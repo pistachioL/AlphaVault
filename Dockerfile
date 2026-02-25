@@ -18,7 +18,9 @@ RUN pip install --upgrade pip \
 
 COPY . /app
 
+RUN chmod +x /app/entrypoint.sh
+
 EXPOSE 8080
 
-CMD ["supervisord", "-c", "/app/supervisord.conf"]
+CMD ["sh", "/app/entrypoint.sh"]
 
