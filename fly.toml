@@ -1,17 +1,23 @@
-app = "alphavault-demo"  # 替换成你自己的 app 名
-primary_region = "nrt"
+# fly.toml app configuration file generated for alphavault on 2026-02-25T16:08:28Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'alphavault'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
-
-[env]
-  PORT = "8080"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "off"
-  auto_start_machines = "on"
-  min_machines_running = 1
-  processes = ["app"]
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
 
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 256
