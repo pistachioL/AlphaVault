@@ -1,0 +1,5 @@
+streamlit
+sqlalchemy
+feedparser
+pytz
+supervisor
