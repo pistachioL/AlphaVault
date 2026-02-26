@@ -1,5 +1,6 @@
 streamlit
 sqlalchemy
+sqlalchemy-libsql
 feedparser
 pytz
 supervisor

@@ -1,6 +1,7 @@
 from datetime import datetime
 from contextlib import contextmanager
 from pathlib import Path
+import os
 
 from sqlalchemy import (
     create_engine,
@@ -15,13 +16,25 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
-# 将 SQLite 放在项目根目录下的 data/ 目录中
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DATABASE_URL = f"sqlite:///{DATA_DIR / 'data.db'}"
+# 优先使用 Turso（通过环境变量配置），否则回退到本地 SQLite 文件
+TURSO_URL = os.getenv("TURSO_DATABASE_URL")
+TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
-engine = create_engine(DATABASE_URL, echo=False, future=True)
+if TURSO_URL:
+    # Turso 远程数据库（推荐线上环境）
+    engine = create_engine(
+        f"sqlite+libsql://{TURSO_URL}?secure=true",
+        connect_args={"auth_token": TURSO_TOKEN} if TURSO_TOKEN else {},
+        echo=False,
+        future=True,
+    )
+else:
+    # 本地开发回退：将 SQLite 放在项目根目录下的 data/ 目录中
+    BASE_DIR = Path(__file__).resolve().parent
+    DATA_DIR = BASE_DIR / "data"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATABASE_URL = f"sqlite:///{DATA_DIR / 'data.db'}"
+    engine = create_engine(DATABASE_URL, echo=False, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
 
