@@ -1,5 +1,6 @@
 from datetime import datetime
 from contextlib import contextmanager
+from pathlib import Path
 
 from sqlalchemy import (
     create_engine,
@@ -14,7 +15,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 
-DATABASE_URL = "sqlite:///data.db"
+# 将 SQLite 放在项目根目录下的 data/ 目录中
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_URL = f"sqlite:///{DATA_DIR / 'data.db'}"
 
 engine = create_engine(DATABASE_URL, echo=False, future=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
