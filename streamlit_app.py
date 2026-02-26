@@ -86,51 +86,50 @@ def main():
 
         if df.empty:
             st.info("当前条件下没有抓到任何内容，可以检查 RSS/时间范围。")
-            return
+        else:
+            # 1）按主题标签统计，用于「当前窗口提醒」
+            topic_series = (
+                df["主题标签"]
+                .dropna()
+                .str.split(",")
+                .explode()
+                .str.strip()
+            )
+            topic_counts = topic_series.value_counts().head(10)
 
-        # 1）按主题标签统计，用于「当前窗口提醒」
-        topic_series = (
-            df["主题标签"]
-            .dropna()
-            .str.split(",")
-            .explode()
-            .str.strip()
-        )
-        topic_counts = topic_series.value_counts().head(10)
+            col_left, col_right = st.columns([1, 2])
 
-        col_left, col_right = st.columns([1, 2])
+            with col_left:
+                st.markdown("**热门主题（最近 N 天）**")
+                if topic_counts.empty:
+                    st.write("暂无主题标签信息。")
+                else:
+                    st.bar_chart(topic_counts)
 
-        with col_left:
-            st.markdown("**热门主题（最近 N 天）**")
-            if topic_counts.empty:
-                st.write("暂无主题标签信息。")
-            else:
-                st.bar_chart(topic_counts)
+            with col_right:
+                # 2）按日期统计发文数量
+                df["日期"] = df["发文时间"].dt.date
+                daily_counts = df.groupby("日期")["id"].count()
+                st.markdown("**发文数量时间轴**")
+                st.line_chart(daily_counts)
 
-        with col_right:
-            # 2）按日期统计发文数量
-            df["日期"] = df["发文时间"].dt.date
-            daily_counts = df.groupby("日期")["id"].count()
-            st.markdown("**发文数量时间轴**")
-            st.line_chart(daily_counts)
-
-        st.subheader("详细列表（按时间倒序）")
-        df = df.sort_values(by="发文时间", ascending=False)
-        st.dataframe(
-            df[
-                [
-                    "发文时间",
-                    "大佬",
-                    "标题",
-                    "摘要",
-                    "标的标签",
-                    "主题标签",
-                    "链接",
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+            st.subheader("详细列表（按时间倒序）")
+            df = df.sort_values(by="发文时间", ascending=False)
+            st.dataframe(
+                df[
+                    [
+                        "发文时间",
+                        "大佬",
+                        "标题",
+                        "摘要",
+                        "标的标签",
+                        "主题标签",
+                        "链接",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
 
         # 苏宁时间接口数据展示
         st.subheader("苏宁时间接口数据（最近 200 条）")

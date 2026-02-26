@@ -1,3 +1,16 @@
+# Python
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+
+# Local database
 data.db
+
+# IDE
+.idea/
+.vscode/
+
+# OS / logs
+.DS_Store
+*.log
