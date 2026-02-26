@@ -137,7 +137,7 @@ def fetch_suning_once():
         session.add(row)
 
 
-def main_loop(interval_seconds=60):
+def main_loop(interval_seconds=3600):
     """循环定时抓取"""
     init_db()
     ensure_influencers()
@@ -153,6 +153,6 @@ def main_loop(interval_seconds=60):
 
 
 if __name__ == "__main__":
-    # 1min抓一次，可以自己调整
-    main_loop(60)
+    # 1h抓一次，可以自己调整
+    main_loop(3600)
 
