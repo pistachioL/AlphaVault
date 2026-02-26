@@ -2,8 +2,9 @@ import time
 from datetime import datetime
 
 import feedparser
+import requests
 
-from db import init_db, get_session, Influencer, Post
+from db import init_db, get_session, Influencer, Post, SuningTime
 
 
 # 简单关键词配置，用于打标签
@@ -29,46 +30,7 @@ INFLUENCERS_CONFIG = [
     },
 ]
 
-# 是否使用本地模拟的 RSS 数据（True 时不真正访问网络）
-USE_MOCK_DATA = True
-
-# 本地模拟的 RSS 数据，按 rss_url 分组
-MOCK_RSS_FEEDS = {
-    "https://example.com/feedA.xml": [
-        {
-            "title": "电力板块估值修复机会",
-            "summary": "近期电力板块调整后性价比提升，关注水电与火电龙头。",
-            "link": "https://mock.example.com/a1",
-            "published": datetime(2026, 2, 10, 9, 30),
-        },
-        {
-            "title": "大盘震荡中的防御策略",
-            "summary": "指数短期波动加大，更看重现金流稳定、分红率较高的标的。",
-            "link": "https://mock.example.com/a2",
-            "published": datetime(2026, 2, 15, 14, 0),
-        },
-        {
-            "title": "银行板块估值与风险溢价",
-            "summary": "银行板块当前 PB 处于历史低位，关注不良率与息差变化。",
-            "link": "https://mock.example.com/a3",
-            "published": datetime(2026, 2, 20, 10, 15),
-        },
-    ],
-    "https://example.com/feedB.xml": [
-        {
-            "title": "黄金与实际利率的再平衡",
-            "summary": "黄金价格与实际利率相关性再次强化，可作为组合对冲工具。",
-            "link": "https://mock.example.com/b1",
-            "published": datetime(2026, 2, 12, 11, 45),
-        },
-        {
-            "title": "电力与公用事业的长期逻辑",
-            "summary": "公用事业在高波动环境下具有防御属性，关注电力龙头资产注入预期。",
-            "link": "https://mock.example.com/b2",
-            "published": datetime(2026, 2, 22, 16, 30),
-        },
-    ],
-}
+SUNING_API_URL = "https://f.m.suning.com/api/ct.do"
 
 
 def ensure_influencers():
@@ -108,17 +70,12 @@ def extract_tags(text):
 
 
 def fetch_once():
-    """抓取所有已配置 RSS 一次"""
+    """抓取所有已配置 RSS 一次"""   
     with get_session() as session:
         influencers = session.query(Influencer).all()
         for inf in influencers:
-            if USE_MOCK_DATA:
-                entries = MOCK_RSS_FEEDS.get(inf.rss_url, [])
-            else:
-                feed = feedparser.parse(inf.rss_url)
-                entries = feed.entries
-
-            for entry in entries:
+            feed = feedparser.parse(inf.rss_url)
+            for entry in feed.entries:
                 link = entry.get("link")
                 if not link:
                     continue
@@ -132,19 +89,16 @@ def fetch_once():
                 summary = entry.get("summary", "")
                 content = summary  # demo 里先用 summary，当正文用
 
-                if USE_MOCK_DATA:
-                    published = entry.get("published")
-                else:
-                    published = None
-                    if hasattr(entry, "published_parsed") and entry.published_parsed:
-                        published = datetime(
-                            entry.published_parsed.tm_year,
-                            entry.published_parsed.tm_mon,
-                            entry.published_parsed.tm_mday,
-                            entry.published_parsed.tm_hour,
-                            entry.published_parsed.tm_min,
-                            entry.published_parsed.tm_sec,
-                        )
+                published = None
+                if hasattr(entry, "published_parsed") and entry.published_parsed:
+                    published = datetime(
+                        entry.published_parsed.tm_year,
+                        entry.published_parsed.tm_mon,
+                        entry.published_parsed.tm_mday,
+                        entry.published_parsed.tm_hour,
+                        entry.published_parsed.tm_min,
+                        entry.published_parsed.tm_sec,
+                    )
 
                 stock_tags, topic_tags = extract_tags(
                     "%s\n%s\n%s" % (title, summary, content)
@@ -163,6 +117,26 @@ def fetch_once():
                 session.add(post)
 
 
+def fetch_suning_once():
+    """调用苏宁接口一次并写入 sqlite"""
+    try:
+        resp = requests.get(SUNING_API_URL, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        print("[crawler] suning api error: %s" % e)
+        return
+
+    with get_session() as session:
+        row = SuningTime(
+            api=data.get("api"),
+            code=str(data.get("code")) if data.get("code") is not None else None,
+            current_time=data.get("currentTime"),
+            msg=data.get("msg"),
+        )
+        session.add(row)
+
+
 def main_loop(interval_seconds=1800):
     """循环定时抓取"""
     init_db()
@@ -171,6 +145,7 @@ def main_loop(interval_seconds=1800):
         try:
             print("[crawler] fetching at %s..." % datetime.utcnow().isoformat())
             fetch_once()
+            fetch_suning_once()
             print("[crawler] done.")
         except Exception as e:
             print("[crawler] error: %s" % e)

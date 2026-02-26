@@ -3,3 +3,4 @@ sqlalchemy
 feedparser
 pytz
 supervisor
+requests

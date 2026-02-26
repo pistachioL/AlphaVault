@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import select
 
-from db import init_db, get_session, Influencer, Post
+from db import init_db, get_session, Influencer, Post, SuningTime
 
 
 st.set_page_config(page_title="大佬观点中枢 Demo", layout="wide")
@@ -131,6 +131,42 @@ def main():
             use_container_width=True,
             hide_index=True,
         )
+
+        # 苏宁时间接口数据展示
+        st.subheader("苏宁时间接口数据（最近 200 条）")
+        suning_rows = (
+            session.query(SuningTime)
+            .order_by(SuningTime.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        if not suning_rows:
+            st.info("还没有从苏宁接口抓到任何数据。")
+        else:
+            suning_df = pd.DataFrame(
+                [
+                    {
+                        "抓取时间": row.created_at,
+                        "接口标识": row.api,
+                        "返回码": row.code,
+                        "currentTime": row.current_time,
+                        "消息": row.msg,
+                    }
+                    for row in suning_rows
+                ]
+            ).sort_values(by="抓取时间")
+
+            col_a, col_b = st.columns([1, 1])
+            with col_a:
+                st.markdown("**currentTime 时间序列**")
+                st.line_chart(suning_df.set_index("抓取时间")["currentTime"])
+            with col_b:
+                st.markdown("**原始返回数据表**")
+                st.dataframe(
+                    suning_df.sort_values(by="抓取时间", ascending=False),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 
 if __name__ == "__main__":

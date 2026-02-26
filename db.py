@@ -53,6 +53,19 @@ class Post(Base):
     __table_args__ = (UniqueConstraint("link", name="uq_posts_link"),)
 
 
+class SuningTime(Base):
+    __tablename__ = "suning_time"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    api = Column(String(50), nullable=True)
+    code = Column(String(20), nullable=True)
+    current_time = Column(Integer, nullable=True)
+    msg = Column(String(200), nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 def init_db() -> None:
     """Create tables if they don't exist."""
     Base.metadata.create_all(bind=engine)
