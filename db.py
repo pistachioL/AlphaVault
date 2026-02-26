@@ -3,6 +3,10 @@ from contextlib import contextmanager
 from pathlib import Path
 import os
 
+# 加载环境变量
+from dotenv import load_dotenv
+load_dotenv()
+
 from sqlalchemy import (
     create_engine,
     Column,
@@ -22,8 +26,14 @@ TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
 if TURSO_URL:
     # Turso 远程数据库（推荐线上环境）
+    # 确保 URL 格式正确，不包含重复的前缀
+    if TURSO_URL.startswith('libsql://'):
+        turso_url = TURSO_URL[9:]  # 移除 libsql:// 前缀
+    else:
+        turso_url = TURSO_URL
+    
     engine = create_engine(
-        f"sqlite+libsql://{TURSO_URL}?secure=true",
+        f"sqlite+libsql://{turso_url}?secure=true",
         connect_args={"auth_token": TURSO_TOKEN} if TURSO_TOKEN else {},
         echo=False,
         future=True,

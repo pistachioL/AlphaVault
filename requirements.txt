@@ -5,3 +5,4 @@ feedparser
 pytz
 supervisor
 requests
+python-dotenv
