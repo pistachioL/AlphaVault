@@ -24,8 +24,12 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 TURSO_URL = os.getenv("TURSO_DATABASE_URL")
 TURSO_TOKEN = os.getenv("TURSO_AUTH_TOKEN")
 
+print(f"[Database] TURSO_DATABASE_URL: {TURSO_URL}")
+print(f"[Database] TURSO_AUTH_TOKEN: {'Set' if TURSO_TOKEN else 'Not set'}")
+
 if TURSO_URL:
     # Turso 远程数据库（推荐线上环境）
+    print("[Database] Using Turso database")
     # 确保 URL 格式正确，不包含重复的前缀
     if TURSO_URL.startswith('libsql://'):
         turso_url = TURSO_URL[9:]  # 移除 libsql:// 前缀
@@ -40,11 +44,14 @@ if TURSO_URL:
     )
 else:
     # 本地开发回退：将 SQLite 放在项目根目录下的 data/ 目录中
+    print("[Database] Using local SQLite database")
     BASE_DIR = Path(__file__).resolve().parent
     DATA_DIR = BASE_DIR / "data"
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     DATABASE_URL = f"sqlite:///{DATA_DIR / 'data.db'}"
     engine = create_engine(DATABASE_URL, echo=False, future=True)
+
+print(f"[Database] Database URL: {engine.url}")
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
 
