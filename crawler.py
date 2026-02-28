@@ -4,7 +4,7 @@ from datetime import datetime
 import feedparser
 import requests
 
-from db import init_db, get_session, Influencer, Post, SuningTime
+from db import init_db, get_session, Influencer, Post
 
 
 # 简单关键词配置，用于打标签
@@ -117,35 +117,37 @@ def fetch_once():
                 session.add(post)
 
 
-def fetch_suning_once():
-    """调用苏宁接口一次并写入 sqlite"""
-    try:
-        resp = requests.get(SUNING_API_URL, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print("[crawler] suning api error: %s" % e)
-        return
+# def fetch_suning_once():
+#     """调用苏宁接口一次并写入 sqlite"""
+#     try:
+#         resp = requests.get(SUNING_API_URL, timeout=10)
+#         resp.raise_for_status()
+#         data = resp.json()
+#     except Exception as e:
+#         print("[crawler] suning api error: %s" % e)
+#         return
 
-    with get_session() as session:
-        row = SuningTime(
-            api=data.get("api"),
-            code=str(data.get("code")) if data.get("code") is not None else None,
-            current_time=data.get("currentTime"),
-            msg=data.get("msg"),
-        )
-        session.add(row)
+#     with get_session() as session:
+#         row = SuningTime(
+#             api=data.get("api"),
+#             code=str(data.get("code")) if data.get("code") is not None else None,
+#             current_time=data.get("currentTime"),
+#             msg=data.get("msg"),
+#         )
+#         session.add(row)
 
 
 def main_loop(interval_seconds=3600):
     """循环定时抓取"""
-    init_db()
-    ensure_influencers()
+    # 暂时注释掉数据库初始化和操作
+    # init_db()
+    # ensure_influencers()
     while True:
         try:
             print("[crawler] fetching at %s..." % datetime.utcnow().isoformat())
-            fetch_once()
-            fetch_suning_once()
+            # 暂时注释掉数据库操作
+            # fetch_once()
+            # fetch_suning_once()
             print("[crawler] done.")
         except Exception as e:
             print("[crawler] error: %s" % e)
