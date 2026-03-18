@@ -34,6 +34,7 @@ from ai_analyze import (
     AnalyzeResult,
     analyze_with_litellm,
     clean_text,
+    format_llm_error_one_line,
     validate_and_adjust_assertions,
 )
 from rss_utils import (
@@ -526,7 +527,7 @@ def _process_one_post_uid(
             assertions=assertions,
             )
     except Exception as e:
-        msg = f"ai:{type(e).__name__}: {e}"
+        msg = f"ai:{format_llm_error_one_line(e, limit=950)}"
         now_epoch = int(time.time())
         retry_count = 1
         try:
@@ -539,7 +540,7 @@ def _process_one_post_uid(
         except Exception as mark_e:
             if config.verbose:
                 print(f"[llm] mark_error_failed {post_uid} {type(mark_e).__name__}: {mark_e}", flush=True)
-        print(f"[llm] error {post_uid} {type(e).__name__}: {e}", flush=True)
+        print(f"[llm] error {post_uid} {msg}", flush=True)
 
 
 def _ingest_rss_many_once(
