@@ -12,10 +12,20 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from turso_db import ensure_turso_engine
+from topic_cluster import UNCATEGORIZED_LABEL, enrich_assertions_with_clusters, try_load_cluster_tables
+from ui_topic_cluster import show_topic_cluster_admin
 
 load_dotenv()
 
 STREAMLIT_SOURCE_NAME = "archive"
+
+
+@st.cache_data(show_spinner=False)
+def load_topic_cluster_sources(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
+    if not db_url:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "Missing TURSO_DATABASE_URL"
+    engine = ensure_turso_engine(db_url, auth_token)
+    return try_load_cluster_tables(engine)
 
 
 def parse_json_list(value: object) -> List[str]:
@@ -250,6 +260,12 @@ def build_filters(
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     st.sidebar.header("筛选条件")
 
+    group_by_cluster = False
+    if "cluster_display" in assertions.columns:
+        group_by_cluster = st.sidebar.checkbox("按板块看（聚合）", value=False, key="filter_group_by_cluster")
+    group_col = "cluster_display" if group_by_cluster else "topic_key"
+    group_label = "板块" if group_by_cluster else "主题"
+
     posts_filtered = posts.copy()
     required_post_cols = {
         "post_uid": "",
@@ -380,12 +396,18 @@ def build_filters(
             else:
                 assertions_joined[col] = ""
 
-    topic_options = sorted(assertions["topic_key"].dropna().unique().tolist())
-    selected_topics = st.sidebar.multiselect("主题", topic_options, default=None)
-    if selected_topics:
-        assertions_joined = assertions_joined[
-            assertions_joined["topic_key"].isin(selected_topics)
-        ]
+    show_uncategorized = True
+    if group_by_cluster:
+        show_uncategorized = st.sidebar.checkbox("显示未归类", value=True, key="filter_show_uncategorized")
+        if not show_uncategorized and "cluster_display" in assertions_joined.columns:
+            assertions_joined = assertions_joined[assertions_joined["cluster_display"] != UNCATEGORIZED_LABEL]
+
+    group_options = sorted(assertions[group_col].dropna().unique().tolist()) if group_col in assertions.columns else []
+    if group_by_cluster and not show_uncategorized:
+        group_options = [item for item in group_options if str(item).strip() != UNCATEGORIZED_LABEL]
+    selected_groups = st.sidebar.multiselect(group_label, group_options, default=None)
+    if selected_groups and group_col in assertions_joined.columns:
+        assertions_joined = assertions_joined[assertions_joined[group_col].isin(selected_groups)]
 
     action_options = sorted(assertions["action"].dropna().unique().tolist())
     selected_actions = st.sidebar.multiselect("动作", action_options, default=None)
@@ -417,6 +439,9 @@ def build_filters(
         "keyword": keyword,
         "only_with_assertions": only_with_assertions,
         "date_col": date_col,
+        "group_by_cluster": group_by_cluster,
+        "group_col": group_col,
+        "group_label": group_label,
     }
     return posts_filtered, assertions_joined, meta
 
@@ -447,16 +472,23 @@ def show_kpis(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame) -
     col6.metric("转发占比", f"{repost_ratio:.0%}")
 
 
-def show_overview_charts(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame) -> None:
+def show_overview_charts(
+    posts_filtered: pd.DataFrame,
+    assertions_filtered: pd.DataFrame,
+    *,
+    group_col: str,
+    group_label: str,
+) -> None:
+    group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
     col_left, col_mid, col_right = st.columns([1, 1, 2])
 
     with col_left:
-        st.markdown("**热门主题**")
-        topic_counts = assertions_filtered["topic_key"].value_counts().head(12)
-        if topic_counts.empty:
-            st.write("暂无主题数据。")
+        st.markdown(f"**热门{group_label}**")
+        group_counts = assertions_filtered[group_col].value_counts().head(12)
+        if group_counts.empty:
+            st.write(f"暂无{group_label}数据。")
         else:
-            st.bar_chart(topic_counts)
+            st.bar_chart(group_counts)
 
     with col_mid:
         st.markdown("**热门动作**")
@@ -546,7 +578,8 @@ def trade_action_badge(action: str, strength: object) -> str:
     return "·"
 
 
-def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
+def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+    group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
     trade_mask = assertions_filtered["action"].str.startswith("trade.", na=False)
     trade_df = assertions_filtered[trade_mask].copy()
 
@@ -561,40 +594,28 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
         value=False,
         key="trade_flow_show_raw_col",
     )
-    st.dataframe(
-        (
-            trade_view.assign(原文=trade_view["raw_text"].fillna(""))[
-                [
-                    "created_at",
-                    "author",
-                    "source",
-                    "topic_key",
-                    "action",
-                    "action_strength",
-                    "summary",
-                    "confidence",
-                    "url",
-                    "原文",
-                ]
-            ]
-            if show_raw_col
-            else trade_view[
-                [
-                    "created_at",
-                    "author",
-                    "source",
-                    "topic_key",
-                    "action",
-                    "action_strength",
-                    "summary",
-                    "confidence",
-                    "url",
-                ]
-            ]
-        ),
-        width="stretch",
-        hide_index=True,
+    group_cols = [group_col] if group_col == "topic_key" else [group_col, "topic_key"]
+    base_cols = [
+        "created_at",
+        "author",
+        "source",
+        *group_cols,
+        "action",
+        "action_strength",
+        "summary",
+        "confidence",
+        "url",
+    ]
+    display_df = (
+        trade_view.assign(原文=trade_view["raw_text"].fillna(""))[base_cols + ["原文"]]
+        if show_raw_col
+        else trade_view[base_cols]
     )
+    rename_map = {"topic_key": "主题"}
+    if group_col != "topic_key":
+        rename_map[group_col] = group_label
+    display_df = display_df.rename(columns=rename_map)
+    st.dataframe(display_df, width="stretch", hide_index=True)
 
     st.divider()
     st.markdown("**作业板（抄作业用，一眼看懂）**")
@@ -640,9 +661,9 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
         )
 
     board_df = trade_df.dropna(subset=["created_at"]).copy()
-    board_df = board_df[board_df["topic_key"].astype(str).str.strip().ne("")].copy()
+    board_df = board_df[board_df[group_col].astype(str).str.strip().ne("")].copy()
     if board_df.empty:
-        st.info("没有可用的数据（topic_key/created_at 为空）。")
+        st.info(f"没有可用的数据（{group_label}/created_at 为空）。")
         return
 
     max_ts = board_df["created_at"].max()
@@ -667,11 +688,11 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
     )
     board_df["hold_mentions"] = board_df["action"].isin(TRADE_HOLD_ACTIONS).astype(int)
 
-    agg = board_df.groupby("topic_key", as_index=False).agg(
+    agg = board_df.groupby(group_col, as_index=False).agg(
         买强度=("buy_strength", "sum"),
         卖强度=("sell_strength", "sum"),
         只看次数=("hold_mentions", "sum"),
-        提及次数=("topic_key", "count"),
+        提及次数=(group_col, "count"),
         大佬数=("author", "nunique"),
         最近时间=("created_at", "max"),
     )
@@ -679,24 +700,24 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
 
     last_rows = (
         board_df.sort_values(by="created_at")
-        .groupby("topic_key")
+        .groupby(group_col)
         .tail(1)
-        .set_index("topic_key")
+        .set_index(group_col)
     )
     last_badge = last_rows.apply(
         lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
     )
-    agg["最近大佬"] = agg["topic_key"].map(last_rows["author"])
-    agg["最近动作"] = agg["topic_key"].map(last_badge)
+    agg["最近大佬"] = agg[group_col].map(last_rows["author"])
+    agg["最近动作"] = agg[group_col].map(last_badge)
     agg["最近摘要"] = (
-        agg["topic_key"]
+        agg[group_col]
         .map(last_rows["summary"])
         .fillna("")
         .astype(str)
         .str.replace(r"\s+", " ", regex=True)
         .str.slice(0, 60)
     )
-    agg["url"] = agg["topic_key"].map(last_rows["url"])
+    agg["url"] = agg[group_col].map(last_rows["url"])
     agg["最近"] = agg["最近时间"].apply(lambda ts: format_age_label(max_ts, ts))
 
     consensus = pd.Series(["·不清楚"] * len(agg), index=agg.index)
@@ -725,7 +746,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
         )
 
     kpi_left, kpi_mid, kpi_right = st.columns(3)
-    kpi_left.metric("标的数", f"{len(agg_sorted)}")
+    kpi_left.metric(f"{group_label}数", f"{len(agg_sorted)}")
     kpi_mid.metric("大佬数", f"{int(board_df['author'].nunique())}")
     kpi_right.metric(
         "有共识",
@@ -736,7 +757,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
     st.dataframe(
         top_assets[
             [
-                "topic_key",
+                group_col,
                 "共识",
                 "净强度",
                 "买强度",
@@ -749,7 +770,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
                 "最近摘要",
                 "url",
             ]
-        ].rename(columns={"topic_key": "标的"}),
+        ].rename(columns={group_col: group_label}),
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -757,7 +778,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
         },
     )
 
-    st.markdown("**作业格（大佬 × 标的）**")
+    st.markdown(f"**作业格（大佬 × {group_label}）**")
     if "invest_score" in board_df.columns:
         score_series = pd.to_numeric(board_df["invest_score"], errors="coerce").fillna(0.0)
     else:
@@ -771,17 +792,17 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
     author_stats = author_stats[author_stats["author"].astype(str).str.strip().ne("")]
     author_stats = author_stats.sort_values(by=["分数", "提及"], ascending=False)
     top_author_list = author_stats.head(max_authors)["author"].tolist()
-    top_asset_keys = top_assets["topic_key"].tolist()
+    top_asset_keys = top_assets[group_col].tolist()
 
     if not top_asset_keys:
-        st.info("没有标的数据。")
+        st.info(f"没有{group_label}数据。")
         return
 
     if not top_author_list:
         st.info("没有大佬数据（author 为空）。")
     else:
         pair_df = board_df[
-            board_df["topic_key"].isin(top_asset_keys)
+            board_df[group_col].isin(top_asset_keys)
             & board_df["author"].isin(top_author_list)
         ].copy()
         if pair_df.empty:
@@ -789,7 +810,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
         else:
             pair_last = (
                 pair_df.sort_values(by="created_at")
-                .groupby(["topic_key", "author"])
+                .groupby([group_col, "author"])
                 .tail(1)
                 .copy()
             )
@@ -802,19 +823,19 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
             pair_last["cell"] = pair_last["badge"] + " " + pair_last["age"]
 
             matrix = (
-                pair_last.pivot(index="topic_key", columns="author", values="cell")
+                pair_last.pivot(index=group_col, columns="author", values="cell")
                 .reindex(index=top_asset_keys, columns=top_author_list)
                 .fillna("")
             )
             st.dataframe(
-                matrix.reset_index().rename(columns={"topic_key": "标的"}),
+                matrix.reset_index().rename(columns={group_col: group_label}),
                 use_container_width=True,
                 hide_index=True,
             )
 
-    st.markdown("**标的细节（点开看最近几条）**")
-    selected_topic = st.selectbox(
-        "选择标的",
+    st.markdown(f"**{group_label}细节（点开看最近几条）**")
+    selected_key = st.selectbox(
+        f"选择{group_label}",
         options=top_asset_keys,
         index=0,
         key="trade_board_selected_topic",
@@ -827,7 +848,7 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
         step=5,
         key="trade_board_detail_n",
     )
-    detail_df = board_df[board_df["topic_key"] == selected_topic].copy()
+    detail_df = board_df[board_df[group_col] == selected_key].copy()
     detail_df = detail_df.sort_values(by="created_at", ascending=False).head(int(detail_n))
     detail_df["动作"] = detail_df.apply(
         lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
@@ -839,19 +860,20 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
         .str.replace(r"\s+", " ", regex=True)
         .str.slice(0, 120)
     )
+    detail_cols = [
+        "created_at",
+        "author",
+        "source",
+        "动作",
+        "summary",
+        "confidence",
+        "原文",
+        "url",
+    ]
+    if group_col != "topic_key" and "topic_key" in detail_df.columns:
+        detail_cols.insert(3, "topic_key")
     st.dataframe(
-        detail_df[
-            [
-                "created_at",
-                "author",
-                "source",
-                "动作",
-                "summary",
-                "confidence",
-                "原文",
-                "url",
-            ]
-        ],
+        detail_df[detail_cols],
         width="stretch",
         hide_index=True,
         column_config={
@@ -860,7 +882,8 @@ def show_trade_flow(assertions_filtered: pd.DataFrame) -> None:
     )
 
 
-def show_risk_radar(assertions_filtered: pd.DataFrame) -> None:
+def show_risk_radar(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+    group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
     st.markdown("**风险雷达（时间衰减评分）**")
 
     include_bearish = st.checkbox("把 bearish 观点也计入风险", value=True)
@@ -898,10 +921,10 @@ def show_risk_radar(assertions_filtered: pd.DataFrame) -> None:
 
     agg = (
         risk_df.sort_values(by="created_at")
-        .groupby("topic_key", as_index=False)
+        .groupby(group_col, as_index=False)
         .agg(
             risk_score=("risk_score", "sum"),
-            mentions=("topic_key", "count"),
+            mentions=(group_col, "count"),
             last_time=("created_at", "max"),
         )
         .sort_values(by="risk_score", ascending=False)
@@ -909,20 +932,20 @@ def show_risk_radar(assertions_filtered: pd.DataFrame) -> None:
 
     last_rows = (
         risk_df.sort_values(by="created_at")
-        .groupby("topic_key")
+        .groupby(group_col)
         .tail(1)
-        .set_index("topic_key")
+        .set_index(group_col)
     )
 
-    agg["last_author"] = agg["topic_key"].map(last_rows["author"])
-    agg["last_summary"] = agg["topic_key"].map(last_rows["summary"])
-    agg["last_evidence"] = agg["topic_key"].map(last_rows["evidence"])
+    agg["last_author"] = agg[group_col].map(last_rows["author"])
+    agg["last_summary"] = agg[group_col].map(last_rows["summary"])
+    agg["last_evidence"] = agg[group_col].map(last_rows["evidence"])
 
-    st.bar_chart(agg.set_index("topic_key")["risk_score"].head(12))
+    st.bar_chart(agg.set_index(group_col)["risk_score"].head(12))
     st.dataframe(
         agg[
             [
-                "topic_key",
+                group_col,
                 "risk_score",
                 "mentions",
                 "last_time",
@@ -930,27 +953,28 @@ def show_risk_radar(assertions_filtered: pd.DataFrame) -> None:
                 "last_summary",
                 "last_evidence",
             ]
-        ],
+        ].rename(columns={group_col: group_label}),
         width="stretch",
         hide_index=True,
     )
 
 
-def show_topic_timeline(assertions_filtered: pd.DataFrame) -> None:
-    st.markdown("**主题时间线**")
-    topic_options = sorted(assertions_filtered["topic_key"].dropna().unique().tolist())
-    if not topic_options:
-        st.info("暂无主题数据。")
+def show_topic_timeline(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
+    group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
+    st.markdown(f"**{group_label}时间线**")
+    options = sorted(assertions_filtered[group_col].dropna().unique().tolist())
+    if not options:
+        st.info(f"暂无{group_label}数据。")
         return
-    selected_topic = st.selectbox("选择主题", topic_options)
-    topic_df = assertions_filtered[assertions_filtered["topic_key"] == selected_topic]
-    if topic_df.empty:
+    selected_key = st.selectbox(f"选择{group_label}", options)
+    view_df = assertions_filtered[assertions_filtered[group_col] == selected_key]
+    if view_df.empty:
         st.info("暂无数据。")
         return
 
-    if topic_df["created_at"].notna().any():
+    if view_df["created_at"].notna().any():
         pivot = (
-            topic_df.dropna(subset=["created_at"])
+            view_df.dropna(subset=["created_at"])
             .set_index("created_at")
             .groupby("action")
             .resample("D")
@@ -962,7 +986,7 @@ def show_topic_timeline(assertions_filtered: pd.DataFrame) -> None:
             st.line_chart(pivot)
 
     st.dataframe(
-        topic_df.sort_values(by="created_at", ascending=False)[
+        view_df.sort_values(by="created_at", ascending=False)[
             [
                 "created_at",
                 "author",
@@ -1009,8 +1033,9 @@ def show_learning_library(assertions_filtered: pd.DataFrame) -> None:
     )
 
 
-def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
+def show_conflicts_and_changes(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
     st.markdown("**观点变化 / 冲突**")
+    group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
 
     bullish_actions = {
         "view.bullish",
@@ -1040,7 +1065,7 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
 
     # Change detection per author + topic
     change_rows = []
-    for (author, topic_key), group in data.groupby(["author", "topic_key"]):
+    for (author, group_key), group in data.groupby(["author", group_col]):
         polarities = set(group["polarity"]) - {"neutral"}
         if "bull" in polarities and "bear" in polarities:
             group_sorted = group.sort_values(by="created_at")
@@ -1050,7 +1075,7 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
             change_rows.append(
                 {
                     "author": author,
-                    "topic_key": topic_key,
+                    group_label: group_key,
                     "first_bull": first_bull["created_at"].iloc[0]
                     if not first_bull.empty
                     else None,
@@ -1093,7 +1118,7 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
     recent = data[data["created_at"] >= cutoff]
 
     conflict_rows = []
-    for topic_key, group in recent.groupby("topic_key"):
+    for group_key, group in recent.groupby(group_col):
         bulls = group[group["polarity"] == "bull"]
         bears = group[group["polarity"] == "bear"]
         if not bulls.empty and not bears.empty:
@@ -1101,7 +1126,7 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
             latest_bear = bears.sort_values(by="created_at").tail(1)
             conflict_rows.append(
                 {
-                    "topic_key": topic_key,
+                    group_label: group_key,
                     "bull_authors": ", ".join(sorted(bulls["author"].unique().tolist())),
                     "bear_authors": ", ".join(sorted(bears["author"].unique().tolist())),
                     "bull_count": len(bulls),
@@ -1131,7 +1156,13 @@ def show_conflicts_and_changes(assertions_filtered: pd.DataFrame) -> None:
         )
 
 
-def show_tables(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame) -> None:
+def show_tables(
+    posts_filtered: pd.DataFrame,
+    assertions_filtered: pd.DataFrame,
+    *,
+    group_col: str,
+    group_label: str,
+) -> None:
     st.markdown("**帖子列表**")
     if posts_filtered.empty:
         st.info("当前条件下没有符合的帖子。")
@@ -1166,22 +1197,29 @@ def show_tables(posts_filtered: pd.DataFrame, assertions_filtered: pd.DataFrame)
     if assertions_filtered.empty:
         st.info("当前条件下没有观点。")
         return
+    group_col = group_col if group_col in assertions_filtered.columns else "topic_key"
+    show_cluster = group_col != "topic_key" and "cluster_display" in assertions_filtered.columns
+    assertion_cols = [
+        "created_at",
+        "author",
+        "source",
+    ]
+    if show_cluster:
+        assertion_cols.append("cluster_display")
+    assertion_cols += [
+        "topic_key",
+        "action",
+        "action_strength",
+        "confidence",
+        "summary",
+        "evidence",
+        "stock_codes_str",
+        "industries_str",
+    ]
     st.dataframe(
-        assertions_filtered.sort_values(by="created_at", ascending=False)[
-            [
-                "created_at",
-                "author",
-                "source",
-                "topic_key",
-                "action",
-                "action_strength",
-                "confidence",
-                "summary",
-                "evidence",
-                "stock_codes_str",
-                "industries_str",
-            ]
-        ],
+        assertions_filtered.sort_values(by="created_at", ascending=False)[assertion_cols].rename(
+            columns={"cluster_display": "板块", "topic_key": "主题"}
+        ),
         width="stretch",
         hide_index=True,
     )
@@ -1256,10 +1294,22 @@ def main() -> None:
     assertions = normalize_assertions_datetime(assertions)
     assertions = enrich_assertions(assertions)
 
+    turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
+    turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+    clusters_df, cluster_topic_map_df, cluster_post_overrides_df, cluster_load_error = load_topic_cluster_sources(
+        turso_url, turso_token
+    )
+    assertions = enrich_assertions_with_clusters(
+        assertions,
+        clusters=clusters_df,
+        topic_map=cluster_topic_map_df,
+        post_overrides=cluster_post_overrides_df,
+    )
+
     assertion_counts = assertions.groupby("post_uid")["idx"].count()
     posts["assertion_count"] = posts["post_uid"].map(assertion_counts).fillna(0).astype(int)
 
-    posts_filtered, assertions_filtered, _meta = build_filters(posts, assertions)
+    posts_filtered, assertions_filtered, meta = build_filters(posts, assertions)
 
     tabs = st.tabs(
         [
@@ -1267,6 +1317,7 @@ def main() -> None:
             "交易流",
             "风险雷达",
             "主题时间线",
+            "主题聚合",
             "学习库",
             "冲突/变化",
             "数据表",
@@ -1276,25 +1327,35 @@ def main() -> None:
     with tabs[0]:
         show_kpis(posts_filtered, assertions_filtered)
         st.divider()
-        show_overview_charts(posts_filtered, assertions_filtered)
+        show_overview_charts(posts_filtered, assertions_filtered, group_col=meta["group_col"], group_label=meta["group_label"])
 
     with tabs[1]:
-        show_trade_flow(assertions_filtered)
+        show_trade_flow(assertions_filtered, group_col=meta["group_col"], group_label=meta["group_label"])
 
     with tabs[2]:
-        show_risk_radar(assertions_filtered)
+        show_risk_radar(assertions_filtered, group_col=meta["group_col"], group_label=meta["group_label"])
 
     with tabs[3]:
-        show_topic_timeline(assertions_filtered)
+        show_topic_timeline(assertions_filtered, group_col=meta["group_col"], group_label=meta["group_label"])
 
     with tabs[4]:
-        show_learning_library(assertions_filtered)
+        engine = ensure_turso_engine(turso_url, turso_token)
+        show_topic_cluster_admin(
+            engine=engine,
+            assertions_all=assertions,
+            clusters=clusters_df,
+            topic_map=cluster_topic_map_df,
+            load_error=cluster_load_error,
+        )
 
     with tabs[5]:
-        show_conflicts_and_changes(assertions_filtered)
+        show_learning_library(assertions_filtered)
 
     with tabs[6]:
-        show_tables(posts_filtered, assertions_filtered)
+        show_conflicts_and_changes(assertions_filtered, group_col=meta["group_col"], group_label=meta["group_label"])
+
+    with tabs[7]:
+        show_tables(posts_filtered, assertions_filtered, group_col=meta["group_col"], group_label=meta["group_label"])
 
 
 if __name__ == "__main__":
