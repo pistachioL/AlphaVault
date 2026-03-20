@@ -66,7 +66,8 @@ def _ingest_rss_many_once(
             if post_uid in seen_post_uids:
                 continue
 
-            title = clean_text(entry.get("title") or "")
+            raw_title = clean_text(entry.get("title") or "")
+            title = (html_to_text(raw_title) or raw_title).strip()
             content_html = get_entry_content(entry)
             content_text = html_to_text(content_html)
             image_urls = extract_image_urls_from_html(content_html)
@@ -148,4 +149,3 @@ def _ingest_rss_many_once(
             seen_urls.add(link)
 
     return inserted, turso_error
-

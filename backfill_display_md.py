@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import time
 
 from sqlalchemy import text
@@ -19,6 +20,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="最多处理多少条（0=不限）")
     parser.add_argument("--sleep-sec", type=float, default=0.0, help="每批之间 sleep 秒数（默认 0）")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已有 display_md（默认只补空的）")
+    parser.add_argument(
+        "--post-uids",
+        type=str,
+        default="",
+        help="只处理指定 post_uid（逗号/换行分隔）。提供后将强制覆盖重算 display_md。",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只打印进度，不写 DB")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
@@ -94,12 +101,119 @@ def _max_target_post_uid(conn, *, overwrite: bool) -> str:
             """
     return str(conn.execute(text(query)).scalar() or "").strip()
 
+def _parse_post_uids(value: str) -> list[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for part in re.split(r"[,\n]+", raw):
+        uid = str(part or "").strip()
+        if not uid:
+            continue
+        if uid.isdigit():
+            uid = f"weibo:{uid}"
+        if uid in seen:
+            continue
+        seen.add(uid)
+        items.append(uid)
+    return items
+
+
+def _select_rows_by_post_uids(conn, post_uids: list[str]) -> list[dict]:
+    if not post_uids:
+        return []
+    placeholders = ", ".join([f":uid{i}" for i in range(len(post_uids))])
+    query = f"""
+        SELECT post_uid, author, raw_text
+        FROM posts
+        WHERE post_uid IN ({placeholders})
+          AND TRIM(raw_text) <> ''
+        ORDER BY post_uid ASC
+        """
+    params = {f"uid{i}": uid for i, uid in enumerate(post_uids)}
+    rows = conn.execute(text(query), params).mappings().fetchall()
+    return [dict(row) for row in rows]
+
+
+def _chunks(items: list[str], size: int) -> list[list[str]]:
+    n = max(1, int(size))
+    return [items[i : i + n] for i in range(0, len(items), n)]
+
 
 def main() -> None:
     args = parse_args()
     engine = get_turso_engine_from_env()
 
     ensure_cloud_queue_schema(engine, verbose=bool(args.verbose))
+
+    post_uids = _parse_post_uids(getattr(args, "post_uids", ""))
+    if post_uids:
+        processed = 0
+        updated = 0
+        found_uids: set[str] = set()
+
+        with engine.connect() as conn:
+            total_posts = int(conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0)
+
+        print(
+            f"[backfill] start total_posts={total_posts} target={len(post_uids)} "
+            f"overwrite=True by_post_uids=True"
+        )
+
+        batch_size = max(1, int(args.batch_size))
+        for chunk in _chunks(post_uids, batch_size):
+            with engine.connect() as conn:
+                rows = _select_rows_by_post_uids(conn, chunk)
+
+            updates: list[dict] = []
+            for row in rows:
+                post_uid = str(row.get("post_uid") or "").strip()
+                author = str(row.get("author") or "").strip()
+                raw_text = str(row.get("raw_text") or "")
+                if not post_uid:
+                    continue
+                display_md = format_weibo_display_md(raw_text, author=author)
+                updates.append({"post_uid": post_uid, "display_md": display_md})
+                found_uids.add(post_uid)
+
+            processed += len(rows)
+
+            if args.dry_run:
+                print(f"[dry-run] batch rows={len(rows)} total_processed={processed}")
+                continue
+
+            with engine.begin() as conn:
+                updated_this_batch = 0
+                for item in updates:
+                    res = conn.execute(
+                        text(
+                            """
+                            UPDATE posts
+                            SET display_md = :display_md
+                            WHERE post_uid = :post_uid
+                            """
+                        ),
+                        item,
+                    )
+                    updated_this_batch += int(res.rowcount or 0)
+            updated += updated_this_batch
+            print(
+                f"[backfill] batch updated={updated_this_batch} "
+                f"total_updated={updated} total_processed={processed}"
+            )
+
+            if float(args.sleep_sec or 0.0) > 0:
+                time.sleep(float(args.sleep_sec))
+
+        missing = [uid for uid in post_uids if uid not in found_uids]
+        if missing and bool(args.verbose):
+            head = ", ".join(missing[:10])
+            tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
+            print(f"[backfill] missing_post_uids={len(missing)} {head}{tail}")
+
+        print(f"[backfill] done updated={updated} processed={processed} target={len(post_uids)}")
+        return
 
     processed = 0
     updated = 0
