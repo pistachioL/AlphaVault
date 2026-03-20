@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import streamlit as st
 
-from weibo_display import format_weibo_display_md
+from alphavault.weibo.display import format_weibo_display_md
 
 
 def show_topic_timeline(assertions_filtered: pd.DataFrame, *, group_col: str, group_label: str) -> None:
@@ -291,4 +291,3 @@ def show_tables(
         width="stretch",
         hide_index=True,
     )
-

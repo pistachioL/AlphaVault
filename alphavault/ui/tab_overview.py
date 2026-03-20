@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-Streamlit tabs: overview.
+Streamlit tab: overview.
 """
 
 import math
@@ -95,4 +95,3 @@ def show_overview_charts(
         source_assertions = assertions_filtered["source"].value_counts()
         if not source_assertions.empty:
             st.bar_chart(source_assertions)
-

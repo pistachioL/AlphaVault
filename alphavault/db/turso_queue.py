@@ -15,8 +15,8 @@ from typing import Any, Dict, Iterable, Optional
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from db_introspect import table_columns
-from turso_db import init_cloud_schema
+from alphavault.db.introspect import table_columns
+from alphavault.db.turso_db import init_cloud_schema
 
 
 AI_STATUS_PENDING = "pending"

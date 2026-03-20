@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-Streamlit tabs: risk radar.
+Streamlit tab: risk radar.
 """
 
 from datetime import datetime, timedelta
@@ -86,4 +86,3 @@ def show_risk_radar(assertions_filtered: pd.DataFrame, *, group_col: str, group_
         width="stretch",
         hide_index=True,
     )
-

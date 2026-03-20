@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
-from ai_analyze import (
+from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
     DEFAULT_AI_MODE,

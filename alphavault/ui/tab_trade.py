@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-Streamlit tabs: trade flow.
+Streamlit tab: trade flow.
 """
 
 from datetime import datetime, timedelta
@@ -338,4 +338,3 @@ def show_trade_flow(assertions_filtered: pd.DataFrame, *, group_col: str, group_
             "url": st.column_config.LinkColumn("链接", display_text="打开"),
         },
     )
-

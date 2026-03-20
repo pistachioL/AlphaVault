@@ -1,3 +1,5 @@
+"""DB introspection helpers."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -27,4 +29,3 @@ def _table_columns_from_conn(conn: Any, table: str) -> set[str]:
         if row and len(row) >= 2:
             out.add(str(row[1]))
     return out
-

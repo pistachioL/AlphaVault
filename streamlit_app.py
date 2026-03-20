@@ -5,7 +5,10 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 
-from streamlit_data import (
+from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
+from alphavault.db.turso_db import ensure_turso_engine
+from alphavault.topic_cluster import enrich_assertions_with_clusters
+from alphavault.ui.data import (
     enrich_assertions,
     enrich_posts,
     load_sources,
@@ -13,19 +16,17 @@ from streamlit_data import (
     normalize_assertions_datetime,
     normalize_datetime_columns,
 )
-from streamlit_filters import build_filters
-from streamlit_tab_misc import (
+from alphavault.ui.filters import build_filters
+from alphavault.ui.tab_misc import (
     show_conflicts_and_changes,
     show_learning_library,
     show_tables,
     show_topic_timeline,
 )
-from streamlit_tab_overview import show_kpis, show_overview_charts
-from streamlit_tab_risk import show_risk_radar
-from streamlit_tab_trade import show_trade_flow
-from topic_cluster import enrich_assertions_with_clusters
-from turso_db import ensure_turso_engine
-from ui_topic_cluster import show_topic_cluster_admin
+from alphavault.ui.tab_overview import show_kpis, show_overview_charts
+from alphavault.ui.tab_risk import show_risk_radar
+from alphavault.ui.tab_trade import show_trade_flow
+from alphavault.ui.topic_cluster_admin import show_topic_cluster_admin
 
 load_dotenv()
 
@@ -99,8 +100,8 @@ def main() -> None:
     assertions = normalize_assertions_datetime(assertions)
     assertions = enrich_assertions(assertions)
 
-    turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
-    turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+    turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
+    turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
     clusters_df, cluster_topic_map_df, cluster_post_overrides_df, cluster_load_error = load_topic_cluster_sources(
         turso_url, turso_token
     )
@@ -191,4 +192,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

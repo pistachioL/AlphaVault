@@ -11,7 +11,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import streamlit as st
 
-from topic_cluster import UNCATEGORIZED_LABEL
+from alphavault.topic_cluster import UNCATEGORIZED_LABEL
 
 
 def build_filters(
@@ -221,4 +221,3 @@ def build_filters(
         "group_label": group_label,
     }
     return posts_filtered, assertions_joined, meta
-

@@ -17,9 +17,10 @@ import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 import streamlit as st
 
-from db_introspect import table_columns
-from topic_cluster import try_load_cluster_tables
-from turso_db import ensure_turso_engine
+from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
+from alphavault.db.introspect import table_columns
+from alphavault.db.turso_db import ensure_turso_engine
+from alphavault.topic_cluster import try_load_cluster_tables
 
 STREAMLIT_SOURCE_NAME = "archive"
 
@@ -95,8 +96,8 @@ def load_sources() -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     assertions_frames: List[pd.DataFrame] = []
     missing: List[str] = []
 
-    turso_url = os.getenv("TURSO_DATABASE_URL", "").strip()
-    turso_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+    turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
+    turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
     if not turso_url:
         missing.append("TURSO_DATABASE_URL")
         return pd.DataFrame(), pd.DataFrame(), missing
@@ -267,4 +268,3 @@ def standardize_assertions(
         assertions["invest_score"] = 0.0
 
     return assertions
-

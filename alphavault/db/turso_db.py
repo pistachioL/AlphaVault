@@ -5,6 +5,7 @@ import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
+from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
 # NOTE: This module is extracted from the old local-sqlite sync scripts.
 # It keeps only Turso engine creation + base schema (posts/assertions).
 
@@ -31,8 +32,8 @@ def ensure_turso_engine(url: str, token: str) -> Engine:
 
 
 def get_turso_engine_from_env() -> Engine:
-    url = os.getenv("TURSO_DATABASE_URL", "").strip()
-    token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+    url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
+    token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
     if not url:
         raise RuntimeError("Missing TURSO_DATABASE_URL")
     return ensure_turso_engine(url, token)
