@@ -11,8 +11,8 @@
 
 ## 目录结构（核心脚本）
 - `weibo_rss_turso_worker.py`：Worker（RSS → spool → Turso → AI → Turso）
-- `turso_queue.py`：Turso 队列字段与读写
-- `turso_db.py`：Turso engine + 基础表（posts/assertions）
+- `alphavault/db/turso_queue.py`：Turso 队列字段与读写
+- `alphavault/db/turso_db.py`：Turso engine + 基础表（posts/assertions）
 - `streamlit_app.py`：Web（只读 Turso）
 
 ## 环境要求

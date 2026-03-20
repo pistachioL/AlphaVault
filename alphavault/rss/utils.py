@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import html as _html
 import os
 import re
 import threading
@@ -15,6 +14,9 @@ from urllib.parse import urlparse
 
 import feedparser
 import requests
+
+from alphavault.constants import ENV_RSS_URL, ENV_RSS_URLS
+from alphavault.text.html import html_to_text
 
 # NOTE: This module is extracted from the old local-sqlite ingest scripts.
 # It keeps only RSS parsing + small helpers, so the worker can delete the old route.
@@ -92,22 +94,6 @@ def fetch_feed(url: str, timeout: float) -> feedparser.FeedParserDict:
     resp = requests.get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return feedparser.parse(resp.content)
-
-
-def html_to_text(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    text = str(value)
-    text = re.sub(r"(?i)<br\\s*/?>", "\n", text)
-    text = re.sub(r"(?i)</p\\s*>", "\n", text)
-    text = re.sub(r"(?i)<p\\s*>", "", text)
-    text = re.sub(r"(?is)<script.*?>.*?</script>", "", text)
-    text = re.sub(r"(?is)<style.*?>.*?</style>", "", text)
-    text = re.sub(r"(?s)<[^>]+>", "", text)
-    text = _html.unescape(text)
-    text = text.replace("\r\n", "\n").strip()
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text
 
 
 def get_entry_content(entry: feedparser.FeedParserDict) -> str:
@@ -261,8 +247,8 @@ def parse_rss_urls(args: argparse.Namespace) -> list[str]:
     urls.extend(_split_rss_urls(getattr(args, "rss_urls", "") or ""))
 
     if not urls:
-        urls.extend(_split_rss_urls(os.getenv("RSS_URLS", "")))
-        urls.extend(_split_rss_urls(os.getenv("RSS_URL", "")))
+        urls.extend(_split_rss_urls(os.getenv(ENV_RSS_URLS, "")))
+        urls.extend(_split_rss_urls(os.getenv(ENV_RSS_URL, "")))
 
     seen: set[str] = set()
     out: list[str] = []

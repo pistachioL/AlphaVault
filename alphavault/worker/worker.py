@@ -10,6 +10,25 @@ from typing import Optional, Tuple
 
 from sqlalchemy.engine import Engine
 
+from alphavault.constants import (
+    ENV_AI_API_KEY,
+    ENV_AI_API_MODE,
+    ENV_AI_BASE_URL,
+    ENV_AI_MAX_INFLIGHT,
+    ENV_AI_MODEL,
+    ENV_AI_PROMPT_VERSION,
+    ENV_AI_REASONING_EFFORT,
+    ENV_AI_RETRIES,
+    ENV_AI_RPM,
+    ENV_AI_STREAM,
+    ENV_AI_TEMPERATURE,
+    ENV_AI_TIMEOUT_SEC,
+    ENV_AI_TRACE_OUT,
+    ENV_RSS_ACTIVE_HOURS,
+    ENV_RSS_INTERVAL_SECONDS,
+    ENV_RSS_URL,
+    ENV_RSS_URLS,
+)
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
@@ -47,9 +66,9 @@ from alphavault.rss.utils import (
     parse_rss_urls,
     sleep_until_active,
 )
-from alphavault.worker.ingest import _ingest_rss_many_once
-from alphavault.worker.redis_queue import _flush_redis_to_turso, _try_get_redis
-from alphavault.worker.spool import _ensure_spool_dir, _flush_spool_to_turso
+from alphavault.worker.ingest import ingest_rss_many_once
+from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
+from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
 
 
 @dataclass
@@ -71,7 +90,7 @@ class LLMConfig:
 
 
 def _build_config(args: argparse.Namespace) -> LLMConfig:
-    ai_stream_env = env_bool("AI_STREAM")
+    ai_stream_env = env_bool(ENV_AI_STREAM)
     ai_stream = True
     if ai_stream_env is not None:
         ai_stream = bool(ai_stream_env)
@@ -79,7 +98,7 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         ai_stream = True
 
     trace_out = args.trace_out
-    trace_out_env = os.getenv("AI_TRACE_OUT", "").strip()
+    trace_out_env = os.getenv(ENV_AI_TRACE_OUT, "").strip()
     if trace_out_env and trace_out is None:
         trace_out = Path(trace_out_env)
 
@@ -92,9 +111,9 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
     if args.api_key:
         api_key = str(args.api_key).strip()
     else:
-        api_key = os.getenv("AI_API_KEY", "").strip()
+        api_key = os.getenv(ENV_AI_API_KEY, "").strip()
     if not api_key:
-        raise RuntimeError("Missing AI_API_KEY. Set AI_API_KEY.")
+        raise RuntimeError(f"Missing {ENV_AI_API_KEY}. Set {ENV_AI_API_KEY}.")
 
     return LLMConfig(
         api_key=api_key,
@@ -216,10 +235,10 @@ def _process_one_post_uid(
 
 
 def parse_args() -> argparse.Namespace:
-    ai_retries_env = env_int("AI_RETRIES")
-    ai_rpm_env = env_float("AI_RPM")
-    ai_timeout_env = env_float("AI_TIMEOUT_SEC")
-    ai_max_inflight_env = env_int("AI_MAX_INFLIGHT")
+    ai_retries_env = env_int(ENV_AI_RETRIES)
+    ai_rpm_env = env_float(ENV_AI_RPM)
+    ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
+    ai_max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
 
     parser = argparse.ArgumentParser(description="Weibo RSS -> Turso queue -> AI -> Turso")
     parser.add_argument("--rss-url", action="append", default=[], help="RSS 地址（可重复传多次）")
@@ -234,19 +253,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ai-stuck-seconds", type=int, default=600, help="running 超过多久算卡死（秒）")
 
     # AI config (litellm only; mostly via env)
-    parser.add_argument("--model", default=os.getenv("AI_MODEL", DEFAULT_MODEL))
-    parser.add_argument("--base-url", default=os.getenv("AI_BASE_URL", "").strip(), help="可选：OpenAI 兼容接口 base_url（也可用 AI_BASE_URL）")
+    parser.add_argument("--model", default=os.getenv(ENV_AI_MODEL, DEFAULT_MODEL))
+    parser.add_argument(
+        "--base-url",
+        default=os.getenv(ENV_AI_BASE_URL, "").strip(),
+        help="可选：OpenAI 兼容接口 base_url（也可用 AI_BASE_URL）",
+    )
     parser.add_argument("--api-key", default=None, help="可选：API Key（默认读 AI_API_KEY）")
-    parser.add_argument("--api-mode", default=os.getenv("AI_API_MODE", DEFAULT_AI_MODE), choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES])
+    parser.add_argument(
+        "--api-mode",
+        default=os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE),
+        choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
+    )
     parser.add_argument("--ai-stream", action="store_true")
-    parser.add_argument("--prompt-version", default=os.getenv("AI_PROMPT_VERSION", DEFAULT_PROMPT_VERSION))
+    parser.add_argument("--prompt-version", default=os.getenv(ENV_AI_PROMPT_VERSION, DEFAULT_PROMPT_VERSION))
     parser.add_argument(
         "--ai-retries",
         type=int,
         default=ai_retries_env if ai_retries_env is not None else DEFAULT_AI_RETRY_COUNT,
     )
-    parser.add_argument("--ai-temperature", type=float, default=float(os.getenv("AI_TEMPERATURE", str(DEFAULT_AI_TEMPERATURE))))
-    parser.add_argument("--ai-reasoning-effort", default=os.getenv("AI_REASONING_EFFORT", DEFAULT_AI_REASONING_EFFORT), choices=["none", "minimal", "low", "medium", "high", "xhigh"])
+    parser.add_argument(
+        "--ai-temperature",
+        type=float,
+        default=float(os.getenv(ENV_AI_TEMPERATURE, str(DEFAULT_AI_TEMPERATURE))),
+    )
+    parser.add_argument(
+        "--ai-reasoning-effort",
+        default=os.getenv(ENV_AI_REASONING_EFFORT, DEFAULT_AI_REASONING_EFFORT),
+        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+    )
     parser.add_argument(
         "--ai-rpm",
         type=float,
@@ -272,18 +307,22 @@ def main() -> None:
     args = parse_args()
     rss_urls = parse_rss_urls(args)
     if not rss_urls:
-        raise RuntimeError("Missing RSS url(s). Set RSS_URLS/RSS_URL or pass --rss-url/--rss-urls.")
+        raise RuntimeError(
+            f"Missing RSS url(s). Set {ENV_RSS_URLS}/{ENV_RSS_URL} or pass --rss-url/--rss-urls."
+        )
     if args.verbose:
         print(f"[rss] sources={len(rss_urls)}", flush=True)
 
-    active_hours_value = args.active_hours.strip() if args.active_hours else os.getenv("RSS_ACTIVE_HOURS", "").strip()
+    active_hours_value = (
+        args.active_hours.strip() if args.active_hours else os.getenv(ENV_RSS_ACTIVE_HOURS, "").strip()
+    )
     active_hours = None
     if active_hours_value:
         active_hours = parse_active_hours(active_hours_value)
 
     interval = float(args.interval_seconds or 0.0)
     if interval <= 0:
-        interval = float(os.getenv("RSS_INTERVAL_SECONDS", "600") or "600")
+        interval = float(os.getenv(ENV_RSS_INTERVAL_SECONDS, "600") or "600")
     interval = max(1.0, interval)
 
     config = _build_config(args)
@@ -301,8 +340,8 @@ def main() -> None:
     engine = get_turso_engine_from_env()
     turso_ready = False
 
-    spool_dir = _ensure_spool_dir()
-    redis_client, redis_queue_key = _try_get_redis()
+    spool_dir = ensure_spool_dir()
+    redis_client, redis_queue_key = try_get_redis()
     if args.verbose:
         print(f"[spool] dir={spool_dir}", flush=True)
         if redis_client:
@@ -361,7 +400,7 @@ def main() -> None:
                 _ensure_turso()
             active_engine: Optional[Engine] = engine if turso_ready else None
 
-            inserted, ingest_turso_error = _ingest_rss_many_once(
+            inserted, ingest_turso_error = ingest_rss_many_once(
                 rss_urls=rss_urls,
                 engine=active_engine,
                 spool_dir=spool_dir,
@@ -394,7 +433,7 @@ def main() -> None:
                     if args.verbose:
                         print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
 
-                flushed_redis, flush_redis_turso_error = _flush_redis_to_turso(
+                flushed_redis, flush_redis_turso_error = flush_redis_to_turso(
                     client=redis_client,
                     queue_key=redis_queue_key,
                     spool_dir=spool_dir,
@@ -402,7 +441,7 @@ def main() -> None:
                     max_items=200,
                     verbose=bool(args.verbose),
                 )
-                flushed_spool, flush_spool_turso_error = _flush_spool_to_turso(
+                flushed_spool, flush_spool_turso_error = flush_spool_to_turso(
                     spool_dir=spool_dir,
                     engine=active_engine,
                     max_items=200,
