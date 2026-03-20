@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, Optional
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from db_introspect import table_columns
 from turso_db import init_cloud_schema
 
 
@@ -38,16 +39,6 @@ class CloudPost:
     ai_retry_count: int
 
 
-def _table_columns(conn, table: str) -> set[str]:
-    rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-    out: set[str] = set()
-    for row in rows:
-        # row is a tuple: (cid, name, type, notnull, dflt_value, pk)
-        if row and len(row) >= 2:
-            out.add(str(row[1]))
-    return out
-
-
 def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
     """
     Ensure base schema exists (posts/assertions), then add queue columns to posts.
@@ -66,7 +57,7 @@ def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
     ]
 
     with engine.begin() as conn:
-        cols = _table_columns(conn, "posts")
+        cols = table_columns(conn, "posts")
         for col_name, col_def in extra_columns:
             if col_name in cols:
                 continue
