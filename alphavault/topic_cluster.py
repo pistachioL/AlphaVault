@@ -8,7 +8,7 @@ import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from turso_db import (
+from alphavault.db.turso_db import (
     TOPIC_CLUSTER_POST_OVERRIDES_TABLE,
     TOPIC_CLUSTER_TOPICS_TABLE,
     TOPIC_CLUSTERS_TABLE,

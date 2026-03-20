@@ -9,16 +9,15 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from turso_db import ensure_turso_engine
+from alphavault.constants import (
+    DEFAULT_SPOOL_DIR,
+    ENV_REDIS_URL,
+    ENV_SPOOL_DIR,
+    ENV_TURSO_AUTH_TOKEN,
+    ENV_TURSO_DATABASE_URL,
+)
+from alphavault.db.turso_db import ensure_turso_engine
 
-
-ENV_SPOOL_DIR = "SPOOL_DIR"
-DEFAULT_SPOOL_DIR = "/tmp/alphavault-spool"
-
-ENV_TURSO_DATABASE_URL = "TURSO_DATABASE_URL"
-ENV_TURSO_AUTH_TOKEN = "TURSO_AUTH_TOKEN"
-
-ENV_REDIS_URL = "REDIS_URL"
 
 HEALTHCHECK_TABLE = "__alphavault_healthcheck"
 
@@ -167,4 +166,3 @@ def main(argv: list[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv))
-

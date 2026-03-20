@@ -1,3 +1,5 @@
+"""RSS parsing + small helpers."""
+
 from __future__ import annotations
 
 import argparse
