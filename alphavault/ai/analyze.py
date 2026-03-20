@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from alphavault.constants import (
+    ENV_AI_API_MODE,
+    ENV_AI_MODEL,
+    ENV_AI_PROMPT_VERSION,
+    ENV_AI_REASONING_EFFORT,
+    ENV_AI_RETRIES,
+    ENV_AI_TEMPERATURE,
+)
 from alphavault.ai._client import _call_ai_with_litellm
 from alphavault.ai._errors import extract_llm_error_details, format_llm_error_one_line
 from alphavault.ai._text import clean_text, clamp_float, clamp_int, parse_json_text
@@ -16,13 +24,13 @@ from alphavault.ai._text import clean_text, clamp_float, clamp_int, parse_json_t
 AI_MODE_COMPLETION = "completion"
 AI_MODE_RESPONSES = "responses"
 
-DEFAULT_MODEL = os.getenv("AI_MODEL", "openai/gpt-5.2")
-DEFAULT_PROMPT_VERSION = os.getenv("AI_PROMPT_VERSION", "weibo_assertions_v1")
+DEFAULT_MODEL = os.getenv(ENV_AI_MODEL, "openai/gpt-5.2")
+DEFAULT_PROMPT_VERSION = os.getenv(ENV_AI_PROMPT_VERSION, "weibo_assertions_v1")
 
-DEFAULT_AI_MODE = os.getenv("AI_API_MODE", AI_MODE_RESPONSES)
-DEFAULT_AI_TEMPERATURE = float(os.getenv("AI_TEMPERATURE", "0.1"))
-DEFAULT_AI_RETRY_COUNT = int(os.getenv("AI_RETRIES", "11"))
-DEFAULT_AI_REASONING_EFFORT = os.getenv("AI_REASONING_EFFORT", "xhigh")
+DEFAULT_AI_MODE = os.getenv(ENV_AI_API_MODE, AI_MODE_RESPONSES)
+DEFAULT_AI_TEMPERATURE = float(os.getenv(ENV_AI_TEMPERATURE, "0.1"))
+DEFAULT_AI_RETRY_COUNT = int(os.getenv(ENV_AI_RETRIES, "11"))
+DEFAULT_AI_REASONING_EFFORT = os.getenv(ENV_AI_REASONING_EFFORT, "xhigh")
 
 ALLOWED_ACTIONS = {
     "trade.buy",
@@ -269,4 +277,3 @@ __all__ = [
     "extract_llm_error_details",
     "format_llm_error_one_line",
 ]
-

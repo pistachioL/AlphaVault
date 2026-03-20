@@ -19,11 +19,11 @@ from alphavault.rss.utils import (
     parse_datetime,
 )
 from alphavault.weibo.display import extract_image_urls_from_html, format_weibo_display_md
-from alphavault.worker.redis_queue import DEFAULT_REDIS_DEDUP_TTL_SECONDS, _redis_try_push_dedup
-from alphavault.worker.spool import _spool_delete, _spool_write
+from alphavault.worker.redis_queue import DEFAULT_REDIS_DEDUP_TTL_SECONDS, redis_try_push_dedup
+from alphavault.worker.spool import spool_delete, spool_write
 
 
-def _ingest_rss_many_once(
+def ingest_rss_many_once(
     *,
     rss_urls: list[str],
     engine: Optional[Engine],
@@ -97,13 +97,13 @@ def _ingest_rss_many_once(
             }
 
             try:
-                _spool_write(spool_dir, post_uid, payload)
+                spool_write(spool_dir, post_uid, payload)
             except Exception as e:
                 print(f"[spool] write_error {post_uid} {type(e).__name__}: {e}", flush=True)
 
             if engine is None:
                 if redis_client and redis_queue_key:
-                    _redis_try_push_dedup(
+                    redis_try_push_dedup(
                         redis_client,
                         redis_queue_key,
                         post_uid=post_uid,
@@ -127,14 +127,14 @@ def _ingest_rss_many_once(
                     archived_at=now_str(),
                     ingested_at=int(payload["ingested_at"]),
                 )
-                _spool_delete(spool_dir, post_uid)
+                spool_delete(spool_dir, post_uid)
                 inserted += 1
                 if verbose:
                     print(f"[rss] inserted {post_uid}", flush=True)
             except Exception as e:
                 turso_error = True
                 if redis_client and redis_queue_key:
-                    _redis_try_push_dedup(
+                    redis_try_push_dedup(
                         redis_client,
                         redis_queue_key,
                         post_uid=post_uid,

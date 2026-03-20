@@ -15,11 +15,11 @@ from alphavault.rss.utils import now_str
 from alphavault.weibo.display import format_weibo_display_md
 
 
-def _sha1_short(value: str) -> str:
+def sha1_short(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:20]
 
 
-def _ensure_spool_dir() -> Path:
+def ensure_spool_dir() -> Path:
     value = os.getenv(ENV_SPOOL_DIR, "").strip() or DEFAULT_SPOOL_DIR
     path = Path(value)
     try:
@@ -30,10 +30,10 @@ def _ensure_spool_dir() -> Path:
 
 
 def _spool_path(spool_dir: Path, post_uid: str) -> Path:
-    return spool_dir / f"{_sha1_short(post_uid)}.json"
+    return spool_dir / f"{sha1_short(post_uid)}.json"
 
 
-def _spool_write(spool_dir: Path, post_uid: str, payload: Dict[str, Any]) -> Path:
+def spool_write(spool_dir: Path, post_uid: str, payload: Dict[str, Any]) -> Path:
     path = _spool_path(spool_dir, post_uid)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -41,7 +41,7 @@ def _spool_write(spool_dir: Path, post_uid: str, payload: Dict[str, Any]) -> Pat
     return path
 
 
-def _spool_delete(spool_dir: Path, post_uid: str) -> None:
+def spool_delete(spool_dir: Path, post_uid: str) -> None:
     path = _spool_path(spool_dir, post_uid)
     try:
         path.unlink(missing_ok=True)
@@ -49,7 +49,7 @@ def _spool_delete(spool_dir: Path, post_uid: str) -> None:
         return
 
 
-def _flush_spool_to_turso(
+def flush_spool_to_turso(
     *,
     spool_dir: Path,
     engine: Optional[Engine],
@@ -106,4 +106,3 @@ def _flush_spool_to_turso(
             pass
         processed += 1
     return processed, False
-

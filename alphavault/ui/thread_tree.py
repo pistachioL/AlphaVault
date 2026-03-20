@@ -14,13 +14,14 @@ This module parses that JSON (best-effort) and builds a parent-child tree:
 Goal: render a readable ASCII tree like 1.txt (├── / └── / │).
 """
 
-import html
 import hashlib
 import json
 import re
 from typing import Any, Dict
 
 import pandas as pd
+
+from alphavault.text.html import html_to_text
 
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
@@ -33,23 +34,15 @@ VIRTUAL_NODE_LABEL = "回复"
 SYNTHETIC_SOURCE_ID_PREFIX = "src:"
 
 
-def _html_to_text(text: str) -> str:
-    s = str(text or "")
-    if "<" in s and ">" in s:
-        s = re.sub(r"(?i)<br\\s*/?>", "\n", s)
-        s = re.sub(r"(?is)<[^>]+>", "", s)
-    return html.unescape(s)
-
-
 def _normalize_for_match(text: str) -> str:
-    s = strip_csv_raw_fields(_html_to_text(text))
+    s = strip_csv_raw_fields(html_to_text(str(text or "")))
     s = s.replace("\u00a0", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
 def _first_non_empty_line(text: str) -> str:
-    raw = strip_csv_raw_fields(_html_to_text(text))
+    raw = strip_csv_raw_fields(html_to_text(str(text or "")))
     for line in str(raw or "").splitlines():
         s = str(line).strip()
         if s:
@@ -67,7 +60,7 @@ def _match_key(text: str) -> str:
 
 
 def _to_one_line_text(text: str) -> str:
-    s = strip_csv_raw_fields(_html_to_text(text))
+    s = strip_csv_raw_fields(html_to_text(str(text or "")))
     s = s.replace("\u00a0", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -81,7 +74,7 @@ def parse_display_md_segments(display_md: str) -> list[str]:
     later replies (multi-turn). We split by that separator and make every
     segment a single line (so it can become a tree node).
     """
-    text = _html_to_text(str(display_md or ""))
+    text = html_to_text(str(display_md or ""))
     if not text.strip():
         return []
     parts = DISPLAY_MD_SPLIT_RE.split(text)
@@ -144,7 +137,7 @@ def _extract_repost_original_text(raw_text: str) -> tuple[str, str]:
     Best-effort parse: "... 转发 @某人: 原文".
     Return (author_hint, original_text). If not found, return ("", "").
     """
-    text = _html_to_text(str(raw_text or ""))
+    text = html_to_text(str(raw_text or ""))
     idx = text.rfind(REPOST_TOKEN)
     if idx < 0:
         return "", ""

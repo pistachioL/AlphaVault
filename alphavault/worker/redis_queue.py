@@ -9,18 +9,18 @@ from typing import Any, Dict, Optional, Tuple
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from alphavault.constants import ENV_REDIS_URL
+from alphavault.constants import ENV_REDIS_QUEUE_KEY, ENV_REDIS_URL
 from alphavault.db.turso_queue import upsert_pending_post
 from alphavault.rss.utils import now_str
 from alphavault.weibo.display import format_weibo_display_md
-from alphavault.worker.spool import _sha1_short, _spool_delete
+from alphavault.worker.spool import sha1_short, spool_delete
 
 
 DEFAULT_REDIS_QUEUE_KEY = "alphavault:rss_spool"
 DEFAULT_REDIS_DEDUP_TTL_SECONDS = 24 * 3600
 
 
-def _try_get_redis():
+def try_get_redis():
     redis_url = os.getenv(ENV_REDIS_URL, "").strip()
     if not redis_url:
         return None, ""
@@ -35,7 +35,7 @@ def _try_get_redis():
     except Exception as e:
         print(f"[redis] disabled connect_error {type(e).__name__}: {e}", flush=True)
         return None, ""
-    key = os.getenv("REDIS_QUEUE_KEY", "").strip() or DEFAULT_REDIS_QUEUE_KEY
+    key = os.getenv(ENV_REDIS_QUEUE_KEY, "").strip() or DEFAULT_REDIS_QUEUE_KEY
     return client, key
 
 
@@ -44,10 +44,10 @@ def _redis_processing_key(queue_key: str) -> str:
 
 
 def _redis_dedup_key(queue_key: str, post_uid: str) -> str:
-    return f"{queue_key}:dedup:{_sha1_short(post_uid)}"
+    return f"{queue_key}:dedup:{sha1_short(post_uid)}"
 
 
-def _redis_try_push_dedup(
+def redis_try_push_dedup(
     client,
     queue_key: str,
     *,
@@ -135,7 +135,7 @@ def _redis_push(client, queue_key: str, payload: Dict[str, Any]) -> None:
     client.lpush(queue_key, json.dumps(payload, ensure_ascii=False))
 
 
-def _flush_redis_to_turso(
+def flush_redis_to_turso(
     *,
     client,
     queue_key: str,
@@ -211,7 +211,7 @@ def _flush_redis_to_turso(
                 if verbose:
                     print(f"[redis] ack_error {type(e).__name__}: {e}", flush=True)
                 return processed, False
-            _spool_delete(spool_dir, post_uid)
+            spool_delete(spool_dir, post_uid)
             processed += 1
             continue
 
@@ -249,7 +249,6 @@ def _flush_redis_to_turso(
             if verbose:
                 print(f"[redis] ack_error {type(e).__name__}: {e}", flush=True)
             return processed, False
-        _spool_delete(spool_dir, post_uid)
+        spool_delete(spool_dir, post_uid)
         processed += 1
     return processed, False
-

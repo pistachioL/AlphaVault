@@ -4,6 +4,16 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+from alphavault.constants import (
+    ENV_AI_API_KEY,
+    ENV_AI_API_MODE,
+    ENV_AI_BASE_URL,
+    ENV_AI_MODEL,
+    ENV_AI_REASONING_EFFORT,
+    ENV_AI_RETRIES,
+    ENV_AI_TEMPERATURE,
+    ENV_AI_TIMEOUT_SEC,
+)
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
@@ -50,20 +60,23 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _get_ai_config_from_env() -> tuple[Optional[AiConfig], str]:
-    api_key = os.getenv("AI_API_KEY", "").strip()
+    api_key = os.getenv(ENV_AI_API_KEY, "").strip()
     if not api_key:
-        return None, "Missing AI_API_KEY"
+        return None, f"Missing {ENV_AI_API_KEY}"
 
-    model = os.getenv("AI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    base_url = os.getenv("AI_BASE_URL", "").strip()
-    api_mode = os.getenv("AI_API_MODE", DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
+    model = os.getenv(ENV_AI_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    base_url = os.getenv(ENV_AI_BASE_URL, "").strip()
+    api_mode = os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
     if api_mode not in {AI_MODE_COMPLETION, AI_MODE_RESPONSES}:
         api_mode = DEFAULT_AI_MODE
 
-    temperature = _env_float("AI_TEMPERATURE", DEFAULT_AI_TEMPERATURE)
-    timeout_seconds = _env_float("AI_TIMEOUT_SEC", 1000.0)
-    retries = _env_int("AI_RETRIES", DEFAULT_AI_RETRY_COUNT)
-    reasoning_effort = os.getenv("AI_REASONING_EFFORT", DEFAULT_AI_REASONING_EFFORT).strip() or DEFAULT_AI_REASONING_EFFORT
+    temperature = _env_float(ENV_AI_TEMPERATURE, DEFAULT_AI_TEMPERATURE)
+    timeout_seconds = _env_float(ENV_AI_TIMEOUT_SEC, 1000.0)
+    retries = _env_int(ENV_AI_RETRIES, DEFAULT_AI_RETRY_COUNT)
+    reasoning_effort = (
+        os.getenv(ENV_AI_REASONING_EFFORT, DEFAULT_AI_REASONING_EFFORT).strip()
+        or DEFAULT_AI_REASONING_EFFORT
+    )
 
     return (
         AiConfig(

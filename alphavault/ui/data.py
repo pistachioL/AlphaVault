@@ -31,7 +31,7 @@ def load_topic_cluster_sources(
     auth_token: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     if not db_url:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), "Missing TURSO_DATABASE_URL"
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), f"Missing {ENV_TURSO_DATABASE_URL}"
     engine = ensure_turso_engine(db_url, auth_token)
     return try_load_cluster_tables(engine)
 
@@ -73,7 +73,7 @@ def action_group(action: str) -> str:
 @st.cache_data(show_spinner=False)
 def load_turso_tables(db_url: str, auth_token: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not db_url:
-        raise RuntimeError("Missing TURSO_DATABASE_URL")
+        raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
     engine = ensure_turso_engine(db_url, auth_token)
     post_cols = table_columns(engine, "posts")
     display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
@@ -99,7 +99,7 @@ def load_sources() -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
     turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
     if not turso_url:
-        missing.append("TURSO_DATABASE_URL")
+        missing.append(ENV_TURSO_DATABASE_URL)
         return pd.DataFrame(), pd.DataFrame(), missing
 
     try:
