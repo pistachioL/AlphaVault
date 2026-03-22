@@ -85,7 +85,7 @@ def _check_turso() -> None:
     try:
         note = f"pid={os.getpid()} ts={int(time.time())}"
         with turso_connect_autocommit(engine) as conn:
-            # Keep DDL outside SAVEPOINT for libsql/Turso.
+            # Keep DDL outside the atomic write block for libsql/Turso.
             conn.execute(
                 text(
                     f"""

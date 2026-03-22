@@ -58,23 +58,30 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
 @contextmanager
 def turso_savepoint(conn: Connection, name: str = TURSO_SAVEPOINT_NAME) -> Connection:
     """
-    Run multiple SQL statements as one atomic unit without calling DBAPI commit()/rollback().
+    Keep the old helper API, but use a SQL transaction instead of SAVEPOINT.
+
+    Why:
+    - Some libsql/Hrana builds lose SAVEPOINT state across AUTOCOMMIT executes and then fail
+      with "no such savepoint" on RELEASE/ROLLBACK TO.
+    - Sending SQL BEGIN/COMMIT/ROLLBACK keeps us away from DBAPI commit()/rollback(), which is
+      the original reason this helper exists.
     """
     savepoint = str(name or "").strip()
     if not savepoint or _SAVEPOINT_NAME_RE.fullmatch(savepoint) is None:
         raise ValueError("invalid_savepoint_name")
 
-    conn.execute(text(f"SAVEPOINT {savepoint}"))
+    conn.execute(text("BEGIN"))
     try:
         yield conn
     except Exception:
         try:
-            conn.execute(text(f"ROLLBACK TO {savepoint}"))
-        finally:
-            conn.execute(text(f"RELEASE {savepoint}"))
+            conn.execute(text("ROLLBACK"))
+        except Exception:
+            # Preserve the original application error if rollback itself also fails.
+            pass
         raise
     else:
-        conn.execute(text(f"RELEASE {savepoint}"))
+        conn.execute(text("COMMIT"))
 
 
 def _topic_cluster_topics_pk_cols(conn) -> list[str]:
