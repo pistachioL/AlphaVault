@@ -81,9 +81,7 @@ def _ensure_required_columns(df: pd.DataFrame, required: dict[str, object]) -> p
 
 
 def _sidebar_grouping_config(assertions: pd.DataFrame) -> tuple[bool, str, str]:
-    group_by_cluster = False
-    if "cluster_display" in assertions.columns:
-        group_by_cluster = st.sidebar.checkbox("按板块看（聚合）", value=False, key="filter_group_by_cluster")
+    group_by_cluster = st.sidebar.checkbox("按板块看（聚合）", value=False, key="filter_group_by_cluster")
     group_col = "cluster_display" if group_by_cluster else "topic_key"
     group_label = "板块" if group_by_cluster else "主题"
     return group_by_cluster, group_col, group_label

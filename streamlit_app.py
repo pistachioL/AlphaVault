@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
@@ -86,6 +87,22 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
+    pages = [
+        "总览",
+        "交易流",
+        "风险雷达",
+        "主题时间线",
+        "关注页",
+        "主题聚合",
+        "学习库",
+        "冲突/变化",
+        "数据表",
+    ]
+    selected_page_pre = str(st.session_state.get("main_page") or pages[0])
+    want_clusters_pre = selected_page_pre in {"关注页", "主题聚合"} or bool(
+        st.session_state.get("filter_group_by_cluster")
+    )
+
     posts, assertions, missing = load_sources()
     if missing:
         st.error("Turso 没配好，或者连不上。")
@@ -98,29 +115,23 @@ def main() -> None:
 
     turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
     turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    clusters_df, cluster_topic_map_df, cluster_post_overrides_df, cluster_load_error = load_topic_cluster_sources(
-        turso_url, turso_token
-    )
-    assertions = enrich_assertions_with_clusters(
-        assertions,
-        clusters=clusters_df,
-        topic_map=cluster_topic_map_df,
-        post_overrides=cluster_post_overrides_df,
-    )
+    clusters_df = pd.DataFrame()
+    cluster_topic_map_df = pd.DataFrame()
+    cluster_post_overrides_df = pd.DataFrame()
+    cluster_load_error = ""
+    if want_clusters_pre:
+        clusters_df, cluster_topic_map_df, cluster_post_overrides_df, cluster_load_error = load_topic_cluster_sources(
+            turso_url, turso_token
+        )
+        assertions = enrich_assertions_with_clusters(
+            assertions,
+            clusters=clusters_df,
+            topic_map=cluster_topic_map_df,
+            post_overrides=cluster_post_overrides_df,
+        )
 
     posts_filtered, assertions_filtered, meta = build_filters(posts, assertions)
 
-    pages = [
-        "总览",
-        "交易流",
-        "风险雷达",
-        "主题时间线",
-        "关注页",
-        "主题聚合",
-        "学习库",
-        "冲突/变化",
-        "数据表",
-    ]
     selected_page = st.segmented_control(
         "页面",
         pages,
