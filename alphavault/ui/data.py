@@ -25,6 +25,7 @@ from alphavault.db.sql.ui import (
     build_processed_posts_query,
 )
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
+from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.topic_cluster import try_load_cluster_tables
 
 STREAMLIT_SOURCE_NAME = "archive"
@@ -166,8 +167,8 @@ def load_turso_tables(
             col for col in WANTED_ASSERTION_COLUMNS if col in assertion_cols
         ]
         assertions_query = build_assertions_query(selected_assertion_cols)
-        posts = pd.read_sql_query(posts_query, conn)
-        assertions = pd.read_sql_query(assertions_query, conn)
+        posts = turso_read_sql_df(conn, posts_query)
+        assertions = turso_read_sql_df(conn, assertions_query)
         return posts, assertions
 
 
