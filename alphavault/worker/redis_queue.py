@@ -6,10 +6,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
-
 from alphavault.constants import ENV_REDIS_QUEUE_KEY, ENV_REDIS_URL
+from alphavault.db.sql.scripts import SELECT_POST_PROCESSED_AND_INGESTED
+from alphavault.db.turso_db import TursoEngine
 from alphavault.db.turso_db import turso_connect_autocommit
 from alphavault.db.turso_queue import upsert_pending_post
 from alphavault.rss.utils import now_str
@@ -84,13 +83,11 @@ def redis_try_push_dedup(
 
 
 def _cloud_post_is_processed_or_newer(
-    engine: Engine, post_uid: str, payload_ingested_at: int
+    engine: TursoEngine, post_uid: str, payload_ingested_at: int
 ) -> bool:
     with turso_connect_autocommit(engine) as conn:
         row = conn.execute(
-            text(
-                "SELECT processed_at, ingested_at FROM posts WHERE post_uid = :post_uid LIMIT 1"
-            ),
+            SELECT_POST_PROCESSED_AND_INGESTED,
             {"post_uid": post_uid},
         ).fetchone()
         if not row:
@@ -176,7 +173,7 @@ def flush_redis_to_turso(
     client,
     queue_key: str,
     spool_dir: Path,
-    engine: Optional[Engine],
+    engine: Optional[TursoEngine],
     max_items: int,
     verbose: bool,
 ) -> Tuple[int, bool]:

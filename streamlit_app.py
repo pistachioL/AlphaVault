@@ -23,6 +23,7 @@ from alphavault.ui.tab_misc import (
     show_topic_timeline,
 )
 from alphavault.ui.tab_follow_pages import show_follow_pages
+from alphavault.ui.tab_logs import show_logs
 from alphavault.ui.tab_overview import show_kpis, show_overview_charts
 from alphavault.ui.tab_risk import show_risk_radar
 from alphavault.ui.tab_trade import show_trade_flow
@@ -96,6 +97,7 @@ def main() -> None:
         "主题聚合",
         "学习库",
         "冲突/变化",
+        "日志",
         "数据表",
     ]
     selected_page_pre = str(st.session_state.get("main_page") or pages[0])
@@ -218,6 +220,10 @@ def main() -> None:
             group_col=meta["group_col"],
             group_label=meta["group_label"],
         )
+        return
+
+    if selected_page == "日志":
+        show_logs(turso_url=turso_url, turso_token=turso_token)
         return
 
     assertion_counts = (

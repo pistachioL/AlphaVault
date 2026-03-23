@@ -5,14 +5,22 @@ from datetime import datetime
 from typing import Dict, Iterable, List
 
 import pandas as pd
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
 
 from alphavault.constants import DATETIME_FMT
+from alphavault.db.sql.topic_cluster import (
+    delete_cluster_key_rows,
+    delete_cluster_topic_map,
+    select_clusters,
+    select_post_overrides,
+    select_topic_map,
+    upsert_cluster as upsert_cluster_sql,
+    upsert_cluster_topic_map,
+)
 from alphavault.db.turso_db import (
     TOPIC_CLUSTER_POST_OVERRIDES_TABLE,
     TOPIC_CLUSTER_TOPICS_TABLE,
     TOPIC_CLUSTERS_TABLE,
+    TursoEngine,
     init_topic_cluster_schema,
     turso_connect_autocommit,
     turso_savepoint,
@@ -27,12 +35,12 @@ def _now_str() -> str:
     return datetime.now().strftime(DATETIME_FMT)
 
 
-def ensure_cluster_schema(engine: Engine) -> None:
+def ensure_cluster_schema(engine: TursoEngine) -> None:
     init_topic_cluster_schema(engine)
 
 
 def try_load_cluster_tables(
-    engine: Engine,
+    engine: TursoEngine,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     """
     Best-effort load cluster tables.
@@ -42,15 +50,15 @@ def try_load_cluster_tables(
     try:
         with turso_connect_autocommit(engine) as conn:
             clusters = pd.read_sql_query(
-                f"SELECT cluster_key, cluster_name, description, created_at, updated_at FROM {TOPIC_CLUSTERS_TABLE}",
+                select_clusters(TOPIC_CLUSTERS_TABLE),
                 conn,
             )
             topic_map = pd.read_sql_query(
-                f"SELECT topic_key, cluster_key, source, confidence, created_at FROM {TOPIC_CLUSTER_TOPICS_TABLE}",
+                select_topic_map(TOPIC_CLUSTER_TOPICS_TABLE),
                 conn,
             )
             post_overrides = pd.read_sql_query(
-                f"SELECT post_uid, cluster_key, reason, confidence, created_at FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}",
+                select_post_overrides(TOPIC_CLUSTER_POST_OVERRIDES_TABLE),
                 conn,
             )
         return clusters, topic_map, post_overrides, ""
@@ -195,7 +203,7 @@ def enrich_assertions_with_clusters(
 
 
 def upsert_cluster(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     cluster_key: str,
     cluster_name: str,
@@ -204,18 +212,7 @@ def upsert_cluster(
     now = _now_str()
     with turso_connect_autocommit(engine) as conn:
         conn.execute(
-            text(
-                f"""
-                INSERT INTO {TOPIC_CLUSTERS_TABLE}(
-                    cluster_key, cluster_name, description, created_at, updated_at
-                )
-                VALUES (:cluster_key, :cluster_name, :description, :now, :now)
-                ON CONFLICT(cluster_key) DO UPDATE SET
-                    cluster_name = excluded.cluster_name,
-                    description = excluded.description,
-                    updated_at = excluded.updated_at
-                """
-            ),
+            upsert_cluster_sql(TOPIC_CLUSTERS_TABLE),
             {
                 "cluster_key": str(cluster_key or "").strip(),
                 "cluster_name": str(cluster_name or "").strip(),
@@ -226,7 +223,7 @@ def upsert_cluster(
 
 
 def upsert_cluster_topics(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     cluster_key: str,
     topic_keys: Iterable[str],
@@ -256,25 +253,14 @@ def upsert_cluster_topics(
 
     with turso_connect_autocommit(engine) as conn:
         conn.execute(
-            text(
-                f"""
-                INSERT INTO {TOPIC_CLUSTER_TOPICS_TABLE}(
-                    topic_key, cluster_key, source, confidence, created_at
-                )
-                VALUES (:topic_key, :cluster_key, :source, :confidence, :now)
-                ON CONFLICT(topic_key, cluster_key) DO UPDATE SET
-                    source = excluded.source,
-                    confidence = excluded.confidence,
-                    created_at = excluded.created_at
-                """
-            ),
+            upsert_cluster_topic_map(TOPIC_CLUSTER_TOPICS_TABLE),
             payloads,
         )
     return len(items)
 
 
 def upsert_cluster_topics_detailed(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     cluster_key: str,
     topic_items: Iterable[dict],
@@ -315,25 +301,14 @@ def upsert_cluster_topics_detailed(
 
     with turso_connect_autocommit(engine) as conn:
         conn.execute(
-            text(
-                f"""
-                INSERT INTO {TOPIC_CLUSTER_TOPICS_TABLE}(
-                    topic_key, cluster_key, source, confidence, created_at
-                )
-                VALUES (:topic_key, :cluster_key, :source, :confidence, :now)
-                ON CONFLICT(topic_key, cluster_key) DO UPDATE SET
-                    source = excluded.source,
-                    confidence = excluded.confidence,
-                    created_at = excluded.created_at
-                """
-            ),
+            upsert_cluster_topic_map(TOPIC_CLUSTER_TOPICS_TABLE),
             payloads,
         )
     return len(payloads)
 
 
 def delete_cluster_topics(
-    engine: Engine, *, cluster_key: str, topic_keys: Iterable[str]
+    engine: TursoEngine, *, cluster_key: str, topic_keys: Iterable[str]
 ) -> int:
     items = [str(item or "").strip() for item in topic_keys]
     items = [item for item in items if item]
@@ -346,18 +321,13 @@ def delete_cluster_topics(
         with turso_savepoint(conn):
             for topic_key in items:
                 conn.execute(
-                    text(
-                        f"""
-                        DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE}
-                        WHERE topic_key = :topic_key AND cluster_key = :cluster_key
-                        """
-                    ),
+                    delete_cluster_topic_map(TOPIC_CLUSTER_TOPICS_TABLE),
                     {"topic_key": topic_key, "cluster_key": key},
                 )
     return len(items)
 
 
-def delete_cluster(engine: Engine, *, cluster_key: str) -> dict[str, int]:
+def delete_cluster(engine: TursoEngine, *, cluster_key: str) -> dict[str, int]:
     """
     Delete one cluster and its mappings.
 
@@ -370,21 +340,15 @@ def delete_cluster(engine: Engine, *, cluster_key: str) -> dict[str, int]:
     with turso_connect_autocommit(engine) as conn:
         with turso_savepoint(conn):
             res_topics = conn.execute(
-                text(
-                    f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE cluster_key = :cluster_key"
-                ),
+                delete_cluster_key_rows(TOPIC_CLUSTER_TOPICS_TABLE),
                 {"cluster_key": key},
             )
             res_overrides = conn.execute(
-                text(
-                    f"DELETE FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE} WHERE cluster_key = :cluster_key"
-                ),
+                delete_cluster_key_rows(TOPIC_CLUSTER_POST_OVERRIDES_TABLE),
                 {"cluster_key": key},
             )
             res_clusters = conn.execute(
-                text(
-                    f"DELETE FROM {TOPIC_CLUSTERS_TABLE} WHERE cluster_key = :cluster_key"
-                ),
+                delete_cluster_key_rows(TOPIC_CLUSTERS_TABLE),
                 {"cluster_key": key},
             )
 
