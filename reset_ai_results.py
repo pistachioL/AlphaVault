@@ -3,8 +3,12 @@ from __future__ import annotations
 import argparse
 import re
 
-from sqlalchemy import text
-
+from alphavault.db.sql.common import make_in_params, make_in_placeholders
+from alphavault.db.sql.scripts import (
+    SELECT_TOTAL_ASSERTIONS,
+    SELECT_TOTAL_POSTS,
+    select_post_uids_in,
+)
 from alphavault.env import load_dotenv_if_present
 
 from alphavault.db.turso_db import get_turso_engine_from_env, turso_connect_autocommit
@@ -65,11 +69,11 @@ def _parse_post_uids(value: str) -> list[str]:
 def _select_existing_post_uids(engine, post_uids: list[str]) -> set[str]:
     if not post_uids:
         return set()
-    placeholders = ", ".join([f":uid{i}" for i in range(len(post_uids))])
-    params = {f"uid{i}": uid for i, uid in enumerate(post_uids)}
-    query = f"SELECT post_uid FROM posts WHERE post_uid IN ({placeholders})"
+    placeholders = make_in_placeholders(prefix="uid", count=len(post_uids))
+    params = make_in_params(prefix="uid", values=post_uids)
+    query = select_post_uids_in(placeholders)
     with turso_connect_autocommit(engine) as conn:
-        rows = conn.execute(text(query), params).fetchall()
+        rows = conn.execute(query, params).fetchall()
     return {str(r[0]) for r in rows if r and r[0]}
 
 
@@ -89,12 +93,8 @@ def main() -> None:
 
     if args.all:
         with turso_connect_autocommit(engine) as conn:
-            total_posts = int(
-                conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0
-            )
-            total_assertions = int(
-                conn.execute(text("SELECT COUNT(*) FROM assertions")).scalar() or 0
-            )
+            total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
+            total_assertions = int(conn.execute(SELECT_TOTAL_ASSERTIONS).scalar() or 0)
 
         print(
             f"[reset] plan all=1 posts={total_posts} assertions={total_assertions} keep_assertions=1 dry_run={int(bool(args.dry_run))}",

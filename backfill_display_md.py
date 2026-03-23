@@ -4,8 +4,15 @@ import argparse
 import re
 import time
 
-from sqlalchemy import text
-
+from alphavault.db.sql.common import make_in_params, make_in_placeholders
+from alphavault.db.sql.scripts import (
+    SELECT_TOTAL_POSTS,
+    count_backfill_targets,
+    max_backfill_target_post_uid,
+    select_backfill_batch,
+    select_backfill_rows_by_post_uids,
+    update_display_md,
+)
 from alphavault.env import load_dotenv_if_present
 
 from alphavault.db.turso_db import (
@@ -52,66 +59,24 @@ def _select_batch(
     stop_post_uid: str,
 ) -> list[dict]:
     limit = max(1, int(batch_size))
-    if not overwrite:
-        query = """
-            SELECT post_uid, author, raw_text
-            FROM posts
-            WHERE (display_md IS NULL OR TRIM(display_md) = '')
-              AND TRIM(raw_text) <> ''
-              AND post_uid > :last_post_uid
-              AND post_uid <= :stop_post_uid
-            ORDER BY post_uid ASC
-            LIMIT :limit
-            """
-        params = {
-            "limit": limit,
-            "last_post_uid": str(last_post_uid or ""),
-            "stop_post_uid": str(stop_post_uid or ""),
-        }
-    else:
-        query = """
-            SELECT post_uid, author, raw_text
-            FROM posts
-            WHERE TRIM(raw_text) <> ''
-              AND post_uid > :last_post_uid
-              AND post_uid <= :stop_post_uid
-            ORDER BY post_uid ASC
-            LIMIT :limit
-            """
-        params = {
-            "limit": limit,
-            "last_post_uid": str(last_post_uid or ""),
-            "stop_post_uid": str(stop_post_uid or ""),
-        }
-
-    rows = conn.execute(text(query), params).mappings().fetchall()
+    query = select_backfill_batch(overwrite=overwrite)
+    params = {
+        "limit": limit,
+        "last_post_uid": str(last_post_uid or ""),
+        "stop_post_uid": str(stop_post_uid or ""),
+    }
+    rows = conn.execute(query, params).mappings().fetchall()
     return [dict(row) for row in rows]
 
 
 def _count_targets(conn, *, overwrite: bool) -> int:
-    if overwrite:
-        query = "SELECT COUNT(*) FROM posts WHERE TRIM(raw_text) <> ''"
-    else:
-        query = """
-            SELECT COUNT(*)
-            FROM posts
-            WHERE (display_md IS NULL OR TRIM(display_md) = '')
-              AND TRIM(raw_text) <> ''
-            """
-    return int(conn.execute(text(query)).scalar() or 0)
+    query = count_backfill_targets(overwrite=overwrite)
+    return int(conn.execute(query).scalar() or 0)
 
 
 def _max_target_post_uid(conn, *, overwrite: bool) -> str:
-    if overwrite:
-        query = "SELECT MAX(post_uid) FROM posts WHERE TRIM(raw_text) <> ''"
-    else:
-        query = """
-            SELECT MAX(post_uid)
-            FROM posts
-            WHERE (display_md IS NULL OR TRIM(display_md) = '')
-              AND TRIM(raw_text) <> ''
-            """
-    return str(conn.execute(text(query)).scalar() or "").strip()
+    query = max_backfill_target_post_uid(overwrite=overwrite)
+    return str(conn.execute(query).scalar() or "").strip()
 
 
 def _parse_post_uids(value: str) -> list[str]:
@@ -136,16 +101,10 @@ def _parse_post_uids(value: str) -> list[str]:
 def _select_rows_by_post_uids(conn, post_uids: list[str]) -> list[dict]:
     if not post_uids:
         return []
-    placeholders = ", ".join([f":uid{i}" for i in range(len(post_uids))])
-    query = f"""
-        SELECT post_uid, author, raw_text
-        FROM posts
-        WHERE post_uid IN ({placeholders})
-          AND TRIM(raw_text) <> ''
-        ORDER BY post_uid ASC
-        """
-    params = {f"uid{i}": uid for i, uid in enumerate(post_uids)}
-    rows = conn.execute(text(query), params).mappings().fetchall()
+    placeholders = make_in_placeholders(prefix="uid", count=len(post_uids))
+    query = select_backfill_rows_by_post_uids(placeholders)
+    params = make_in_params(prefix="uid", values=post_uids)
+    rows = conn.execute(query, params).mappings().fetchall()
     return [dict(row) for row in rows]
 
 
@@ -170,22 +129,10 @@ def _build_updates(rows: list[dict]) -> tuple[list[dict], set[str]]:
 
 
 def _update_batch(conn, *, updates: list[dict], overwrite: bool) -> int:
-    query = """
-        UPDATE posts
-        SET display_md = :display_md
-        WHERE post_uid = :post_uid
-        """
-    if not overwrite:
-        query = (
-            query
-            + """
-              AND (display_md IS NULL OR TRIM(display_md) = '')
-            """
-        )
-
+    query = update_display_md(overwrite=overwrite)
     updated = 0
     for item in updates:
-        res = conn.execute(text(query), item)
+        res = conn.execute(query, item)
         updated += int(res.rowcount or 0)
     return updated
 
@@ -204,9 +151,7 @@ def _backfill_by_post_uids(
     found_uids: set[str] = set()
 
     with turso_connect_autocommit(engine) as conn:
-        total_posts = int(
-            conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0
-        )
+        total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
 
     print(
         f"[backfill] start total_posts={total_posts} target={len(post_uids)} overwrite=True by_post_uids=True"
@@ -263,9 +208,7 @@ def _backfill_scan(
     last_post_uid = ""
 
     with turso_connect_autocommit(engine) as conn:
-        total_posts = int(
-            conn.execute(text("SELECT COUNT(*) FROM posts")).scalar() or 0
-        )
+        total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
         target_total = _count_targets(conn, overwrite=bool(overwrite))
         stop_post_uid = _max_target_post_uid(conn, overwrite=bool(overwrite))
 

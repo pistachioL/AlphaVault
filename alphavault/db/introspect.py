@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import text
+from alphavault.db.sql.common import pragma_table_info
 
 
 def table_columns(conn_or_engine: Any, table: str) -> set[str]:
@@ -22,7 +22,7 @@ def table_columns(conn_or_engine: Any, table: str) -> set[str]:
 
 
 def _table_columns_from_conn(conn: Any, table: str) -> set[str]:
-    rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+    rows = conn.execute(pragma_table_info(table)).fetchall()
     out: set[str] = set()
     for row in rows:
         # row is a tuple: (cid, name, type, notnull, dflt_value, pk)

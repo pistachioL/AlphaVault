@@ -6,12 +6,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "feedparser",
+  "libsql>=0.1.11",
   "litellm",
   "python-dotenv",
   "redis",
   "requests",
   "sqlalchemy",
-  "sqlalchemy-libsql",
+  "sqlparams>=6.2.0",
   "streamlit",
   "supervisor",
 ]

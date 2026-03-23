@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import argparse
 
-from sqlalchemy import text
-
 from alphavault.env import load_dotenv_if_present
 
 from alphavault.ai.tag_validate import validate_assertion_row
+from alphavault.db.sql.scripts import scan_invalid_assertion_rows
 from alphavault.db.turso_db import get_turso_engine_from_env
 from alphavault.db.turso_queue import (
     ensure_cloud_queue_schema,
@@ -47,39 +46,17 @@ def _scan_invalid_post_uids(
     limit: int,
     verbose: bool,
 ) -> tuple[list[str], dict[str, str], int]:
-    query = """
-        SELECT
-            p.post_uid AS post_uid,
-            COALESCE(p.prompt_version, '') AS prompt_version,
-            a.idx AS idx,
-            a.topic_key AS topic_key,
-            a.action AS action,
-            a.action_strength AS action_strength,
-            a.confidence AS confidence,
-            a.stock_codes_json AS stock_codes_json,
-            a.stock_names_json AS stock_names_json,
-            a.industries_json AS industries_json,
-            a.commodities_json AS commodities_json,
-            a.indices_json AS indices_json
-        FROM posts p
-        JOIN assertions a
-          ON a.post_uid = p.post_uid
-        WHERE p.processed_at IS NOT NULL
-        ORDER BY p.post_uid ASC, a.idx ASC
-        """
     params = {"prompt_version": str(prompt_version or "").strip()}
-    if params["prompt_version"]:
-        query = query.replace(
-            "WHERE p.processed_at IS NOT NULL",
-            "WHERE p.processed_at IS NOT NULL AND COALESCE(p.prompt_version, '') = :prompt_version",
-        )
+    query = scan_invalid_assertion_rows(
+        filter_prompt_version=bool(params["prompt_version"])
+    )
 
     invalid_post_uids: list[str] = []
     first_error_by_uid: dict[str, str] = {}
     scanned_rows = 0
 
     with engine.connect() as conn:
-        rows = conn.execute(text(query), params).mappings()
+        rows = conn.execute(query, params).mappings()
         for row in rows:
             scanned_rows += 1
             uid = str(row.get("post_uid") or "").strip()

@@ -12,10 +12,16 @@ from __future__ import annotations
 from datetime import datetime
 
 import pandas as pd
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
 
 from alphavault.constants import DATETIME_FMT
+from alphavault.db.sql.follow_pages import (
+    create_follow_pages_index,
+    create_follow_pages_table,
+    delete_follow_page as delete_follow_page_sql,
+    select_follow_pages,
+    upsert_follow_page as upsert_follow_page_sql,
+)
+from alphavault.db.turso_db import TursoEngine
 from alphavault.db.turso_db import turso_connect_autocommit
 
 
@@ -44,39 +50,22 @@ def make_page_key(*, follow_type: str, follow_key: str) -> str:
     return f"{t}:{k}"
 
 
-def init_follow_pages_schema(engine: Engine) -> None:
+def init_follow_pages_schema(engine: TursoEngine) -> None:
     """
     Create optional follow_pages table.
 
     Intentionally additive (CREATE TABLE IF NOT EXISTS).
     """
-    ddl_pages = f"""
-    CREATE TABLE IF NOT EXISTS {FOLLOW_PAGES_TABLE} (
-        page_key TEXT PRIMARY KEY,
-        follow_type TEXT NOT NULL CHECK (follow_type IN ('topic', 'cluster')),
-        follow_key TEXT NOT NULL,
-        page_name TEXT NOT NULL DEFAULT '',
-        keywords_text TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-    );
-    """
-    idx_sql = f"""
-    CREATE INDEX IF NOT EXISTS idx_{FOLLOW_PAGES_TABLE}_follow_type_key
-        ON {FOLLOW_PAGES_TABLE}(follow_type, follow_key);
-    """
     with turso_connect_autocommit(engine) as conn:
-        conn.execute(text(ddl_pages))
-        for stmt in idx_sql.strip().split(";\n"):
-            if stmt.strip():
-                conn.execute(text(stmt))
+        conn.execute(create_follow_pages_table(FOLLOW_PAGES_TABLE))
+        conn.execute(create_follow_pages_index(FOLLOW_PAGES_TABLE))
 
 
-def ensure_follow_pages_schema(engine: Engine) -> None:
+def ensure_follow_pages_schema(engine: TursoEngine) -> None:
     init_follow_pages_schema(engine)
 
 
-def try_load_follow_pages(engine: Engine) -> tuple[pd.DataFrame, str]:
+def try_load_follow_pages(engine: TursoEngine) -> tuple[pd.DataFrame, str]:
     """
     Best-effort load follow_pages.
 
@@ -84,20 +73,14 @@ def try_load_follow_pages(engine: Engine) -> tuple[pd.DataFrame, str]:
     """
     try:
         with turso_connect_autocommit(engine) as conn:
-            pages = pd.read_sql_query(
-                f"""
-                SELECT page_key, follow_type, follow_key, page_name, keywords_text, created_at, updated_at
-                FROM {FOLLOW_PAGES_TABLE}
-                """,
-                conn,
-            )
+            pages = pd.read_sql_query(select_follow_pages(FOLLOW_PAGES_TABLE), conn)
         return pages, ""
     except Exception as exc:
         return pd.DataFrame(), f"{type(exc).__name__}: {exc}"
 
 
 def upsert_follow_page(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     follow_type: str,
     follow_key: str,
@@ -113,18 +96,7 @@ def upsert_follow_page(
     now = _now_str()
     with turso_connect_autocommit(engine) as conn:
         conn.execute(
-            text(
-                f"""
-                INSERT INTO {FOLLOW_PAGES_TABLE}(
-                    page_key, follow_type, follow_key, page_name, keywords_text, created_at, updated_at
-                )
-                VALUES (:page_key, :follow_type, :follow_key, :page_name, :keywords_text, :now, :now)
-                ON CONFLICT(page_key) DO UPDATE SET
-                    page_name = excluded.page_name,
-                    keywords_text = excluded.keywords_text,
-                    updated_at = excluded.updated_at
-                """
-            ),
+            upsert_follow_page_sql(FOLLOW_PAGES_TABLE),
             {
                 "page_key": page_key,
                 "follow_type": follow_type_norm,
@@ -137,18 +109,13 @@ def upsert_follow_page(
     return page_key
 
 
-def delete_follow_page(engine: Engine, *, page_key: str) -> int:
+def delete_follow_page(engine: TursoEngine, *, page_key: str) -> int:
     key = str(page_key or "").strip()
     if not key:
         return 0
     with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
-            text(
-                f"""
-                DELETE FROM {FOLLOW_PAGES_TABLE}
-                WHERE page_key = :page_key
-                """
-            ),
+            delete_follow_page_sql(FOLLOW_PAGES_TABLE),
             {"page_key": key},
         )
         return int(res.rowcount or 0)

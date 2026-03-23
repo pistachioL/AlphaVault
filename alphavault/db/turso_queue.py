@@ -12,11 +12,28 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
-
 from alphavault.db.introspect import table_columns
+from alphavault.db.sql.common import make_in_params, make_in_placeholders
+from alphavault.db.sql.turso_queue import (
+    CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT,
+    DELETE_ASSERTIONS_BY_POST_UID,
+    INSERT_ASSERTION,
+    MARK_AI_ERROR,
+    QUEUE_EXTRA_COLUMNS,
+    RECOVER_DONE_WITHOUT_PROCESSED_AT,
+    RECOVER_STUCK_AI_TASKS,
+    RESET_AI_RESULTS_ALL,
+    SELECT_CLOUD_POST,
+    SELECT_DUE_POST_UIDS,
+    SELECT_RECENT_POSTS_BY_AUTHOR,
+    TRY_MARK_AI_RUNNING,
+    UPDATE_POST_DONE,
+    UPSERT_PENDING_POST,
+    alter_posts_add_column,
+    build_reset_ai_results_for_post_uids,
+)
 from alphavault.db.turso_db import (
+    TursoEngine,
     init_cloud_schema,
     turso_connect_autocommit,
     turso_savepoint,
@@ -39,46 +56,28 @@ class CloudPost:
     ai_retry_count: int
 
 
-def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
+def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
     """
     Ensure base schema exists (posts/assertions), then add queue columns to posts.
     """
     init_cloud_schema(engine)
 
-    extra_columns: list[tuple[str, str]] = [
-        ("display_md", "display_md TEXT"),
-        ("ai_status", "ai_status TEXT NOT NULL DEFAULT 'done'"),
-        ("ai_retry_count", "ai_retry_count INTEGER NOT NULL DEFAULT 0"),
-        ("ai_next_retry_at", "ai_next_retry_at INTEGER"),
-        ("ai_running_at", "ai_running_at INTEGER"),
-        ("ai_last_error", "ai_last_error TEXT"),
-        ("ai_result_json", "ai_result_json TEXT"),
-        ("ingested_at", "ingested_at INTEGER NOT NULL DEFAULT 0"),
-    ]
-
     # Note: keep DDL (ALTER TABLE) outside the atomic write block on libsql/Turso.
     # Some builds may auto-break transactional state around DDL.
     with turso_connect_autocommit(engine) as conn:
         cols = table_columns(conn, "posts")
-        for col_name, col_def in extra_columns:
+        for col_name, col_def in QUEUE_EXTRA_COLUMNS:
             if col_name in cols:
                 continue
-            conn.execute(text(f"ALTER TABLE posts ADD COLUMN {col_def}"))
+            conn.execute(alter_posts_add_column(col_def))
             if verbose:
                 print(f"[turso] schema add_column posts.{col_name}", flush=True)
 
-        conn.execute(
-            text(
-                """
-                CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
-                    ON posts(ai_status, ai_next_retry_at);
-                """
-            )
-        )
+        conn.execute(CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT)
 
 
 def upsert_pending_post(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     post_uid: str,
     platform: str,
@@ -99,32 +98,7 @@ def upsert_pending_post(
     """
     with turso_connect_autocommit(engine) as conn:
         conn.execute(
-            text(
-                """
-                INSERT INTO posts (
-                    post_uid, platform, platform_post_id, author, created_at, url, raw_text, display_md,
-                    final_status, invest_score, processed_at, model, prompt_version, archived_at,
-                    ai_status, ai_retry_count, ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
-                    ingested_at
-                ) VALUES (
-                    :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text, :display_md,
-                    :final_status, NULL, NULL, NULL, NULL, :archived_at,
-                    :ai_status, 0, NULL, NULL, NULL, NULL,
-                    :ingested_at
-                )
-                ON CONFLICT(post_uid) DO UPDATE SET
-                    platform=excluded.platform,
-                    platform_post_id=excluded.platform_post_id,
-                    author=excluded.author,
-                    created_at=excluded.created_at,
-                    url=excluded.url,
-                    raw_text=excluded.raw_text,
-                    display_md=excluded.display_md,
-                    archived_at=excluded.archived_at,
-                    ingested_at=excluded.ingested_at
-                WHERE posts.processed_at IS NULL
-                """
-            ),
+            UPSERT_PENDING_POST,
             {
                 "post_uid": post_uid,
                 "platform": platform,
@@ -142,70 +116,36 @@ def upsert_pending_post(
         )
 
 
-def select_due_post_uids(engine: Engine, *, now_epoch: int, limit: int) -> list[str]:
+def select_due_post_uids(
+    engine: TursoEngine, *, now_epoch: int, limit: int
+) -> list[str]:
     with turso_connect_autocommit(engine) as conn:
         rows = conn.execute(
-            text(
-                """
-                    SELECT post_uid
-                    FROM posts
-                    WHERE ai_status IN ('pending', 'error')
-                      AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
-                    ORDER BY
-                        CASE
-                            WHEN processed_at IS NULL OR TRIM(processed_at) = '' THEN 0
-                            ELSE 1
-                        END ASC,
-                        COALESCE(ai_next_retry_at, 0) ASC,
-                        ingested_at DESC
-                    LIMIT :limit
-                    """
-            ),
+            SELECT_DUE_POST_UIDS,
             {"now": int(now_epoch), "limit": max(0, int(limit))},
         ).fetchall()
         return [str(r[0]) for r in rows if r and r[0]]
 
 
 def try_mark_ai_running(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     post_uid: str,
     now_epoch: int,
 ) -> bool:
     with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
-            text(
-                """
-                UPDATE posts
-                SET ai_status='running',
-                    ai_running_at=:now,
-                    ai_retry_count=COALESCE(ai_retry_count, 0) + 1,
-                    ai_last_error=NULL,
-                    ai_next_retry_at=NULL
-                WHERE post_uid=:post_uid
-                  AND ai_status IN ('pending', 'error')
-                  AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
-                """
-            ),
+            TRY_MARK_AI_RUNNING,
             {"post_uid": post_uid, "now": int(now_epoch)},
         )
         return int(res.rowcount or 0) > 0
 
 
-def load_cloud_post(engine: Engine, post_uid: str) -> CloudPost:
+def load_cloud_post(engine: TursoEngine, post_uid: str) -> CloudPost:
     with turso_connect_autocommit(engine) as conn:
         row = (
             conn.execute(
-                text(
-                    """
-                    SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-                           COALESCE(display_md, '') AS display_md,
-                           ai_retry_count
-                    FROM posts
-                    WHERE post_uid = :post_uid
-                    LIMIT 1
-                    """
-                ),
+                SELECT_CLOUD_POST,
                 {"post_uid": post_uid},
             )
             .mappings()
@@ -227,7 +167,7 @@ def load_cloud_post(engine: Engine, post_uid: str) -> CloudPost:
 
 
 def load_recent_posts_by_author(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     author: str,
     limit: int,
@@ -245,17 +185,7 @@ def load_recent_posts_by_author(
     with turso_connect_autocommit(engine) as conn:
         rows = (
             conn.execute(
-                text(
-                    """
-                    SELECT post_uid, platform_post_id, author, created_at, url, raw_text,
-                           COALESCE(display_md, '') AS display_md,
-                           processed_at, ai_status, COALESCE(ai_retry_count, 0) AS ai_retry_count
-                    FROM posts
-                    WHERE author = :author
-                    ORDER BY created_at DESC
-                    LIMIT :limit
-                    """
-                ),
+                SELECT_RECENT_POSTS_BY_AUTHOR,
                 {"author": resolved_author, "limit": max(0, int(limit))},
             )
             .mappings()
@@ -265,7 +195,7 @@ def load_recent_posts_by_author(
 
 
 def reset_ai_results_all(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     archived_at: str,
 ) -> tuple[int, int]:
@@ -276,19 +206,7 @@ def reset_ai_results_all(
     """
     with turso_connect_autocommit(engine) as conn:
         updated = conn.execute(
-            text(
-                """
-                UPDATE posts
-                SET ai_status=:ai_status,
-                    ai_retry_count=0,
-                    ai_next_retry_at=NULL,
-                    ai_running_at=NULL,
-                    ai_last_error=NULL,
-                    ai_result_json=NULL,
-                    archived_at=:archived_at
-                WHERE ai_status != 'running'
-                """
-            ),
+            RESET_AI_RESULTS_ALL,
             {
                 "ai_status": AI_STATUS_PENDING,
                 "archived_at": str(archived_at or "").strip(),
@@ -298,7 +216,7 @@ def reset_ai_results_all(
 
 
 def reset_ai_results_for_post_uids(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     post_uids: Iterable[str],
     archived_at: str,
@@ -325,27 +243,14 @@ def reset_ai_results_for_post_uids(
     n = max(1, int(chunk_size))
     for start in range(0, len(resolved), n):
         chunk = resolved[start : start + n]
-        placeholders = ", ".join([f":uid{i}" for i in range(len(chunk))])
-        params = {f"uid{i}": uid for i, uid in enumerate(chunk)}
+        placeholders = make_in_placeholders(prefix="uid", count=len(chunk))
+        params = make_in_params(prefix="uid", values=chunk)
         params["ai_status"] = AI_STATUS_PENDING
         params["archived_at"] = str(archived_at or "").strip()
 
         with turso_connect_autocommit(engine) as conn:
             upd_res = conn.execute(
-                text(
-                    f"""
-                    UPDATE posts
-                    SET ai_status=:ai_status,
-                        ai_retry_count=0,
-                        ai_next_retry_at=NULL,
-                        ai_running_at=NULL,
-                        ai_last_error=NULL,
-                        ai_result_json=NULL,
-                        archived_at=:archived_at
-                    WHERE post_uid IN ({placeholders})
-                      AND ai_status != 'running'
-                    """
-                ),
+                build_reset_ai_results_for_post_uids(placeholders),
                 params,
             )
 
@@ -355,7 +260,7 @@ def reset_ai_results_for_post_uids(
 
 
 def write_assertions_and_mark_done(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     post_uid: str,
     final_status: str,
@@ -374,23 +279,10 @@ def write_assertions_and_mark_done(
     """
     with turso_connect_autocommit(engine) as conn:
         with turso_savepoint(conn):
-            conn.execute(
-                text("DELETE FROM assertions WHERE post_uid = :post_uid"),
-                {"post_uid": post_uid},
-            )
+            conn.execute(DELETE_ASSERTIONS_BY_POST_UID, {"post_uid": post_uid})
+            assertion_payloads: list[dict[str, object]] = []
             for idx, a in enumerate(assertions, start=1):
-                conn.execute(
-                    text(
-                        """
-                        INSERT INTO assertions (
-                            post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-                            stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
-                        ) VALUES (
-                            :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
-                            :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
-                        )
-                        """
-                    ),
+                assertion_payloads.append(
                     {
                         "post_uid": post_uid,
                         "idx": int(idx),
@@ -405,27 +297,13 @@ def write_assertions_and_mark_done(
                         "industries_json": a.get("industries_json", "[]"),
                         "commodities_json": a.get("commodities_json", "[]"),
                         "indices_json": a.get("indices_json", "[]"),
-                    },
+                    }
                 )
+            if assertion_payloads:
+                conn.execute(INSERT_ASSERTION, assertion_payloads)
 
             conn.execute(
-                text(
-                    """
-                    UPDATE posts
-                    SET final_status=:final_status,
-                        invest_score=:invest_score,
-                        processed_at=:processed_at,
-                        model=:model,
-                        prompt_version=:prompt_version,
-                        archived_at=:archived_at,
-                        ai_status='done',
-                        ai_running_at=NULL,
-                        ai_next_retry_at=NULL,
-                        ai_last_error=NULL,
-                        ai_result_json=:ai_result_json
-                    WHERE post_uid=:post_uid
-                    """
-                ),
+                UPDATE_POST_DONE,
                 {
                     "post_uid": post_uid,
                     "final_status": final_status,
@@ -440,7 +318,7 @@ def write_assertions_and_mark_done(
 
 
 def mark_ai_error(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     post_uid: str,
     error: str,
@@ -450,17 +328,7 @@ def mark_ai_error(
     msg = (error or "")[:1000]
     with turso_connect_autocommit(engine) as conn:
         conn.execute(
-            text(
-                """
-                UPDATE posts
-                SET ai_status='error',
-                    ai_running_at=NULL,
-                    ai_last_error=:error,
-                    ai_next_retry_at=:next_retry_at,
-                    archived_at=:archived_at
-                WHERE post_uid=:post_uid
-                """
-            ),
+            MARK_AI_ERROR,
             {
                 "post_uid": post_uid,
                 "error": msg,
@@ -471,7 +339,7 @@ def mark_ai_error(
 
 
 def recover_stuck_ai_tasks(
-    engine: Engine,
+    engine: TursoEngine,
     *,
     now_epoch: int,
     stuck_seconds: int,
@@ -480,18 +348,7 @@ def recover_stuck_ai_tasks(
     threshold = int(now_epoch) - max(0, int(stuck_seconds))
     with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
-            text(
-                """
-                UPDATE posts
-                SET ai_status='error',
-                    ai_running_at=NULL,
-                    ai_last_error='ai:recovered_after_restart',
-                    ai_next_retry_at=:next_retry_at
-                WHERE ai_status='running'
-                  AND ai_running_at IS NOT NULL
-                  AND ai_running_at <= :threshold
-                """
-            ),
+            RECOVER_STUCK_AI_TASKS,
             {"threshold": threshold, "next_retry_at": int(now_epoch) + 60},
         )
         recovered = int(res.rowcount or 0)
@@ -500,7 +357,7 @@ def recover_stuck_ai_tasks(
         return recovered
 
 
-def recover_done_without_processed_at(engine: Engine, *, verbose: bool) -> int:
+def recover_done_without_processed_at(engine: TursoEngine, *, verbose: bool) -> int:
     """
     Fix inconsistent rows:
     - ai_status='done' but processed_at is NULL/blank
@@ -508,19 +365,7 @@ def recover_done_without_processed_at(engine: Engine, *, verbose: bool) -> int:
     Such rows will never be picked by the AI scheduler, so we reset them to pending.
     """
     with turso_connect_autocommit(engine) as conn:
-        res = conn.execute(
-            text(
-                """
-                UPDATE posts
-                SET ai_status='pending',
-                    ai_running_at=NULL,
-                    ai_next_retry_at=NULL,
-                    ai_last_error='ai:recovered_done_without_processed_at'
-                WHERE ai_status='done'
-                  AND (processed_at IS NULL OR TRIM(processed_at) = '')
-                """
-            )
-        )
+        res = conn.execute(RECOVER_DONE_WITHOUT_PROCESSED_AT)
         fixed = int(res.rowcount or 0)
         if fixed and verbose:
             print(f"[ai] recovered_done_without_processed_at={fixed}", flush=True)

@@ -5,9 +5,6 @@ import sys
 import time
 from pathlib import Path
 
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
-
 from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_REDIS_URL,
@@ -15,7 +12,15 @@ from alphavault.constants import (
     ENV_TURSO_AUTH_TOKEN,
     ENV_TURSO_DATABASE_URL,
 )
+from alphavault.db.sql.scripts import (
+    SELECT_LAST_INSERT_ROWID,
+    SELECT_ONE,
+    create_healthcheck_table,
+    delete_healthcheck_row,
+    insert_healthcheck_row,
+)
 from alphavault.db.turso_db import (
+    TursoEngine,
     ensure_turso_engine,
     turso_connect_autocommit,
     turso_savepoint,
@@ -67,7 +72,7 @@ def _check_spool_dir() -> None:
     _print("[healthcheck] spool ok")
 
 
-def _get_turso_engine_from_env() -> Engine:
+def _get_turso_engine_from_env() -> TursoEngine:
     url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
     token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
     if not url:
@@ -81,7 +86,7 @@ def _check_turso() -> None:
 
     try:
         with turso_connect_autocommit(engine) as conn:
-            conn.execute(text("SELECT 1")).fetchone()
+            conn.execute(SELECT_ONE).fetchone()
     except Exception as e:
         raise RuntimeError(f"turso connect failed: {type(e).__name__}: {e}") from e
 
@@ -89,30 +94,16 @@ def _check_turso() -> None:
         note = f"pid={os.getpid()} ts={int(time.time())}"
         with turso_connect_autocommit(engine) as conn:
             # Keep DDL outside the atomic write block for libsql/Turso.
-            conn.execute(
-                text(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {HEALTHCHECK_TABLE} (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        created_at INTEGER NOT NULL,
-                        note TEXT NOT NULL
-                    )
-                    """
-                )
-            )
+            conn.execute(create_healthcheck_table(HEALTHCHECK_TABLE))
             with turso_savepoint(conn):
                 conn.execute(
-                    text(
-                        f"INSERT INTO {HEALTHCHECK_TABLE}(created_at, note) VALUES (:ts, :note)"
-                    ),
+                    insert_healthcheck_row(HEALTHCHECK_TABLE),
                     {"ts": int(time.time()), "note": note},
                 )
-                inserted_id = conn.execute(
-                    text("SELECT last_insert_rowid()")
-                ).scalar_one()
+                inserted_id = conn.execute(SELECT_LAST_INSERT_ROWID).scalar()
                 conn.execute(
-                    text(f"DELETE FROM {HEALTHCHECK_TABLE} WHERE id = :id"),
-                    {"id": int(inserted_id)},
+                    delete_healthcheck_row(HEALTHCHECK_TABLE),
+                    {"id": int(inserted_id or 0)},
                 )
     except Exception as e:
         raise RuntimeError(f"turso write failed: {type(e).__name__}: {e}") from e
