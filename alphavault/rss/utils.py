@@ -1,8 +1,9 @@
+"""RSS parsing + small helpers."""
+
 from __future__ import annotations
 
 import argparse
 import hashlib
-import html as _html
 import os
 import re
 import threading
@@ -13,6 +14,10 @@ from urllib.parse import urlparse
 
 import feedparser
 import requests
+
+from alphavault.constants import ENV_RSS_URL, ENV_RSS_URLS
+from alphavault.constants import DATETIME_FMT
+from alphavault.text.html import html_to_text
 
 # NOTE: This module is extracted from the old local-sqlite ingest scripts.
 # It keeps only RSS parsing + small helpers, so the worker can delete the old route.
@@ -79,7 +84,7 @@ class RateLimiter:
 
 
 def now_str() -> str:
-    return datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(CST).strftime(DATETIME_FMT)
 
 
 def fetch_feed(url: str, timeout: float) -> feedparser.FeedParserDict:
@@ -90,22 +95,6 @@ def fetch_feed(url: str, timeout: float) -> feedparser.FeedParserDict:
     resp = requests.get(url, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return feedparser.parse(resp.content)
-
-
-def html_to_text(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    text = str(value)
-    text = re.sub(r"(?i)<br\\s*/?>", "\n", text)
-    text = re.sub(r"(?i)</p\\s*>", "\n", text)
-    text = re.sub(r"(?i)<p\\s*>", "", text)
-    text = re.sub(r"(?is)<script.*?>.*?</script>", "", text)
-    text = re.sub(r"(?is)<style.*?>.*?</style>", "", text)
-    text = re.sub(r"(?s)<[^>]+>", "", text)
-    text = _html.unescape(text)
-    text = text.replace("\r\n", "\n").strip()
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text
 
 
 def get_entry_content(entry: feedparser.FeedParserDict) -> str:
@@ -127,7 +116,7 @@ def parse_datetime(entry: feedparser.FeedParserDict) -> str:
         parsed = getattr(entry, key, None)
         if parsed:
             dt = datetime(*parsed[:6], tzinfo=timezone.utc).astimezone(CST)
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
+            return dt.strftime(DATETIME_FMT)
     return now_str()
 
 
@@ -259,8 +248,8 @@ def parse_rss_urls(args: argparse.Namespace) -> list[str]:
     urls.extend(_split_rss_urls(getattr(args, "rss_urls", "") or ""))
 
     if not urls:
-        urls.extend(_split_rss_urls(os.getenv("RSS_URLS", "")))
-        urls.extend(_split_rss_urls(os.getenv("RSS_URL", "")))
+        urls.extend(_split_rss_urls(os.getenv(ENV_RSS_URLS, "")))
+        urls.extend(_split_rss_urls(os.getenv(ENV_RSS_URL, "")))
 
     seen: set[str] = set()
     out: list[str] = []
@@ -324,7 +313,7 @@ def sleep_until_active(active_hours: tuple[int, int], *, verbose: bool) -> None:
     sleep_sec = max(1.0, (next_dt - now_dt).total_seconds())
     if verbose:
         print(
-            f"[schedule] inactive now={now_dt.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"[schedule] inactive now={now_dt.strftime(DATETIME_FMT)} "
             f"active={start_hour}-{end_hour} sleep={int(sleep_sec)}s",
             flush=True,
         )

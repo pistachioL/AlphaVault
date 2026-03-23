@@ -2,17 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List
 
 import pandas as pd
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from turso_db import (
+from alphavault.constants import DATETIME_FMT
+from alphavault.db.turso_db import (
     TOPIC_CLUSTER_POST_OVERRIDES_TABLE,
     TOPIC_CLUSTER_TOPICS_TABLE,
     TOPIC_CLUSTERS_TABLE,
     init_topic_cluster_schema,
+    turso_connect_autocommit,
+    turso_savepoint,
 )
 
 
@@ -21,7 +24,7 @@ UNCATEGORIZED_LABEL = "未归类"
 
 def _now_str() -> str:
     # Keep the same shape as rss_utils.now_str() (YYYY-MM-DD HH:MM:SS).
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now().strftime(DATETIME_FMT)
 
 
 def ensure_cluster_schema(engine: Engine) -> None:
@@ -35,18 +38,19 @@ def try_load_cluster_tables(engine: Engine) -> tuple[pd.DataFrame, pd.DataFrame,
     Returns: (clusters, topic_map, post_overrides, error_message)
     """
     try:
-        clusters = pd.read_sql_query(
-            f"SELECT cluster_key, cluster_name, description, created_at, updated_at FROM {TOPIC_CLUSTERS_TABLE}",
-            engine,
-        )
-        topic_map = pd.read_sql_query(
-            f"SELECT topic_key, cluster_key, source, confidence, created_at FROM {TOPIC_CLUSTER_TOPICS_TABLE}",
-            engine,
-        )
-        post_overrides = pd.read_sql_query(
-            f"SELECT post_uid, cluster_key, reason, confidence, created_at FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}",
-            engine,
-        )
+        with turso_connect_autocommit(engine) as conn:
+            clusters = pd.read_sql_query(
+                f"SELECT cluster_key, cluster_name, description, created_at, updated_at FROM {TOPIC_CLUSTERS_TABLE}",
+                conn,
+            )
+            topic_map = pd.read_sql_query(
+                f"SELECT topic_key, cluster_key, source, confidence, created_at FROM {TOPIC_CLUSTER_TOPICS_TABLE}",
+                conn,
+            )
+            post_overrides = pd.read_sql_query(
+                f"SELECT post_uid, cluster_key, reason, confidence, created_at FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE}",
+                conn,
+            )
         return clusters, topic_map, post_overrides, ""
     except Exception as exc:
         empty = pd.DataFrame()
@@ -56,7 +60,7 @@ def try_load_cluster_tables(engine: Engine) -> tuple[pd.DataFrame, pd.DataFrame,
 @dataclass(frozen=True)
 class ClusterMaps:
     cluster_name_by_key: Dict[str, str]
-    cluster_by_topic_key: Dict[str, str]
+    cluster_keys_by_member_key: Dict[str, List[str]]
     cluster_by_post_uid: Dict[str, str]
 
 
@@ -73,13 +77,20 @@ def build_cluster_maps(
             if key:
                 cluster_name_by_key[key] = name
 
-    cluster_by_topic_key: Dict[str, str] = {}
+    # Note: historical column name is still "topic_key" in DB/table,
+    # but we treat it as a generic "member_key" now.
+    cluster_keys_by_member_key: Dict[str, List[str]] = {}
     if not topic_map.empty:
         for _, row in topic_map.iterrows():
-            topic_key = str(row.get("topic_key") or "").strip()
+            member_key = str(row.get("topic_key") or "").strip()
             cluster_key = str(row.get("cluster_key") or "").strip()
-            if topic_key and cluster_key:
-                cluster_by_topic_key[topic_key] = cluster_key
+            if member_key and cluster_key:
+                cluster_keys_by_member_key.setdefault(member_key, []).append(cluster_key)
+    if cluster_keys_by_member_key:
+        for member_key, keys in list(cluster_keys_by_member_key.items()):
+            # keep unique + stable (sorted) for deterministic UI.
+            uniq = sorted(set(str(k).strip() for k in keys if str(k).strip()))
+            cluster_keys_by_member_key[member_key] = uniq
 
     cluster_by_post_uid: Dict[str, str] = {}
     if not post_overrides.empty:
@@ -91,7 +102,7 @@ def build_cluster_maps(
 
     return ClusterMaps(
         cluster_name_by_key=cluster_name_by_key,
-        cluster_by_topic_key=cluster_by_topic_key,
+        cluster_keys_by_member_key=cluster_keys_by_member_key,
         cluster_by_post_uid=cluster_by_post_uid,
     )
 
@@ -107,35 +118,71 @@ def enrich_assertions_with_clusters(
     Add cluster columns on top of existing assertions.
 
     Columns added:
-    - cluster_key: resolved key (topic_map first, then post override)
-    - cluster_name: optional display name from topic_clusters
-    - cluster_display: cluster_name or cluster_key, otherwise '未归类'
+    - cluster_keys: list of resolved keys (topic_map first; if empty then post override)
+    - cluster_displays: list of display names (cluster_name or cluster_key); if empty then ['未归类']
     """
     if assertions.empty:
         out = assertions.copy()
-        out["cluster_key"] = ""
-        out["cluster_name"] = ""
-        out["cluster_display"] = UNCATEGORIZED_LABEL
+        out["cluster_keys"] = [[] for _ in range(len(out))]
+        out["cluster_displays"] = [[UNCATEGORIZED_LABEL] for _ in range(len(out))]
         return out
 
     maps = build_cluster_maps(clusters, topic_map, post_overrides)
     out = assertions.copy()
 
-    topic_keys = out.get("topic_key", pd.Series([""] * len(out), index=out.index))
+    if "match_keys" in out.columns:
+        match_keys = out["match_keys"]
+    else:
+        match_keys = out.get("topic_key", pd.Series([""] * len(out), index=out.index))
     post_uids = out.get("post_uid", pd.Series([""] * len(out), index=out.index))
 
-    cluster_key = topic_keys.map(maps.cluster_by_topic_key).fillna("")
-    missing_cluster = cluster_key.astype(str).str.strip().eq("")
-    if missing_cluster.any():
-        cluster_key = cluster_key.where(~missing_cluster, post_uids.map(maps.cluster_by_post_uid).fillna(""))
+    def _cluster_keys_for_keys_and_post(keys_value: object, post_uid: object) -> list[str]:
+        keys_out: list[str] = []
+        if isinstance(keys_value, list):
+            for item in keys_value:
+                member_key = str(item or "").strip()
+                if not member_key:
+                    continue
+                resolved = maps.cluster_keys_by_member_key.get(member_key)
+                if resolved:
+                    keys_out.extend(resolved)
+        else:
+            member_key = str(keys_value or "").strip()
+            if member_key:
+                resolved = maps.cluster_keys_by_member_key.get(member_key)
+                if resolved:
+                    keys_out.extend(resolved)
 
-    out["cluster_key"] = cluster_key.astype(str)
-    out["cluster_name"] = out["cluster_key"].map(maps.cluster_name_by_key).fillna("").astype(str)
+        if keys_out:
+            # Keep unique + stable for deterministic UI.
+            return sorted(set(str(x).strip() for x in keys_out if str(x).strip()))
+        p = str(post_uid or "").strip()
+        if p:
+            override_key = str(maps.cluster_by_post_uid.get(p, "") or "").strip()
+            if override_key:
+                return [override_key]
+        return []
 
-    display = out["cluster_name"].where(out["cluster_name"].str.strip().ne(""), out["cluster_key"])
-    display = display.fillna("").astype(str)
-    display = display.where(display.str.strip().ne(""), UNCATEGORIZED_LABEL)
-    out["cluster_display"] = display
+    out["cluster_keys"] = [
+        _cluster_keys_for_keys_and_post(keys_value, post_uid)
+        for keys_value, post_uid in zip(match_keys.tolist(), post_uids.tolist(), strict=False)
+    ]
+
+    def _displays_for_keys(keys: object) -> list[str]:
+        if not isinstance(keys, list):
+            keys = []
+        out_labels: list[str] = []
+        for key in keys:
+            k = str(key or "").strip()
+            if not k:
+                continue
+            name = str(maps.cluster_name_by_key.get(k, "") or "").strip()
+            out_labels.append(name if name else k)
+        if out_labels:
+            return out_labels
+        return [UNCATEGORIZED_LABEL]
+
+    out["cluster_displays"] = out["cluster_keys"].apply(_displays_for_keys)
     return out
 
 
@@ -147,7 +194,7 @@ def upsert_cluster(
     description: str,
 ) -> None:
     now = _now_str()
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 f"""
@@ -199,7 +246,7 @@ def upsert_cluster_topics(
         for topic_key in items
     ]
 
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 f"""
@@ -207,8 +254,7 @@ def upsert_cluster_topics(
                     topic_key, cluster_key, source, confidence, created_at
                 )
                 VALUES (:topic_key, :cluster_key, :source, :confidence, :now)
-                ON CONFLICT(topic_key) DO UPDATE SET
-                    cluster_key = excluded.cluster_key,
+                ON CONFLICT(topic_key, cluster_key) DO UPDATE SET
                     source = excluded.source,
                     confidence = excluded.confidence,
                     created_at = excluded.created_at
@@ -259,7 +305,7 @@ def upsert_cluster_topics_detailed(
     if not payloads:
         return 0
 
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 f"""
@@ -267,8 +313,7 @@ def upsert_cluster_topics_detailed(
                     topic_key, cluster_key, source, confidence, created_at
                 )
                 VALUES (:topic_key, :cluster_key, :source, :confidence, :now)
-                ON CONFLICT(topic_key) DO UPDATE SET
-                    cluster_key = excluded.cluster_key,
+                ON CONFLICT(topic_key, cluster_key) DO UPDATE SET
                     source = excluded.source,
                     confidence = excluded.confidence,
                     created_at = excluded.created_at
@@ -279,15 +324,56 @@ def upsert_cluster_topics_detailed(
     return len(payloads)
 
 
-def delete_cluster_topics(engine: Engine, *, topic_keys: Iterable[str]) -> int:
+def delete_cluster_topics(engine: Engine, *, cluster_key: str, topic_keys: Iterable[str]) -> int:
     items = [str(item or "").strip() for item in topic_keys]
     items = [item for item in items if item]
     if not items:
         return 0
-    with engine.begin() as conn:
-        for topic_key in items:
-            conn.execute(
-                text(f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE topic_key = :topic_key"),
-                {"topic_key": topic_key},
-            )
+    key = str(cluster_key or "").strip()
+    if not key:
+        return 0
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            for topic_key in items:
+                conn.execute(
+                    text(
+                        f"""
+                        DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE}
+                        WHERE topic_key = :topic_key AND cluster_key = :cluster_key
+                        """
+                    ),
+                    {"topic_key": topic_key, "cluster_key": key},
+                )
     return len(items)
+
+
+def delete_cluster(engine: Engine, *, cluster_key: str) -> dict[str, int]:
+    """
+    Delete one cluster and its mappings.
+
+    Note: this does NOT delete follow_pages. Users delete those manually.
+    """
+    key = str(cluster_key or "").strip()
+    if not key:
+        return {"clusters": 0, "topics": 0, "overrides": 0}
+
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            res_topics = conn.execute(
+                text(f"DELETE FROM {TOPIC_CLUSTER_TOPICS_TABLE} WHERE cluster_key = :cluster_key"),
+                {"cluster_key": key},
+            )
+            res_overrides = conn.execute(
+                text(f"DELETE FROM {TOPIC_CLUSTER_POST_OVERRIDES_TABLE} WHERE cluster_key = :cluster_key"),
+                {"cluster_key": key},
+            )
+            res_clusters = conn.execute(
+                text(f"DELETE FROM {TOPIC_CLUSTERS_TABLE} WHERE cluster_key = :cluster_key"),
+                {"cluster_key": key},
+            )
+
+    return {
+        "clusters": int(res_clusters.rowcount or 0),
+        "topics": int(res_topics.rowcount or 0),
+        "overrides": int(res_overrides.rowcount or 0),
+    }

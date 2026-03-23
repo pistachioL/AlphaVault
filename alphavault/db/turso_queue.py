@@ -15,7 +15,8 @@ from typing import Any, Dict, Iterable, Optional
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from turso_db import init_cloud_schema
+from alphavault.db.introspect import table_columns
+from alphavault.db.turso_db import init_cloud_schema, turso_connect_autocommit, turso_savepoint
 
 
 AI_STATUS_PENDING = "pending"
@@ -35,17 +36,8 @@ class CloudPost:
     created_at: str
     url: str
     raw_text: str
+    display_md: str
     ai_retry_count: int
-
-
-def _table_columns(conn, table: str) -> set[str]:
-    rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
-    out: set[str] = set()
-    for row in rows:
-        # row is a tuple: (cid, name, type, notnull, dflt_value, pk)
-        if row and len(row) >= 2:
-            out.add(str(row[1]))
-    return out
 
 
 def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
@@ -65,8 +57,10 @@ def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
         ("ingested_at", "ingested_at INTEGER NOT NULL DEFAULT 0"),
     ]
 
-    with engine.begin() as conn:
-        cols = _table_columns(conn, "posts")
+    # Note: keep DDL (ALTER TABLE) outside the atomic write block on libsql/Turso.
+    # Some builds may auto-break transactional state around DDL.
+    with turso_connect_autocommit(engine) as conn:
+        cols = table_columns(conn, "posts")
         for col_name, col_def in extra_columns:
             if col_name in cols:
                 continue
@@ -85,7 +79,7 @@ def ensure_cloud_queue_schema(engine: Engine, *, verbose: bool) -> None:
 
 
 def cloud_post_is_processed(engine: Engine, post_uid: str) -> bool:
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         row = (
             conn.execute(
                 text("SELECT processed_at FROM posts WHERE post_uid = :post_uid LIMIT 1"),
@@ -119,7 +113,7 @@ def upsert_pending_post(
     NOTE: Cloud posts.final_status is required by existing schema, so we set a placeholder
     final_status='irrelevant' and keep processed_at=NULL until AI is done.
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 """
@@ -165,7 +159,7 @@ def upsert_pending_post(
 
 
 def select_due_post_uids(engine: Engine, *, now_epoch: int, limit: int) -> list[str]:
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         rows = (
             conn.execute(
                 text(
@@ -174,8 +168,13 @@ def select_due_post_uids(engine: Engine, *, now_epoch: int, limit: int) -> list[
                     FROM posts
                     WHERE ai_status IN ('pending', 'error')
                       AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
-                      AND processed_at IS NULL
-                    ORDER BY COALESCE(ai_next_retry_at, 0) ASC, ingested_at ASC
+                    ORDER BY
+                        CASE
+                            WHEN processed_at IS NULL OR TRIM(processed_at) = '' THEN 0
+                            ELSE 1
+                        END ASC,
+                        COALESCE(ai_next_retry_at, 0) ASC,
+                        ingested_at DESC
                     LIMIT :limit
                     """
                 ),
@@ -192,7 +191,7 @@ def try_mark_ai_running(
     post_uid: str,
     now_epoch: int,
 ) -> bool:
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
             text(
                 """
@@ -205,7 +204,6 @@ def try_mark_ai_running(
                 WHERE post_uid=:post_uid
                   AND ai_status IN ('pending', 'error')
                   AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
-                  AND processed_at IS NULL
                 """
             ),
             {"post_uid": post_uid, "now": int(now_epoch)},
@@ -214,12 +212,14 @@ def try_mark_ai_running(
 
 
 def load_cloud_post(engine: Engine, post_uid: str) -> CloudPost:
-    with engine.connect() as conn:
+    with turso_connect_autocommit(engine) as conn:
         row = (
             conn.execute(
                 text(
                     """
-                    SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text, ai_retry_count
+                    SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+                           COALESCE(display_md, '') AS display_md,
+                           ai_retry_count
                     FROM posts
                     WHERE post_uid = :post_uid
                     LIMIT 1
@@ -240,8 +240,137 @@ def load_cloud_post(engine: Engine, post_uid: str) -> CloudPost:
             created_at=str(row.get("created_at") or ""),
             url=str(row.get("url") or ""),
             raw_text=str(row.get("raw_text") or ""),
+            display_md=str(row.get("display_md") or ""),
             ai_retry_count=int(row.get("ai_retry_count") or 0),
         )
+
+
+def load_recent_posts_by_author(
+    engine: Engine,
+    *,
+    author: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    """
+    Load recent posts (both processed and unprocessed) for building a thread context.
+
+    Returns mappings with keys:
+    - post_uid, platform_post_id, author, created_at, url, raw_text, display_md
+    - processed_at, ai_status, ai_retry_count
+    """
+    resolved_author = str(author or "").strip()
+    if not resolved_author:
+        return []
+    with turso_connect_autocommit(engine) as conn:
+        rows = (
+            conn.execute(
+                text(
+                    """
+                    SELECT post_uid, platform_post_id, author, created_at, url, raw_text,
+                           COALESCE(display_md, '') AS display_md,
+                           processed_at, ai_status, COALESCE(ai_retry_count, 0) AS ai_retry_count
+                    FROM posts
+                    WHERE author = :author
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                    """
+                ),
+                {"author": resolved_author, "limit": max(0, int(limit))},
+            )
+            .mappings()
+            .fetchall()
+        )
+        return [dict(r) for r in rows if r]
+
+
+def reset_ai_results_all(
+    engine: Engine,
+    *,
+    archived_at: str,
+) -> tuple[int, int]:
+    """
+    Reset all posts back to "pending" (do NOT delete assertions).
+
+    Returns: (deleted_assertions, updated_posts)
+    """
+    with turso_connect_autocommit(engine) as conn:
+        updated = conn.execute(
+            text(
+                """
+                UPDATE posts
+                SET ai_status=:ai_status,
+                    ai_retry_count=0,
+                    ai_next_retry_at=NULL,
+                    ai_running_at=NULL,
+                    ai_last_error=NULL,
+                    ai_result_json=NULL,
+                    archived_at=:archived_at
+                WHERE ai_status != 'running'
+                """
+            ),
+            {
+                "ai_status": AI_STATUS_PENDING,
+                "archived_at": str(archived_at or "").strip(),
+            },
+        )
+        return 0, int(updated.rowcount or 0)
+
+
+def reset_ai_results_for_post_uids(
+    engine: Engine,
+    *,
+    post_uids: Iterable[str],
+    archived_at: str,
+    chunk_size: int = 200,
+) -> tuple[int, int]:
+    """
+    Reset specific posts back to "pending" (do NOT delete assertions).
+
+    Returns: (deleted_assertions, updated_posts)
+    """
+    resolved = []
+    seen: set[str] = set()
+    for uid in post_uids:
+        s = str(uid or "").strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        resolved.append(s)
+    if not resolved:
+        return 0, 0
+
+    deleted_total = 0
+    updated_total = 0
+    n = max(1, int(chunk_size))
+    for start in range(0, len(resolved), n):
+        chunk = resolved[start : start + n]
+        placeholders = ", ".join([f":uid{i}" for i in range(len(chunk))])
+        params = {f"uid{i}": uid for i, uid in enumerate(chunk)}
+        params["ai_status"] = AI_STATUS_PENDING
+        params["archived_at"] = str(archived_at or "").strip()
+
+        with turso_connect_autocommit(engine) as conn:
+            upd_res = conn.execute(
+                text(
+                    f"""
+                    UPDATE posts
+                    SET ai_status=:ai_status,
+                        ai_retry_count=0,
+                        ai_next_retry_at=NULL,
+                        ai_running_at=NULL,
+                        ai_last_error=NULL,
+                        ai_result_json=NULL,
+                        archived_at=:archived_at
+                    WHERE post_uid IN ({placeholders})
+                      AND ai_status != 'running'
+                    """
+                ),
+                params,
+            )
+
+        updated_total += int(upd_res.rowcount or 0)
+
+    return deleted_total, updated_total
 
 
 def mark_ai_done(
@@ -256,7 +385,7 @@ def mark_ai_done(
     archived_at: str,
     ai_result_json: Optional[str],
 ) -> None:
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 """
@@ -302,71 +431,72 @@ def write_assertions_and_mark_done(
     assertions: Iterable[Dict[str, Any]],
 ) -> None:
     """
-    Commit AI outputs in a single transaction:
+    Commit AI outputs in a single atomic unit, without DBAPI commit/rollback.
     - overwrite assertions for post_uid
     - mark posts row as done
     """
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
-        for idx, a in enumerate(assertions, start=1):
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
+            for idx, a in enumerate(assertions, start=1):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO assertions (
+                            post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
+                            stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
+                        ) VALUES (
+                            :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
+                            :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
+                        )
+                        """
+                    ),
+                    {
+                        "post_uid": post_uid,
+                        "idx": int(idx),
+                        "topic_key": a["topic_key"],
+                        "action": a["action"],
+                        "action_strength": int(a["action_strength"]),
+                        "summary": a["summary"],
+                        "evidence": a["evidence"],
+                        "confidence": float(a["confidence"]),
+                        "stock_codes_json": a.get("stock_codes_json", "[]"),
+                        "stock_names_json": a.get("stock_names_json", "[]"),
+                        "industries_json": a.get("industries_json", "[]"),
+                        "commodities_json": a.get("commodities_json", "[]"),
+                        "indices_json": a.get("indices_json", "[]"),
+                    },
+                )
+
             conn.execute(
                 text(
                     """
-                    INSERT INTO assertions (
-                        post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-                        stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
-                    ) VALUES (
-                        :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
-                        :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
-                    )
+                    UPDATE posts
+                    SET final_status=:final_status,
+                        invest_score=:invest_score,
+                        processed_at=:processed_at,
+                        model=:model,
+                        prompt_version=:prompt_version,
+                        archived_at=:archived_at,
+                        ai_status='done',
+                        ai_running_at=NULL,
+                        ai_next_retry_at=NULL,
+                        ai_last_error=NULL,
+                        ai_result_json=:ai_result_json
+                    WHERE post_uid=:post_uid
                     """
                 ),
                 {
                     "post_uid": post_uid,
-                    "idx": int(idx),
-                    "topic_key": a["topic_key"],
-                    "action": a["action"],
-                    "action_strength": int(a["action_strength"]),
-                    "summary": a["summary"],
-                    "evidence": a["evidence"],
-                    "confidence": float(a["confidence"]),
-                    "stock_codes_json": a.get("stock_codes_json", "[]"),
-                    "stock_names_json": a.get("stock_names_json", "[]"),
-                    "industries_json": a.get("industries_json", "[]"),
-                    "commodities_json": a.get("commodities_json", "[]"),
-                    "indices_json": a.get("indices_json", "[]"),
+                    "final_status": final_status,
+                    "invest_score": invest_score,
+                    "processed_at": processed_at,
+                    "model": model,
+                    "prompt_version": prompt_version,
+                    "archived_at": archived_at,
+                    "ai_result_json": ai_result_json,
                 },
             )
-
-        conn.execute(
-            text(
-                """
-                UPDATE posts
-                SET final_status=:final_status,
-                    invest_score=:invest_score,
-                    processed_at=:processed_at,
-                    model=:model,
-                    prompt_version=:prompt_version,
-                    archived_at=:archived_at,
-                    ai_status='done',
-                    ai_running_at=NULL,
-                    ai_next_retry_at=NULL,
-                    ai_last_error=NULL,
-                    ai_result_json=:ai_result_json
-                WHERE post_uid=:post_uid
-                """
-            ),
-            {
-                "post_uid": post_uid,
-                "final_status": final_status,
-                "invest_score": invest_score,
-                "processed_at": processed_at,
-                "model": model,
-                "prompt_version": prompt_version,
-                "archived_at": archived_at,
-                "ai_result_json": ai_result_json,
-            },
-        )
 
 
 def mark_ai_error(
@@ -378,7 +508,7 @@ def mark_ai_error(
     archived_at: str,
 ) -> None:
     msg = (error or "")[:1000]
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         conn.execute(
             text(
                 """
@@ -408,7 +538,7 @@ def recover_stuck_ai_tasks(
     verbose: bool,
 ) -> int:
     threshold = int(now_epoch) - max(0, int(stuck_seconds))
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
             text(
                 """
@@ -420,7 +550,6 @@ def recover_stuck_ai_tasks(
                 WHERE ai_status='running'
                   AND ai_running_at IS NOT NULL
                   AND ai_running_at <= :threshold
-                  AND processed_at IS NULL
                 """
             ),
             {"threshold": threshold, "next_retry_at": int(now_epoch) + 60},
@@ -438,7 +567,7 @@ def recover_done_without_processed_at(engine: Engine, *, verbose: bool) -> int:
 
     Such rows will never be picked by the AI scheduler, so we reset them to pending.
     """
-    with engine.begin() as conn:
+    with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
             text(
                 """
@@ -464,34 +593,34 @@ def write_cloud_assertions(
     post_uid: str,
     assertions: Iterable[Dict[str, Any]],
 ) -> None:
-    with engine.begin() as conn:
-        conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
-        for idx, a in enumerate(assertions, start=1):
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO assertions (
-                        post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-                        stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
-                    ) VALUES (
-                        :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
-                        :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
-                    )
-                    """
-                ),
-                {
-                    "post_uid": post_uid,
-                    "idx": int(idx),
-                    "topic_key": a["topic_key"],
-                    "action": a["action"],
-                    "action_strength": int(a["action_strength"]),
-                    "summary": a["summary"],
-                    "evidence": a["evidence"],
-                    "confidence": float(a["confidence"]),
-                    "stock_codes_json": a.get("stock_codes_json", "[]"),
-                    "stock_names_json": a.get("stock_names_json", "[]"),
-                    "industries_json": a.get("industries_json", "[]"),
-                    "commodities_json": a.get("commodities_json", "[]"),
-                    "indices_json": a.get("indices_json", "[]"),
-                },
-            )
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            conn.execute(text("DELETE FROM assertions WHERE post_uid = :post_uid"), {"post_uid": post_uid})
+            for idx, a in enumerate(assertions, start=1):
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO assertions (
+                            post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
+                            stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
+                        ) VALUES (
+                            :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
+                            :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
+                        )
+                        """
+                    ),
+                    {
+                        "post_uid": post_uid,
+                        "idx": int(idx),
+                        "topic_key": a["topic_key"],
+                        "action": a["action"],
+                        "action_strength": int(a["action_strength"]),
+                        "summary": a["summary"],
+                        "evidence": a["evidence"],
+                        "confidence": float(a["confidence"]),
+                        "stock_codes_json": a.get("stock_codes_json", "[]"),
+                        "stock_names_json": a.get("stock_names_json", "[]"),
+                        "industries_json": a.get("industries_json", "[]"),
+                        "indices_json": a.get("indices_json", "[]"),
+                    },
+                )

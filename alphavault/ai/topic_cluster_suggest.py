@@ -4,7 +4,17 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
-from ai_analyze import (
+from alphavault.constants import (
+    ENV_AI_API_KEY,
+    ENV_AI_API_MODE,
+    ENV_AI_BASE_URL,
+    ENV_AI_MODEL,
+    ENV_AI_REASONING_EFFORT,
+    ENV_AI_RETRIES,
+    ENV_AI_TEMPERATURE,
+    ENV_AI_TIMEOUT_SEC,
+)
+from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
     DEFAULT_AI_MODE,
@@ -50,20 +60,23 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _get_ai_config_from_env() -> tuple[Optional[AiConfig], str]:
-    api_key = os.getenv("AI_API_KEY", "").strip()
+    api_key = os.getenv(ENV_AI_API_KEY, "").strip()
     if not api_key:
-        return None, "Missing AI_API_KEY"
+        return None, f"Missing {ENV_AI_API_KEY}"
 
-    model = os.getenv("AI_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    base_url = os.getenv("AI_BASE_URL", "").strip()
-    api_mode = os.getenv("AI_API_MODE", DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
+    model = os.getenv(ENV_AI_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    base_url = os.getenv(ENV_AI_BASE_URL, "").strip()
+    api_mode = os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
     if api_mode not in {AI_MODE_COMPLETION, AI_MODE_RESPONSES}:
         api_mode = DEFAULT_AI_MODE
 
-    temperature = _env_float("AI_TEMPERATURE", DEFAULT_AI_TEMPERATURE)
-    timeout_seconds = _env_float("AI_TIMEOUT_SEC", 1000.0)
-    retries = _env_int("AI_RETRIES", DEFAULT_AI_RETRY_COUNT)
-    reasoning_effort = os.getenv("AI_REASONING_EFFORT", DEFAULT_AI_REASONING_EFFORT).strip() or DEFAULT_AI_REASONING_EFFORT
+    temperature = _env_float(ENV_AI_TEMPERATURE, DEFAULT_AI_TEMPERATURE)
+    timeout_seconds = _env_float(ENV_AI_TIMEOUT_SEC, 1000.0)
+    retries = _env_int(ENV_AI_RETRIES, DEFAULT_AI_RETRY_COUNT)
+    reasoning_effort = (
+        os.getenv(ENV_AI_REASONING_EFFORT, DEFAULT_AI_REASONING_EFFORT).strip()
+        or DEFAULT_AI_REASONING_EFFORT
+    )
 
     return (
         AiConfig(
@@ -108,35 +121,45 @@ def get_ai_config_summary() -> tuple[Dict[str, Any], str]:
 def _format_topic_candidates(topics: Iterable[dict]) -> str:
     lines: List[str] = []
     for item in topics:
-        topic_key = clean_text(item.get("topic_key", ""))
-        if not topic_key:
+        key = clean_text(item.get("key", "")) or clean_text(item.get("topic_key", ""))
+        if not key:
             continue
         count = item.get("count", None)
         hint = clean_text(item.get("hint", ""))
         hint_part = f" hint={hint}" if hint else ""
         if count is None:
-            lines.append(f"- {topic_key}{hint_part}")
+            lines.append(f"- {key}{hint_part}")
         else:
-            lines.append(f"- {topic_key} (count={int(count)}){hint_part}")
+            lines.append(f"- {key} (count={int(count)}){hint_part}")
     return "\n".join(lines).strip()
 
 
-def suggest_topics_for_cluster(
+def suggest_keys_for_cluster(
     *,
     cluster_name: str,
     description: str,
     candidates: List[Dict[str, Any]],
     max_items_per_list: int = 200,
+    timeout_seconds: float | None = None,
+    retries: int | None = None,
 ) -> Dict[str, Any]:
     """
-    Ask AI to classify topic_key candidates into include/exclude/unsure.
+    Ask AI to classify key candidates into include/unsure.
 
-    candidates: list of {topic_key, count}
+    candidates: list of {key, count}
     Returns a parsed JSON dict from the model.
     """
     config, err = _get_ai_config_from_env()
     if config is None:
         raise RuntimeError(err or "ai_not_configured")
+
+    effective_timeout_seconds = (
+        float(timeout_seconds) if timeout_seconds is not None else float(config.timeout_seconds)
+    )
+    effective_timeout_seconds = max(1.0, effective_timeout_seconds)
+
+    effective_retries = int(retries) if retries is not None else int(config.retries)
+    effective_retries = max(0, effective_retries)
 
     cluster_name = clean_text(cluster_name)
     description = clean_text(description)
@@ -146,26 +169,23 @@ def suggest_topics_for_cluster(
 你是分类助手。我要做一个板块：{cluster_name}
 说明：{description or "（空）"}
 
-下面是系统已有的 topic_key 候选列表（后面可能带 count）。
-请你从候选中筛选：哪些 topic_key 属于这个板块。
+下面是系统已有的 key 候选列表（后面可能带 count/hint）。
+请你从候选中筛选：哪些 key 属于这个板块。
 
 输出严格 JSON（不要 Markdown），结构如下：
 {{
-  "include_topics": [{{"topic_key": "...", "confidence": 0.0, "reason": "..."}}],
-  "unsure_topics": [{{"topic_key": "...", "confidence": 0.0, "reason": "..."}}],
-  "exclude_topics": [{{"topic_key": "...", "reason": "..."}}],
-  "keywords": ["..."],
-  "negative_keywords": ["..."]
+  "include_keys": [{{"key": "...", "confidence": 0.0, "reason": "..."}}],
+  "unsure_keys": [{{"key": "...", "confidence": 0.0, "reason": "..."}}],
 }}
 
 规则：
-- topic_key 只能从候选列表里选，禁止编造。
-- include_topics 要保守；不确定就放 unsure_topics。
-- 如果 topic_key 是类似 stock:601225.SH 这种“代码”，请优先参考候选里的 hint（比如 stock_name/industry）。没有 hint 就更保守，放 unsure_topics。
+- key 只能从候选列表里选，禁止编造。
+- include_keys 要保守；不确定就放 unsure_keys。
+- 如果 key 是类似 stock:601225.SH 这种“代码”，请优先参考候选里的 hint（比如 stock_name/industry）。没有 hint 就更保守，放 unsure_keys。
 - confidence 范围 0~1。
-- include_topics / unsure_topics / exclude_topics 每个最多 {int(max_items_per_list)} 条。
+- include_keys / unsure_keys 每个最多 {int(max_items_per_list)} 条。
 
-候选 topic_key：
+候选 key：
 {candidates_text}
 """.strip()
 
@@ -176,8 +196,8 @@ def suggest_topics_for_cluster(
         model_name=config.model,
         base_url=config.base_url,
         api_key=config.api_key,
-        timeout_seconds=float(config.timeout_seconds),
-        retry_count=int(config.retries),
+        timeout_seconds=float(effective_timeout_seconds),
+        retry_count=int(effective_retries),
         temperature=float(config.temperature),
         reasoning_effort=str(config.reasoning_effort),
         trace_out=None,
@@ -186,3 +206,16 @@ def suggest_topics_for_cluster(
     if not isinstance(parsed, dict):
         raise RuntimeError("ai_invalid_json")
     return parsed
+
+
+def suggest_topics_for_cluster(*args, **kwargs) -> Dict[str, Any]:
+    # Backward-compatible alias (older UI code). Prefer suggest_keys_for_cluster().
+    return suggest_keys_for_cluster(*args, **kwargs)
+
+
+__all__ = [
+    "ai_is_configured",
+    "get_ai_config_summary",
+    "suggest_keys_for_cluster",
+    "suggest_topics_for_cluster",
+]
