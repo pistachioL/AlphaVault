@@ -19,8 +19,84 @@ TURSO_AUTOCOMMIT_ISOLATION_LEVEL = "AUTOCOMMIT"
 TURSO_SAVEPOINT_NAME = "alphavault_sp"
 _SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SQLALCHEMY_DIALECT_PATCH_FLAG = "_alphavault_turso_dialect_patched"
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 TOPIC_CLUSTER_TOPICS_V2_TABLE = f"{TOPIC_CLUSTER_TOPICS_TABLE}_v2"
+
+
+def is_turso_stream_not_found_error(err: BaseException) -> bool:
+    """
+    Detect the transient Hrana error: "stream not found" (HTTP 404).
+
+    This usually means the client is trying to reuse an old stream id.
+    Disposing the SQLAlchemy engine pool typically fixes it.
+    """
+    needle = "stream not found"
+    current: BaseException | None = err
+    for _ in range(8):
+        if current is None:
+            break
+        try:
+            msg = str(current)
+        except Exception:
+            msg = ""
+        if needle in msg.lower():
+            return True
+        # SQLAlchemy often wraps the original exception in `.orig`.
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException) and orig is not current:
+            current = orig
+            continue
+        current = (
+            current.__cause__
+            if isinstance(current.__cause__, BaseException)
+            else current.__context__
+        )
+        if not isinstance(current, BaseException):
+            current = None
+    return False
+
+
+def is_turso_libsql_panic_error(err: BaseException) -> bool:
+    """
+    Detect libsql/pyo3 panic surfaced as a Python BaseException.
+
+    This is NOT a normal Exception and may bypass `except Exception`.
+    Typical message: "called `Option::unwrap()` on a `None` value".
+    """
+    current: BaseException | None = err
+    for _ in range(10):
+        if current is None:
+            break
+        t = type(current)
+        if getattr(t, "__name__", "") == "PanicException":
+            mod = str(getattr(t, "__module__", "") or "")
+            if "pyo3" in mod or "pyo3_runtime" in mod:
+                return True
+        try:
+            msg = str(current)
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            msg = ""
+        msg_lower = msg.lower()
+        if "option::unwrap" in msg_lower:
+            return True
+        if "panicexception" in msg_lower and "pyo3" in msg_lower:
+            return True
+        # SQLAlchemy often wraps the original exception in `.orig`.
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException) and orig is not current:
+            current = orig
+            continue
+        current = (
+            current.__cause__
+            if isinstance(current.__cause__, BaseException)
+            else current.__context__
+        )
+        if not isinstance(current, BaseException):
+            current = None
+    return False
 
 
 def turso_connect_autocommit(engine: Engine) -> Connection:
@@ -34,7 +110,9 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
       SQLAlchemy's default SQLite isolation_level setter.
     """
     dialect = getattr(engine, "dialect", None)
-    if dialect is not None and not getattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, False):
+    if dialect is not None and not getattr(
+        dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, False
+    ):
         original_do_rollback = getattr(dialect, "do_rollback", None)
         original_set_isolation_level = getattr(dialect, "set_isolation_level", None)
 
@@ -47,19 +125,25 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
                 # Some libsql builds may panic on DBAPI rollback(), so we avoid calling it.
                 try:
                     cursor = dbapi_connection.cursor()
-                except Exception:
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
                     cursor = None
 
                 if cursor is not None:
                     try:
                         cursor.execute("ROLLBACK")
-                    except Exception:
+                    except BaseException as e:
+                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                            raise
                         # Cleanup rollback must never crash the worker.
                         pass
                     finally:
                         try:
                             cursor.close()
-                        except Exception:
+                        except BaseException as e:
+                            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                                raise
                             pass
                     return None
 
@@ -67,7 +151,9 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
                 if callable(execute):
                     try:
                         execute("ROLLBACK")
-                    except Exception:
+                    except BaseException as e:
+                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                            raise
                         pass
                 return None
 
@@ -89,7 +175,9 @@ def turso_connect_autocommit(engine: Engine) -> Connection:
             dialect.do_rollback = _patched_do_rollback  # type: ignore[assignment]
         setattr(dialect, _SQLALCHEMY_DIALECT_PATCH_FLAG, True)
 
-    return engine.connect().execution_options(isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL)
+    return engine.connect().execution_options(
+        isolation_level=TURSO_AUTOCOMMIT_ISOLATION_LEVEL
+    )
 
 
 @contextmanager
@@ -123,13 +211,19 @@ def turso_savepoint(conn: Connection, name: str = TURSO_SAVEPOINT_NAME) -> Conne
 
 def _topic_cluster_topics_pk_cols(conn) -> list[str]:
     try:
-        rows = conn.execute(text(f"PRAGMA table_info({TOPIC_CLUSTER_TOPICS_TABLE})")).mappings().all()
+        rows = (
+            conn.execute(text(f"PRAGMA table_info({TOPIC_CLUSTER_TOPICS_TABLE})"))
+            .mappings()
+            .all()
+        )
     except Exception:
         return []
     if not rows:
         return []
     ordered = sorted(rows, key=lambda r: int(r.get("pk") or 0))
-    cols = [str(r.get("name") or "").strip() for r in ordered if int(r.get("pk") or 0) > 0]
+    cols = [
+        str(r.get("name") or "").strip() for r in ordered if int(r.get("pk") or 0) > 0
+    ]
     return [c for c in cols if c]
 
 
@@ -175,7 +269,9 @@ def _migrate_topic_cluster_topics_to_v2(conn) -> None:
 
     old_n = int(
         (
-            conn.execute(text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_TABLE}"))
+            conn.execute(
+                text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_TABLE}")
+            )
             .mappings()
             .first()
             or {}
@@ -184,7 +280,9 @@ def _migrate_topic_cluster_topics_to_v2(conn) -> None:
     )
     new_n = int(
         (
-            conn.execute(text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_V2_TABLE}"))
+            conn.execute(
+                text(f"SELECT COUNT(1) AS n FROM {TOPIC_CLUSTER_TOPICS_V2_TABLE}")
+            )
             .mappings()
             .first()
             or {}
@@ -214,6 +312,7 @@ def ensure_turso_engine(url: str, token: str) -> Engine:
     return create_engine(
         f"sqlite+libsql://{turso_url}?secure=true",
         connect_args={"auth_token": token} if token else {},
+        pool_pre_ping=True,
         # Avoid calling DBAPI rollback() on connection return.
         # Some libsql builds may panic on rollback after transient failures.
         pool_reset_on_return=None,
