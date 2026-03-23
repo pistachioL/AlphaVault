@@ -32,7 +32,7 @@ def test_is_turso_stream_not_found_error_false() -> None:
 
 
 def test_turso_connection_named_params_and_mappings() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", autocommit=True))
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         conn.execute(
             "CREATE TABLE posts(post_uid TEXT PRIMARY KEY, author TEXT NOT NULL, score INTEGER NOT NULL)"
@@ -55,7 +55,7 @@ def test_turso_connection_named_params_and_mappings() -> None:
 
 
 def test_turso_connection_executemany_with_mapping_list() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", autocommit=True))
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         conn.execute(
             "CREATE TABLE assertions(post_uid TEXT NOT NULL, idx INTEGER NOT NULL)"
@@ -80,7 +80,7 @@ def test_turso_connection_executemany_with_mapping_list() -> None:
 
 
 def test_turso_savepoint_commit_and_rollback() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", autocommit=True))
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         conn.execute("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT NOT NULL)")
 
@@ -106,7 +106,7 @@ def test_turso_savepoint_commit_and_rollback() -> None:
 
 
 def test_named_params_support_escaped_colon_literal() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", autocommit=True))
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         conn.execute(
             "CREATE TABLE posts(post_uid TEXT PRIMARY KEY, ai_status TEXT, ai_running_at INTEGER, ai_last_error TEXT, ai_next_retry_at INTEGER)"

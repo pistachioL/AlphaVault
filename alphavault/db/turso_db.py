@@ -393,7 +393,9 @@ class TursoEngine:
         return libsql.connect(
             self.remote_url,
             auth_token=self.auth_token,
-            autocommit=True,
+            # Autocommit: use DB-API compatible way.
+            # Some libsql versions may not accept `autocommit=...`.
+            isolation_level=None,
             _check_same_thread=False,
         )
 
