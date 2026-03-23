@@ -23,6 +23,7 @@ from alphavault.db.sql.follow_pages import (
 )
 from alphavault.db.turso_db import TursoEngine
 from alphavault.db.turso_db import turso_connect_autocommit
+from alphavault.db.turso_pandas import turso_read_sql_df
 
 
 FOLLOW_PAGES_TABLE = "follow_pages"
@@ -73,7 +74,7 @@ def try_load_follow_pages(engine: TursoEngine) -> tuple[pd.DataFrame, str]:
     """
     try:
         with turso_connect_autocommit(engine) as conn:
-            pages = pd.read_sql_query(select_follow_pages(FOLLOW_PAGES_TABLE), conn)
+            pages = turso_read_sql_df(conn, select_follow_pages(FOLLOW_PAGES_TABLE))
         return pages, ""
     except Exception as exc:
         return pd.DataFrame(), f"{type(exc).__name__}: {exc}"

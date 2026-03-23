@@ -25,6 +25,7 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
     turso_savepoint,
 )
+from alphavault.db.turso_pandas import turso_read_sql_df
 
 
 UNCATEGORIZED_LABEL = "未归类"
@@ -49,17 +50,12 @@ def try_load_cluster_tables(
     """
     try:
         with turso_connect_autocommit(engine) as conn:
-            clusters = pd.read_sql_query(
-                select_clusters(TOPIC_CLUSTERS_TABLE),
-                conn,
+            clusters = turso_read_sql_df(conn, select_clusters(TOPIC_CLUSTERS_TABLE))
+            topic_map = turso_read_sql_df(
+                conn, select_topic_map(TOPIC_CLUSTER_TOPICS_TABLE)
             )
-            topic_map = pd.read_sql_query(
-                select_topic_map(TOPIC_CLUSTER_TOPICS_TABLE),
-                conn,
-            )
-            post_overrides = pd.read_sql_query(
-                select_post_overrides(TOPIC_CLUSTER_POST_OVERRIDES_TABLE),
-                conn,
+            post_overrides = turso_read_sql_df(
+                conn, select_post_overrides(TOPIC_CLUSTER_POST_OVERRIDES_TABLE)
             )
         return clusters, topic_map, post_overrides, ""
     except Exception as exc:
