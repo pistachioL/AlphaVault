@@ -18,6 +18,7 @@ TRADE_HOLD_ACTIONS = frozenset({"trade.hold"})
 
 DEFAULT_TRADE_FLOW_PAGE_SIZE = 5
 MAX_TRADE_FLOW_PAGE_SIZE = 20
+TRADE_BOARD_MAX_WINDOW_DAYS = 60
 
 
 def format_age_label(max_ts: datetime, ts: datetime) -> str:
@@ -246,16 +247,44 @@ def _render_recent_trade_flow(
             st.divider()
 
 
-def _trade_board_settings() -> tuple[int, str, int, int]:
+def _trade_data_coverage_days(
+    df: pd.DataFrame,
+) -> tuple[int, datetime | None, datetime | None]:
+    if df.empty or "created_at" not in df.columns:
+        return 1, None, None
+    created = pd.to_datetime(df["created_at"], errors="coerce")
+    created = created.dropna()
+    if created.empty:
+        return 1, None, None
+    min_ts = created.min()
+    max_ts = created.max()
+    try:
+        days = int((max_ts - min_ts).days) + 1
+    except Exception:
+        days = 1
+    return max(1, days), min_ts.to_pydatetime(), max_ts.to_pydatetime()
+
+
+def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, int, int]:
     col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1])
+    window_max_days = max(1, int(window_max_days))
+    window_max_days = min(window_max_days, TRADE_BOARD_MAX_WINDOW_DAYS)
+    window_key = "trade_board_window_days"
+    default_window = min(7, window_max_days)
+    if window_key in st.session_state:
+        try:
+            current = int(st.session_state.get(window_key) or default_window)
+        except Exception:
+            current = default_window
+        st.session_state[window_key] = max(1, min(current, window_max_days))
     with col_a:
         window_days = st.slider(
             "时间窗（天）",
             1,
-            60,
-            7,
+            int(window_max_days),
+            int(default_window),
             step=1,
-            key="trade_board_window_days",
+            key=window_key,
         )
     with col_b:
         sort_mode = st.selectbox(
@@ -569,7 +598,7 @@ def show_trade_flow(
     group_col = _trade_group_col(assertions_filtered, group_col)
     trade_df = _filter_trade_df(assertions_filtered)
     if trade_df.empty:
-        st.info("当前筛选下没有交易类观点。")
+        st.info("没有交易类观点。")
         return
     _render_recent_trade_flow(
         trade_df,
@@ -581,7 +610,14 @@ def show_trade_flow(
     st.divider()
     st.markdown("**作业板（抄作业用，一眼看懂）**")
 
-    window_days, sort_mode, max_assets, max_authors = _trade_board_settings()
+    coverage_days, min_ts, max_ts = _trade_data_coverage_days(trade_df)
+    if min_ts and max_ts:
+        st.caption(
+            f"当前交易观点时间：{min_ts.date()} ~ {max_ts.date()}（{coverage_days} 天）。"
+        )
+    window_days, sort_mode, max_assets, max_authors = _trade_board_settings(
+        window_max_days=coverage_days
+    )
     prepared = _prepare_trade_board_df(
         trade_df,
         group_col=group_col,
