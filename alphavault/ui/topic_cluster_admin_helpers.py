@@ -158,8 +158,3 @@ def _parse_confidence(raw: object, default_value: float) -> float:
 
 def _sort_by_count(items: list[str], *, count_by_topic: dict[str, int]) -> list[str]:
     return sorted(items, key=lambda k: (-int(count_by_topic.get(k, 0)), str(k)))
-
-
-def _format_basic_topic(topic_key: str, *, count_by_topic: dict[str, int]) -> str:
-    count = int(count_by_topic.get(topic_key, 0))
-    return f"{topic_key}（{count}次）" if count else topic_key

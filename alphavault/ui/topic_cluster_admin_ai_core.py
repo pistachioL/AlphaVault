@@ -846,30 +846,6 @@ def _render_ai_section(
     col_a.metric("include", f"{len(include_items)}")
     col_b.metric("unsure", f"{len(unsure_items)}")
 
-    if include_items:
-        st.markdown("**include（建议加入）**")
-        st.dataframe(
-            pd.DataFrame(include_items)
-            .sort_values(by=["count"], ascending=False)
-            .head(300),
-            width="stretch",
-            hide_index=True,
-        )
-    else:
-        st.info(
-            "include 为空。你可以在“高级”里调大“最多处理 key 数量”，或者换个板块名字更具体。"
-        )
-
-    if unsure_items:
-        st.markdown("**unsure（不确定）**")
-        st.dataframe(
-            pd.DataFrame(unsure_items)
-            .sort_values(by=["count"], ascending=False)
-            .head(300),
-            width="stretch",
-            hide_index=True,
-        )
-
     _render_ai_write_section(
         engine=engine,
         topic_map=topic_map,

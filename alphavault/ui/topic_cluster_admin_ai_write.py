@@ -9,7 +9,6 @@ from alphavault.topic_cluster import (
     upsert_cluster_topics_detailed,
 )
 from alphavault.ui.topic_cluster_admin_helpers import (
-    _format_basic_topic,
     _parse_confidence,
     _sort_by_count,
 )
@@ -87,27 +86,152 @@ def _render_ai_write_section(
     )
     unsure_keys = _sort_by_count(unsure_keys, count_by_topic=count_by_topic)
 
+    COL_SELECTED = "selected"
+    COL_KEY = "key"
+    COL_COUNT = "count"
+    COL_CONF = "confidence"
+    COL_REASON = "reason"
+    COL_HINT = "hint"
+
+    include_reason_by_topic: dict[str, str] = {}
+    include_hint_by_topic: dict[str, str] = {}
+    for item in include_items:
+        key = str(item.get("key") or item.get("topic_key") or "").strip()
+        if not key:
+            continue
+        if key not in include_reason_by_topic:
+            include_reason_by_topic[key] = str(item.get("reason") or "").strip()
+        if key not in include_hint_by_topic:
+            include_hint_by_topic[key] = str(item.get("hint") or "").strip()
+
+    unsure_reason_by_topic: dict[str, str] = {}
+    unsure_hint_by_topic: dict[str, str] = {}
+    for item in unsure_items:
+        key = str(item.get("key") or item.get("topic_key") or "").strip()
+        if not key:
+            continue
+        if key not in unsure_reason_by_topic:
+            unsure_reason_by_topic[key] = str(item.get("reason") or "").strip()
+        if key not in unsure_hint_by_topic:
+            unsure_hint_by_topic[key] = str(item.get("hint") or "").strip()
+
     st.markdown("**include（默认全选）**")
-    include_selected = st.multiselect(
-        "选择要加入本板块的 key",
-        options=include_keys,
-        default=include_keys,
-        format_func=lambda k: _format_basic_topic(
-            str(k), count_by_topic=count_by_topic
-        ),
-        key=f"cluster_ai_write_include:{selected_cluster}",
-    )
+    st.caption("在左边直接勾选/取消勾选。")
+
+    include_editor_key = f"cluster_ai_write_include_editor:{selected_cluster}"
+    include_editor_sig_key = f"cluster_ai_write_include_editor_sig:{selected_cluster}"
+    include_sig_prev = st.session_state.get(include_editor_sig_key, None)
+    if not isinstance(include_sig_prev, list) or include_sig_prev != include_keys:
+        st.session_state[include_editor_sig_key] = list(include_keys)
+        st.session_state.pop(include_editor_key, None)
+
+    include_selected: list[str] = []
+    if include_keys:
+        include_rows = [
+            {
+                COL_SELECTED: True,
+                COL_KEY: str(k),
+                COL_COUNT: int(count_by_topic.get(str(k), 0)),
+                COL_CONF: float(include_conf_by_topic.get(str(k), 0.8)),
+                COL_REASON: str(include_reason_by_topic.get(str(k), "") or "").strip(),
+                COL_HINT: str(include_hint_by_topic.get(str(k), "") or "").strip(),
+            }
+            for k in include_keys
+        ]
+        include_df = pd.DataFrame(include_rows)
+        include_edited = st.data_editor(
+            include_df,
+            width="stretch",
+            hide_index=True,
+            num_rows="fixed",
+            column_order=[
+                COL_SELECTED,
+                COL_KEY,
+                COL_COUNT,
+                COL_CONF,
+                COL_REASON,
+                COL_HINT,
+            ],
+            column_config={
+                COL_SELECTED: st.column_config.CheckboxColumn("选", help="勾上=要写入"),
+                COL_KEY: st.column_config.TextColumn("key"),
+                COL_COUNT: st.column_config.NumberColumn("次数"),
+                COL_CONF: st.column_config.NumberColumn("confidence", format="%.2f"),
+                COL_REASON: st.column_config.TextColumn("reason"),
+                COL_HINT: st.column_config.TextColumn("hint"),
+            },
+            disabled=[COL_KEY, COL_COUNT, COL_CONF, COL_REASON, COL_HINT],
+            key=include_editor_key,
+        )
+        if isinstance(include_edited, pd.DataFrame):
+            include_selected = [
+                str(x).strip()
+                for x in include_edited.loc[
+                    include_edited[COL_SELECTED].astype(bool), COL_KEY
+                ].tolist()
+                if str(x).strip()
+            ]
+        st.caption(f"include：选了 {len(include_selected)}/{len(include_keys)}")
+    else:
+        st.info("include 为空。")
 
     st.markdown("**unsure（默认不选）**")
-    unsure_selected = st.multiselect(
-        "选择要加入（unsure）的 key",
-        options=unsure_keys,
-        default=[],
-        format_func=lambda k: _format_basic_topic(
-            str(k), count_by_topic=count_by_topic
-        ),
-        key=f"cluster_ai_write_unsure:{selected_cluster}",
-    )
+    st.caption("在左边直接勾选。")
+
+    unsure_editor_key = f"cluster_ai_write_unsure_editor:{selected_cluster}"
+    unsure_editor_sig_key = f"cluster_ai_write_unsure_editor_sig:{selected_cluster}"
+    unsure_sig_prev = st.session_state.get(unsure_editor_sig_key, None)
+    if not isinstance(unsure_sig_prev, list) or unsure_sig_prev != unsure_keys:
+        st.session_state[unsure_editor_sig_key] = list(unsure_keys)
+        st.session_state.pop(unsure_editor_key, None)
+
+    unsure_selected: list[str] = []
+    if unsure_keys:
+        unsure_rows = [
+            {
+                COL_SELECTED: False,
+                COL_KEY: str(k),
+                COL_COUNT: int(count_by_topic.get(str(k), 0)),
+                COL_CONF: float(unsure_conf_by_topic.get(str(k), 0.55)),
+                COL_REASON: str(unsure_reason_by_topic.get(str(k), "") or "").strip(),
+                COL_HINT: str(unsure_hint_by_topic.get(str(k), "") or "").strip(),
+            }
+            for k in unsure_keys
+        ]
+        unsure_df = pd.DataFrame(unsure_rows)
+        unsure_edited = st.data_editor(
+            unsure_df,
+            width="stretch",
+            hide_index=True,
+            num_rows="fixed",
+            column_order=[
+                COL_SELECTED,
+                COL_KEY,
+                COL_COUNT,
+                COL_CONF,
+                COL_REASON,
+                COL_HINT,
+            ],
+            column_config={
+                COL_SELECTED: st.column_config.CheckboxColumn("选", help="勾上=要写入"),
+                COL_KEY: st.column_config.TextColumn("key"),
+                COL_COUNT: st.column_config.NumberColumn("次数"),
+                COL_CONF: st.column_config.NumberColumn("confidence", format="%.2f"),
+                COL_REASON: st.column_config.TextColumn("reason"),
+                COL_HINT: st.column_config.TextColumn("hint"),
+            },
+            disabled=[COL_KEY, COL_COUNT, COL_CONF, COL_REASON, COL_HINT],
+            key=unsure_editor_key,
+        )
+        if isinstance(unsure_edited, pd.DataFrame):
+            unsure_selected = [
+                str(x).strip()
+                for x in unsure_edited.loc[
+                    unsure_edited[COL_SELECTED].astype(bool), COL_KEY
+                ].tolist()
+                if str(x).strip()
+            ]
+        st.caption(f"unsure：选了 {len(unsure_selected)}/{len(unsure_keys)}")
 
     to_write = [
         *[str(x).strip() for x in include_selected],
