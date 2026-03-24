@@ -26,6 +26,18 @@ from alphavault.follow_pages import (
 )
 from alphavault.ai.topic_cluster_suggest import ai_is_configured
 from alphavault.ai.follow_keywords_suggest import suggest_keywords_for_follow
+from alphavault.ui.follow_pages_ai_create import render_follow_pages_ai_create
+from alphavault.ui.follow_pages_key_match import (
+    build_grouped_key_candidates,
+    build_stock_name_by_code,
+    filter_assertions_by_follow_key,
+    filter_assertions_by_follow_keys,
+    format_key_label,
+    has_bad_stock_separator,
+    is_stock_code_value,
+    normalize_stock_code,
+    parse_json_list,
+)
 from alphavault.ui.keyword_or import split_keywords_or
 from alphavault.ui.thread_tree import build_weibo_thread_forest
 from alphavault.ui.thread_tree_view import render_thread_forest
@@ -87,86 +99,6 @@ def _format_page_label(clusters: pd.DataFrame, row: pd.Series) -> str:
     return base or "关注页"
 
 
-def _build_stock_name_by_code(assertions_filtered: pd.DataFrame) -> dict[str, str]:
-    if assertions_filtered.empty:
-        return {}
-    if (
-        "stock_codes" not in assertions_filtered.columns
-        or "stock_names" not in assertions_filtered.columns
-    ):
-        return {}
-    counts: dict[str, dict[str, int]] = {}
-    for codes, names in zip(
-        assertions_filtered["stock_codes"].tolist(),
-        assertions_filtered["stock_names"].tolist(),
-        strict=False,
-    ):
-        if not isinstance(codes, list) or not isinstance(names, list):
-            continue
-        codes = [str(x).strip() for x in codes if str(x).strip()]
-        names = [str(x).strip() for x in names if str(x).strip()]
-        if len(codes) != 1 or len(names) != 1:
-            continue
-        code = codes[0]
-        name = names[0]
-        if not code or not name:
-            continue
-        counts.setdefault(code, {})
-        counts[code][name] = int(counts[code].get(name, 0)) + 1
-
-    out: dict[str, str] = {}
-    for code, name_counts in counts.items():
-        best = sorted(name_counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))[0][
-            0
-        ]
-        out[str(code).strip()] = str(best).strip()
-    return out
-
-
-def _format_key_label(key: str, *, stock_name_by_code: dict[str, str]) -> str:
-    k = str(key or "").strip()
-    if not k:
-        return ""
-    if k.startswith("stock:"):
-        code = k[len("stock:") :].strip()
-        name = str(stock_name_by_code.get(code, "") or "").strip()
-        return f"个股：{name} ({code})" if name else f"个股：{code}"
-    if k.startswith("industry:"):
-        return f"行业：{k[len('industry:') :].strip()}"
-    if k.startswith("commodity:"):
-        return f"商品：{k[len('commodity:') :].strip()}"
-    if k.startswith("index:"):
-        return f"指数：{k[len('index:') :].strip()}"
-    # Keep raw key for other types (portfolio/macro/method/...).
-    return k
-
-
-def _key_candidates(assertions_filtered: pd.DataFrame) -> pd.Series:
-    if assertions_filtered.empty:
-        return pd.Series(dtype=int)
-    if "match_keys" in assertions_filtered.columns:
-        flat: list[str] = []
-        for item in assertions_filtered["match_keys"].tolist():
-            if not isinstance(item, list):
-                continue
-            for k in item:
-                s = str(k).strip()
-                if s:
-                    flat.append(s)
-        if not flat:
-            return pd.Series(dtype=int)
-        return pd.Series(flat, dtype=str).value_counts()
-
-    # Fallback: old data path (topic_key only).
-    if "topic_key" not in assertions_filtered.columns:
-        return pd.Series(dtype=int)
-    s = assertions_filtered["topic_key"].dropna().astype(str).str.strip()
-    s = s[s.ne("")]
-    if s.empty:
-        return pd.Series(dtype=int)
-    return s.value_counts()
-
-
 def _select_follow_key(assertions_filtered: pd.DataFrame, *, key_prefix: str) -> str:
     st.caption("提示：key 可能很多，建议先搜索。")
     search = st.text_input(
@@ -175,29 +107,52 @@ def _select_follow_key(assertions_filtered: pd.DataFrame, *, key_prefix: str) ->
         key=f"{key_prefix}:key_search",
     ).strip()
 
-    counts = _key_candidates(assertions_filtered)
-    if counts.empty:
+    (
+        grouped_counts,
+        members_by_canon,
+        stock_name_by_code,
+        _stock_key_to_code,
+        _stock_name_to_code,
+    ) = build_grouped_key_candidates(assertions_filtered)
+    if grouped_counts.empty:
         st.info("没有 key 数据。")
         return ""
 
-    stock_name_by_code = _build_stock_name_by_code(assertions_filtered)
-    count_by_key = {str(k): int(v) for k, v in counts.items()}
+    count_by_key = {str(k): int(v) for k, v in grouped_counts.items()}
 
     def _format_option(k: object) -> str:
         key = str(k or "").strip()
-        label = _format_key_label(key, stock_name_by_code=stock_name_by_code) or key
+        label = format_key_label(key, stock_name_by_code=stock_name_by_code) or key
         count = int(count_by_key.get(key, 0))
         return f"{label} · {count}次" if count else label
+
+    def _is_bad_stock_candidate(key: str) -> bool:
+        k = str(key or "").strip()
+        if not k.startswith("stock:"):
+            return False
+        v = k[len("stock:") :].strip()
+        return bool(v) and has_bad_stock_separator(v)
 
     if search:
         needle = search.lower()
         matched: list[str] = []
-        for k in counts.index.tolist():
+        for k in grouped_counts.index.tolist():
             key = str(k).strip()
             if not key:
                 continue
-            label = _format_key_label(key, stock_name_by_code=stock_name_by_code)
-            hay = f"{key} {label}".lower()
+            if _is_bad_stock_candidate(key):
+                continue
+            label = format_key_label(key, stock_name_by_code=stock_name_by_code)
+            parts: list[str] = [key, label]
+            for raw in sorted(members_by_canon.get(key, set())):
+                raw_key = str(raw or "").strip()
+                if not raw_key:
+                    continue
+                parts.append(raw_key)
+                parts.append(
+                    format_key_label(raw_key, stock_name_by_code=stock_name_by_code)
+                )
+            hay = " ".join([p for p in parts if p]).lower()
             if needle in hay:
                 matched.append(key)
             if len(matched) >= MAX_KEY_CANDIDATES:
@@ -205,9 +160,37 @@ def _select_follow_key(assertions_filtered: pd.DataFrame, *, key_prefix: str) ->
         options = matched
         st.caption(f"搜索命中 {len(options)} 个（最多展示 {MAX_KEY_CANDIDATES} 个）")
     else:
-        head = counts.head(DEFAULT_KEY_CANDIDATES_TOP_N)
-        options = [str(k) for k in head.index.tolist()]
+        options = []
+        for k in grouped_counts.index.tolist():
+            key = str(k).strip()
+            if not key or _is_bad_stock_candidate(key):
+                continue
+            options.append(key)
+            if len(options) >= int(DEFAULT_KEY_CANDIDATES_TOP_N):
+                break
         st.caption(f"默认展示 Top {DEFAULT_KEY_CANDIDATES_TOP_N}")
+
+    if not options:
+        # Fallback: allow "bad stock key" only when it's the only searchable thing.
+        if search:
+            needle = search.lower()
+            bad_matched: list[str] = []
+            for k in grouped_counts.index.tolist():
+                key = str(k).strip()
+                if not key or not _is_bad_stock_candidate(key):
+                    continue
+                label = format_key_label(key, stock_name_by_code=stock_name_by_code)
+                hay = f"{key} {label}".lower()
+                if needle in hay:
+                    bad_matched.append(key)
+                if len(bad_matched) >= MAX_KEY_CANDIDATES:
+                    break
+            options = bad_matched
+
+    if not options:
+        options = [
+            str(k).strip() for k in grouped_counts.index.tolist() if str(k).strip()
+        ]
 
     selected = st.selectbox(
         "选择 key",
@@ -344,6 +327,7 @@ def _render_page_create(
                 engine,
                 follow_type=follow_type_label,
                 follow_key=follow_key,
+                follow_keys=[],
                 page_name=page_name,
                 keywords_text=keywords_text,
             )
@@ -364,6 +348,7 @@ def _render_page_update(
     page_key: str,
     follow_type: str,
     follow_key: str,
+    follow_keys: list[str],
     page_name: str,
     keywords_text: str,
 ) -> None:
@@ -371,11 +356,11 @@ def _render_page_update(
 
     widget_key = f"follow_pages_update_keywords:{page_key}"
 
-    stock_name_by_code = _build_stock_name_by_code(assertions_filtered)
+    stock_name_by_code = build_stock_name_by_code(assertions_filtered)
     follow_label = (
         _format_cluster_label(clusters, follow_key)
         if follow_type == FOLLOW_TYPE_CLUSTER
-        else _format_key_label(follow_key, stock_name_by_code=stock_name_by_code)
+        else format_key_label(follow_key, stock_name_by_code=stock_name_by_code)
     )
 
     def _seed_keywords() -> list[str]:
@@ -384,15 +369,32 @@ def _render_page_update(
             return []
         out: list[str] = []
         if k.startswith("stock:"):
-            code = k[len("stock:") :].strip()
-            if code:
+            value = k[len("stock:") :].strip()
+            if not value:
+                return []
+
+            if is_stock_code_value(value):
+                code = normalize_stock_code(value)
                 out.append(code)
-                out.append(
-                    code.replace(".SH", "").replace(".SZ", "").replace(".HK", "")
-                )
-            name = str(stock_name_by_code.get(code, "") or "").strip()
-            if name:
-                out.append(name)
+                if "." in code:
+                    out.append(code.rsplit(".", 1)[0])
+                name = str(stock_name_by_code.get(code, "") or "").strip()
+                if name:
+                    out.append(name)
+                return [x for x in out if x]
+
+            # stock:<name> (no code)
+            out.append(value)
+            # Best-effort: if we already know the code, include it too.
+            code_by_name = {
+                v: k for k, v in stock_name_by_code.items() if str(v).strip()
+            }
+            mapped = str(code_by_name.get(value, "") or "").strip()
+            if mapped and is_stock_code_value(mapped):
+                mapped = normalize_stock_code(mapped)
+                out.append(mapped)
+                if "." in mapped:
+                    out.append(mapped.rsplit(".", 1)[0])
             return [x for x in out if x]
 
         if ":" in k:
@@ -417,28 +419,18 @@ def _render_page_update(
                     continue
                 keys = [str(x).strip() for x in item if str(x).strip()]
                 mask.append(want in keys)
-            view = assertions_filtered[pd.Series(mask, index=assertions_filtered.index)]
-        else:
-            want = str(follow_key or "").strip()
-            if not want:
-                return []
-            if "match_keys" in assertions_filtered.columns:
-                mask = []
-                for item in assertions_filtered["match_keys"].tolist():
-                    if not isinstance(item, list):
-                        mask.append(False)
-                        continue
-                    keys = [str(x).strip() for x in item if str(x).strip()]
-                    mask.append(want in keys)
                 view = assertions_filtered[
                     pd.Series(mask, index=assertions_filtered.index)
                 ]
-            elif "topic_key" in assertions_filtered.columns:
-                view = assertions_filtered[
-                    assertions_filtered["topic_key"].astype(str).str.strip() == want
-                ]
+        else:
+            if follow_keys:
+                view = filter_assertions_by_follow_keys(
+                    assertions_filtered, follow_keys=follow_keys
+                )
             else:
-                view = assertions_filtered.head(0).copy()
+                view = filter_assertions_by_follow_key(
+                    assertions_filtered, follow_key=follow_key
+                )
 
         post_text = (
             view.get("raw_text", pd.Series(dtype=str)).dropna().astype(str).tolist()
@@ -525,6 +517,7 @@ def _render_page_update(
                 engine,
                 follow_type=follow_type,
                 follow_key=follow_key,
+                follow_keys=follow_keys,
                 page_name=page_name_new,
                 keywords_text=keywords_new,
             )
@@ -555,6 +548,8 @@ def show_follow_pages(
     st.divider()
     if pages_df.empty:
         st.info("还没有关注页。先新建一个。")
+        render_follow_pages_ai_create(engine, assertions_filtered=assertions_filtered)
+        st.divider()
         _render_page_create(
             engine, clusters=clusters, assertions_filtered=assertions_filtered
         )
@@ -601,6 +596,10 @@ def show_follow_pages(
         return
     follow_type = str(row["follow_type"].iloc[0] or "").strip()
     follow_key = str(row["follow_key"].iloc[0] or "").strip()
+    follow_keys_json = str(
+        row.get("follow_keys_json", pd.Series([""])).iloc[0] or ""
+    ).strip()
+    follow_keys = parse_json_list(follow_keys_json)
     page_name = str(row.get("page_name", pd.Series([""])).iloc[0] or "").strip()
     keywords_text = str(row.get("keywords_text", pd.Series([""])).iloc[0] or "")
 
@@ -611,6 +610,7 @@ def show_follow_pages(
         page_key=selected_page_key,
         follow_type=follow_type,
         follow_key=follow_key,
+        follow_keys=follow_keys,
         page_name=page_name,
         keywords_text=keywords_text,
     )
@@ -618,6 +618,10 @@ def show_follow_pages(
     col_left, col_right = st.columns([2, 1])
     with col_left:
         with st.expander("新建关注页"):
+            render_follow_pages_ai_create(
+                engine, assertions_filtered=assertions_filtered
+            )
+            st.divider()
             _render_page_create(
                 engine, clusters=clusters, assertions_filtered=assertions_filtered
             )
@@ -675,26 +679,14 @@ def show_follow_pages(
         else:
             base_view = assertions_filtered.head(0).copy()
     else:
-        want = str(follow_key or "").strip()
-        if not want:
-            base_view = assertions_filtered.head(0).copy()
-        elif "match_keys" in assertions_filtered.columns:
-            mask = []
-            for item in assertions_filtered["match_keys"].tolist():
-                if not isinstance(item, list):
-                    mask.append(False)
-                    continue
-                keys = [str(x).strip() for x in item if str(x).strip()]
-                mask.append(want in keys)
-            base_view = assertions_filtered[
-                pd.Series(mask, index=assertions_filtered.index)
-            ]
-        elif "topic_key" in assertions_filtered.columns:
-            base_view = assertions_filtered[
-                assertions_filtered["topic_key"].astype(str).str.strip() == want
-            ]
+        if follow_keys:
+            base_view = filter_assertions_by_follow_keys(
+                assertions_filtered, follow_keys=follow_keys
+            )
         else:
-            base_view = assertions_filtered.head(0).copy()
+            base_view = filter_assertions_by_follow_key(
+                assertions_filtered, follow_key=follow_key
+            )
 
     base_post_uids = set(
         str(x).strip()
