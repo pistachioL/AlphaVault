@@ -36,27 +36,23 @@ def render_thread_forest(
         st.info("当前筛选下，没有可用的 tree。")
         return
 
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        page_size = int(
-            st.number_input(
-                "一页多少棵",
-                min_value=1,
-                max_value=MAX_PAGE_SIZE,
-                value=int(default_page_size),
-                step=1,
-                key=f"{key_prefix}:page_size",
-            )
-        )
+    page_size_key = f"{key_prefix}:page_size"
+    page_key = f"{key_prefix}:page"
+
+    if page_size_key not in st.session_state:
+        st.session_state[page_size_key] = int(default_page_size)
+    page_size = int(st.session_state.get(page_size_key) or int(default_page_size))
+    page_size = max(1, min(MAX_PAGE_SIZE, page_size))
+    st.session_state[page_size_key] = page_size
+
     total_pages = max(1, int(math.ceil(total / max(1, page_size))))
-    with col2:
-        page = st.selectbox(
-            "第几页",
-            list(range(1, total_pages + 1)),
-            key=f"{key_prefix}:page",
-        )
-    with col3:
-        st.caption(f"共有 {total} 棵（最多展示前 {max_threads} 棵）")
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 1
+    page = int(st.session_state.get(page_key) or 1)
+    page = max(1, min(total_pages, page))
+    st.session_state[page_key] = page
+
+    st.caption(f"共有 {total} 棵（最多展示前 {max_threads} 棵）")
 
     start_idx = (int(page) - 1) * page_size
     end_idx = min(start_idx + page_size, total)
@@ -79,6 +75,38 @@ def render_thread_forest(
 
         if i + 1 < end_idx:
             st.divider()
+
+    st.divider()
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        page_size_bottom = int(
+            st.number_input(
+                "一页多少棵",
+                min_value=1,
+                max_value=MAX_PAGE_SIZE,
+                value=int(page_size),
+                step=1,
+                key=page_size_key,
+            )
+        )
+    page_size_bottom = max(1, min(MAX_PAGE_SIZE, int(page_size_bottom)))
+    total_pages_bottom = max(1, int(math.ceil(total / max(1, page_size_bottom))))
+    page_bottom = int(st.session_state.get(page_key) or 1)
+    if page_bottom > total_pages_bottom:
+        page_bottom = total_pages_bottom
+        st.session_state[page_key] = page_bottom
+
+    with col2:
+        st.selectbox(
+            "第几页",
+            list(range(1, total_pages_bottom + 1)),
+            key=page_key,
+        )
+    with col3:
+        st.caption(
+            f"第 {int(st.session_state.get(page_key) or 1)} / {total_pages_bottom} 页"
+        )
 
 
 __all__ = [
