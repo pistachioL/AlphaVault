@@ -18,6 +18,7 @@ from alphavault.text.html import html_to_text
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
 FORWARD_ORIGINAL_MARKER = "[转发原文]"
+WEIBO_META_MARKER = "[微博元信息]"
 REPOST_TOKEN = "转发 @"
 MATCH_KEY_LEN = 80
 DISPLAY_MD_SPLIT_RE = re.compile(r"(?m)^\s*---\s*$")
@@ -58,6 +59,31 @@ def _to_one_line_text(text: str) -> str:
     return s
 
 
+def _clean_display_md_segment(text: str) -> str:
+    """
+    Clean a single display_md segment.
+
+    This is Weibo-specific, best-effort, and conservative:
+    - Strip the noisy "[微博元信息]" tail if present
+    - Handle "[转发原文]" by keeping comment or original text
+    """
+    s = str(text or "").strip()
+    if not s:
+        return ""
+
+    meta_idx = s.find(WEIBO_META_MARKER)
+    if meta_idx >= 0:
+        s = s[:meta_idx].strip()
+
+    forward_idx = s.find(FORWARD_ORIGINAL_MARKER)
+    if forward_idx >= 0:
+        before = s[:forward_idx].strip()
+        after = s[forward_idx + len(FORWARD_ORIGINAL_MARKER) :].strip()
+        s = before if before else after
+
+    return s.strip()
+
+
 def parse_display_md_segments(display_md: str) -> list[str]:
     """
     Parse posts.display_md into message segments.
@@ -73,6 +99,7 @@ def parse_display_md_segments(display_md: str) -> list[str]:
     segments: list[str] = []
     for part in parts:
         seg = _to_one_line_text(str(part or ""))
+        seg = _clean_display_md_segment(seg)
         if seg:
             segments.append(seg)
     return segments
