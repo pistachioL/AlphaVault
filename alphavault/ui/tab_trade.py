@@ -5,6 +5,7 @@ Streamlit tab: trade flow.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import html as _html
 import math
 
 import pandas as pd
@@ -19,6 +20,110 @@ TRADE_HOLD_ACTIONS = frozenset({"trade.hold"})
 DEFAULT_TRADE_FLOW_PAGE_SIZE = 5
 MAX_TRADE_FLOW_PAGE_SIZE = 20
 TRADE_BOARD_MAX_WINDOW_DAYS = 60
+
+TRADE_BOARD_CONSENSUS_BUY = "↑偏买"
+TRADE_BOARD_CONSENSUS_SELL = "↓偏卖"
+TRADE_BOARD_CONSENSUS_HOLD = "→只看"
+TRADE_BOARD_CONSENSUS_UNKNOWN = "·不清楚"
+
+TRADE_BOARD_CONSENSUS_FILTER_ALL = "全部"
+TRADE_BOARD_CONSENSUS_FILTER_HAS = "只看有共识（买/卖）"
+TRADE_BOARD_CONSENSUS_FILTER_BUY = f"只看偏买（{TRADE_BOARD_CONSENSUS_BUY}）"
+TRADE_BOARD_CONSENSUS_FILTER_SELL = f"只看偏卖（{TRADE_BOARD_CONSENSUS_SELL}）"
+TRADE_BOARD_CONSENSUS_FILTER_HOLD = f"只看只看（{TRADE_BOARD_CONSENSUS_HOLD}）"
+TRADE_BOARD_CONSENSUS_FILTER_UNKNOWN = f"只看不清楚（{TRADE_BOARD_CONSENSUS_UNKNOWN}）"
+
+TRADE_BOARD_CONSENSUS_FILTER_OPTIONS = [
+    TRADE_BOARD_CONSENSUS_FILTER_ALL,
+    TRADE_BOARD_CONSENSUS_FILTER_HAS,
+    TRADE_BOARD_CONSENSUS_FILTER_BUY,
+    TRADE_BOARD_CONSENSUS_FILTER_SELL,
+    TRADE_BOARD_CONSENSUS_FILTER_HOLD,
+    TRADE_BOARD_CONSENSUS_FILTER_UNKNOWN,
+]
+TRADE_BOARD_CONSENSUS_FILTER_VALUES = {
+    TRADE_BOARD_CONSENSUS_FILTER_HAS: frozenset(
+        {TRADE_BOARD_CONSENSUS_BUY, TRADE_BOARD_CONSENSUS_SELL}
+    ),
+    TRADE_BOARD_CONSENSUS_FILTER_BUY: frozenset({TRADE_BOARD_CONSENSUS_BUY}),
+    TRADE_BOARD_CONSENSUS_FILTER_SELL: frozenset({TRADE_BOARD_CONSENSUS_SELL}),
+    TRADE_BOARD_CONSENSUS_FILTER_HOLD: frozenset({TRADE_BOARD_CONSENSUS_HOLD}),
+    TRADE_BOARD_CONSENSUS_FILTER_UNKNOWN: frozenset({TRADE_BOARD_CONSENSUS_UNKNOWN}),
+}
+
+TRADE_BOARD_MATRIX_TOOLTIP_STYLE = """
+<style>
+.av-trade-matrix {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.av-trade-matrix-wrap {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+}
+.av-trade-matrix th,
+.av-trade-matrix td {
+  border: 1px solid rgba(49, 51, 63, 0.18);
+  padding: 6px 8px;
+  vertical-align: top;
+}
+.av-trade-matrix th {
+  background: rgba(240, 242, 246, 0.7);
+  font-weight: 600;
+}
+.av-trade-matrix td {
+  position: relative;
+  overflow: visible;
+}
+.av-trade-cell {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 1.2em;
+}
+.av-trade-tip {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 120ms ease-in-out;
+  position: absolute;
+  left: 0;
+  top: 1.6em;
+  z-index: 1000;
+  background: rgba(17, 17, 19, 0.98);
+  color: #f7f7f7;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  max-width: min(900px, 90vw);
+  max-height: 520px;
+  overflow: auto;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+}
+.av-trade-cell:hover .av-trade-tip {
+  visibility: visible;
+  opacity: 1;
+}
+.av-trade-tip-title {
+  font-size: 12px;
+  opacity: 0.85;
+  margin: 0 0 8px 0;
+}
+.av-trade-tip pre {
+  margin: 0;
+  white-space: pre;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.35;
+}
+.av-trade-empty {
+  color: rgba(49, 51, 63, 0.45);
+}
+</style>
+"""
 
 
 def format_age_label(max_ts: datetime, ts: datetime) -> str:
@@ -265,8 +370,8 @@ def _trade_data_coverage_days(
     return max(1, days), min_ts.to_pydatetime(), max_ts.to_pydatetime()
 
 
-def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, int, int]:
-    col_a, col_b, col_c, col_d = st.columns([1, 1, 1, 1])
+def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, str]:
+    row1_a, row1_b, row1_c = st.columns([1, 1, 1])
     window_max_days = max(1, int(window_max_days))
     window_max_days = min(window_max_days, TRADE_BOARD_MAX_WINDOW_DAYS)
     window_key = "trade_board_window_days"
@@ -277,7 +382,7 @@ def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, int, int]:
         except Exception:
             current = default_window
         st.session_state[window_key] = max(1, min(current, window_max_days))
-    with col_a:
+    with row1_a:
         window_days = st.slider(
             "时间窗（天）",
             1,
@@ -286,36 +391,27 @@ def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, int, int]:
             step=1,
             key=window_key,
         )
-    with col_b:
+    with row1_b:
         sort_mode = st.selectbox(
             "排序",
             ["最新", "大佬最多", "共识最强"],
             index=0,
             key="trade_board_sort_mode",
         )
-    with col_c:
-        max_assets = int(
-            st.number_input(
-                "标的数",
-                min_value=5,
-                max_value=200,
-                value=30,
-                step=5,
-                key="trade_board_max_assets",
-            )
+
+    with row1_c:
+        consensus_filter = st.selectbox(
+            "共识筛选",
+            TRADE_BOARD_CONSENSUS_FILTER_OPTIONS,
+            index=0,
+            key="trade_board_consensus_filter",
         )
-    with col_d:
-        max_authors = int(
-            st.number_input(
-                "大佬数",
-                min_value=1,
-                max_value=30,
-                value=8,
-                step=1,
-                key="trade_board_max_authors",
-            )
-        )
-    return int(window_days), str(sort_mode), int(max_assets), int(max_authors)
+
+    return (
+        int(window_days),
+        str(sort_mode),
+        str(consensus_filter),
+    )
 
 
 def _prepare_trade_board_df(
@@ -389,15 +485,15 @@ def _build_trade_board_agg(
     agg["url"] = agg[group_col].map(last_rows["url"])
     agg["最近"] = agg["最近时间"].apply(lambda ts: format_age_label(max_ts, ts))
 
-    consensus = pd.Series(["·不清楚"] * len(agg), index=agg.index)
-    consensus = consensus.mask(agg["净强度"] > 0, "↑偏买")
-    consensus = consensus.mask(agg["净强度"] < 0, "↓偏卖")
+    consensus = pd.Series([TRADE_BOARD_CONSENSUS_UNKNOWN] * len(agg), index=agg.index)
+    consensus = consensus.mask(agg["净强度"] > 0, TRADE_BOARD_CONSENSUS_BUY)
+    consensus = consensus.mask(agg["净强度"] < 0, TRADE_BOARD_CONSENSUS_SELL)
     consensus = consensus.mask(
         (agg["净强度"] == 0)
         & (agg["买强度"] == 0)
         & (agg["卖强度"] == 0)
         & (agg["只看次数"] > 0),
-        "→只看",
+        TRADE_BOARD_CONSENSUS_HOLD,
     )
     agg["共识"] = consensus
     return agg
@@ -415,6 +511,17 @@ def _sort_trade_board_agg(agg: pd.DataFrame, *, sort_mode: str) -> pd.DataFrame:
     )
 
 
+def _filter_trade_board_agg_by_consensus(
+    agg_sorted: pd.DataFrame, *, consensus_filter: str
+) -> pd.DataFrame:
+    values = TRADE_BOARD_CONSENSUS_FILTER_VALUES.get(
+        str(consensus_filter or "").strip()
+    )
+    if not values or agg_sorted.empty or "共识" not in agg_sorted.columns:
+        return agg_sorted
+    return agg_sorted[agg_sorted["共识"].astype(str).isin(values)].copy()
+
+
 def _render_trade_kpis(
     agg_sorted: pd.DataFrame, *, board_df: pd.DataFrame, group_label: str
 ) -> None:
@@ -423,7 +530,7 @@ def _render_trade_kpis(
     kpi_mid.metric("大佬数", f"{int(board_df['author'].nunique())}")
     kpi_right.metric(
         "有共识",
-        f"{int((agg_sorted['共识'].isin(['↑偏买', '↓偏卖'])).sum())}",
+        f"{int((agg_sorted['共识'].isin([TRADE_BOARD_CONSENSUS_BUY, TRADE_BOARD_CONSENSUS_SELL])).sum())}",
     )
 
 
@@ -432,9 +539,8 @@ def _render_top_assets(
     *,
     group_col: str,
     group_label: str,
-    max_assets: int,
 ) -> pd.DataFrame:
-    top_assets = agg_sorted.head(int(max_assets)).copy()
+    top_assets = agg_sorted.copy()
     st.dataframe(
         top_assets[
             [
@@ -461,7 +567,7 @@ def _render_top_assets(
     return top_assets
 
 
-def _top_authors(board_df: pd.DataFrame, *, max_authors: int) -> list[str]:
+def _top_authors(board_df: pd.DataFrame) -> list[str]:
     if "invest_score" in board_df.columns:
         score_series = pd.to_numeric(board_df["invest_score"], errors="coerce").fillna(
             0.0
@@ -476,7 +582,43 @@ def _top_authors(board_df: pd.DataFrame, *, max_authors: int) -> list[str]:
     )
     author_stats = author_stats[author_stats["author"].astype(str).str.strip().ne("")]
     author_stats = author_stats.sort_values(by=["分数", "提及"], ascending=False)
-    return author_stats.head(int(max_authors))["author"].tolist()
+    return author_stats["author"].tolist()
+
+
+def _escape_html(value: object) -> str:
+    return _html.escape(str(value or ""), quote=True)
+
+
+def _trade_matrix_cell_html(
+    cell_text: object,
+    *,
+    tree_text: str,
+    tree_label: str,
+) -> str:
+    cell = str(cell_text or "").strip()
+    if not cell:
+        return "<span class='av-trade-empty'> </span>"
+
+    cell_escaped = _escape_html(cell)
+    tree = str(tree_text or "").rstrip()
+    if not tree.strip():
+        return f"<span class='av-trade-cell'>{cell_escaped}</span>"
+
+    label = str(tree_label or "").strip()
+    title_html = (
+        f"<div class='av-trade-tip-title'>对话：{_escape_html(label)}</div>"
+        if label
+        else "<div class='av-trade-tip-title'>原文树</div>"
+    )
+    return (
+        "<span class='av-trade-cell'>"
+        f"{cell_escaped}"
+        "<span class='av-trade-tip'>"
+        f"{title_html}"
+        f"<pre>{_escape_html(tree)}</pre>"
+        "</span>"
+        "</span>"
+    )
 
 
 def _render_trade_matrix(
@@ -487,6 +629,7 @@ def _render_trade_matrix(
     group_col: str,
     group_label: str,
     max_ts: datetime,
+    posts_all: pd.DataFrame | None = None,
 ) -> None:
     if not top_asset_keys:
         st.info(f"没有{group_label}数据。")
@@ -504,6 +647,14 @@ def _render_trade_matrix(
         st.info("当前条件下，作业格没有数据。")
         return
 
+    norm_assets = [str(x or "").strip() for x in top_asset_keys if str(x or "").strip()]
+    norm_authors = [
+        str(x or "").strip() for x in top_author_list if str(x or "").strip()
+    ]
+    if not norm_assets or not norm_authors:
+        st.info("当前条件下，作业格没有可用的行/列。")
+        return
+
     pair_last = (
         pair_df.sort_values(by="created_at")
         .groupby([group_col, "author"])
@@ -518,16 +669,51 @@ def _render_trade_matrix(
     )
     pair_last["cell"] = pair_last["badge"] + " " + pair_last["age"]
 
-    matrix = (
-        pair_last.pivot(index=group_col, columns="author", values="cell")
-        .reindex(index=top_asset_keys, columns=top_author_list)
-        .fillna("")
-    )
-    st.dataframe(
-        matrix.reset_index().rename(columns={group_col: group_label}),
-        width="stretch",
-        hide_index=True,
-    )
+    tree_by_uid, label_by_uid = _build_tree_maps(pair_last, posts_all=posts_all)
+
+    cell_by_pair: dict[tuple[str, str], str] = {}
+    tree_by_pair: dict[tuple[str, str], str] = {}
+    label_by_pair: dict[tuple[str, str], str] = {}
+    for _, row in pair_last.iterrows():
+        asset = str(row.get(group_col) or "").strip()
+        author = str(row.get("author") or "").strip()
+        if not asset or not author:
+            continue
+        key = (asset, author)
+        cell_by_pair[key] = str(row.get("cell") or "").strip()
+        post_uid = str(row.get("post_uid") or "").strip()
+        if post_uid:
+            tree = str(tree_by_uid.get(post_uid, "") or "").rstrip()
+            if tree.strip():
+                tree_by_pair[key] = tree
+                label_by_pair[key] = str(label_by_uid.get(post_uid, "") or "").strip()
+
+    parts: list[str] = [
+        TRADE_BOARD_MATRIX_TOOLTIP_STYLE,
+        "<div class='av-trade-matrix-wrap'>",
+        "<table class='av-trade-matrix'>",
+        "<thead><tr>",
+        f"<th>{_escape_html(group_label)}</th>",
+    ]
+    for author in norm_authors:
+        parts.append(f"<th>{_escape_html(author)}</th>")
+    parts += ["</tr></thead>", "<tbody>"]
+
+    for asset in norm_assets:
+        parts.append("<tr>")
+        parts.append(f"<td>{_escape_html(asset)}</td>")
+        for author in norm_authors:
+            key = (asset, author)
+            cell_html = _trade_matrix_cell_html(
+                cell_by_pair.get(key, ""),
+                tree_text=tree_by_pair.get(key, ""),
+                tree_label=label_by_pair.get(key, ""),
+            )
+            parts.append(f"<td>{cell_html}</td>")
+        parts.append("</tr>")
+
+    parts += ["</tbody></table>", "</div>"]
+    st.markdown("\n".join(parts), unsafe_allow_html=True)
 
 
 def _render_trade_detail(
@@ -615,7 +801,7 @@ def show_trade_flow(
         st.caption(
             f"当前交易观点时间：{min_ts.date()} ~ {max_ts.date()}（{coverage_days} 天）。"
         )
-    window_days, sort_mode, max_assets, max_authors = _trade_board_settings(
+    window_days, sort_mode, consensus_filter = _trade_board_settings(
         window_max_days=coverage_days
     )
     prepared = _prepare_trade_board_df(
@@ -630,27 +816,41 @@ def show_trade_flow(
 
     agg = _build_trade_board_agg(board_df, group_col=group_col, max_ts=max_ts)
     agg_sorted = _sort_trade_board_agg(agg, sort_mode=sort_mode)
-    _render_trade_kpis(agg_sorted, board_df=board_df, group_label=group_label)
+    agg_view = _filter_trade_board_agg_by_consensus(
+        agg_sorted, consensus_filter=consensus_filter
+    )
+    view_keys = set(
+        str(x).strip()
+        for x in agg_view.get(group_col, pd.Series(dtype=str)).dropna().tolist()
+        if str(x).strip()
+    )
+    board_view = (
+        board_df[board_df[group_col].astype(str).str.strip().isin(view_keys)].copy()
+        if view_keys
+        else board_df.head(0).copy()
+    )
+
+    _render_trade_kpis(agg_view, board_df=board_view, group_label=group_label)
     top_assets = _render_top_assets(
-        agg_sorted,
+        agg_view,
         group_col=group_col,
         group_label=group_label,
-        max_assets=max_assets,
     )
 
     st.markdown(f"**作业格（大佬 × {group_label}）**")
     top_asset_keys = top_assets[group_col].tolist()
-    top_author_list = _top_authors(board_df, max_authors=max_authors)
+    top_author_list = _top_authors(board_view)
     _render_trade_matrix(
-        board_df,
+        board_view,
         top_asset_keys=top_asset_keys,
         top_author_list=top_author_list,
         group_col=group_col,
         group_label=group_label,
         max_ts=max_ts,
+        posts_all=posts_all,
     )
     _render_trade_detail(
-        board_df,
+        board_view,
         top_asset_keys=top_asset_keys,
         group_col=group_col,
         group_label=group_label,
