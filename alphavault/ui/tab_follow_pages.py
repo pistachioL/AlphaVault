@@ -26,6 +26,8 @@ from alphavault.follow_pages import (
 )
 from alphavault.ai.topic_cluster_suggest import ai_is_configured
 from alphavault.ai.follow_keywords_suggest import suggest_keywords_for_follow
+from alphavault.topic_cluster import enrich_assertions_with_clusters
+from alphavault.ui.data import load_topic_cluster_sources
 from alphavault.ui.follow_pages_ai_create import render_follow_pages_ai_create
 from alphavault.ui.follow_pages_key_match import (
     build_grouped_key_candidates,
@@ -541,6 +543,31 @@ def show_follow_pages(
     st.caption("关注 key（个股/行业/商品/指数/主题）/板块 → 关键字 OR → tree。")
 
     engine = ensure_turso_engine(turso_url, turso_token)
+    # Always load latest clusters here (avoid relying on outer pre-load timing).
+    # Otherwise, "新建关注页 -> 板块（聚合）" may show empty options right after creating a new cluster.
+    clusters_loaded, topic_map_loaded, post_overrides_loaded, cluster_load_error = (
+        load_topic_cluster_sources(turso_url, turso_token)
+    )
+    if (
+        not clusters_loaded.empty
+        and "cluster_key" in clusters_loaded.columns
+        and clusters_loaded["cluster_key"].dropna().astype(str).str.strip().ne("").any()
+    ):
+        clusters = clusters_loaded
+        if (
+            "cluster_keys" not in assertions_filtered.columns
+            or "cluster_displays" not in assertions_filtered.columns
+        ):
+            assertions_filtered = enrich_assertions_with_clusters(
+                assertions_filtered,
+                clusters=clusters_loaded,
+                topic_map=topic_map_loaded,
+                post_overrides=post_overrides_loaded,
+            )
+    elif cluster_load_error and (
+        clusters.empty or "cluster_key" not in clusters.columns
+    ):
+        st.caption(f"板块表读取失败：{cluster_load_error}")
     pages_df, load_error = load_follow_pages_sources(turso_url, turso_token)
 
     _maybe_init_follow_pages_tables(engine, load_error)
