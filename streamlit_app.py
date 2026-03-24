@@ -15,7 +15,6 @@ from alphavault.ui.data import (
     load_sources,
     load_topic_cluster_sources,
 )
-from alphavault.ui.filters import build_filters
 from alphavault.ui.tab_misc import (
     show_conflicts_and_changes,
     show_learning_library,
@@ -31,9 +30,16 @@ from alphavault.ui.topic_cluster_admin import show_topic_cluster_admin
 
 load_dotenv_if_present()
 
+DEFAULT_GROUP_COL = "topic_key"
+DEFAULT_GROUP_LABEL = "主题"
+
 
 def main() -> None:
-    st.set_page_config(page_title="AlphaVault 观点可视化", layout="wide")
+    st.set_page_config(
+        page_title="AlphaVault 观点可视化",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
 
     st.markdown(
         """
@@ -101,13 +107,7 @@ def main() -> None:
         "数据表",
     ]
     selected_page_pre = str(st.session_state.get("main_page") or pages[0])
-    group_mode_pre = str(st.session_state.get("filter_group_mode") or "").strip()
-    legacy_group_by_cluster = bool(st.session_state.get("filter_group_by_cluster"))
-    want_clusters_pre = (
-        selected_page_pre in {"关注页", "主题聚合"}
-        or group_mode_pre == "cluster"
-        or legacy_group_by_cluster
-    )
+    want_clusters_pre = selected_page_pre in {"关注页", "主题聚合"}
 
     posts, assertions, missing = load_sources()
     if missing:
@@ -140,7 +140,9 @@ def main() -> None:
             post_overrides=cluster_post_overrides_df,
         )
 
-    posts_filtered, assertions_filtered, meta = build_filters(posts, assertions)
+    # Note: Left sidebar filters removed on purpose.
+    posts_filtered = posts
+    assertions_filtered = assertions
 
     selected_page = st.segmented_control(
         "页面",
@@ -158,16 +160,16 @@ def main() -> None:
         show_overview_charts(
             posts_filtered,
             assertions_filtered,
-            group_col=meta["group_col"],
-            group_label=meta["group_label"],
+            group_col=DEFAULT_GROUP_COL,
+            group_label=DEFAULT_GROUP_LABEL,
         )
         return
 
     if selected_page == "交易流":
         show_trade_flow(
             assertions_filtered,
-            group_col=meta["group_col"],
-            group_label=meta["group_label"],
+            group_col=DEFAULT_GROUP_COL,
+            group_label=DEFAULT_GROUP_LABEL,
             posts_all=posts,
         )
         return
@@ -175,8 +177,8 @@ def main() -> None:
     if selected_page == "风险雷达":
         show_risk_radar(
             assertions_filtered,
-            group_col=meta["group_col"],
-            group_label=meta["group_label"],
+            group_col=DEFAULT_GROUP_COL,
+            group_label=DEFAULT_GROUP_LABEL,
         )
         return
 
@@ -184,8 +186,8 @@ def main() -> None:
         show_topic_timeline(
             posts,
             assertions_filtered,
-            group_col=meta["group_col"],
-            group_label=meta["group_label"],
+            group_col=DEFAULT_GROUP_COL,
+            group_label=DEFAULT_GROUP_LABEL,
         )
         return
 
@@ -217,8 +219,8 @@ def main() -> None:
     if selected_page == "冲突/变化":
         show_conflicts_and_changes(
             assertions_filtered,
-            group_col=meta["group_col"],
-            group_label=meta["group_label"],
+            group_col=DEFAULT_GROUP_COL,
+            group_label=DEFAULT_GROUP_LABEL,
         )
         return
 
@@ -241,8 +243,8 @@ def main() -> None:
     show_tables(
         posts_view,
         assertions_filtered,
-        group_col=meta["group_col"],
-        group_label=meta["group_label"],
+        group_col=DEFAULT_GROUP_COL,
+        group_label=DEFAULT_GROUP_LABEL,
     )
 
 
