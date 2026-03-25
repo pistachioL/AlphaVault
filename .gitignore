@@ -1,3 +1,7 @@
+.states
+.web
+*.db
+assets/external/
 # Python
 __pycache__/
 *.py[cod]
@@ -32,3 +36,7 @@ xueqiu_batch.sqlite3-wal
 # Trace files
 trace.txt
 .ace-tool/
+
+# Reflex
+.web/
+.reflex/

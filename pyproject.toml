@@ -10,6 +10,7 @@ dependencies = [
   "litellm",
   "python-dotenv",
   "redis",
+  "reflex>=0.8.28.post1",
   "requests",
   "sqlalchemy",
   "sqlparams>=6.2.0",

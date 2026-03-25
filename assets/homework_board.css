@@ -1,0 +1,264 @@
+:root {
+  --av-bg: #ffffff;
+  --av-ink: #0f172a;
+  --av-muted: #64748b;
+  --av-border: rgba(15, 23, 42, 0.12);
+  --av-panel: #fbfbfd;
+  --av-accent: #ff6a3d;
+}
+
+body {
+  background: var(--av-bg);
+  color: var(--av-ink);
+}
+
+.av-page {
+  width: 100%;
+  padding: 20px 22px;
+}
+
+.av-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.av-muted {
+  color: var(--av-muted);
+}
+
+.av-caption {
+  margin: 10px 0 6px 0;
+  color: var(--av-muted);
+  font-size: 14px;
+}
+
+.av-controls {
+  border: 1px solid var(--av-border);
+  border-radius: 12px;
+  padding: 12px 12px 10px 12px;
+  background: var(--av-panel);
+}
+
+.av-label {
+  font-size: 13px;
+  color: var(--av-muted);
+}
+
+.av-btn {
+  background: var(--av-accent);
+  color: white;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 600;
+}
+
+.av-btn-small {
+  padding: 6px 10px;
+  border-radius: 10px;
+}
+
+.av-error {
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  background: rgba(220, 38, 38, 0.06);
+  border-radius: 12px;
+  padding: 10px 12px;
+  margin-top: 12px;
+}
+
+.av-error-title {
+  font-weight: 700;
+  color: rgb(185, 28, 28);
+}
+
+.av-error-text {
+  color: rgb(185, 28, 28);
+  word-break: break-word;
+}
+
+.av-main {
+  margin-top: 12px;
+}
+
+.av-table-shell {
+  position: relative;
+  width: 100%;
+}
+
+.av-table-wrap {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 1px solid var(--av-border);
+  border-radius: 14px;
+  overflow: auto;
+  background: white;
+  min-height: 520px;
+}
+
+.av-table-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(2px);
+  border-radius: 14px;
+  cursor: progress;
+}
+
+.av-table-empty-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(2px);
+  border-radius: 14px;
+}
+
+.av-empty {
+  padding: 28px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.av-empty-title {
+  font-weight: 700;
+  color: var(--av-ink);
+}
+
+.av-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.av-thead th {
+  background: rgba(241, 245, 249, 0.8);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.av-th,
+.av-td {
+  border-bottom: 1px solid var(--av-border);
+  border-right: 1px solid var(--av-border);
+  padding: 8px 10px;
+  vertical-align: top;
+  font-size: 14px;
+}
+
+.av-th:last-child,
+.av-td:last-child {
+  border-right: none;
+}
+
+.av-th-inner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  user-select: none;
+}
+
+.av-col-resizer {
+  position: absolute;
+  right: -4px;
+  top: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.av-col-resizer::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  background: rgba(15, 23, 42, 0.12);
+}
+
+.av-summary {
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.av-num {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.av-panel {
+  width: 520px;
+  max-width: 45vw;
+  border: 1px solid var(--av-border);
+  border-radius: 14px;
+  padding: 12px 12px 10px 12px;
+  background: var(--av-panel);
+  min-height: 520px;
+}
+
+.av-panel-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.av-panel-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.av-panel-caption {
+  font-size: 13px;
+  color: var(--av-muted);
+  word-break: break-word;
+}
+
+.av-panel-empty {
+  padding: 10px 8px;
+}
+
+.av-table a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.av-dialog-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+}
+
+.av-tree-pre {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--av-border);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.35;
+  white-space: pre;
+  overflow: auto;
+  max-height: 70vh;
+}
