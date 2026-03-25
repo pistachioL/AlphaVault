@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from alphavault_reflex.services.research_data import (
+    build_search_index,
     build_sector_research_view,
     build_stock_research_view,
 )
@@ -68,3 +69,19 @@ def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -
     assert view.header_title == "white_liquor"
     assert view.signals[0]["summary"] == "板块继续走强"
     assert view.related_stocks[0]["stock_key"] == "stock:600519.SH"
+
+
+def test_build_search_index_returns_stock_and_sector_hits() -> None:
+    posts = pd.DataFrame([])
+    assertions = pd.DataFrame(
+        [
+            {
+                "topic_key": "stock:600519.SH",
+                "cluster_keys": ["white_liquor"],
+            }
+        ]
+    )
+
+    rows = build_search_index(posts, assertions)
+    assert rows[0]["href"] == "/research/stocks/600519.SH"
+    assert rows[1]["href"] == "/research/sectors/white_liquor"

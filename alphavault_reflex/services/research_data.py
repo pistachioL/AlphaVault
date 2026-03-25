@@ -4,6 +4,19 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from alphavault.research_workbench import make_candidate_id
+from alphavault_reflex.services.relation_candidates import (
+    RELATION_LABEL_RELATED,
+    build_sector_relation_candidates,
+    build_stock_alias_candidates,
+    build_stock_sector_candidates,
+    enrich_candidates_with_ai,
+)
+from alphavault_reflex.services.research_models import (
+    build_sector_route,
+    build_stock_route,
+)
+
 
 STOCK_KEY_PREFIX = "stock:"
 
@@ -22,6 +35,47 @@ class SectorResearchView:
     signals: list[dict[str, str]]
     related_stocks: list[dict[str, str]]
     pending_candidates: list[dict[str, str]]
+
+
+def build_search_index(
+    posts: pd.DataFrame,
+    assertions: pd.DataFrame,
+) -> list[dict[str, str]]:
+    del posts
+    if assertions.empty:
+        return []
+
+    stock_hits: dict[str, dict[str, str]] = {}
+    sector_hits: dict[str, dict[str, str]] = {}
+
+    for raw_key in assertions.get("topic_key", pd.Series(dtype=str)).tolist():
+        stock_key = str(raw_key or "").strip()
+        if not stock_key.startswith(STOCK_KEY_PREFIX):
+            continue
+        stock_hits.setdefault(
+            stock_key,
+            {
+                "entity_type": "stock",
+                "entity_key": stock_key,
+                "label": _stock_title(stock_key),
+                "href": build_stock_route(stock_key),
+            },
+        )
+
+    for item in assertions.get("cluster_keys", pd.Series(dtype=object)).tolist():
+        for sector_key in _coerce_list(item):
+            sector_hits.setdefault(
+                sector_key,
+                {
+                    "entity_type": "sector",
+                    "entity_key": f"cluster:{sector_key}",
+                    "label": sector_key,
+                    "href": build_sector_route(f"cluster:{sector_key}"),
+                },
+            )
+    ranked_stocks = sorted(stock_hits.values(), key=lambda row: row["label"])
+    ranked_sectors = sorted(sector_hits.values(), key=lambda row: row["label"])
+    return ranked_stocks + ranked_sectors
 
 
 def build_stock_research_view(
@@ -73,6 +127,105 @@ def build_sector_research_view(
         signals=_build_signal_rows(sector_view),
         related_stocks=_build_related_stock_rows(sector_view),
         pending_candidates=[],
+    )
+
+
+def build_stock_pending_candidates(
+    assertions: pd.DataFrame,
+    *,
+    stock_key: str,
+    ai_enabled: bool,
+) -> list[dict[str, str]]:
+    alias_rows = build_stock_alias_candidates(assertions, stock_key=stock_key)
+    sector_rows = build_stock_sector_candidates(assertions, stock_key=stock_key)
+
+    candidates: list[dict[str, str]] = []
+    for row in alias_rows:
+        alias_key = str(row.get("alias_key") or "").strip()
+        if not alias_key:
+            continue
+        candidates.append(
+            {
+                **row,
+                "relation_type": "stock_alias",
+                "left_key": stock_key,
+                "right_key": alias_key,
+                "relation_label": "alias_of",
+                "candidate_id": make_candidate_id(
+                    relation_type="stock_alias",
+                    left_key=stock_key,
+                    right_key=alias_key,
+                    relation_label="alias_of",
+                ),
+                "candidate_key": alias_key,
+                "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
+            }
+        )
+    for row in sector_rows:
+        sector_key = str(row.get("sector_key") or "").strip()
+        if not sector_key:
+            continue
+        candidates.append(
+            {
+                **row,
+                "relation_type": "stock_sector",
+                "left_key": stock_key,
+                "right_key": f"cluster:{sector_key}",
+                "relation_label": "member_of",
+                "candidate_id": make_candidate_id(
+                    relation_type="stock_sector",
+                    left_key=stock_key,
+                    right_key=f"cluster:{sector_key}",
+                    relation_label="member_of",
+                ),
+                "candidate_key": sector_key,
+                "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
+            }
+        )
+    return _finalize_candidate_rows(
+        enrich_candidates_with_ai(
+            candidates,
+            relation_type="stock_sector",
+            ai_enabled=ai_enabled,
+        )
+    )
+
+
+def build_sector_pending_candidates(
+    assertions: pd.DataFrame,
+    *,
+    sector_key: str,
+    ai_enabled: bool,
+) -> list[dict[str, str]]:
+    candidates = build_sector_relation_candidates(assertions, sector_key=sector_key)
+    rows: list[dict[str, str]] = []
+    for row in candidates:
+        candidate_sector = str(row.get("sector_key") or "").strip()
+        if not candidate_sector:
+            continue
+        rows.append(
+            {
+                **row,
+                "relation_type": "sector_sector",
+                "left_key": f"cluster:{sector_key}",
+                "right_key": f"cluster:{candidate_sector}",
+                "relation_label": RELATION_LABEL_RELATED,
+                "candidate_id": make_candidate_id(
+                    relation_type="sector_sector",
+                    left_key=f"cluster:{sector_key}",
+                    right_key=f"cluster:{candidate_sector}",
+                    relation_label=RELATION_LABEL_RELATED,
+                ),
+                "candidate_key": candidate_sector,
+                "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
+            }
+        )
+    return _finalize_candidate_rows(
+        enrich_candidates_with_ai(
+            rows,
+            relation_type="sector_sector",
+            ai_enabled=ai_enabled,
+        )
     )
 
 
@@ -188,6 +341,23 @@ def _coerce_list(value: object) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _finalize_candidate_rows(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                str(key): str(raw or "").strip()
+                for key, raw in item.items()
+                if str(key).strip()
+            }
+        )
+    return out
 
 
 def _stock_title(stock_key: str) -> str:

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import reflex as rx
 
-from alphavault_reflex.pages.homework import homework_page, index_page
+from alphavault_reflex.organizer_state import OrganizerState
+from alphavault_reflex.pages.homework import homework_page
+from alphavault_reflex.pages.index import index_page
+from alphavault_reflex.pages.organizer import organizer_page
 from alphavault_reflex.homework_state import HomeworkState
 from alphavault_reflex.pages.sector_research import sector_research_page
 from alphavault_reflex.pages.stock_research import stock_research_page
@@ -37,4 +40,10 @@ app.add_page(
     route="/research/sectors/[sector_slug]",
     title="板块研究",
     on_load=ResearchState.load_sector_page,
+)
+app.add_page(
+    organizer_page,
+    route="/organizer",
+    title="整理中心",
+    on_load=OrganizerState.load_pending,
 )

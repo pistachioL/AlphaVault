@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime
+import os
 from typing import Iterator
 
-from alphavault.constants import DATETIME_FMT
+from alphavault.constants import (
+    DATETIME_FMT,
+    ENV_TURSO_AUTH_TOKEN,
+    ENV_TURSO_DATABASE_URL,
+)
 from alphavault.db.sql.research_workbench import (
     create_research_object_index,
     create_research_objects_table,
@@ -22,11 +27,13 @@ from alphavault.db.sql.research_workbench import (
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
+    ensure_turso_engine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
     turso_connect_autocommit,
     turso_savepoint,
 )
+from alphavault.env import load_dotenv_if_present
 
 RESEARCH_OBJECTS_TABLE = "research_objects"
 RESEARCH_RELATIONS_TABLE = "research_relations"
@@ -104,6 +111,21 @@ def _relation_id(
             str(left_key or "").strip(),
             str(right_key or "").strip(),
         ]
+    )
+
+
+def make_candidate_id(
+    *,
+    relation_type: str,
+    left_key: str,
+    right_key: str,
+    relation_label: str,
+) -> str:
+    return _relation_id(
+        relation_type=relation_type,
+        left_key=left_key,
+        right_key=right_key,
+        relation_label=relation_label,
     )
 
 
@@ -253,6 +275,36 @@ def list_pending_candidates(
     raise AssertionError("unreachable")
 
 
+def list_candidate_status_map(
+    engine_or_conn: TursoEngine | TursoConnection,
+    candidate_ids: list[str],
+) -> dict[str, str]:
+    cleaned = [
+        str(item or "").strip() for item in candidate_ids if str(item or "").strip()
+    ]
+    if not cleaned:
+        return {}
+    placeholders = ", ".join(["?"] * len(cleaned))
+    sql = f"""
+SELECT candidate_id, status
+FROM {RESEARCH_RELATION_CANDIDATES_TABLE}
+WHERE candidate_id IN ({placeholders})
+"""
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            rows = conn.execute(sql, cleaned).mappings().all()
+            return {
+                str(row.get("candidate_id") or "").strip(): str(
+                    row.get("status") or ""
+                ).strip()
+                for row in rows
+                if str(row.get("candidate_id") or "").strip()
+            }
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+    raise AssertionError("unreachable")
+
+
 def _set_candidate_status(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
@@ -340,6 +392,15 @@ def block_relation_candidate(
     )
 
 
+def get_research_workbench_engine_from_env() -> TursoEngine:
+    load_dotenv_if_present()
+    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
+    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
+    if not db_url:
+        raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
+    return ensure_turso_engine(db_url, auth_token)
+
+
 __all__ = [
     "RESEARCH_OBJECTS_TABLE",
     "RESEARCH_RELATIONS_TABLE",
@@ -347,8 +408,11 @@ __all__ = [
     "accept_relation_candidate",
     "block_relation_candidate",
     "ensure_research_workbench_schema",
+    "get_research_workbench_engine_from_env",
     "ignore_relation_candidate",
     "list_pending_candidates",
+    "list_candidate_status_map",
+    "make_candidate_id",
     "record_stock_sector_relation",
     "upsert_relation_candidate",
 ]
