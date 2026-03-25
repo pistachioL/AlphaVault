@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from alphavault_reflex.research_state import ResearchState
+from alphavault_reflex.research_state import _resolve_route_slug
+
+
+def test_research_state_starts_in_loading_state() -> None:
+    state = ResearchState()
+
+    assert state.show_loading is True
+    assert state.show_signal_empty is False
+    assert state.show_related_empty is False
+    assert state.show_pending_empty is False
 
 
 def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
@@ -17,8 +29,33 @@ def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
     state = ResearchState()
     state.load_stock_page("600519.SH")
     assert state.page_title == "600519.SH"
+    assert state.loaded_once is True
+    assert state.show_loading is False
+    assert state.show_signal_empty is False
     assert state.primary_signals[0]["summary"] == "继续加仓"
     assert state.related_items[0]["sector_key"] == "white_liquor"
+
+
+def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_view",
+        lambda stock_slug: {
+            "header_title": "000001.SZ",
+            "signals": [],
+            "related_sectors": [],
+            "pending_candidates": [],
+            "load_error": "",
+        },
+    )
+
+    state = ResearchState()
+    state.load_stock_page("000001.SZ")
+
+    assert state.loaded_once is True
+    assert state.show_loading is False
+    assert state.show_signal_empty is True
+    assert state.show_related_empty is True
+    assert state.show_pending_empty is True
 
 
 def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:
@@ -74,3 +111,23 @@ def test_accept_candidate_clears_caches_and_marks_candidate_accepted(
 
     assert calls == ["accept:cand-1", "cleared"]
     assert state.pending_candidates == []
+
+
+def test_resolve_route_slug_reads_router_url_without_touching_page() -> None:
+    class ExplodingRouter:
+        route_id = "/research/stocks/[stock_slug]"
+        url = SimpleNamespace(
+            path="/research/stocks/600519.SH",
+            query_parameters={},
+        )
+
+        @property
+        def page(self):
+            raise AssertionError("router.page should not be used")
+
+    state = SimpleNamespace(router=ExplodingRouter())
+
+    assert (
+        _resolve_route_slug(state, explicit_slug=None, route_key="stock_slug")
+        == "600519.SH"
+    )

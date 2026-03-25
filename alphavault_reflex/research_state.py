@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from urllib.parse import unquote
 
 import reflex as rx
 
@@ -105,6 +106,8 @@ def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
 
 
 class ResearchState(rx.State):
+    loading: bool = False
+    loaded_once: bool = False
     page_title: str = ""
     entity_key: str = ""
     entity_type: str = ""
@@ -118,6 +121,37 @@ class ResearchState(rx.State):
         return bool(self.primary_signals)
 
     @rx.var
+    def show_loading(self) -> bool:
+        return bool(self.loading or not self.loaded_once)
+
+    @rx.var
+    def show_signal_empty(self) -> bool:
+        return bool(
+            self.loaded_once
+            and (not self.loading)
+            and (str(self.load_error or "").strip() == "")
+            and (not self.primary_signals)
+        )
+
+    @rx.var
+    def show_related_empty(self) -> bool:
+        return bool(
+            self.loaded_once
+            and (not self.loading)
+            and (str(self.load_error or "").strip() == "")
+            and (not self.related_items)
+        )
+
+    @rx.var
+    def show_pending_empty(self) -> bool:
+        return bool(
+            self.loaded_once
+            and (not self.loading)
+            and (str(self.load_error or "").strip() == "")
+            and (not self.pending_candidates)
+        )
+
+    @rx.var
     def has_pending_candidates(self) -> bool:
         return bool(self.pending_candidates)
 
@@ -127,6 +161,7 @@ class ResearchState(rx.State):
 
     @rx.event
     def load_stock_page(self, stock_slug: str | None = None) -> None:
+        self.loading = True
         slug = _resolve_route_slug(
             self, explicit_slug=stock_slug, route_key="stock_slug"
         )
@@ -139,9 +174,12 @@ class ResearchState(rx.State):
         self.primary_signals = _coerce_rows(view.get("signals"))
         self.related_items = _prepare_sector_links(view.get("related_sectors"))
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
+        self.loaded_once = True
+        self.loading = False
 
     @rx.event
     def load_sector_page(self, sector_slug: str | None = None) -> None:
+        self.loading = True
         slug = _resolve_route_slug(
             self,
             explicit_slug=sector_slug,
@@ -156,6 +194,8 @@ class ResearchState(rx.State):
         self.primary_signals = _coerce_rows(view.get("signals"))
         self.related_items = _prepare_stock_links(view.get("related_stocks"))
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
+        self.loaded_once = True
+        self.loading = False
 
     @rx.event
     def accept_candidate(self, candidate_id: str) -> None:
@@ -199,7 +239,7 @@ class ResearchState(rx.State):
 
 
 def _resolve_route_slug(
-    state: ResearchState,
+    state: object,
     *,
     explicit_slug: str | None,
     route_key: str,
@@ -207,19 +247,40 @@ def _resolve_route_slug(
     slug = str(explicit_slug or "").strip()
     if slug:
         return slug
-    params = getattr(getattr(state.router, "page", None), "params", None)
-    if params is not None:
-        getter = getattr(params, "get", None)
+    route_value = getattr(state, route_key, "")
+    slug = str(route_value or "").strip()
+    if slug:
+        return slug
+    router = getattr(state, "router", None)
+    return _resolve_route_slug_from_url(router, route_key=route_key)
+
+
+def _resolve_route_slug_from_url(router: object, *, route_key: str) -> str:
+    url = getattr(router, "url", None)
+    query_parameters = getattr(url, "query_parameters", None)
+    if query_parameters is not None:
+        getter = getattr(query_parameters, "get", None)
         if callable(getter):
             slug = str(getter(route_key, "") or "").strip()
             if slug:
                 return slug
-        route_value = getattr(params, route_key, "")
-        slug = str(route_value or "").strip()
-        if slug:
-            return slug
-    route_value = getattr(state, route_key, "")
-    return str(route_value or "").strip()
+
+    route_parts = _split_route_parts(getattr(router, "route_id", ""))
+    path_parts = _split_route_parts(getattr(url, "path", ""))
+    if len(route_parts) != len(path_parts):
+        return ""
+
+    target_part = f"[{route_key}]"
+    for route_part, path_part in zip(route_parts, path_parts):
+        if route_part == target_part:
+            return unquote(path_part).strip()
+    return ""
+
+
+def _split_route_parts(value: object) -> tuple[str, ...]:
+    return tuple(
+        part for part in str(value or "").strip().strip("/").split("/") if part
+    )
 
 
 def _normalize_stock_key(stock_slug: str) -> str:

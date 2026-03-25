@@ -4,6 +4,10 @@ import reflex as rx
 
 from alphavault_reflex.research_state import ResearchState
 
+EMPTY_TEXT = "暂无。"
+LOADING_TEXT = "加载中…"
+NO_SIGNAL_TEXT = "没有信号。"
+
 
 def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.div(
@@ -55,6 +59,19 @@ def _pending_item(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
+def _section_loading() -> rx.Component:
+    return rx.el.div(
+        rx.spinner(size="3"),
+        rx.text(LOADING_TEXT, class_name="av-research-muted"),
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "gap": "10px",
+            "marginTop": "12px",
+        },
+    )
+
+
 def sector_research_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
@@ -75,33 +92,57 @@ def sector_research_page() -> rx.Component:
             rx.el.div(
                 rx.heading("板块信号", size="4"),
                 rx.cond(
-                    ResearchState.has_signals,
-                    rx.el.div(
-                        rx.foreach(ResearchState.primary_signals, _signal_card),
-                        class_name="av-research-list",
+                    ResearchState.show_loading,
+                    _section_loading(),
+                    rx.cond(
+                        ResearchState.has_signals,
+                        rx.el.div(
+                            rx.foreach(ResearchState.primary_signals, _signal_card),
+                            class_name="av-research-list",
+                        ),
+                        rx.cond(
+                            ResearchState.show_signal_empty,
+                            rx.text(NO_SIGNAL_TEXT, class_name="av-research-muted"),
+                            rx.el.div(),
+                        ),
                     ),
-                    rx.text("没有信号。", class_name="av-research-muted"),
                 ),
                 class_name="av-research-main",
             ),
             rx.el.aside(
                 rx.heading("板块内个股", size="4"),
                 rx.cond(
-                    ResearchState.has_related_items,
-                    rx.el.div(
-                        rx.foreach(ResearchState.related_items, _related_link),
-                        class_name="av-research-chip-wrap",
+                    ResearchState.show_loading,
+                    _section_loading(),
+                    rx.cond(
+                        ResearchState.has_related_items,
+                        rx.el.div(
+                            rx.foreach(ResearchState.related_items, _related_link),
+                            class_name="av-research-chip-wrap",
+                        ),
+                        rx.cond(
+                            ResearchState.show_related_empty,
+                            rx.text(EMPTY_TEXT, class_name="av-research-muted"),
+                            rx.el.div(),
+                        ),
                     ),
-                    rx.text("暂无。", class_name="av-research-muted"),
                 ),
                 rx.heading("待确认关系", size="4", margin_top="18px"),
                 rx.cond(
-                    ResearchState.has_pending_candidates,
-                    rx.el.div(
-                        rx.foreach(ResearchState.pending_candidates, _pending_item),
-                        class_name="av-research-side-list",
+                    ResearchState.show_loading,
+                    _section_loading(),
+                    rx.cond(
+                        ResearchState.has_pending_candidates,
+                        rx.el.div(
+                            rx.foreach(ResearchState.pending_candidates, _pending_item),
+                            class_name="av-research-side-list",
+                        ),
+                        rx.cond(
+                            ResearchState.show_pending_empty,
+                            rx.text(EMPTY_TEXT, class_name="av-research-muted"),
+                            rx.el.div(),
+                        ),
                     ),
-                    rx.text("暂无。", class_name="av-research-muted"),
                 ),
                 class_name="av-research-side",
             ),
