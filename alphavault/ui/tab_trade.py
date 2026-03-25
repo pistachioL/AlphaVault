@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import html as _html
-import math
 
 import pandas as pd
 import streamlit as st
@@ -16,9 +15,6 @@ from alphavault.ui.thread_tree import build_weibo_thread_forest
 TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})
 TRADE_HOLD_ACTIONS = frozenset({"trade.hold"})
-
-DEFAULT_TRADE_FLOW_PAGE_SIZE = 5
-MAX_TRADE_FLOW_PAGE_SIZE = 20
 TRADE_BOARD_MAX_WINDOW_DAYS = 60
 
 TRADE_BOARD_CONSENSUS_BUY = "↑偏买"
@@ -50,6 +46,8 @@ TRADE_BOARD_CONSENSUS_FILTER_VALUES = {
     TRADE_BOARD_CONSENSUS_FILTER_HOLD: frozenset({TRADE_BOARD_CONSENSUS_HOLD}),
     TRADE_BOARD_CONSENSUS_FILTER_UNKNOWN: frozenset({TRADE_BOARD_CONSENSUS_UNKNOWN}),
 }
+
+TRADE_BOARD_DOT_SEPARATOR = " · "
 
 TRADE_BOARD_MATRIX_TOOLTIP_STYLE = """
 <style>
@@ -84,6 +82,12 @@ TRADE_BOARD_MATRIX_TOOLTIP_STYLE = """
   width: 100%;
   min-height: 1.2em;
 }
+.av-trade-summary {
+  max-width: 520px;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
 .av-trade-tip {
   visibility: hidden;
   opacity: 0;
@@ -113,11 +117,12 @@ TRADE_BOARD_MATRIX_TOOLTIP_STYLE = """
 }
 .av-trade-tip pre {
   margin: 0;
-  white-space: pre;
+  white-space: pre !important;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
-    "Liberation Mono", "Courier New", monospace;
+    "Liberation Mono", "Courier New", monospace !important;
   font-size: 12px;
   line-height: 1.35;
+  font-variant-ligatures: none;
 }
 .av-trade-empty {
   color: rgba(49, 51, 63, 0.45);
@@ -125,9 +130,29 @@ TRADE_BOARD_MATRIX_TOOLTIP_STYLE = """
 </style>
 """
 
+TRADE_BOARD_LIST_STYLE_TEMPLATE = """
+<style>
+.av-trade-board-header {{
+  font-weight: 600;
+  opacity: 0.85;
+  margin-bottom: 4px;
+}}
+.av-trade-board-summary {{
+  max-width: {summary_width_em}em;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}}
+.av-trade-board-sep {{
+  border-bottom: 1px solid rgba(49, 51, 63, 0.12);
+  margin: 4px 0 6px 0;
+}}
+</style>
+"""
+
 
 def format_age_label(max_ts: datetime, ts: datetime) -> str:
-    """Return a short age label like '3m', '2h', '5d'."""
+    """Return a short age label like '3分钟', '2小时', '5天'."""
     if not isinstance(ts, datetime) or not isinstance(max_ts, datetime):
         return ""
     delta = max_ts - ts
@@ -135,16 +160,16 @@ def format_age_label(max_ts: datetime, ts: datetime) -> str:
         delta = timedelta(seconds=0)
     minutes = int(delta.total_seconds() // 60)
     if minutes < 60:
-        return f"{minutes}m"
+        return f"{minutes}分钟"
     hours = int(minutes // 60)
     if hours < 48:
-        return f"{hours}h"
+        return f"{hours}小时"
     days = int(hours // 24)
-    return f"{days}d"
+    return f"{days}天"
 
 
 def trade_action_badge(action: str, strength: object) -> str:
-    """Return a readable action label like 'trade.sell-卖-中等偏强-强度2'."""
+    """Return a readable action label like '卖 · 中等偏强 · 强度 2'."""
     action_str = str(action or "").strip()
     strength_val = pd.to_numeric(strength, errors="coerce")
     strength_num = 0 if pd.isna(strength_val) else int(strength_val)
@@ -157,21 +182,25 @@ def trade_action_badge(action: str, strength: object) -> str:
     elif strength_num >= 3:
         strength_text = "很强"
 
-    action_cn = ""
+    action_cn = "交易"
     if action_str in TRADE_BUY_ACTIONS:
         action_cn = "买"
     elif action_str in TRADE_SELL_ACTIONS:
         action_cn = "卖"
     elif action_str in TRADE_HOLD_ACTIONS:
-        action_cn = "看"
+        action_cn = "只看"
     elif action_str.startswith("trade."):
         action_cn = "交易"
+    elif action_str:
+        action_cn = action_str
 
-    if action_cn:
-        return f"{action_str}-{action_cn}-{strength_text}-强度{strength_num}"
-    if action_str:
-        return f"{action_str}-{strength_text}-强度{strength_num}"
-    return f"交易-{strength_text}-强度{strength_num}"
+    return TRADE_BOARD_DOT_SEPARATOR.join(
+        [
+            str(action_cn),
+            str(strength_text),
+            f"强度 {strength_num}",
+        ]
+    )
 
 
 def _trade_group_col(assertions_filtered: pd.DataFrame, group_col: str) -> str:
@@ -185,23 +214,13 @@ def _filter_trade_df(assertions_filtered: pd.DataFrame) -> pd.DataFrame:
     return assertions_filtered[trade_mask].copy()
 
 
-def _format_ts(value: object) -> str:
-    ts = pd.to_datetime(value, errors="coerce")
-    if pd.isna(ts):
-        return ""
-    try:
-        return ts.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return str(ts)
-
-
 def _unique_post_uids_in_order(df: pd.DataFrame) -> list[str]:
     if df.empty or "post_uid" not in df.columns:
         return []
     seen: set[str] = set()
     out: list[str] = []
     for item in df["post_uid"].tolist():
-        uid = str(item or "").strip()
+        uid = "" if pd.isna(item) else str(item or "").strip()
         if not uid or uid in seen:
             continue
         seen.add(uid)
@@ -244,112 +263,60 @@ def _build_tree_maps(
     return tree_by_uid, label_by_uid
 
 
-def _paginate_rows(total: int, *, key_prefix: str) -> tuple[int, int, int, int]:
-    if total <= 0:
-        return 1, 1, 0, 0
-
-    col1, col2, col3 = st.columns([1, 1, 2])
-    with col1:
-        page_size = int(
-            st.number_input(
-                "一页多少条",
-                min_value=1,
-                max_value=MAX_TRADE_FLOW_PAGE_SIZE,
-                value=int(DEFAULT_TRADE_FLOW_PAGE_SIZE),
-                step=1,
-                key=f"{key_prefix}:page_size",
-            )
-        )
-
-    total_pages = max(1, int(math.ceil(total / max(1, page_size))))
-    page_key = f"{key_prefix}:page"
-    if page_key in st.session_state:
-        try:
-            current = int(st.session_state.get(page_key) or 1)
-        except Exception:
-            current = 1
-        st.session_state[page_key] = max(1, min(current, total_pages))
-    with col2:
-        page = st.selectbox(
-            "第几页",
-            list(range(1, total_pages + 1)),
-            index=0,
-            key=page_key,
-        )
-    with col3:
-        st.caption(f"共有 {total} 条")
-
-    start_idx = (int(page) - 1) * page_size
-    end_idx = min(start_idx + page_size, total)
-    st.caption(f"本页：{start_idx + 1} - {end_idx}")
-    return int(page_size), int(page), int(start_idx), int(end_idx)
+@st.dialog("原文树", width="large")
+def _show_tree_dialog(*, tree_label: str, tree_text: str, post_uid: str) -> None:
+    label = str(tree_label or "").strip()
+    if label:
+        st.caption(f"对话：{label}")
+    else:
+        st.caption("原文树")
+    st.code(str(tree_text or "").rstrip(), language="text")
+    st.caption(f"post_uid：{str(post_uid or '').strip()}")
 
 
-def _render_recent_trade_flow(
-    trade_df: pd.DataFrame,
-    *,
-    group_col: str,
-    group_label: str,
-    posts_all: pd.DataFrame | None,
-) -> None:
-    st.markdown("**最近交易流（按时间倒序）**")
-    trade_view = trade_df.sort_values(by="created_at", ascending=False)
-    if trade_view.empty:
-        st.info("没有交易观点。")
-        return
+def _post_uid_set(posts_all: pd.DataFrame | None) -> set[str]:
+    if posts_all is None or posts_all.empty or "post_uid" not in posts_all.columns:
+        return set()
+    values = posts_all["post_uid"].dropna().astype(str).map(lambda v: v.strip())
+    return {v for v in values.tolist() if v}
 
-    total = len(trade_view)
-    _, _, start_idx, end_idx = _paginate_rows(total, key_prefix="trade_flow")
-    page_df = trade_view.iloc[start_idx:end_idx].copy()
 
-    tree_by_uid, label_by_uid = _build_tree_maps(page_df, posts_all=posts_all)
-    if posts_all is None or posts_all.empty:
-        st.info("没有帖子数据，tree 画不出来。")
+def _build_latest_post_uid_candidates(
+    board_view: pd.DataFrame, *, group_col: str
+) -> dict[str, list[str]]:
+    if (
+        board_view.empty
+        or group_col not in board_view.columns
+        or "post_uid" not in board_view.columns
+    ):
+        return {}
 
-    for i, (_, row) in enumerate(page_df.iterrows(), start=1):
-        post_uid = str(row.get("post_uid") or "").strip()
-        created = _format_ts(row.get("created_at"))
-        author = str(row.get("author") or "").strip()
-        action_badge = trade_action_badge(row.get("action"), row.get("action_strength"))
-        summary = str(row.get("summary") or "").strip()
-        group_val = str(row.get(group_col) or "").strip()
-        topic_key = str(row.get("topic_key") or "").strip()
-        confidence = row.get("confidence")
-        url = str(row.get("url") or "").strip()
+    view = board_view[[group_col, "created_at", "post_uid"]].copy()
+    view["post_uid"] = view["post_uid"].apply(lambda v: "" if pd.isna(v) else str(v))
+    view["post_uid"] = view["post_uid"].astype(str).str.strip()
+    view = view[view["post_uid"].ne("")]
+    if view.empty:
+        return {}
 
-        title = summary if summary else action_badge
-        st.markdown(f"**{action_badge} {title}**")
+    if "created_at" in view.columns:
+        view = view.sort_values(by="created_at", ascending=False)
 
-        meta_parts = [p for p in [created, author] if p]
-        if group_val:
-            meta_parts.append(f"{group_label}：{group_val}")
-        if topic_key and topic_key != group_val:
-            meta_parts.append(f"主题：{topic_key}")
-        if confidence is not None and str(confidence).strip():
-            meta_parts.append(f"置信度：{confidence}")
-        if meta_parts:
-            st.caption(" · ".join(meta_parts))
-
-        if url:
-            st.link_button(
-                f"打开链接（{start_idx + i}）",
-                url,
-                type="secondary",
-                width="content",
-            )
-
-        label = label_by_uid.get(post_uid, "")
-        if label:
-            st.caption(f"对话：{label}")
-
-        tree_text = tree_by_uid.get(post_uid, "").rstrip()
-        if tree_text.strip():
-            st.code(tree_text, language="text")
-        else:
-            st.info("tree 为空。")
-
-        if i < len(page_df):
-            st.divider()
+    candidates: dict[str, list[str]] = {}
+    for key, group in view.groupby(group_col, sort=False):
+        topic = str(key or "").strip()
+        if not topic:
+            continue
+        seen: set[str] = set()
+        uids: list[str] = []
+        for uid in group["post_uid"].tolist():
+            s = str(uid or "").strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            uids.append(s)
+        if uids:
+            candidates[topic] = uids
+    return candidates
 
 
 def _trade_data_coverage_days(
@@ -370,7 +337,7 @@ def _trade_data_coverage_days(
     return max(1, days), min_ts.to_pydatetime(), max_ts.to_pydatetime()
 
 
-def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, str]:
+def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, str, int]:
     row1_a, row1_b, row1_c = st.columns([1, 1, 1])
     window_max_days = max(1, int(window_max_days))
     window_max_days = min(window_max_days, TRADE_BOARD_MAX_WINDOW_DAYS)
@@ -407,10 +374,20 @@ def _trade_board_settings(*, window_max_days: int) -> tuple[int, str, str]:
             key="trade_board_consensus_filter",
         )
 
+    summary_width_chars = st.slider(
+        "总结一行大概多少字",
+        20,
+        120,
+        60,
+        step=5,
+        key="trade_board_summary_width_chars",
+    )
+
     return (
         int(window_days),
         str(sort_mode),
         str(consensus_filter),
+        int(summary_width_chars),
     )
 
 
@@ -472,6 +449,7 @@ def _build_trade_board_agg(
     last_badge = last_rows.apply(
         lambda row: trade_action_badge(row["action"], row["strength"]), axis=1
     )
+    agg["post_uid"] = agg[group_col].map(last_rows["post_uid"])
     agg["最近大佬"] = agg[group_col].map(last_rows["author"])
     agg["最近动作"] = agg[group_col].map(last_badge)
     agg["最近摘要"] = (
@@ -480,7 +458,6 @@ def _build_trade_board_agg(
         .fillna("")
         .astype(str)
         .str.replace(r"\s+", " ", regex=True)
-        .str.slice(0, 60)
     )
     agg["url"] = agg[group_col].map(last_rows["url"])
     agg["最近"] = agg["最近时间"].apply(lambda ts: format_age_label(max_ts, ts))
@@ -537,33 +514,187 @@ def _render_trade_kpis(
 def _render_top_assets(
     agg_sorted: pd.DataFrame,
     *,
+    board_view: pd.DataFrame,
     group_col: str,
     group_label: str,
+    posts_all: pd.DataFrame | None = None,
+    summary_width_chars: int,
 ) -> pd.DataFrame:
     top_assets = agg_sorted.copy()
-    st.dataframe(
-        top_assets[
-            [
-                group_col,
-                "共识",
-                "净强度",
-                "买强度",
-                "卖强度",
-                "提及次数",
-                "大佬数",
-                "最近",
-                "最近动作",
-                "最近大佬",
-                "最近摘要",
-                "url",
-            ]
-        ].rename(columns={group_col: group_label}),
-        width="stretch",
-        hide_index=True,
-        column_config={
-            "url": st.column_config.LinkColumn("链接", display_text="打开"),
-        },
+    if top_assets.empty:
+        st.info(f"没有{group_label}数据。")
+        return top_assets
+
+    available_post_uids = _post_uid_set(posts_all)
+    candidates_by_topic = _build_latest_post_uid_candidates(
+        board_view, group_col=group_col
     )
+
+    tree_post_uids = top_assets.get("post_uid", pd.Series(dtype=object)).copy()
+    tree_post_uids = tree_post_uids.apply(lambda v: "" if pd.isna(v) else str(v))
+    tree_post_uids = tree_post_uids.astype(str).str.strip()
+
+    if available_post_uids and candidates_by_topic:
+        for idx, row in top_assets.iterrows():
+            current_uid = str(tree_post_uids.get(idx, "") or "").strip()
+            if current_uid and current_uid in available_post_uids:
+                continue
+            topic_key = str(row.get(group_col) or "").strip()
+            for cand_uid in candidates_by_topic.get(topic_key, []):
+                if cand_uid in available_post_uids:
+                    tree_post_uids.at[idx] = cand_uid
+                    break
+
+    tree_view = top_assets.copy()
+    tree_view["post_uid"] = tree_post_uids
+    tree_by_uid, label_by_uid = _build_tree_maps(tree_view, posts_all=posts_all)
+
+    # Note: We use CSS `em` as a rough "character width" for Chinese text.
+    summary_width_em = max(10, int(summary_width_chars))
+    st.markdown(
+        TRADE_BOARD_LIST_STYLE_TEMPLATE.format(summary_width_em=summary_width_em),
+        unsafe_allow_html=True,
+    )
+
+    col_sizes = [2, 1, 6, 1, 1, 2, 1, 2, 4]
+    (
+        header_topic,
+        header_consensus,
+        header_summary,
+        header_tree,
+        header_link,
+        header_recent_action,
+        header_recent_time,
+        header_recent_author,
+        header_stats,
+    ) = st.columns(col_sizes)
+    with header_topic:
+        st.markdown(
+            f"<div class='av-trade-board-header'>{_escape_html(group_label)}</div>",
+            unsafe_allow_html=True,
+        )
+    with header_consensus:
+        st.markdown(
+            "<div class='av-trade-board-header'>共识</div>", unsafe_allow_html=True
+        )
+    with header_summary:
+        st.markdown(
+            "<div class='av-trade-board-header'>总结</div>", unsafe_allow_html=True
+        )
+    with header_tree:
+        st.markdown(
+            "<div class='av-trade-board-header'>树</div>", unsafe_allow_html=True
+        )
+    with header_link:
+        st.markdown(
+            "<div class='av-trade-board-header'>链接</div>", unsafe_allow_html=True
+        )
+    with header_recent_action:
+        st.markdown(
+            "<div class='av-trade-board-header'>最近动作</div>", unsafe_allow_html=True
+        )
+    with header_recent_time:
+        st.markdown(
+            "<div class='av-trade-board-header'>最近时间</div>", unsafe_allow_html=True
+        )
+    with header_recent_author:
+        st.markdown(
+            "<div class='av-trade-board-header'>最近大佬</div>", unsafe_allow_html=True
+        )
+    with header_stats:
+        st.markdown(
+            "<div class='av-trade-board-header'>统计</div>", unsafe_allow_html=True
+        )
+
+    for idx, row in top_assets.iterrows():
+        topic = str(row.get(group_col) or "").strip()
+        consensus = str(row.get("共识") or "").strip()
+        summary = str(row.get("最近摘要") or "").strip()
+        url = str(row.get("url") or "").strip()
+        tree_post_uid = str(tree_post_uids.get(idx, "") or "").strip()
+
+        (
+            col_topic,
+            col_consensus,
+            col_summary,
+            col_tree,
+            col_link,
+            col_recent_action,
+            col_recent_time,
+            col_recent_author,
+            col_stats,
+        ) = st.columns(col_sizes)
+        with col_topic:
+            st.markdown(f"<b>{_escape_html(topic)}</b>", unsafe_allow_html=True)
+        with col_consensus:
+            st.write(consensus)
+        with col_summary:
+            st.markdown(
+                f"<div class='av-trade-board-summary'>{_escape_html(summary)}</div>",
+                unsafe_allow_html=True,
+            )
+        with col_tree:
+            tree_text = str(tree_by_uid.get(tree_post_uid, "") or "").rstrip()
+            tree_label = str(label_by_uid.get(tree_post_uid, "") or "").strip()
+            if tree_text.strip():
+                tree_key = f"trade_board:tree:{idx}:{tree_post_uid}"
+                if st.button("树", key=tree_key):
+                    _show_tree_dialog(
+                        tree_label=tree_label,
+                        tree_text=tree_text,
+                        post_uid=tree_post_uid,
+                    )
+            else:
+                with st.popover("无", width="stretch"):
+                    st.caption("没有树：找不到原帖数据。")
+                    if not tree_post_uid:
+                        st.write("原因：这条的 post_uid 是空的。")
+                    elif (
+                        available_post_uids and tree_post_uid not in available_post_uids
+                    ):
+                        st.write("原因：posts 里没有这条 post_uid。")
+                        st.code(tree_post_uid, language="text")
+                    else:
+                        st.write("原因：posts 有，但 tree 算不出来。")
+        with col_link:
+            if url:
+                st.link_button("打开", url, width="content", type="tertiary")
+            else:
+                st.write("—")
+
+        recent_action = str(row.get("最近动作") or "").strip()
+        recent_author = str(row.get("最近大佬") or "").strip()
+        recent_age = str(row.get("最近") or "").strip()
+        net_strength = row.get("净强度")
+        buy_strength = row.get("买强度")
+        sell_strength = row.get("卖强度")
+        mentions = row.get("提及次数")
+        author_count = row.get("大佬数")
+
+        with col_recent_action:
+            st.write(recent_action)
+        with col_recent_time:
+            st.write(recent_age)
+        with col_recent_author:
+            st.write(recent_author)
+        with col_stats:
+            st.write(
+                TRADE_BOARD_DOT_SEPARATOR.join(
+                    [
+                        item
+                        for item in [
+                            f"净强度 {net_strength}",
+                            f"买强度 {buy_strength}",
+                            f"卖强度 {sell_strength}",
+                            f"提及次数 {mentions}",
+                            f"大佬数 {author_count}",
+                        ]
+                        if str(item or "").strip()
+                    ]
+                )
+            )
+        st.markdown("<div class='av-trade-board-sep'></div>", unsafe_allow_html=True)
+
     return top_assets
 
 
@@ -602,7 +733,7 @@ def _trade_matrix_cell_html(
     cell_escaped = _escape_html(cell)
     tree = str(tree_text or "").rstrip()
     if not tree.strip():
-        return f"<span class='av-trade-cell'>{cell_escaped}</span>"
+        return f"<div class='av-trade-cell'>{cell_escaped}</div>"
 
     label = str(tree_label or "").strip()
     title_html = (
@@ -611,13 +742,13 @@ def _trade_matrix_cell_html(
         else "<div class='av-trade-tip-title'>原文树</div>"
     )
     return (
-        "<span class='av-trade-cell'>"
+        "<div class='av-trade-cell'>"
         f"{cell_escaped}"
-        "<span class='av-trade-tip'>"
+        "<div class='av-trade-tip'>"
         f"{title_html}"
         f"<pre>{_escape_html(tree)}</pre>"
-        "</span>"
-        "</span>"
+        "</div>"
+        "</div>"
     )
 
 
@@ -629,7 +760,6 @@ def _render_trade_matrix(
     group_col: str,
     group_label: str,
     max_ts: datetime,
-    posts_all: pd.DataFrame | None = None,
 ) -> None:
     if not top_asset_keys:
         st.info(f"没有{group_label}数据。")
@@ -667,13 +797,11 @@ def _render_trade_matrix(
     pair_last["age"] = pair_last["created_at"].apply(
         lambda ts: format_age_label(max_ts, ts)
     )
-    pair_last["cell"] = pair_last["badge"] + " " + pair_last["age"]
-
-    tree_by_uid, label_by_uid = _build_tree_maps(pair_last, posts_all=posts_all)
+    pair_last["cell"] = (
+        pair_last["badge"] + TRADE_BOARD_DOT_SEPARATOR + pair_last["age"]
+    )
 
     cell_by_pair: dict[tuple[str, str], str] = {}
-    tree_by_pair: dict[tuple[str, str], str] = {}
-    label_by_pair: dict[tuple[str, str], str] = {}
     for _, row in pair_last.iterrows():
         asset = str(row.get(group_col) or "").strip()
         author = str(row.get("author") or "").strip()
@@ -681,12 +809,6 @@ def _render_trade_matrix(
             continue
         key = (asset, author)
         cell_by_pair[key] = str(row.get("cell") or "").strip()
-        post_uid = str(row.get("post_uid") or "").strip()
-        if post_uid:
-            tree = str(tree_by_uid.get(post_uid, "") or "").rstrip()
-            if tree.strip():
-                tree_by_pair[key] = tree
-                label_by_pair[key] = str(label_by_uid.get(post_uid, "") or "").strip()
 
     parts: list[str] = [
         TRADE_BOARD_MATRIX_TOOLTIP_STYLE,
@@ -706,8 +828,8 @@ def _render_trade_matrix(
             key = (asset, author)
             cell_html = _trade_matrix_cell_html(
                 cell_by_pair.get(key, ""),
-                tree_text=tree_by_pair.get(key, ""),
-                tree_label=label_by_pair.get(key, ""),
+                tree_text="",
+                tree_label="",
             )
             parts.append(f"<td>{cell_html}</td>")
         parts.append("</tr>")
@@ -786,14 +908,6 @@ def show_trade_flow(
     if trade_df.empty:
         st.info("没有交易类观点。")
         return
-    _render_recent_trade_flow(
-        trade_df,
-        group_col=group_col,
-        group_label=group_label,
-        posts_all=posts_all,
-    )
-
-    st.divider()
     st.markdown("**作业板（抄作业用，一眼看懂）**")
 
     coverage_days, min_ts, max_ts = _trade_data_coverage_days(trade_df)
@@ -801,8 +915,8 @@ def show_trade_flow(
         st.caption(
             f"当前交易观点时间：{min_ts.date()} ~ {max_ts.date()}（{coverage_days} 天）。"
         )
-    window_days, sort_mode, consensus_filter = _trade_board_settings(
-        window_max_days=coverage_days
+    window_days, sort_mode, consensus_filter, summary_width_chars = (
+        _trade_board_settings(window_max_days=coverage_days)
     )
     prepared = _prepare_trade_board_df(
         trade_df,
@@ -833,8 +947,11 @@ def show_trade_flow(
     _render_trade_kpis(agg_view, board_df=board_view, group_label=group_label)
     top_assets = _render_top_assets(
         agg_view,
+        board_view=board_view,
         group_col=group_col,
         group_label=group_label,
+        posts_all=posts_all,
+        summary_width_chars=summary_width_chars,
     )
 
     st.markdown(f"**作业格（大佬 × {group_label}）**")
@@ -847,7 +964,6 @@ def show_trade_flow(
         group_col=group_col,
         group_label=group_label,
         max_ts=max_ts,
-        posts_all=posts_all,
     )
     _render_trade_detail(
         board_view,
