@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import reflex as rx
+
+from alphavault_reflex.research_state import ResearchState
+
+
+def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.div(
+        rx.text(row["summary"], class_name="av-research-signal-title"),
+        rx.text(row["action"], class_name="av-research-muted"),
+        rx.text(row["author"], class_name="av-research-muted"),
+        rx.cond(
+            row["display_md"] != "",
+            rx.text(row["display_md"], class_name="av-research-signal-body"),
+            rx.text(row["raw_text"], class_name="av-research-signal-body"),
+        ),
+        class_name="av-research-card",
+    )
+
+
+def _related_link(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.link(
+        row["label"],
+        href=row["href"],
+        class_name="av-research-chip",
+    )
+
+
+def _pending_item(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.div(
+        rx.text(row["candidate_key"], class_name="av-research-side-title"),
+        rx.text(row["evidence_summary"], class_name="av-research-muted"),
+        class_name="av-research-side-item",
+    )
+
+
+def stock_research_page() -> rx.Component:
+    return rx.el.div(
+        rx.el.div(
+            rx.heading(ResearchState.page_title, size="6"),
+            rx.text("最近买卖信号 + 原文", class_name="av-research-muted"),
+            class_name="av-research-head",
+        ),
+        rx.cond(
+            ResearchState.load_error != "",
+            rx.el.div(
+                rx.text("错误：", class_name="av-error-title"),
+                rx.text(ResearchState.load_error, class_name="av-error-text"),
+                class_name="av-error",
+            ),
+            rx.el.div(),
+        ),
+        rx.el.div(
+            rx.el.div(
+                rx.heading("最近信号", size="4"),
+                rx.cond(
+                    ResearchState.has_signals,
+                    rx.el.div(
+                        rx.foreach(ResearchState.primary_signals, _signal_card),
+                        class_name="av-research-list",
+                    ),
+                    rx.text("没有信号。", class_name="av-research-muted"),
+                ),
+                class_name="av-research-main",
+            ),
+            rx.el.aside(
+                rx.heading("相关板块", size="4"),
+                rx.cond(
+                    ResearchState.related_items,
+                    rx.el.div(
+                        rx.foreach(ResearchState.related_items, _related_link),
+                        class_name="av-research-chip-wrap",
+                    ),
+                    rx.text("暂无。", class_name="av-research-muted"),
+                ),
+                rx.heading("待确认关系", size="4", margin_top="18px"),
+                rx.cond(
+                    ResearchState.has_pending_candidates,
+                    rx.el.div(
+                        rx.foreach(ResearchState.pending_candidates, _pending_item),
+                        class_name="av-research-side-list",
+                    ),
+                    rx.text("暂无。", class_name="av-research-muted"),
+                ),
+                class_name="av-research-side",
+            ),
+            class_name="av-research-layout",
+        ),
+        class_name="av-research-page",
+    )

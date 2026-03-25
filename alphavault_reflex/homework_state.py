@@ -9,6 +9,10 @@ from alphavault_reflex.services.homework_board import (
     build_board,
     build_tree,
 )
+from alphavault_reflex.services.research_models import (
+    build_sector_route,
+    build_stock_route,
+)
 from alphavault_reflex.services.turso_read import (
     load_post_urls_from_env,
     load_posts_for_tree_from_env,
@@ -87,6 +91,17 @@ class HomeworkState(rx.State):
                 uid = str(row.get("tree_post_uid") or "").strip()
                 if uid and uid in url_map:
                     row["url"] = url_map[uid]
+        for row in result.rows:
+            topic_key = str(row.get("topic") or "").strip()
+            row["topic_label"] = _topic_label(topic_key)
+            row["stock_route"] = (
+                build_stock_route(topic_key) if topic_key.startswith("stock:") else ""
+            )
+            row["sector_route"] = (
+                build_sector_route(topic_key)
+                if topic_key.startswith("cluster:")
+                else ""
+            )
 
         self.caption = result.caption
         self.window_max_days = int(result.window_max_days or 1)
@@ -158,3 +173,10 @@ class HomeworkState(rx.State):
             "" if str(tree_text or "").strip() else "没有对话流。"
         )
         self.tree_loading = False
+
+
+def _topic_label(topic_key: str) -> str:
+    value = str(topic_key or "").strip()
+    if ":" not in value:
+        return value
+    return value.split(":", 1)[1].strip()

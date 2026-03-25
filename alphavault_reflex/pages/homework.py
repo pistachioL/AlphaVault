@@ -85,9 +85,32 @@ def _table_header_cell(label: str, *, col_index: int) -> rx.Component:
     )
 
 
+def _topic_cell(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.td(
+        rx.cond(
+            row["stock_route"] != "",
+            rx.link(
+                row["topic_label"],
+                href=row["stock_route"],
+                class_name="av-topic-link",
+            ),
+            rx.cond(
+                row["sector_route"] != "",
+                rx.link(
+                    row["topic_label"],
+                    href=row["sector_route"],
+                    class_name="av-topic-link",
+                ),
+                rx.el.span(row["topic_label"]),
+            ),
+        ),
+        class_name="av-td av-topic",
+    )
+
+
 def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.tr(
-        rx.el.td(row["topic"], class_name="av-td av-topic"),
+        _topic_cell(row),
         rx.el.td(row["consensus"], class_name="av-td av-consensus"),
         rx.el.td(row["summary"], class_name="av-td av-summary"),
         rx.el.td(
@@ -121,6 +144,7 @@ def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.el.td(row["mentions"], class_name="av-td av-num"),
         rx.el.td(row["author_count"], class_name="av-td av-num"),
         class_name="av-tr",
+        on_click=lambda: HomeworkState.open_tree_dialog(row["tree_post_uid"]),
     )
 
 
