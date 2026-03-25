@@ -144,7 +144,15 @@ class HomeworkState(rx.State):
 
     @rx.event
     def set_tree_dialog_open(self, value: bool) -> None:
-        self.tree_dialog_open = bool(value)
+        if value:
+            self.tree_dialog_open = True
+            return
+        self.close_tree_dialog()
+
+    @rx.event
+    def close_tree_dialog(self) -> None:
+        self.tree_dialog_open = False
+        self.tree_loading = False
 
     @rx.event
     def open_tree_dialog(self, post_uid: str):

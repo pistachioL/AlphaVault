@@ -144,7 +144,6 @@ def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.el.td(row["mentions"], class_name="av-td av-num"),
         rx.el.td(row["author_count"], class_name="av-td av-num"),
         class_name="av-tr",
-        on_click=lambda: HomeworkState.open_tree_dialog(row["tree_post_uid"]),
     )
 
 
@@ -259,7 +258,13 @@ def _tree_dialog() -> rx.Component:
                 ),
             ),
             rx.flex(
-                rx.dialog.close(rx.button("关", variant="soft")),
+                rx.dialog.close(
+                    rx.button(
+                        "关",
+                        variant="soft",
+                        on_click=HomeworkState.close_tree_dialog,
+                    )
+                ),
                 justify="end",
                 margin_top="14px",
             ),
