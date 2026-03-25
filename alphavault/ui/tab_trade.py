@@ -145,7 +145,7 @@ TRADE_BOARD_LIST_STYLE_TEMPLATE = """
 }}
 .av-trade-board-sep {{
   border-bottom: 1px solid rgba(49, 51, 63, 0.12);
-  margin: 8px 0 10px 0;
+  margin: 4px 0 6px 0;
 }}
 </style>
 """
@@ -220,7 +220,7 @@ def _unique_post_uids_in_order(df: pd.DataFrame) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for item in df["post_uid"].tolist():
-        uid = str(item or "").strip()
+        uid = "" if pd.isna(item) else str(item or "").strip()
         if not uid or uid in seen:
             continue
         seen.add(uid)
@@ -261,6 +261,62 @@ def _build_tree_maps(
                 tree_by_uid.setdefault(uid, tree_text)
                 label_by_uid.setdefault(uid, label)
     return tree_by_uid, label_by_uid
+
+
+@st.dialog("原文树", width="large")
+def _show_tree_dialog(*, tree_label: str, tree_text: str, post_uid: str) -> None:
+    label = str(tree_label or "").strip()
+    if label:
+        st.caption(f"对话：{label}")
+    else:
+        st.caption("原文树")
+    st.code(str(tree_text or "").rstrip(), language="text")
+    st.caption(f"post_uid：{str(post_uid or '').strip()}")
+
+
+def _post_uid_set(posts_all: pd.DataFrame | None) -> set[str]:
+    if posts_all is None or posts_all.empty or "post_uid" not in posts_all.columns:
+        return set()
+    values = posts_all["post_uid"].dropna().astype(str).map(lambda v: v.strip())
+    return {v for v in values.tolist() if v}
+
+
+def _build_latest_post_uid_candidates(
+    board_view: pd.DataFrame, *, group_col: str
+) -> dict[str, list[str]]:
+    if (
+        board_view.empty
+        or group_col not in board_view.columns
+        or "post_uid" not in board_view.columns
+    ):
+        return {}
+
+    view = board_view[[group_col, "created_at", "post_uid"]].copy()
+    view["post_uid"] = view["post_uid"].apply(lambda v: "" if pd.isna(v) else str(v))
+    view["post_uid"] = view["post_uid"].astype(str).str.strip()
+    view = view[view["post_uid"].ne("")]
+    if view.empty:
+        return {}
+
+    if "created_at" in view.columns:
+        view = view.sort_values(by="created_at", ascending=False)
+
+    candidates: dict[str, list[str]] = {}
+    for key, group in view.groupby(group_col, sort=False):
+        topic = str(key or "").strip()
+        if not topic:
+            continue
+        seen: set[str] = set()
+        uids: list[str] = []
+        for uid in group["post_uid"].tolist():
+            s = str(uid or "").strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            uids.append(s)
+        if uids:
+            candidates[topic] = uids
+    return candidates
 
 
 def _trade_data_coverage_days(
@@ -458,6 +514,7 @@ def _render_trade_kpis(
 def _render_top_assets(
     agg_sorted: pd.DataFrame,
     *,
+    board_view: pd.DataFrame,
     group_col: str,
     group_label: str,
     posts_all: pd.DataFrame | None = None,
@@ -468,7 +525,29 @@ def _render_top_assets(
         st.info(f"没有{group_label}数据。")
         return top_assets
 
-    tree_by_uid, label_by_uid = _build_tree_maps(top_assets, posts_all=posts_all)
+    available_post_uids = _post_uid_set(posts_all)
+    candidates_by_topic = _build_latest_post_uid_candidates(
+        board_view, group_col=group_col
+    )
+
+    tree_post_uids = top_assets.get("post_uid", pd.Series(dtype=object)).copy()
+    tree_post_uids = tree_post_uids.apply(lambda v: "" if pd.isna(v) else str(v))
+    tree_post_uids = tree_post_uids.astype(str).str.strip()
+
+    if available_post_uids and candidates_by_topic:
+        for idx, row in top_assets.iterrows():
+            current_uid = str(tree_post_uids.get(idx, "") or "").strip()
+            if current_uid and current_uid in available_post_uids:
+                continue
+            topic_key = str(row.get(group_col) or "").strip()
+            for cand_uid in candidates_by_topic.get(topic_key, []):
+                if cand_uid in available_post_uids:
+                    tree_post_uids.at[idx] = cand_uid
+                    break
+
+    tree_view = top_assets.copy()
+    tree_view["post_uid"] = tree_post_uids
+    tree_by_uid, label_by_uid = _build_tree_maps(tree_view, posts_all=posts_all)
 
     # Note: We use CSS `em` as a rough "character width" for Chinese text.
     summary_width_em = max(10, int(summary_width_chars))
@@ -477,9 +556,18 @@ def _render_top_assets(
         unsafe_allow_html=True,
     )
 
-    header_topic, header_consensus, header_summary, header_tree, header_link = (
-        st.columns([2, 1, 6, 1, 1])
-    )
+    col_sizes = [2, 1, 6, 1, 1, 2, 1, 2, 4]
+    (
+        header_topic,
+        header_consensus,
+        header_summary,
+        header_tree,
+        header_link,
+        header_recent_action,
+        header_recent_time,
+        header_recent_author,
+        header_stats,
+    ) = st.columns(col_sizes)
     with header_topic:
         st.markdown(
             f"<div class='av-trade-board-header'>{_escape_html(group_label)}</div>",
@@ -501,17 +589,41 @@ def _render_top_assets(
         st.markdown(
             "<div class='av-trade-board-header'>链接</div>", unsafe_allow_html=True
         )
+    with header_recent_action:
+        st.markdown(
+            "<div class='av-trade-board-header'>最近动作</div>", unsafe_allow_html=True
+        )
+    with header_recent_time:
+        st.markdown(
+            "<div class='av-trade-board-header'>最近时间</div>", unsafe_allow_html=True
+        )
+    with header_recent_author:
+        st.markdown(
+            "<div class='av-trade-board-header'>最近大佬</div>", unsafe_allow_html=True
+        )
+    with header_stats:
+        st.markdown(
+            "<div class='av-trade-board-header'>统计</div>", unsafe_allow_html=True
+        )
 
-    for _, row in top_assets.iterrows():
+    for idx, row in top_assets.iterrows():
         topic = str(row.get(group_col) or "").strip()
         consensus = str(row.get("共识") or "").strip()
         summary = str(row.get("最近摘要") or "").strip()
         url = str(row.get("url") or "").strip()
-        post_uid = str(row.get("post_uid") or "").strip()
+        tree_post_uid = str(tree_post_uids.get(idx, "") or "").strip()
 
-        col_topic, col_consensus, col_summary, col_tree, col_link = st.columns(
-            [2, 1, 6, 1, 1]
-        )
+        (
+            col_topic,
+            col_consensus,
+            col_summary,
+            col_tree,
+            col_link,
+            col_recent_action,
+            col_recent_time,
+            col_recent_author,
+            col_stats,
+        ) = st.columns(col_sizes)
         with col_topic:
             st.markdown(f"<b>{_escape_html(topic)}</b>", unsafe_allow_html=True)
         with col_consensus:
@@ -522,22 +634,33 @@ def _render_top_assets(
                 unsafe_allow_html=True,
             )
         with col_tree:
-            tree_text = str(tree_by_uid.get(post_uid, "") or "").rstrip()
-            tree_label = str(label_by_uid.get(post_uid, "") or "").strip()
+            tree_text = str(tree_by_uid.get(tree_post_uid, "") or "").rstrip()
+            tree_label = str(label_by_uid.get(tree_post_uid, "") or "").strip()
             if tree_text.strip():
-                with st.popover("树", width="content"):
-                    if tree_label:
-                        st.caption(f"对话：{tree_label}")
-                    else:
-                        st.caption("原文树")
-                    st.code(tree_text, language="text")
+                tree_key = f"trade_board:tree:{idx}:{tree_post_uid}"
+                if st.button("树", key=tree_key):
+                    _show_tree_dialog(
+                        tree_label=tree_label,
+                        tree_text=tree_text,
+                        post_uid=tree_post_uid,
+                    )
             else:
-                st.caption("—")
+                with st.popover("无", width="stretch"):
+                    st.caption("没有树：找不到原帖数据。")
+                    if not tree_post_uid:
+                        st.write("原因：这条的 post_uid 是空的。")
+                    elif (
+                        available_post_uids and tree_post_uid not in available_post_uids
+                    ):
+                        st.write("原因：posts 里没有这条 post_uid。")
+                        st.code(tree_post_uid, language="text")
+                    else:
+                        st.write("原因：posts 有，但 tree 算不出来。")
         with col_link:
             if url:
                 st.link_button("打开", url, width="content", type="tertiary")
             else:
-                st.caption("—")
+                st.write("—")
 
         recent_action = str(row.get("最近动作") or "").strip()
         recent_author = str(row.get("最近大佬") or "").strip()
@@ -548,24 +671,28 @@ def _render_top_assets(
         mentions = row.get("提及次数")
         author_count = row.get("大佬数")
 
-        st.caption(
-            TRADE_BOARD_DOT_SEPARATOR.join(
-                [
-                    item
-                    for item in [
-                        (recent_action and f"最近动作 {recent_action}") or "",
-                        (recent_age and f"最近时间 {recent_age}") or "",
-                        (recent_author and f"最近大佬 {recent_author}") or "",
-                        f"净强度 {net_strength}",
-                        f"买强度 {buy_strength}",
-                        f"卖强度 {sell_strength}",
-                        f"提及次数 {mentions}",
-                        f"大佬数 {author_count}",
+        with col_recent_action:
+            st.write(recent_action)
+        with col_recent_time:
+            st.write(recent_age)
+        with col_recent_author:
+            st.write(recent_author)
+        with col_stats:
+            st.write(
+                TRADE_BOARD_DOT_SEPARATOR.join(
+                    [
+                        item
+                        for item in [
+                            f"净强度 {net_strength}",
+                            f"买强度 {buy_strength}",
+                            f"卖强度 {sell_strength}",
+                            f"提及次数 {mentions}",
+                            f"大佬数 {author_count}",
+                        ]
+                        if str(item or "").strip()
                     ]
-                    if str(item or "").strip()
-                ]
+                )
             )
-        )
         st.markdown("<div class='av-trade-board-sep'></div>", unsafe_allow_html=True)
 
     return top_assets
@@ -820,6 +947,7 @@ def show_trade_flow(
     _render_trade_kpis(agg_view, board_df=board_view, group_label=group_label)
     top_assets = _render_top_assets(
         agg_view,
+        board_view=board_view,
         group_col=group_col,
         group_label=group_label,
         posts_all=posts_all,
