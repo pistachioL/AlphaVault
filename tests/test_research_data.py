@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import pandas as pd
+
+from alphavault_reflex.services.research_data import (
+    build_sector_research_view,
+    build_stock_research_view,
+)
+
+
+def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -> None:
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "author": "alice",
+                "raw_text": "看多茅台",
+                "display_md": "看多茅台",
+            }
+        ]
+    )
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 3,
+                "summary": "继续加仓",
+                "created_at": "2026-03-25 10:00:00",
+                "cluster_keys": ["white_liquor"],
+            }
+        ]
+    )
+
+    view = build_stock_research_view(posts, assertions, stock_key="stock:600519.SH")
+    assert view.header_title == "600519.SH"
+    assert view.signals[0]["summary"] == "继续加仓"
+    assert view.related_sectors[0]["sector_key"] == "white_liquor"
+
+
+def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -> None:
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "author": "alice",
+                "raw_text": "白酒继续走强",
+                "display_md": "白酒继续走强",
+            }
+        ]
+    )
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "板块继续走强",
+                "created_at": "2026-03-25 10:00:00",
+                "cluster_keys": ["white_liquor"],
+            }
+        ]
+    )
+
+    view = build_sector_research_view(posts, assertions, sector_key="white_liquor")
+    assert view.header_title == "white_liquor"
+    assert view.signals[0]["summary"] == "板块继续走强"
+    assert view.related_stocks[0]["stock_key"] == "stock:600519.SH"

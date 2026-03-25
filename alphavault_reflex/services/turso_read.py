@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import json
 import os
 
 import pandas as pd
@@ -19,10 +20,18 @@ REFLEX_SOURCE_NAME = "archive"
 
 WANTED_TRADE_ASSERTION_COLUMNS = [
     "post_uid",
+    "idx",
     "topic_key",
     "action",
     "action_strength",
     "summary",
+    "evidence",
+    "confidence",
+    "stock_codes_json",
+    "stock_names_json",
+    "industries_json",
+    "commodities_json",
+    "indices_json",
     "author",
     "created_at",
 ]
@@ -100,6 +109,11 @@ def _standardize_assertions(
         "summary": "",
         "evidence": "",
         "confidence": 0.0,
+        "stock_codes_json": "[]",
+        "stock_names_json": "[]",
+        "industries_json": "[]",
+        "commodities_json": "[]",
+        "indices_json": "[]",
         "author": "",
         "created_at": "",
     }
@@ -110,9 +124,21 @@ def _standardize_assertions(
     assertions["source"] = source_name
 
     assertions["url"] = ""
+    assertions["raw_text"] = ""
+    assertions["display_md"] = ""
     if not posts.empty and "post_uid" in posts.columns and "url" in posts.columns:
         url_map = posts.set_index("post_uid")["url"]
         assertions["url"] = assertions["post_uid"].map(url_map).fillna("")
+    if not posts.empty and "post_uid" in posts.columns and "raw_text" in posts.columns:
+        raw_map = posts.set_index("post_uid")["raw_text"]
+        assertions["raw_text"] = assertions["post_uid"].map(raw_map).fillna("")
+    if (
+        not posts.empty
+        and "post_uid" in posts.columns
+        and "display_md" in posts.columns
+    ):
+        display_map = posts.set_index("post_uid")["display_md"]
+        assertions["display_md"] = assertions["post_uid"].map(display_map).fillna("")
 
     if "author" in assertions.columns:
         missing_author = assertions["author"].eq("") | assertions["author"].isna()
@@ -135,7 +161,29 @@ def _standardize_assertions(
             missing_created, "post_uid"
         ].map(created_map)
 
+    assertions["stock_codes"] = assertions["stock_codes_json"].apply(_parse_json_list)
+    assertions["stock_names"] = assertions["stock_names_json"].apply(_parse_json_list)
+    assertions["industries"] = assertions["industries_json"].apply(_parse_json_list)
+    assertions["commodities"] = assertions["commodities_json"].apply(_parse_json_list)
+    assertions["indices"] = assertions["indices_json"].apply(_parse_json_list)
+
     return assertions
+
+
+def _parse_json_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    try:
+        data = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(item).strip() for item in data if str(item).strip()]
 
 
 @lru_cache(maxsize=2)
@@ -298,3 +346,8 @@ def load_sources_from_env() -> tuple[pd.DataFrame, pd.DataFrame, str]:
             raise
         return pd.DataFrame(), pd.DataFrame(), f"turso_connect_error:{type(e).__name__}"
     return posts, assertions, ""
+
+
+def clear_reflex_source_caches() -> None:
+    _load_trade_sources_cached.cache_clear()
+    _load_post_urls_cached.cache_clear()
