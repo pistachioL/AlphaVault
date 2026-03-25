@@ -3,7 +3,7 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault_reflex.pages.homework import homework_page, index_page
-from alphavault_reflex.state import HomeworkState
+from alphavault_reflex.homework_state import HomeworkState
 
 app = rx.App(
     theme=rx.theme(appearance="light"),

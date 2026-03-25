@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import reflex as rx
 
-from alphavault_reflex.state import HomeworkState
+from alphavault_reflex.homework_state import HomeworkState
 
 
 def index_page() -> rx.Component:
