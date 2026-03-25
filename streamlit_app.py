@@ -25,7 +25,6 @@ from alphavault.ui.tab_follow_pages import show_follow_pages
 from alphavault.ui.tab_logs import show_logs
 from alphavault.ui.tab_overview import show_kpis, show_overview_charts
 from alphavault.ui.tab_risk import show_risk_radar
-from alphavault.ui.tab_trade import show_trade_flow
 from alphavault.ui.topic_cluster_admin import show_topic_cluster_admin
 
 load_dotenv_if_present()
@@ -166,11 +165,12 @@ def main() -> None:
         return
 
     if selected_page == "交易流":
-        show_trade_flow(
-            assertions_filtered,
-            group_col=DEFAULT_GROUP_COL,
-            group_label=DEFAULT_GROUP_LABEL,
-            posts_all=posts,
+        st.info("这个页换成 Reflex 了（列表 + 弹窗树 + 可拖拽列宽）。")
+        st.link_button(
+            "打开 Reflex 作业板",
+            "http://localhost:3000/homework",
+            width="content",
+            type="primary",
         )
         return
 
