@@ -1,7 +1,7 @@
 # AlphaVault
 
 面向投资大佬观点追踪的采集与分析系统。
-当前支持：微博 RSS 抓取、LLM 投资相关性分析、断言抽取、写入 Turso 云端库、Streamlit 可视化。
+当前支持：微博 RSS 抓取、LLM 投资相关性分析、断言抽取、写入 Turso 云端库、Reflex 研究台。
 
 ## 功能概览
 - RSS 增量抓取（去重）
@@ -13,7 +13,8 @@
 - `weibo_rss_turso_worker.py`：Worker（RSS → spool → Turso → AI → Turso）
 - `alphavault/db/turso_queue.py`：Turso 队列字段与读写
 - `alphavault/db/turso_db.py`：Turso engine + 基础表（posts/assertions）
-- `streamlit_app.py`：Web（只读 Turso）
+- `alphavault_reflex/`：Reflex 前端（交易流、个股页、板块页、整理中心）
+- `streamlit_app.py`：旧入口壳（保留总览、风险、日志；研究入口已跳到 Reflex）
 
 ## 环境要求
 - Python 3.10+
@@ -66,19 +67,42 @@ uv run python weibo_rss_turso_worker.py --verbose
 - `RSS_URLS` 支持逗号/换行分隔；也可以用 `RSS_URL`（只传 1 个）。
 - `--author/--user-id` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
 - Worker 会先写本地 `spool` 文件；Turso 写失败时会保留 `spool`，并且（可选）推到 Redis。
-- Streamlit 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
+- Reflex / Streamlit 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
 
-## Streamlit 前端
+## Reflex 前端
 ```bash
-uv run streamlit run streamlit_app.py
+uv run reflex run
 ```
 
 需要：`TURSO_DATABASE_URL`（可选 `TURSO_AUTH_TOKEN`）。
 
+主要页面：
+- `/`：首页 + 全局搜索
+- `/homework`：交易流
+- `/research/stocks/[stock_slug]`：个股研究页
+- `/research/sectors/[sector_slug]`：板块研究页
+- `/organizer`：整理中心
+
+## 旧 Streamlit 入口
+```bash
+uv run streamlit run streamlit_app.py
+```
+
+保留原因：
+- 总览
+- 风险雷达
+- 主题时间线
+- 学习库 / 日志 / 数据表
+
+已经迁走的研究入口：
+- `交易流` -> `Reflex /homework`
+- `关注页` -> `Reflex /organizer`
+- `主题聚合` -> `Reflex /organizer`
+
 ## 线上 Docker（推荐）
 
 容器默认用 `supervisord.conf` 常驻跑 2 件事：
-- Web：Streamlit
+- Web：Reflex
 - Worker：`weibo_rss_turso_worker.py`
 
 启动时会先做一次 startup check（失败就直接退出容器）：
@@ -128,5 +152,5 @@ docker run -d --name alphavault \
 ## 常见问题
 - `auth role not found`：Turso token 与 DB 不匹配，请重新生成 token 并核对 URL。
 - Turso 连不上：worker 不会退出，会先写 `spool`/Redis；恢复后会自动 flush + 重试 AI。
-- Streamlit 看不到数据：因为只展示 `processed_at IS NOT NULL`（AI 还没跑完就不会显示）。
+- Reflex / Streamlit 看不到数据：因为只展示 `processed_at IS NOT NULL`（AI 还没跑完就不会显示）。
 - RSS 抓取正常但 LLM 不跑：确认 `AI_API_KEY` / `AI_MODEL` / `AI_BASE_URL` 配置正确。

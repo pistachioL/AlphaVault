@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import os
 
-import pandas as pd
 import streamlit as st
 
 from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
-from alphavault.db.turso_db import ensure_turso_engine
 from alphavault.env import load_dotenv_if_present
-from alphavault.topic_cluster import enrich_assertions_with_clusters
 from alphavault.ui.data import (
     enrich_assertions,
     enrich_posts,
     load_sources,
-    load_topic_cluster_sources,
 )
 from alphavault.ui.tab_misc import (
     show_conflicts_and_changes,
@@ -21,11 +17,9 @@ from alphavault.ui.tab_misc import (
     show_tables,
     show_topic_timeline,
 )
-from alphavault.ui.tab_follow_pages import show_follow_pages
 from alphavault.ui.tab_logs import show_logs
 from alphavault.ui.tab_overview import show_kpis, show_overview_charts
 from alphavault.ui.tab_risk import show_risk_radar
-from alphavault.ui.topic_cluster_admin import show_topic_cluster_admin
 
 load_dotenv_if_present()
 
@@ -105,8 +99,6 @@ def main() -> None:
         "日志",
         "数据表",
     ]
-    selected_page_pre = str(st.session_state.get("main_page") or pages[0])
-    want_clusters_pre = selected_page_pre in {"关注页", "主题聚合"}
 
     posts, assertions, missing = load_sources()
     if missing:
@@ -121,23 +113,6 @@ def main() -> None:
 
     turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
     turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    clusters_df = pd.DataFrame()
-    cluster_topic_map_df = pd.DataFrame()
-    cluster_post_overrides_df = pd.DataFrame()
-    cluster_load_error = ""
-    if want_clusters_pre:
-        (
-            clusters_df,
-            cluster_topic_map_df,
-            cluster_post_overrides_df,
-            cluster_load_error,
-        ) = load_topic_cluster_sources(turso_url, turso_token)
-        assertions = enrich_assertions_with_clusters(
-            assertions,
-            clusters=clusters_df,
-            topic_map=cluster_topic_map_df,
-            post_overrides=cluster_post_overrides_df,
-        )
 
     # Note: Left sidebar filters removed on purpose.
     posts_filtered = posts
@@ -192,23 +167,22 @@ def main() -> None:
         return
 
     if selected_page == "关注页":
-        show_follow_pages(
-            turso_url=turso_url,
-            turso_token=turso_token,
-            posts_all=posts,
-            assertions_filtered=assertions_filtered,
-            clusters=clusters_df,
+        st.info("关注页已经迁到 Reflex 研究台。")
+        st.link_button(
+            "打开 Reflex 整理中心",
+            "http://localhost:3000/organizer",
+            width="content",
+            type="primary",
         )
         return
 
     if selected_page == "主题聚合":
-        engine = ensure_turso_engine(turso_url, turso_token)
-        show_topic_cluster_admin(
-            engine=engine,
-            assertions_all=assertions,
-            clusters=clusters_df,
-            topic_map=cluster_topic_map_df,
-            load_error=cluster_load_error,
+        st.info("主题聚合已经迁到 Reflex 研究台。")
+        st.link_button(
+            "打开 Reflex 整理中心",
+            "http://localhost:3000/organizer",
+            width="content",
+            type="primary",
         )
         return
 
