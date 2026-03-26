@@ -25,7 +25,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install -p /app/.venv/bin/python gunicorn uvicorn
+    uv pip install -p /app/.venv/bin/python gunicorn "uvicorn[standard]"
 
 COPY . /app
 
