@@ -192,3 +192,21 @@ def test_resolve_route_slug_reads_router_url_without_touching_page() -> None:
         _resolve_route_slug(state, explicit_slug=None, route_key="stock_slug")
         == "600519.SH"
     )
+
+
+def test_resolve_route_slug_prefers_current_router_url_over_stale_state_value() -> None:
+    state = SimpleNamespace(
+        stock_slug="600519.SH",
+        router=SimpleNamespace(
+            route_id="/research/stocks/[stock_slug]",
+            url=SimpleNamespace(
+                path="/research/stocks/000001.SZ",
+                query_parameters={},
+            ),
+        ),
+    )
+
+    assert (
+        _resolve_route_slug(state, explicit_slug=None, route_key="stock_slug")
+        == "000001.SZ"
+    )

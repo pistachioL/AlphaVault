@@ -3,6 +3,7 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault_reflex.homework_state import HomeworkState
+from alphavault_reflex.research_state import ResearchState
 
 
 def index_page() -> rx.Component:
@@ -92,6 +93,7 @@ def _topic_cell(row: rx.Var[dict[str, str]]) -> rx.Component:
             rx.link(
                 row["topic_label"],
                 href=row["stock_route"],
+                on_click=lambda: ResearchState.load_stock_page(row["stock_slug"]),
                 class_name="av-topic-link",
             ),
             rx.cond(
@@ -99,6 +101,7 @@ def _topic_cell(row: rx.Var[dict[str, str]]) -> rx.Component:
                 rx.link(
                     row["topic_label"],
                     href=row["sector_route"],
+                    on_click=lambda: ResearchState.load_sector_page(row["sector_slug"]),
                     class_name="av-topic-link",
                 ),
                 rx.el.span(row["topic_label"]),
@@ -144,7 +147,6 @@ def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.el.td(row["mentions"], class_name="av-td av-num"),
         rx.el.td(row["author_count"], class_name="av-td av-num"),
         class_name="av-tr",
-        on_click=lambda: HomeworkState.open_tree_dialog(row["tree_post_uid"]),
     )
 
 
@@ -259,7 +261,13 @@ def _tree_dialog() -> rx.Component:
                 ),
             ),
             rx.flex(
-                rx.dialog.close(rx.button("关", variant="soft")),
+                rx.dialog.close(
+                    rx.button(
+                        "关",
+                        variant="soft",
+                        on_click=HomeworkState.close_tree_dialog,
+                    )
+                ),
                 justify="end",
                 margin_top="14px",
             ),
