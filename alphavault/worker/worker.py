@@ -37,7 +37,7 @@ from alphavault.ai._client import AiInvalidJsonError
 from alphavault.ai.tag_validate import validate_topic_prompt_v3_ai_result
 from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION, build_topic_prompt
 from alphavault.db.turso_db import (
-    get_turso_engine_from_env,
+    ensure_turso_engine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
 )
@@ -66,10 +66,10 @@ from alphavault.rss.utils import (
 )
 from alphavault.worker.cli import (
     _parse_worker_active_hours_from_args,
-    _resolve_rss_urls,
     _resolve_worker_interval_seconds,
     _resolve_worker_threads,
     parse_args,
+    resolve_rss_source_configs,
 )
 from alphavault.worker.ingest import ingest_rss_many_once
 from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
@@ -86,6 +86,30 @@ from alphavault.weibo.topic_prompt_tree import (
 
 TURSO_READY_RETRY_SECONDS = 5.0
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+@dataclass(frozen=True)
+class WorkerSourceConfig:
+    name: str
+    platform: str
+    rss_urls: list[str]
+    author: str
+    user_id: Optional[str]
+    database_url: str
+    auth_token: str
+
+
+@dataclass
+class WorkerSourceRuntime:
+    config: WorkerSourceConfig
+    engine: Engine
+    spool_dir: Path
+    redis_queue_key: str
+    rss_next_ingest_at: float
+    turso_ready: bool = False
+    turso_next_ready_check_at: float = 0.0
+    alias_sync_future: Future | None = None
+    alias_sync_next_at: float = 0.0
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
@@ -880,6 +904,43 @@ def _log_spool_and_redis(
         print(f"[redis] enabled key={redis_queue_key}", flush=True)
 
 
+def _build_source_spool_dir(
+    *, base_spool_dir: Path, source_name: str, multi_source: bool
+) -> Path:
+    path = base_spool_dir if not multi_source else (base_spool_dir / source_name)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"[spool] dir_error {path} {type(e).__name__}: {e}", flush=True)
+    return path
+
+
+def _build_source_redis_queue_key(
+    *, base_queue_key: str, source_name: str, multi_source: bool
+) -> str:
+    if not base_queue_key:
+        return ""
+    if not multi_source:
+        return base_queue_key
+    return f"{base_queue_key}:{source_name}"
+
+
+def _log_source_runtime(*, verbose: bool, source: WorkerSourceRuntime, redis_client) -> None:
+    if not verbose:
+        return
+    cfg = source.config
+    print(
+        f"[source] name={cfg.name} platform={cfg.platform} rss={len(cfg.rss_urls)} db={cfg.database_url}",
+        flush=True,
+    )
+    _log_spool_and_redis(
+        verbose=verbose,
+        spool_dir=source.spool_dir,
+        redis_client=redis_client,
+        redis_queue_key=source.redis_queue_key,
+    )
+
+
 def _maybe_dispose_turso_engine_on_transient_error(
     *, engine: Engine, err: BaseException, verbose: bool
 ) -> None:
@@ -902,12 +963,15 @@ def _maybe_dispose_turso_engine_on_transient_error(
             )
 
 
-def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> bool:
+def _ensure_turso_ready(
+    *, engine: Engine, verbose: bool, turso_ready: bool, source_name: str = ""
+) -> bool:
     if turso_ready:
         return True
+    prefix = f"[turso:{source_name}]" if source_name else "[turso]"
     try:
         ensure_cloud_queue_schema(engine, verbose=bool(verbose))
-        print("[turso] ready", flush=True)
+        print(f"{prefix} ready", flush=True)
         return True
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
@@ -916,7 +980,7 @@ def _ensure_turso_ready(*, engine: Engine, verbose: bool, turso_ready: bool) -> 
             engine=engine, err=e, verbose=bool(verbose)
         )
         if verbose:
-            print(f"[turso] not_ready {type(e).__name__}: {e}", flush=True)
+            print(f"{prefix} not_ready {type(e).__name__}: {e}", flush=True)
         return False
 
 
@@ -1158,21 +1222,47 @@ def _run_turso_maintenance(
 
 def main() -> None:
     args = parse_args()
-    rss_urls = _resolve_rss_urls(args)
+    source_configs = [
+        WorkerSourceConfig(
+            name=cfg.name,
+            platform=cfg.platform,
+            rss_urls=list(cfg.rss_urls),
+            author=cfg.author,
+            user_id=cfg.user_id,
+            database_url=cfg.database_url,
+            auth_token=cfg.auth_token,
+        )
+        for cfg in resolve_rss_source_configs(args)
+    ]
     worker_active_hours = _parse_worker_active_hours_from_args(args)
     worker_interval = _resolve_worker_interval_seconds(args)
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
     worker_threads = _resolve_worker_threads(args)
-    engine = get_turso_engine_from_env()
-    spool_dir = ensure_spool_dir()
-    redis_client, redis_queue_key = try_get_redis()
-    _log_spool_and_redis(
-        verbose=bool(args.verbose),
-        spool_dir=spool_dir,
-        redis_client=redis_client,
-        redis_queue_key=redis_queue_key,
-    )
+    multi_source = len(source_configs) > 1
+    base_spool_dir = ensure_spool_dir()
+    redis_client, base_redis_queue_key = try_get_redis()
+    sources: list[WorkerSourceRuntime] = []
+    for cfg in source_configs:
+        source = WorkerSourceRuntime(
+            config=cfg,
+            engine=ensure_turso_engine(cfg.database_url, cfg.auth_token),
+            spool_dir=_build_source_spool_dir(
+                base_spool_dir=base_spool_dir,
+                source_name=cfg.name,
+                multi_source=multi_source,
+            ),
+            redis_queue_key=_build_source_redis_queue_key(
+                base_queue_key=base_redis_queue_key,
+                source_name=cfg.name,
+                multi_source=multi_source,
+            ),
+            rss_next_ingest_at=0.0 if cfg.rss_urls else float("inf"),
+        )
+        sources.append(source)
+        _log_source_runtime(
+            verbose=bool(args.verbose), source=source, redis_client=redis_client
+        )
     limit = args.limit if args.limit and args.limit > 0 else None
 
     rss_active_hours: Optional[tuple[int, int]] = None
@@ -1193,19 +1283,14 @@ def main() -> None:
             ai_runtime_config=alias_ai_runtime_config,
         )
 
-    rss_next_ingest_at = 0.0 if rss_urls else float("inf")
     maintenance_next_at = 0.0
-    alias_sync_next_at = 0.0
 
     with (
         ThreadPoolExecutor(max_workers=worker_threads) as executor,
-        ThreadPoolExecutor(max_workers=1) as alias_executor,
+        ThreadPoolExecutor(max_workers=max(1, len(sources))) as alias_executor,
     ):
         wakeup_event = threading.Event()
         inflight_futures: set[Future] = set()
-        alias_sync_future: Future | None = None
-        turso_ready = False
-        turso_next_ready_check_at = 0.0
         while True:
             verbose = bool(args.verbose)
             if worker_active_hours is not None:
@@ -1215,209 +1300,229 @@ def main() -> None:
             inflight_futures.difference_update(
                 {f for f in inflight_futures if f.done()}
             )
-            alias_resolved = 0
-            alias_inserted = 0
-            alias_sync_finished = False
-            alias_has_more = False
-            (
-                alias_sync_future,
-                alias_stats,
-                alias_sync_finished,
-                alias_sync_error,
-            ) = _collect_periodic_job_result(
-                job_name="alias",
-                future=alias_sync_future,
-                engine=engine,
-                verbose=verbose,
-            )
-            alias_resolved = int(alias_stats.get("resolved", 0))
-            alias_inserted = int(alias_stats.get("inserted", 0))
-            alias_has_more = bool(alias_stats.get("has_more", False))
-            if (
-                alias_sync_finished
-                and verbose
-                and (alias_resolved > 0 or alias_inserted > 0)
-            ):
-                print(
-                    f"[alias] sync_done resolved={alias_resolved} inserted={alias_inserted}",
-                    flush=True,
-                )
-            if alias_has_more:
-                alias_sync_next_at = 0.0
-
             now = time.time()
             do_maintenance = bool(now >= maintenance_next_at)
             if do_maintenance:
                 maintenance_next_at = now + float(worker_interval)
-
-            do_ingest_rss = False
-            rss_skip_reason = ""
-            if not rss_urls:
-                rss_skip_reason = "no_sources"
-            else:
-                now_dt = datetime.now(CST)
-                if rss_active_hours is not None and not in_active_hours(
-                    now_dt, rss_active_hours
-                ):
-                    rss_skip_reason = "inactive"
-                    rss_next_ingest_at = now + _seconds_until_next_active_start(
-                        now_dt, rss_active_hours
-                    )
-                elif now < rss_next_ingest_at:
-                    rss_skip_reason = "interval"
-                else:
-                    do_ingest_rss = True
-                    rss_next_ingest_at = now + float(rss_interval_seconds)
-
-            force_maintenance = False
-            if not turso_ready and now >= float(turso_next_ready_check_at):
-                turso_ready = _ensure_turso_ready(
-                    engine=engine, verbose=verbose, turso_ready=turso_ready
-                )
-                if turso_ready:
-                    turso_next_ready_check_at = 0.0
-                    # Turso just recovered: run maintenance ASAP to flush spool/redis quickly.
-                    force_maintenance = True
-                else:
-                    turso_next_ready_check_at = now + float(TURSO_READY_RETRY_SECONDS)
-            active_engine: Optional[Engine] = engine if turso_ready else None
-
-            inserted = 0
-            ingest_turso_error = False
-            if do_ingest_rss and rss_urls:
-                try:
-                    inserted, ingest_turso_error = ingest_rss_many_once(
-                        rss_urls=rss_urls,
-                        engine=active_engine,
-                        spool_dir=spool_dir,
-                        redis_client=redis_client,
-                        redis_queue_key=redis_queue_key,
-                        platform=args.platform,
-                        author=args.author.strip(),
-                        user_id=(args.user_id.strip() or None),
-                        limit=limit,
-                        rss_timeout=float(args.rss_timeout),
-                        verbose=verbose,
-                    )
-                except BaseException as e:
-                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-                        raise
-                    _maybe_dispose_turso_engine_on_transient_error(
-                        engine=engine, err=e, verbose=bool(verbose)
-                    )
-                    ingest_turso_error = True
-                    inserted = 0
-                    if verbose:
-                        print(f"[rss] ingest_error {type(e).__name__}: {e}", flush=True)
-
-            recovered = 0
-            flushed_redis = 0
-            flushed_spool = 0
-            maintenance_error = False
-            if (do_maintenance or force_maintenance) and active_engine is not None:
-                if force_maintenance:
-                    maintenance_next_at = now + float(worker_interval)
-                recovered, flushed_redis, flushed_spool, maintenance_error = (
-                    _run_turso_maintenance(
-                        engine=active_engine,
-                        spool_dir=spool_dir,
-                        redis_client=redis_client,
-                        redis_queue_key=redis_queue_key,
-                        stuck_seconds=int(args.ai_stuck_seconds),
-                        verbose=verbose,
-                    )
-                )
-
-            alias_trigger = bool(do_maintenance or force_maintenance or alias_has_more)
-            (
-                alias_sync_future,
-                alias_sync_next_at,
-                start_alias_sync,
-            ) = _maybe_start_periodic_job(
-                executor=alias_executor,
-                future=alias_sync_future,
-                active_engine=active_engine,
-                trigger=alias_trigger,
-                now=now,
-                next_run_at=alias_sync_next_at,
-                interval_seconds=alias_sync_interval_seconds,
-                wakeup_event=wakeup_event,
-                submit_fn=_submit_alias_sync_job,
-            )
-
-            scheduled = 0
-            schedule_error = False
-            if active_engine is not None:
-                scheduled, schedule_error = _schedule_ai(
-                    executor,
-                    engine=active_engine,
-                    worker_threads=worker_threads,
-                    inflight_futures=inflight_futures,
-                    wakeup_event=wakeup_event,
-                    config=config,
-                    limiter=limiter,
+            next_maintenance_in = max(0.0, maintenance_next_at - time.time())
+            for source in sources:
+                alias_resolved = 0
+                alias_inserted = 0
+                alias_sync_finished = False
+                alias_has_more = False
+                (
+                    source.alias_sync_future,
+                    alias_stats,
+                    alias_sync_finished,
+                    alias_sync_error,
+                ) = _collect_periodic_job_result(
+                    job_name=f"alias:{source.config.name}",
+                    future=source.alias_sync_future,
+                    engine=source.engine,
                     verbose=verbose,
                 )
-
-            turso_error = bool(
-                ingest_turso_error
-                or maintenance_error
-                or schedule_error
-                or alias_sync_error
-            )
-            if turso_error:
-                turso_ready = False
-                turso_next_ready_check_at = min(
-                    float(turso_next_ready_check_at) or float("inf"),
-                    time.time() + float(TURSO_READY_RETRY_SECONDS),
-                )
-
-            if verbose and (
-                do_maintenance
-                or start_alias_sync
-                or alias_sync_finished
-                or alias_has_more
-                or inserted > 0
-                or recovered > 0
-                or flushed_redis > 0
-                or flushed_spool > 0
-                or alias_inserted > 0
-            ):
-                next_maintenance_in = max(0.0, maintenance_next_at - time.time())
-                next_alias_sync_in = max(0.0, alias_sync_next_at - time.time())
-                next_rss_in = (
-                    -1.0
-                    if rss_next_ingest_at == float("inf")
-                    else max(0.0, rss_next_ingest_at - time.time())
-                )
-                next_turso_in = -1.0
-                if not turso_ready:
-                    next_turso_in = max(
-                        0.0, float(turso_next_ready_check_at) - time.time()
+                alias_resolved = int(alias_stats.get("resolved", 0))
+                alias_inserted = int(alias_stats.get("inserted", 0))
+                alias_has_more = bool(alias_stats.get("has_more", False))
+                if (
+                    alias_sync_finished
+                    and verbose
+                    and (alias_resolved > 0 or alias_inserted > 0)
+                ):
+                    print(
+                        f"[alias:{source.config.name}] sync_done resolved={alias_resolved} inserted={alias_inserted}",
+                        flush=True,
                     )
-                print(
-                    f"[tick] turso_ready={1 if active_engine is not None else 0} "
-                    f"inflight={len(inflight_futures)} alias_inflight={1 if alias_sync_future is not None else 0} "
-                    f"ai_scheduled={scheduled} "
-                    f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
-                    f"alias_resolved={alias_resolved} alias_inserted={alias_inserted} "
-                    f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
-                    f"next_maint={int(next_maintenance_in)}s "
-                    f"next_alias={int(next_alias_sync_in)}s "
-                    f"next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s "
-                    f"next_turso={int(next_turso_in) if next_turso_in >= 0 else -1}s",
-                    flush=True,
+                if alias_has_more:
+                    source.alias_sync_next_at = 0.0
+
+                do_ingest_rss = False
+                rss_skip_reason = ""
+                if not source.config.rss_urls:
+                    rss_skip_reason = "no_sources"
+                else:
+                    now_dt = datetime.now(CST)
+                    if rss_active_hours is not None and not in_active_hours(
+                        now_dt, rss_active_hours
+                    ):
+                        rss_skip_reason = "inactive"
+                        source.rss_next_ingest_at = now + _seconds_until_next_active_start(
+                            now_dt, rss_active_hours
+                        )
+                    elif now < source.rss_next_ingest_at:
+                        rss_skip_reason = "interval"
+                    else:
+                        do_ingest_rss = True
+                        source.rss_next_ingest_at = now + float(rss_interval_seconds)
+
+                force_maintenance = False
+                if not source.turso_ready and now >= float(source.turso_next_ready_check_at):
+                    source.turso_ready = _ensure_turso_ready(
+                        engine=source.engine,
+                        verbose=verbose,
+                        turso_ready=source.turso_ready,
+                        source_name=source.config.name,
+                    )
+                    if source.turso_ready:
+                        source.turso_next_ready_check_at = 0.0
+                        force_maintenance = True
+                    else:
+                        source.turso_next_ready_check_at = now + float(
+                            TURSO_READY_RETRY_SECONDS
+                        )
+                active_engine: Optional[Engine] = (
+                    source.engine if source.turso_ready else None
                 )
+
+                inserted = 0
+                ingest_turso_error = False
+                if do_ingest_rss and source.config.rss_urls:
+                    try:
+                        inserted, ingest_turso_error = ingest_rss_many_once(
+                            rss_urls=source.config.rss_urls,
+                            engine=active_engine,
+                            spool_dir=source.spool_dir,
+                            redis_client=redis_client,
+                            redis_queue_key=source.redis_queue_key,
+                            platform=source.config.platform,
+                            author=source.config.author,
+                            user_id=source.config.user_id,
+                            limit=limit,
+                            rss_timeout=float(args.rss_timeout),
+                            verbose=verbose,
+                        )
+                    except BaseException as e:
+                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                            raise
+                        _maybe_dispose_turso_engine_on_transient_error(
+                            engine=source.engine, err=e, verbose=bool(verbose)
+                        )
+                        ingest_turso_error = True
+                        inserted = 0
+                        if verbose:
+                            print(
+                                f"[rss:{source.config.name}] ingest_error {type(e).__name__}: {e}",
+                                flush=True,
+                            )
+
+                recovered = 0
+                flushed_redis = 0
+                flushed_spool = 0
+                maintenance_error = False
+                if (do_maintenance or force_maintenance) and active_engine is not None:
+                    if force_maintenance:
+                        maintenance_next_at = now + float(worker_interval)
+                        next_maintenance_in = max(0.0, maintenance_next_at - time.time())
+                    recovered, flushed_redis, flushed_spool, maintenance_error = (
+                        _run_turso_maintenance(
+                            engine=active_engine,
+                            spool_dir=source.spool_dir,
+                            redis_client=redis_client,
+                            redis_queue_key=source.redis_queue_key,
+                            stuck_seconds=int(args.ai_stuck_seconds),
+                            verbose=verbose,
+                        )
+                    )
+
+                alias_trigger = bool(
+                    do_maintenance or force_maintenance or alias_has_more
+                )
+                (
+                    source.alias_sync_future,
+                    source.alias_sync_next_at,
+                    start_alias_sync,
+                ) = _maybe_start_periodic_job(
+                    executor=alias_executor,
+                    future=source.alias_sync_future,
+                    active_engine=active_engine,
+                    trigger=alias_trigger,
+                    now=now,
+                    next_run_at=source.alias_sync_next_at,
+                    interval_seconds=alias_sync_interval_seconds,
+                    wakeup_event=wakeup_event,
+                    submit_fn=_submit_alias_sync_job,
+                )
+
+                scheduled = 0
+                schedule_error = False
+                if active_engine is not None:
+                    scheduled, schedule_error = _schedule_ai(
+                        executor,
+                        engine=active_engine,
+                        worker_threads=worker_threads,
+                        inflight_futures=inflight_futures,
+                        wakeup_event=wakeup_event,
+                        config=config,
+                        limiter=limiter,
+                        verbose=verbose,
+                    )
+
+                turso_error = bool(
+                    ingest_turso_error
+                    or maintenance_error
+                    or schedule_error
+                    or alias_sync_error
+                )
+                if turso_error:
+                    source.turso_ready = False
+                    source.turso_next_ready_check_at = min(
+                        float(source.turso_next_ready_check_at) or float("inf"),
+                        time.time() + float(TURSO_READY_RETRY_SECONDS),
+                    )
+
+                if verbose and (
+                    do_maintenance
+                    or start_alias_sync
+                    or alias_sync_finished
+                    or alias_has_more
+                    or inserted > 0
+                    or recovered > 0
+                    or flushed_redis > 0
+                    or flushed_spool > 0
+                    or alias_inserted > 0
+                ):
+                    next_alias_sync_in = max(
+                        0.0, source.alias_sync_next_at - time.time()
+                    )
+                    next_rss_in = (
+                        -1.0
+                        if source.rss_next_ingest_at == float("inf")
+                        else max(0.0, source.rss_next_ingest_at - time.time())
+                    )
+                    next_turso_in = -1.0
+                    if not source.turso_ready:
+                        next_turso_in = max(
+                            0.0, float(source.turso_next_ready_check_at) - time.time()
+                        )
+                    print(
+                        f"[tick:{source.config.name}] turso_ready={1 if active_engine is not None else 0} "
+                        f"inflight={len(inflight_futures)} alias_inflight={1 if source.alias_sync_future is not None else 0} "
+                        f"ai_scheduled={scheduled} "
+                        f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
+                        f"alias_resolved={alias_resolved} alias_inserted={alias_inserted} "
+                        f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
+                        f"next_maint={int(next_maintenance_in)}s "
+                        f"next_alias={int(next_alias_sync_in)}s "
+                        f"next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s "
+                        f"next_turso={int(next_turso_in) if next_turso_in >= 0 else -1}s",
+                        flush=True,
+                    )
 
             next_deadline = maintenance_next_at
-            if alias_sync_next_at > 0:
-                next_deadline = min(next_deadline, alias_sync_next_at)
-            if rss_next_ingest_at != float("inf"):
-                next_deadline = min(next_deadline, rss_next_ingest_at)
-            if not turso_ready:
-                next_deadline = min(next_deadline, float(turso_next_ready_check_at))
+            any_alias_inflight = False
+            for source in sources:
+                if source.alias_sync_future is not None:
+                    any_alias_inflight = True
+                if source.alias_sync_next_at > 0:
+                    next_deadline = min(next_deadline, source.alias_sync_next_at)
+                if source.rss_next_ingest_at != float("inf"):
+                    next_deadline = min(next_deadline, source.rss_next_ingest_at)
+                if not source.turso_ready:
+                    next_deadline = min(
+                        next_deadline, float(source.turso_next_ready_check_at)
+                    )
             timeout = max(0.0, next_deadline - time.time())
-            if inflight_futures or alias_sync_future is not None:
+            if inflight_futures or any_alias_inflight:
                 wakeup_event.wait(timeout)
             else:
                 time.sleep(timeout)

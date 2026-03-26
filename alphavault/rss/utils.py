@@ -159,7 +159,7 @@ def _extract_last_numeric(value: str, *, min_len: int = 6) -> str:
     text = str(value or "")
     if not text:
         return ""
-    matches = re.findall(rf"(\\d{{{min_len},}})", text)
+    matches = re.findall(rf"(\d{{{min_len},}})", text)
     if not matches:
         return ""
     return matches[-1]
