@@ -146,17 +146,12 @@ def test_accept_candidate_clears_caches_and_marks_candidate_accepted(
 def test_queue_backfill_post_marks_notice_and_clears_caches(monkeypatch) -> None:
     calls: list[str] = []
 
-    def _fake_run_direct_stock_backfill(
-        post_uid: str,
-        stock_key: str,
-        display_name: str,
-    ) -> int:
-        calls.append(f"{post_uid}|{stock_key}|{display_name}")
-        return 1
+    def _fake_queue_post_for_ai_backfill(post_uid: str) -> None:
+        calls.append(str(post_uid or "").strip())
 
     monkeypatch.setattr(
-        "alphavault_reflex.research_state.run_direct_stock_backfill",
-        _fake_run_direct_stock_backfill,
+        "alphavault_reflex.research_state.queue_post_for_ai_backfill",
+        _fake_queue_post_for_ai_backfill,
     )
     monkeypatch.setattr(
         "alphavault_reflex.research_state.clear_reflex_source_caches",
@@ -170,8 +165,8 @@ def test_queue_backfill_post_marks_notice_and_clears_caches(monkeypatch) -> None
 
     state.queue_backfill_post("weibo:123")
 
-    assert calls == ["weibo:123|stock:601899.SH|紫金矿业 (601899.SH)", "cleared"]
-    assert "回补 1 条" in state.backfill_notice
+    assert calls == ["weibo:123", "cleared"]
+    assert "已排队" in state.backfill_notice
 
 
 def test_resolve_route_slug_reads_router_url_without_touching_page() -> None:

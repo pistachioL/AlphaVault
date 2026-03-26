@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime
 import os
-from typing import Iterator
+from typing import Iterator, TypedDict
 
 from alphavault.constants import (
     DATETIME_FMT,
@@ -11,14 +11,19 @@ from alphavault.constants import (
     ENV_TURSO_DATABASE_URL,
 )
 from alphavault.db.sql.research_workbench import (
+    create_research_alias_resolve_tasks_index,
+    create_research_alias_resolve_tasks_table,
     create_research_object_index,
     create_research_objects_table,
     create_research_relation_candidate_index,
     create_research_relation_candidates_table,
     create_research_relation_index,
     create_research_relations_table,
+    select_alias_resolve_tasks_by_status,
     select_candidate_by_id,
     select_pending_candidates as select_pending_candidates_sql,
+    upsert_alias_resolve_task_attempt,
+    upsert_alias_resolve_task_status,
     update_candidate_status,
     upsert_relation_candidate as upsert_relation_candidate_sql,
     upsert_research_object,
@@ -38,11 +43,17 @@ from alphavault.env import load_dotenv_if_present
 RESEARCH_OBJECTS_TABLE = "research_objects"
 RESEARCH_RELATIONS_TABLE = "research_relations"
 RESEARCH_RELATION_CANDIDATES_TABLE = "research_relation_candidates"
+RESEARCH_ALIAS_RESOLVE_TASKS_TABLE = "research_alias_resolve_tasks"
 
 STATUS_PENDING = "pending"
 STATUS_ACCEPTED = "accepted"
 STATUS_IGNORED = "ignored"
 STATUS_BLOCKED = "blocked"
+
+ALIAS_TASK_STATUS_PENDING = "pending"
+ALIAS_TASK_STATUS_MANUAL = "manual"
+ALIAS_TASK_STATUS_BLOCKED = "blocked"
+ALIAS_TASK_STATUS_RESOLVED = "resolved"
 
 RELATION_TYPE_STOCK_SECTOR = "stock_sector"
 RELATION_TYPE_STOCK_ALIAS = "stock_alias"
@@ -53,6 +64,11 @@ _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 def _now_str() -> str:
     return datetime.now().strftime(DATETIME_FMT)
+
+
+class AliasResolveTaskInfo(TypedDict):
+    status: str
+    attempt_count: int
 
 
 @contextmanager
@@ -143,11 +159,21 @@ def ensure_research_workbench_schema(
                     RESEARCH_RELATION_CANDIDATES_TABLE
                 )
             )
+            conn.execute(
+                create_research_alias_resolve_tasks_table(
+                    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
+                )
+            )
             conn.execute(create_research_object_index(RESEARCH_OBJECTS_TABLE))
             conn.execute(create_research_relation_index(RESEARCH_RELATIONS_TABLE))
             conn.execute(
                 create_research_relation_candidate_index(
                     RESEARCH_RELATION_CANDIDATES_TABLE
+                )
+            )
+            conn.execute(
+                create_research_alias_resolve_tasks_index(
+                    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
                 )
             )
     except BaseException as err:
@@ -416,6 +442,123 @@ def block_relation_candidate(
     )
 
 
+def get_alias_resolve_tasks_map(
+    engine_or_conn: TursoEngine | TursoConnection,
+    alias_keys: list[str],
+) -> dict[str, AliasResolveTaskInfo]:
+    cleaned = [
+        str(item or "").strip() for item in alias_keys if str(item or "").strip()
+    ]
+    if not cleaned:
+        return {}
+
+    out: dict[str, AliasResolveTaskInfo] = {}
+    chunk_size = 200
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            for offset in range(0, len(cleaned), chunk_size):
+                chunk = cleaned[offset : offset + chunk_size]
+                placeholders = ", ".join(["?"] * len(chunk))
+                sql = f"""
+SELECT alias_key, status, attempt_count
+FROM {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE}
+WHERE alias_key IN ({placeholders})
+"""
+                rows = conn.execute(sql, chunk).mappings().all()
+                for row in rows:
+                    key = str(row.get("alias_key") or "").strip()
+                    if not key:
+                        continue
+                    out[key] = AliasResolveTaskInfo(
+                        status=str(row.get("status") or "").strip(),
+                        attempt_count=int(row.get("attempt_count") or 0),
+                    )
+            return out
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+    raise AssertionError("unreachable")
+
+
+def increment_alias_resolve_attempts(
+    engine_or_conn: TursoEngine | TursoConnection,
+    alias_keys: list[str],
+) -> dict[str, int]:
+    cleaned = [
+        str(item or "").strip() for item in alias_keys if str(item or "").strip()
+    ]
+    if not cleaned:
+        return {}
+    now = _now_str()
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            conn.execute(
+                upsert_alias_resolve_task_attempt(RESEARCH_ALIAS_RESOLVE_TASKS_TABLE),
+                [
+                    {
+                        "alias_key": key,
+                        "status": ALIAS_TASK_STATUS_PENDING,
+                        "now": now,
+                    }
+                    for key in cleaned
+                ],
+            )
+            updated = get_alias_resolve_tasks_map(conn, cleaned)
+            out: dict[str, int] = {}
+            for key in cleaned:
+                task = updated.get(key)
+                out[key] = int(task["attempt_count"]) if task else 0
+            return out
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+    raise AssertionError("unreachable")
+
+
+def set_alias_resolve_task_status(
+    engine_or_conn: TursoEngine | TursoConnection,
+    *,
+    alias_key: str,
+    status: str,
+    attempt_count: int = 0,
+) -> None:
+    key = str(alias_key or "").strip()
+    if not key:
+        return
+    now = _now_str()
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            conn.execute(
+                upsert_alias_resolve_task_status(RESEARCH_ALIAS_RESOLVE_TASKS_TABLE),
+                {
+                    "alias_key": key,
+                    "status": str(status or "").strip(),
+                    "attempt_count": int(attempt_count or 0),
+                    "now": now,
+                },
+            )
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+
+
+def list_manual_alias_resolve_tasks(
+    engine_or_conn: TursoEngine | TursoConnection,
+) -> list[dict[str, object]]:
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            return (
+                conn.execute(
+                    select_alias_resolve_tasks_by_status(
+                        RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
+                    ),
+                    {"status": ALIAS_TASK_STATUS_MANUAL},
+                )
+                .mappings()
+                .all()
+            )
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+    raise AssertionError("unreachable")
+
+
 def get_research_workbench_engine_from_env() -> TursoEngine:
     load_dotenv_if_present()
     db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
@@ -426,18 +569,27 @@ def get_research_workbench_engine_from_env() -> TursoEngine:
 
 
 __all__ = [
+    "ALIAS_TASK_STATUS_BLOCKED",
+    "ALIAS_TASK_STATUS_MANUAL",
+    "ALIAS_TASK_STATUS_PENDING",
+    "ALIAS_TASK_STATUS_RESOLVED",
     "RESEARCH_OBJECTS_TABLE",
+    "RESEARCH_ALIAS_RESOLVE_TASKS_TABLE",
     "RESEARCH_RELATIONS_TABLE",
     "RESEARCH_RELATION_CANDIDATES_TABLE",
     "accept_relation_candidate",
     "block_relation_candidate",
     "ensure_research_workbench_schema",
+    "get_alias_resolve_tasks_map",
     "get_research_workbench_engine_from_env",
     "ignore_relation_candidate",
+    "increment_alias_resolve_attempts",
     "list_pending_candidates",
+    "list_manual_alias_resolve_tasks",
     "list_candidate_status_map",
     "make_candidate_id",
     "record_stock_alias_relation",
     "record_stock_sector_relation",
+    "set_alias_resolve_task_status",
     "upsert_relation_candidate",
 ]

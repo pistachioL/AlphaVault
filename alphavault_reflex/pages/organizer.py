@@ -4,6 +4,7 @@ import reflex as rx
 
 from alphavault_reflex.organizer_state import (
     OrganizerState,
+    SECTION_ALIAS_MANUAL,
     SECTION_SECTOR_SECTOR,
     SECTION_STOCK_ALIAS,
     SECTION_STOCK_SECTOR,
@@ -39,6 +40,87 @@ def _candidate_card(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
+def _manual_alias_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.div(
+        rx.text(row["alias_key"], class_name="av-research-side-title"),
+        rx.text(
+            f"已尝试 {row['attempt_count']} 次",
+            class_name="av-research-muted",
+        ),
+        rx.hstack(
+            rx.button(
+                "手动处理",
+                on_click=lambda: OrganizerState.open_alias_manual_dialog(
+                    row["alias_key"]
+                ),
+                class_name="av-btn av-btn-small",
+            ),
+            spacing="2",
+            margin_top="10px",
+        ),
+        class_name="av-research-side-item",
+    )
+
+
+def _alias_manual_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("手动处理别名"),
+            rx.cond(
+                OrganizerState.alias_manual_alias_key != "",
+                rx.text(
+                    OrganizerState.alias_manual_alias_key,
+                    class_name="av-research-muted",
+                ),
+                rx.el.div(),
+            ),
+            rx.input(
+                value=OrganizerState.alias_manual_target_input,
+                on_change=OrganizerState.set_alias_manual_target_input,
+                placeholder="输入股票代码，比如 601899.SH",
+                width="320px",
+            ),
+            rx.cond(
+                OrganizerState.alias_manual_error != "",
+                rx.text(
+                    OrganizerState.alias_manual_error,
+                    class_name="av-error-text",
+                ),
+                rx.el.div(),
+            ),
+            rx.hstack(
+                rx.button(
+                    "确认归并",
+                    on_click=OrganizerState.confirm_alias_manual_merge,
+                    class_name="av-btn av-btn-small",
+                ),
+                rx.button(
+                    "拉黑",
+                    on_click=OrganizerState.block_alias_manual,
+                    variant="soft",
+                    color_scheme="gray",
+                ),
+                rx.dialog.close(
+                    rx.button(
+                        "关",
+                        variant="soft",
+                        on_click=OrganizerState.close_alias_manual_dialog,
+                    )
+                ),
+                spacing="2",
+                margin_top="12px",
+            ),
+            style={
+                "max_width": "min(640px, 92vw)",
+                "max_height": "85vh",
+                "overflow": "auto",
+            },
+        ),
+        open=OrganizerState.alias_manual_dialog_open,
+        on_open_change=OrganizerState.set_alias_manual_dialog_open,
+    )
+
+
 def organizer_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
@@ -50,6 +132,13 @@ def organizer_page() -> rx.Component:
             rx.button(
                 "个股归并",
                 on_click=lambda: OrganizerState.set_active_section(SECTION_STOCK_ALIAS),
+                variant="soft",
+            ),
+            rx.button(
+                "别名超限",
+                on_click=lambda: OrganizerState.set_active_section(
+                    SECTION_ALIAS_MANUAL
+                ),
                 variant="soft",
             ),
             rx.button(
@@ -79,11 +168,19 @@ def organizer_page() -> rx.Component:
         ),
         rx.cond(
             OrganizerState.has_pending_rows,
-            rx.el.div(
-                rx.foreach(OrganizerState.pending_rows, _candidate_card),
-                class_name="av-research-side-list",
+            rx.cond(
+                OrganizerState.active_section == SECTION_ALIAS_MANUAL,
+                rx.el.div(
+                    rx.foreach(OrganizerState.pending_rows, _manual_alias_card),
+                    class_name="av-research-side-list",
+                ),
+                rx.el.div(
+                    rx.foreach(OrganizerState.pending_rows, _candidate_card),
+                    class_name="av-research-side-list",
+                ),
             ),
             rx.text("当前分区没有待确认项。", class_name="av-research-muted"),
         ),
+        _alias_manual_dialog(),
         class_name="av-research-page",
     )

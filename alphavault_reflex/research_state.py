@@ -348,24 +348,14 @@ class ResearchState(rx.State):
         if not target:
             return
         try:
-            added = run_direct_stock_backfill(
-                target,
-                stock_key=self.entity_key,
-                display_name=self.page_title,
-            )
+            queue_post_for_ai_backfill(target)
         except BaseException as err:
             if isinstance(err, (KeyboardInterrupt, SystemExit)):
                 raise
-            self.backfill_notice = f"AI 回补失败：{type(err).__name__}"
+            self.backfill_notice = f"排队失败：{type(err).__name__}"
             return
         clear_reflex_source_caches()
-        if self.entity_key:
-            self.load_stock_page(self.entity_key.removeprefix("stock:"))
-        self.backfill_notice = (
-            f"AI 已回补 {added} 条信号：{target}"
-            if added > 0
-            else f"AI 没补出新信号：{target}"
-        )
+        self.backfill_notice = f"已排队：{target}（等一会再刷新）"
 
     def _mutate_candidate(self, candidate_id: str, *, action: str) -> None:
         target = str(candidate_id or "").strip()

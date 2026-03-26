@@ -48,6 +48,25 @@ CREATE TABLE IF NOT EXISTS {table} (
 """
 
 
+def create_research_alias_resolve_tasks_table(table: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {table} (
+    alias_key TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+
+def create_research_alias_resolve_tasks_index(table: str) -> str:
+    return f"""
+CREATE INDEX IF NOT EXISTS idx_{table}_status
+ON {table}(status, updated_at)
+"""
+
+
 def create_research_object_index(table: str) -> str:
     return f"CREATE INDEX IF NOT EXISTS idx_{table}_type ON {table}(object_type)"
 
@@ -175,4 +194,33 @@ def update_candidate_status(table: str) -> str:
 UPDATE {table}
 SET status = :status, updated_at = :now
 WHERE candidate_id = :candidate_id
+"""
+
+
+def upsert_alias_resolve_task_attempt(table: str) -> str:
+    return f"""
+INSERT INTO {table}(alias_key, status, attempt_count, created_at, updated_at)
+VALUES (:alias_key, :status, 1, :now, :now)
+ON CONFLICT(alias_key) DO UPDATE SET
+    attempt_count = attempt_count + 1,
+    updated_at = excluded.updated_at
+"""
+
+
+def upsert_alias_resolve_task_status(table: str) -> str:
+    return f"""
+INSERT INTO {table}(alias_key, status, attempt_count, created_at, updated_at)
+VALUES (:alias_key, :status, :attempt_count, :now, :now)
+ON CONFLICT(alias_key) DO UPDATE SET
+    status = excluded.status,
+    updated_at = excluded.updated_at
+"""
+
+
+def select_alias_resolve_tasks_by_status(table: str) -> str:
+    return f"""
+SELECT alias_key, status, attempt_count, created_at, updated_at
+FROM {table}
+WHERE status = :status
+ORDER BY updated_at DESC, alias_key ASC
 """
