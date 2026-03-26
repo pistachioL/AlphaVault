@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM python:3.11-slim
+FROM python:3.11-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -7,6 +7,8 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=8080
 
 WORKDIR /app
+
+FROM base AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential curl unzip \
@@ -22,6 +24,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 COPY . /app
+
+RUN uv run reflex export --frontend-only --no-zip
+
+FROM base AS runtime
+
+ENV REFLEX_SKIP_COMPILE=true \
+    REFLEX_DIR=/root/.local/share/reflex
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app /app
+COPY --from=builder /root/.local/share/reflex /root/.local/share/reflex
 
 RUN chmod +x /app/entrypoint.sh
 
