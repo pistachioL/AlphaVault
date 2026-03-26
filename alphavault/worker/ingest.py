@@ -56,6 +56,7 @@ def ingest_rss_many_once(
     spool_dir: Path,
     redis_client,
     redis_queue_key: str,
+    platform: str,
     author: str,
     user_id: Optional[str],
     limit: Optional[int],
@@ -66,6 +67,25 @@ def ingest_rss_many_once(
     turso_error = False
     seen_post_uids: set[str] = set()
     seen_urls: set[str] = set()
+    normalized_platform = str(platform or "weibo").strip().lower()
+
+    def build_display_md(
+        *, text: str, author_name: str, image_urls: list[str]
+    ) -> str:
+        if normalized_platform == "weibo":
+            return format_weibo_display_md(
+                text, author=author_name, image_urls=image_urls
+            )
+        if not text and not image_urls:
+            return ""
+        img_lines = [
+            f'<img class="ke_img" src="{url}" />' for url in image_urls
+        ]
+        if not img_lines:
+            return text
+        if not text:
+            return "\n".join(img_lines)
+        return text.rstrip() + "\n" + "\n".join(img_lines)
 
     for rss_url in rss_urls:
         try:
@@ -86,13 +106,14 @@ def ingest_rss_many_once(
             link = (entry.get("link") or entry.get("id") or "").strip()
             if not link:
                 continue
-            if link in seen_urls:
-                continue
-
-            platform_post_id, post_uid, _bid = build_ids(entry, link, feed_user_id)
+            platform_post_id, post_uid, _bid = build_ids(
+                entry, link, feed_user_id, platform=normalized_platform
+            )
             if not post_uid or not platform_post_id:
                 continue
             if post_uid in seen_post_uids:
+                continue
+            if link in seen_urls and normalized_platform == "weibo":
                 continue
 
             raw_title = clean_text(entry.get("title") or "")
@@ -110,14 +131,18 @@ def ingest_rss_many_once(
                 continue
 
             created_at = parse_datetime(entry)
-            resolved_author = choose_author(entry, feed, author)
-            display_md = format_weibo_display_md(
-                raw_text, author=resolved_author, image_urls=image_urls
+            resolved_author = choose_author(
+                entry, feed, author, platform=normalized_platform
+            )
+            display_md = build_display_md(
+                text=raw_text,
+                author_name=resolved_author,
+                image_urls=list(image_urls or []),
             )
 
             payload: Dict[str, Any] = {
                 "post_uid": post_uid,
-                "platform": "weibo",
+                "platform": normalized_platform,
                 "platform_post_id": platform_post_id,
                 "author": resolved_author,
                 "created_at": created_at,
@@ -149,7 +174,7 @@ def ingest_rss_many_once(
                 upsert_pending_post(
                     engine,
                     post_uid=post_uid,
-                    platform="weibo",
+                    platform=normalized_platform,
                     platform_post_id=platform_post_id,
                     author=resolved_author,
                     created_at=created_at,

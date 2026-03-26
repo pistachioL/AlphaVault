@@ -88,6 +88,44 @@ TURSO_READY_RETRY_SECONDS = 5.0
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
+def _clamp_float(value: object, low: float, high: float, default: float) -> float:
+    try:
+        val = float(value)  # type: ignore[arg-type]
+    except Exception:
+        return default
+    if val < low:
+        return low
+    if val > high:
+        return high
+    return val
+
+
+def _clamp_int(value: object, low: int, high: int, default: int) -> int:
+    try:
+        val = int(value)  # type: ignore[arg-type]
+    except Exception:
+        return default
+    if val < low:
+        return low
+    if val > high:
+        return high
+    return val
+
+
+def _score_from_assertions(rows: list[dict[str, object]]) -> float:
+    if not rows:
+        return 0.0
+    scores: list[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        confidence = _clamp_float(row.get("confidence", 0.0), 0.0, 1.0, 0.0)
+        strength = _clamp_int(row.get("action_strength", 1), 0, 3, 1)
+        strength_weight = strength / 3.0
+        scores.append(0.7 * confidence + 0.3 * strength_weight)
+    return max(scores) if scores else 0.0
+
+
 @dataclass
 class LLMConfig:
     api_key: str
@@ -648,7 +686,7 @@ def _process_one_post_uid_topic_prompt_v3(
             rows = assertions_by_post_uid.get(uid, [])
             is_relevant = bool(rows)
             final_status = "relevant" if is_relevant else "irrelevant"
-            invest_score = 1.0 if is_relevant else 0.0
+            invest_score = _score_from_assertions(rows)
             write_assertions_and_mark_done(
                 engine,
                 post_uid=uid,
@@ -1254,6 +1292,7 @@ def main() -> None:
                         spool_dir=spool_dir,
                         redis_client=redis_client,
                         redis_queue_key=redis_queue_key,
+                        platform=args.platform,
                         author=args.author.strip(),
                         user_id=(args.user_id.strip() or None),
                         limit=limit,

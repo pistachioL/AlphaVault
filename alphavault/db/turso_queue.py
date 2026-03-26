@@ -42,6 +42,18 @@ from alphavault.db.turso_db import (
 
 AI_STATUS_PENDING = "pending"
 
+BASE_POSTS_EXTRA_COLUMNS: list[tuple[str, str]] = [
+    (
+        "final_status",
+        "final_status TEXT NOT NULL DEFAULT 'irrelevant' CHECK (final_status IN ('relevant','irrelevant'))",
+    ),
+    ("invest_score", "invest_score REAL"),
+    ("processed_at", "processed_at TEXT"),
+    ("model", "model TEXT"),
+    ("prompt_version", "prompt_version TEXT"),
+    ("archived_at", "archived_at TEXT NOT NULL DEFAULT ''"),
+]
+
 
 @dataclass(frozen=True)
 class CloudPost:
@@ -66,10 +78,18 @@ def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
     # Some builds may auto-break transactional state around DDL.
     with turso_connect_autocommit(engine) as conn:
         cols = table_columns(conn, "posts")
+        for col_name, col_def in BASE_POSTS_EXTRA_COLUMNS:
+            if col_name in cols:
+                continue
+            conn.execute(alter_posts_add_column(col_def))
+            cols.add(col_name)
+            if verbose:
+                print(f"[turso] schema add_column posts.{col_name}", flush=True)
         for col_name, col_def in QUEUE_EXTRA_COLUMNS:
             if col_name in cols:
                 continue
             conn.execute(alter_posts_add_column(col_def))
+            cols.add(col_name)
             if verbose:
                 print(f"[turso] schema add_column posts.{col_name}", flush=True)
 

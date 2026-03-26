@@ -26,6 +26,7 @@ from alphavault.constants import (
     ENV_AI_RPM,
     ENV_AI_TEMPERATURE,
     ENV_AI_TIMEOUT_SEC,
+    ENV_RSS_PLATFORM,
     ENV_WORKER_ACTIVE_HOURS,
     ENV_WORKER_INTERVAL_SECONDS,
 )
@@ -46,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rss-urls", default="", help="多个 RSS 地址（逗号或换行分隔）"
+    )
+    parser.add_argument(
+        "--platform",
+        default=os.getenv(ENV_RSS_PLATFORM, "weibo"),
+        choices=["weibo", "xueqiu"],
+        help="RSS 平台（weibo/xueqiu）",
     )
     parser.add_argument("--author", default="", help="作者名（为空则从 RSS 里取）")
     parser.add_argument("--user-id", default="", help="微博用户ID（可为空，自动推断）")

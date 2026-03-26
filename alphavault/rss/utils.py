@@ -17,6 +17,7 @@ import requests
 
 from alphavault.constants import ENV_RSS_URL, ENV_RSS_URLS
 from alphavault.constants import DATETIME_FMT
+from alphavault.text.html import html_to_text
 
 # NOTE: This module is extracted from the old local-sqlite ingest scripts.
 # It keeps only RSS parsing + small helpers, so the worker can delete the old route.
@@ -86,14 +87,25 @@ def now_str() -> str:
     return datetime.now(CST).strftime(DATETIME_FMT)
 
 
-def fetch_feed(url: str, timeout: float) -> feedparser.FeedParserDict:
+def fetch_feed(url: str, timeout: float, *, retries: int = 2) -> feedparser.FeedParserDict:
     headers = {
         "User-Agent": "AlphaVault-RSS-Ingest/1.0",
         "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml",
     }
-    resp = requests.get(url, headers=headers, timeout=timeout)
-    resp.raise_for_status()
-    return feedparser.parse(resp.content)
+    last_err: Optional[BaseException] = None
+    for attempt in range(max(1, int(retries) + 1)):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            return feedparser.parse(resp.content)
+        except Exception as e:
+            last_err = e
+            if attempt >= int(retries) + 1:
+                break
+            time.sleep(1.0 * attempt)
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("rss_fetch_failed")
 
 
 def get_entry_content(entry: feedparser.FeedParserDict) -> str:
@@ -143,6 +155,16 @@ def extract_numeric_id(value: str) -> str:
     return ""
 
 
+def _extract_last_numeric(value: str, *, min_len: int = 6) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    matches = re.findall(rf"(\\d{{{min_len},}})", text)
+    if not matches:
+        return ""
+    return matches[-1]
+
+
 def extract_bid(link: str, user_id: Optional[str]) -> str:
     if not link:
         return ""
@@ -185,10 +207,10 @@ def bid_to_mid(bid: str) -> str:
     return result
 
 
-def build_ids(
+def _build_weibo_ids(
     entry: feedparser.FeedParserDict, link: str, user_id: Optional[str]
 ) -> tuple[str, str, str]:
-    candidates = []
+    candidates: list[str] = []
     for key in ("id", "guid"):
         val = entry.get(key)
         if val:
@@ -214,10 +236,66 @@ def build_ids(
     return "", "", ""
 
 
+def _build_xueqiu_ids(
+    entry: feedparser.FeedParserDict, link: str
+) -> tuple[str, str, str]:
+    guid = entry.get("guid") or entry.get("id") or ""
+    guid = str(guid or "").strip()
+    if guid:
+        guid_num = _extract_last_numeric(guid)
+        if guid_num:
+            return guid_num, f"xueqiu:{guid_num}", ""
+        return guid, f"xueqiu:{guid}", ""
+    link_num = _extract_last_numeric(link)
+    if link_num:
+        return link_num, f"xueqiu:{link_num}", ""
+    if link:
+        digest = hashlib.sha1(link.encode("utf-8")).hexdigest()[:20]
+        return f"linkhash:{digest}", f"xueqiu:linkhash:{digest}", ""
+    return "", "", ""
+
+
+def build_ids(
+    entry: feedparser.FeedParserDict,
+    link: str,
+    user_id: Optional[str],
+    *,
+    platform: str = "weibo",
+) -> tuple[str, str, str]:
+    if str(platform or "").lower() == "xueqiu":
+        return _build_xueqiu_ids(entry, link)
+    return _build_weibo_ids(entry, link, user_id)
+
+
+def _extract_author_from_title(title: str) -> str:
+    text = html_to_text(str(title or "")).strip()
+    if not text:
+        return ""
+    for sep in ("：", ":"):
+        if sep not in text:
+            continue
+        candidate = text.split(sep, 1)[0].strip()
+        if 0 < len(candidate) <= 30:
+            return candidate
+    return ""
+
+
 def choose_author(
-    entry: feedparser.FeedParserDict, feed: feedparser.FeedParserDict, fallback: str
+    entry: feedparser.FeedParserDict,
+    feed: feedparser.FeedParserDict,
+    fallback: str,
+    *,
+    platform: str = "weibo",
 ) -> str:
-    author = entry.get("author") or feed.feed.get("author") or feed.feed.get("title")
+    author = entry.get("author")
+    author = (author or "").strip()
+    if author:
+        return author
+    if str(platform or "").lower() == "xueqiu":
+        from_title = _extract_author_from_title(entry.get("title") or "")
+        if from_title:
+            return from_title
+    author = feed.feed.get("author") or feed.feed.get("title")
     author = (author or "").strip()
     if author:
         return author
@@ -278,6 +356,9 @@ def infer_user_id_from_rss_url(rss_url: str) -> Optional[str]:
     if match:
         return match.group(1)
     match = re.search(r"/user/([0-9]{4,})", rss_url)
+    if match:
+        return match.group(1)
+    match = re.search(r"/u/([0-9]{4,})", rss_url)
     if match:
         return match.group(1)
     return None
