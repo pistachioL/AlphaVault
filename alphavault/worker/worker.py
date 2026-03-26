@@ -1204,7 +1204,10 @@ def main() -> None:
                     f"[alias] sync_done resolved={alias_resolved} inserted={alias_inserted}",
                     flush=True,
                 )
-            if alias_has_more:
+            alias_fast_retry = bool(
+                alias_has_more and (alias_resolved > 0 or alias_inserted > 0)
+            )
+            if alias_fast_retry:
                 alias_sync_next_at = 0.0
 
             now = time.time()

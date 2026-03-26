@@ -286,6 +286,23 @@ def build_stock_search_rows(
     return rows
 
 
+def pick_unresolved_stock_alias_keys(
+    assertions: pd.DataFrame,
+    *,
+    stock_relations: pd.DataFrame | None = None,
+    alias_keys: list[str] | None = None,
+) -> list[str]:
+    enriched = _ensure_stock_columns(assertions)
+    if enriched.empty:
+        return []
+    base_index = build_stock_object_index(enriched, stock_relations=stock_relations)
+    return _pick_unresolved_alias_keys(
+        enriched,
+        base_index=base_index,
+        alias_keys=alias_keys,
+    )
+
+
 def build_ai_stock_alias_map(
     assertions: pd.DataFrame,
     *,
@@ -774,5 +791,6 @@ __all__ = [
     "build_stock_object_index",
     "build_stock_search_rows",
     "filter_assertions_for_stock_object",
+    "pick_unresolved_stock_alias_keys",
     "resolve_stock_object_key",
 ]
