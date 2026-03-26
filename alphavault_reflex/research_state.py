@@ -251,11 +251,10 @@ def research_page_loading_var() -> rx.Var[bool]:
 
 
 def stock_page_title_var() -> rx.Var[str]:
-    loading = research_page_loading_var()
     return rx.cond(
-        loading & (ResearchState.stock_slug != ""),
+        ResearchState.stock_slug != "",
         ResearchState.stock_slug,
-        ResearchState.page_title,
+        "",
     )
 
 

@@ -68,6 +68,20 @@ def test_stock_research_page_heading_uses_route_slug_while_loading() -> None:
     assert "stock_slug_rx_state_" in heading_contents
 
 
+def test_stock_research_page_heading_title_not_blocked_by_loading_state() -> None:
+    rendered = stock_research_page().render()
+    heading_contents = rendered["children"][0]["children"][0]["children"][0]["contents"]
+
+    assert "show_loading_rx_state_" not in heading_contents
+
+
+def test_stock_research_page_heading_does_not_fallback_to_previous_page_title() -> None:
+    rendered = stock_research_page().render()
+    heading_contents = rendered["children"][0]["children"][0]["children"][0]["contents"]
+
+    assert "page_title_rx_state_" not in heading_contents
+
+
 def test_stock_route_browser_title_uses_dynamic_stock_slug() -> None:
     page = app_module.app._unevaluated_pages["research/stocks/[stock_slug]"]
 
