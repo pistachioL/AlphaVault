@@ -88,30 +88,26 @@ def _ascii_node_line(
 ) -> str:
     node = nodes.get(node_id) or {}
     missing = bool(node.get("missing"))
-    kind = str(node.get("kind") or "").strip() or ("source" if missing else "status")
-    kind_label = {"status": "原帖", "repost": "转发", "source": "源帖"}.get(
-        kind, "帖子"
-    )
-    prefix = f"[{kind_label} ID: {node_id}]"
+    kind = _node_display_kind(node_id, nodes=nodes)
+    suffix = _node_id_suffix(node_id, kind=kind)
 
     raw_text = str(node.get("raw_text") or "").strip()
-    display_md = str(node.get("display_md") or "").strip()
     author = str(node.get("author") or "").strip()
 
     if text_override is not None and str(text_override or "").strip():
         text = _maybe_prefix_focus_symbol(
             str(text_override).strip(), blogger_authors=blogger_authors
         )
-        return f"{prefix} {text}"
+        return f"{text}{suffix}"
 
-    segments = parse_display_md_segments(display_md) if display_md else []
+    segments = _node_segments(node_id, nodes=nodes)
     if segments:
         text = _maybe_prefix_focus_symbol(segments[-1], blogger_authors=blogger_authors)
-        return f"{prefix} {text}"
+        return f"{text}{suffix}"
 
     text = _to_one_line_text(raw_text)
     if not text and missing:
-        return f"{prefix} （缺失）"
+        return f"（缺失）{suffix}"
 
     if (
         author
@@ -122,19 +118,18 @@ def _ascii_node_line(
 
     if text:
         text = _maybe_prefix_focus_symbol(text, blogger_authors=blogger_authors)
-        return f"{prefix} {text}"
+        return f"{text}{suffix}"
     if author:
-        return f"{prefix} {author}"
-    return prefix
+        return f"{author}{suffix}"
+    return suffix.strip()
 
 
 def _ascii_node_main_content(node_id: str, *, nodes: dict[str, dict]) -> str:
     node = nodes.get(node_id) or {}
     raw_text = str(node.get("raw_text") or "").strip()
-    display_md = str(node.get("display_md") or "").strip()
     author = str(node.get("author") or "").strip()
 
-    segments = parse_display_md_segments(display_md) if display_md else []
+    segments = _node_segments(node_id, nodes=nodes)
     if segments:
         return segments[-1]
 
@@ -313,10 +308,7 @@ def _ascii_expand_edge(
         author_hint=str(parent_node.get("author") or "").strip(),
     )
 
-    child_display_md = str(child_node.get("display_md") or "").strip()
-    child_segments = (
-        parse_display_md_segments(child_display_md) if child_display_md else []
-    )
+    child_segments = _node_segments(child_id, nodes=nodes)
 
     if child_segments and len(child_segments) >= 2 and parent_key:
         first_key = _content_key_for_compare(child_segments[0])
@@ -355,10 +347,8 @@ def _ascii_expand_edge(
             blogger_authors=blogger_authors,
         )
 
-    virtual_prefix = f"[{VIRTUAL_NODE_LABEL}] "
     virtual_lines = [
-        virtual_prefix
-        + _maybe_prefix_focus_symbol(str(seg), blogger_authors=blogger_authors)
+        _maybe_prefix_focus_symbol(str(seg), blogger_authors=blogger_authors)
         for seg in virtual_segments
     ]
     real_line = _ascii_node_line(
@@ -430,16 +420,43 @@ def _render_ascii_tree(
     order: list[str] = []
     visited: set[str] = set()
     dedup_real_keys = _build_real_node_key_set(root_id, nodes=nodes, children=children)
-
-    lines.append(
-        _ascii_node_line(root_id, nodes=nodes, blogger_authors=blogger_authors)
-    )
+    child_prefix = ""
+    root_segments = _node_segments(root_id, nodes=nodes)
+    if len(root_segments) <= 1:
+        lines.append(
+            _ascii_node_line(root_id, nodes=nodes, blogger_authors=blogger_authors)
+        )
+    else:
+        lines.append(
+            _maybe_prefix_focus_symbol(
+                root_segments[0], blogger_authors=blogger_authors
+            )
+        )
+        chain_prefix = ""
+        for segment in root_segments[1:-1]:
+            lines.append(
+                chain_prefix
+                + "└── "
+                + _maybe_prefix_focus_symbol(segment, blogger_authors=blogger_authors)
+            )
+            chain_prefix += "    "
+        lines.append(
+            chain_prefix
+            + "└── "
+            + _ascii_node_line(
+                root_id,
+                nodes=nodes,
+                text_override=root_segments[-1],
+                blogger_authors=blogger_authors,
+            )
+        )
+        child_prefix = chain_prefix + "    "
     order.append(root_id)
     visited.add(root_id)
 
     _ascii_render_children(
         root_id,
-        "",
+        child_prefix,
         nodes=nodes,
         children=children,
         lines=lines,
@@ -449,6 +466,37 @@ def _render_ascii_tree(
         blogger_authors=blogger_authors,
     )
     return "\n".join(lines), order
+
+
+def _node_id_suffix(node_id: str, *, kind: str) -> str:
+    kind_label = {"status": "原帖", "repost": "转发", "source": "源帖"}.get(
+        str(kind or "").strip(),
+        "帖子",
+    )
+    return f" [{kind_label} ID: {node_id}]"
+
+
+def _node_display_kind(node_id: str, *, nodes: dict[str, dict]) -> str:
+    node = nodes.get(node_id) or {}
+    missing = bool(node.get("missing"))
+    kind = str(node.get("kind") or "").strip() or ("source" if missing else "status")
+    if kind != "status":
+        return kind
+    raw_text = str(node.get("raw_text") or "")
+    display_md = str(node.get("display_md") or "")
+    text = f"{raw_text}\n{display_md}"
+    if "转发 @" in text or "转发@" in text:
+        return "repost"
+    return kind
+
+
+def _node_segments(node_id: str, *, nodes: dict[str, dict]) -> list[str]:
+    node = nodes.get(node_id) or {}
+    return parse_display_md_segments(
+        str(node.get("display_md") or "").strip(),
+        author=str(node.get("author") or "").strip(),
+        raw_text=str(node.get("raw_text") or ""),
+    )
 
 
 __all__ = [

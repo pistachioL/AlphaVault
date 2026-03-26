@@ -25,6 +25,7 @@ QUOTE_MARKER = "//@"
 SEGMENT_SEPARATOR = "\n\n---\n\n"
 DEFAULT_UNKNOWN_AUTHOR = "未知"
 IMG_LINE_TEMPLATE = '<img class="ke_img" src="{url}" />'
+REPOST_ONLY_TEXT = "转发"
 
 _MAX_HTML_UNESCAPE_PASSES = 2
 
@@ -320,7 +321,7 @@ def _expand_repost_segments(
     expanded_original = _expand_repost_segments(original_seg, max_depth=max_depth - 1)
 
     speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
-    retweeter_text = (comment_text or "").rstrip()
+    retweeter_text = (comment_text or "").rstrip() or REPOST_ONLY_TEXT
     retweeter_seg = WeiboDisplaySegment(
         speaker=speaker, text=retweeter_text, is_current=seg.is_current
     )
@@ -333,24 +334,21 @@ def _sanitize_visible_text(text: str) -> str:
     return s.replace("<", "&lt;").replace(">", "&gt;")
 
 
-def format_weibo_display_md(
+def _build_normalized_segments(
     raw_text: str,
     *,
     author: str = "",
-    image_urls: Optional[Iterable[str]] = None,
-) -> str:
+    max_depth: int = 3,
+) -> List[WeiboDisplaySegment]:
     segments = parse_weibo_reply_chain(
         raw_text, default_author=str(author or "").strip()
     )
     if not segments:
-        return ""
+        return []
 
     expanded_segments: List[WeiboDisplaySegment] = []
     for seg in segments:
-        expanded_segments.extend(_expand_repost_segments(seg, max_depth=3))
-
-    images = _dedup_keep_order(image_urls or [])
-    img_lines = [IMG_LINE_TEMPLATE.format(url=url) for url in images]
+        expanded_segments.extend(_expand_repost_segments(seg, max_depth=max_depth))
 
     normalized_segments: List[WeiboDisplaySegment] = []
     prev_speaker = ""
@@ -365,6 +363,46 @@ def format_weibo_display_md(
             WeiboDisplaySegment(speaker=speaker, text=text, is_current=seg.is_current)
         )
         prev_speaker = speaker
+    return normalized_segments
+
+
+def build_weibo_display_lines(
+    raw_text: str,
+    *,
+    author: str = "",
+    max_depth: int = 3,
+) -> List[str]:
+    segments = _build_normalized_segments(
+        raw_text,
+        author=author,
+        max_depth=max_depth,
+    )
+    lines: List[str] = []
+    for seg in segments:
+        speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
+        text = normalize_weibo_text(seg.text or "")
+        if not text:
+            continue
+        lines.append(f"{speaker}：{text}")
+    return lines
+
+
+def format_weibo_display_md(
+    raw_text: str,
+    *,
+    author: str = "",
+    image_urls: Optional[Iterable[str]] = None,
+) -> str:
+    normalized_segments = _build_normalized_segments(
+        raw_text,
+        author=str(author or "").strip(),
+        max_depth=3,
+    )
+    if not normalized_segments:
+        return ""
+
+    images = _dedup_keep_order(image_urls or [])
+    img_lines = [IMG_LINE_TEMPLATE.format(url=url) for url in images]
 
     blocks: List[str] = []
     for seg in normalized_segments:

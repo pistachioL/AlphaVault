@@ -215,11 +215,15 @@ def _add_synthetic_sources(
     for idx, row in posts.iterrows():
         if _clean_id(row.get("parent_post_id")):
             continue
+        post_author = str(row.get("author") or "").strip()
         display_md = str(row.get("display_md") or "").strip()
-        segments = parse_display_md_segments(display_md) if display_md else []
+        segments = parse_display_md_segments(
+            display_md,
+            author=post_author,
+            raw_text=str(row.get("raw_text") or ""),
+        )
         if len(segments) < 2:
             continue
-        post_author = str(row.get("author") or "").strip()
         first_speaker = _extract_speaker_name(segments[0])
         if not first_speaker or not post_author or first_speaker == post_author:
             continue
@@ -370,8 +374,10 @@ def _ensure_parent_stubs(nodes: dict[str, dict]) -> None:
             child_csv = {}
         source_stub = _source_stub_from_child_csv(child_csv)
         child_display_md = str(node.get("display_md") or "").strip()
-        child_segments = (
-            parse_display_md_segments(child_display_md) if child_display_md else []
+        child_segments = parse_display_md_segments(
+            child_display_md,
+            author=str(node.get("author") or "").strip(),
+            raw_text=str(node.get("raw_text") or ""),
         )
         fallback_source = child_segments[0] if child_segments else ""
         if fallback_source and not str(source_stub.get("raw_text") or "").strip():
