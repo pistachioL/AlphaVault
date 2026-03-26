@@ -41,6 +41,44 @@ def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -
     assert view.related_sectors[0]["sector_key"] == "white_liquor"
 
 
+def test_build_stock_research_view_formats_created_at_line() -> None:
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "author": "alice",
+                "raw_text": "原文内容",
+                "display_md": "格式化原文",
+                "created_at": "2026-03-25 10:23:00",
+            }
+        ]
+    )
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 3,
+                "summary": "继续加仓",
+                "created_at": "2026-03-25 10:23:00",
+                "cluster_keys": ["white_liquor"],
+            }
+        ]
+    )
+
+    view = build_stock_research_view(
+        posts,
+        assertions,
+        stock_key="stock:600519.SH",
+        now=pd.Timestamp("2026-03-26 10:23:00"),
+    )
+
+    assert view.signals[0]["created_at_line"] == "2026-03-25 10:23 · 1天前"
+    assert view.signals[0]["display_md"] == "格式化原文"
+    assert view.signals[0]["raw_text"] == "原文内容"
+
+
 def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -> None:
     posts = pd.DataFrame(
         [
