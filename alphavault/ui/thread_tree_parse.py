@@ -15,6 +15,7 @@ import re
 from typing import Any, Dict
 
 from alphavault.text.html import html_to_text
+from alphavault.weibo.display import build_weibo_display_lines
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
 FORWARD_ORIGINAL_MARKER = "[转发原文]"
@@ -84,14 +85,7 @@ def _clean_display_md_segment(text: str) -> str:
     return s.strip()
 
 
-def parse_display_md_segments(display_md: str) -> list[str]:
-    """
-    Parse posts.display_md into message segments.
-
-    The DB format often uses '---' as a separator between quoted original and
-    later replies (multi-turn). We split by that separator and make every
-    segment a single line (so it can become a tree node).
-    """
+def _parse_display_md_segments(display_md: str) -> list[str]:
     text = html_to_text(str(display_md or ""))
     if not text.strip():
         return []
@@ -102,6 +96,40 @@ def parse_display_md_segments(display_md: str) -> list[str]:
         seg = _clean_display_md_segment(seg)
         if seg:
             segments.append(seg)
+    return segments
+
+
+def _looks_like_compact_weibo_chain(text: str) -> bool:
+    value = html_to_text(str(text or ""))
+    if not value.strip():
+        return False
+    return (
+        "//@" in value
+        or "转发 @" in value
+        or "转发@" in value
+        or value.lstrip().startswith("回复@")
+    )
+
+
+def parse_display_md_segments(
+    display_md: str,
+    *,
+    author: str = "",
+    raw_text: str = "",
+) -> list[str]:
+    """
+    Parse posts.display_md into tree-ready message segments.
+
+    Prefer the stored '---' split format. If the content still looks like a
+    compact Weibo reply/repost chain, rebuild it with the shared Weibo parser.
+    """
+    segments = _parse_display_md_segments(display_md)
+    candidate_text = str(raw_text or "").strip() or str(display_md or "").strip()
+    if not _looks_like_compact_weibo_chain(candidate_text):
+        return segments
+    rebuilt = build_weibo_display_lines(candidate_text, author=author)
+    if len(rebuilt) > len(segments):
+        return rebuilt
     return segments
 
 
@@ -179,6 +207,10 @@ def extract_platform_post_id(post_uid: object) -> str:
     value = str(post_uid or "").strip()
     if not value:
         return ""
+    prefix, sep, suffix = value.partition(":")
+    del prefix
+    if sep and suffix.startswith(("http://", "https://")):
+        return suffix.strip()
     parts = value.split(":")
     if len(parts) >= 2:
         return parts[-1].strip()

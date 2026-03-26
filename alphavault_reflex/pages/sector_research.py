@@ -15,9 +15,13 @@ def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.text(row["action"], class_name="av-research-muted"),
         rx.text(row["author"], class_name="av-research-muted"),
         rx.cond(
-            row["display_md"] != "",
-            rx.text(row["display_md"], class_name="av-research-signal-body"),
-            rx.text(row["raw_text"], class_name="av-research-signal-body"),
+            row["tree_text"] != "",
+            rx.el.pre(row["tree_text"], class_name="av-research-signal-tree"),
+            rx.cond(
+                row["display_md"] != "",
+                rx.text(row["display_md"], class_name="av-research-signal-body"),
+                rx.text(row["raw_text"], class_name="av-research-signal-body"),
+            ),
         ),
         class_name="av-research-card",
     )

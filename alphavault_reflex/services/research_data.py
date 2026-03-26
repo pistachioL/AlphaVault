@@ -16,6 +16,7 @@ from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
+from alphavault_reflex.services.thread_tree import build_post_tree
 
 
 STOCK_KEY_PREFIX = "stock:"
@@ -99,7 +100,7 @@ def build_stock_research_view(
     stock_view = _merge_post_fields(stock_view.copy(), posts)
     return StockResearchView(
         header_title=_stock_title(stock_key),
-        signals=_build_signal_rows(stock_view),
+        signals=_build_signal_rows(stock_view, posts=posts),
         related_sectors=_build_related_sector_rows(stock_view),
         pending_candidates=[],
     )
@@ -124,7 +125,7 @@ def build_sector_research_view(
     sector_view = _merge_post_fields(sector_view, posts)
     return SectorResearchView(
         header_title=sector_key,
-        signals=_build_signal_rows(sector_view),
+        signals=_build_signal_rows(sector_view, posts=posts),
         related_stocks=_build_related_stock_rows(sector_view),
         pending_candidates=[],
     )
@@ -271,7 +272,11 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     )
 
 
-def _build_signal_rows(view: pd.DataFrame) -> list[dict[str, str]]:
+def _build_signal_rows(
+    view: pd.DataFrame,
+    *,
+    posts: pd.DataFrame,
+) -> list[dict[str, str]]:
     if view.empty:
         return []
     rows = view.copy()
@@ -279,14 +284,23 @@ def _build_signal_rows(view: pd.DataFrame) -> list[dict[str, str]]:
         rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
         rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
     out: list[dict[str, str]] = []
+    tree_cache: dict[str, tuple[str, str]] = {}
     for _, row in rows.iterrows():
         created = row.get("created_at")
         created_text = ""
         if pd.notna(created):
             created_text = str(pd.Timestamp(created))
+        post_uid = str(row.get("post_uid") or "").strip()
+        tree_label = ""
+        tree_text = ""
+        if post_uid:
+            tree_label, tree_text = tree_cache.setdefault(
+                post_uid,
+                build_post_tree(post_uid=post_uid, posts=posts),
+            )
         out.append(
             {
-                "post_uid": str(row.get("post_uid") or "").strip(),
+                "post_uid": post_uid,
                 "summary": str(row.get("summary") or "").strip(),
                 "action": str(row.get("action") or "").strip(),
                 "action_strength": str(row.get("action_strength") or "").strip(),
@@ -294,6 +308,8 @@ def _build_signal_rows(view: pd.DataFrame) -> list[dict[str, str]]:
                 "created_at": created_text,
                 "raw_text": str(row.get("raw_text") or "").strip(),
                 "display_md": str(row.get("display_md") or "").strip(),
+                "tree_label": tree_label,
+                "tree_text": tree_text,
             }
         )
     return out

@@ -61,6 +61,20 @@
   color: #1e293b;
 }
 
+.av-research-signal-tree {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--av-research-border);
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.04);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.35;
+  white-space: pre;
+  overflow: auto;
+}
+
 .av-research-muted {
   color: #64748b;
 }
