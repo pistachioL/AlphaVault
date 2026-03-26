@@ -3,10 +3,14 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault_reflex.research_state import ResearchState
+from alphavault_reflex.research_state import research_page_loading_var
+from alphavault_reflex.research_state import sector_page_title_var
 
 EMPTY_TEXT = "暂无。"
 LOADING_TEXT = "加载中…"
 NO_SIGNAL_TEXT = "没有信号。"
+PAGE_LOADING = research_page_loading_var()
+PAGE_TITLE = sector_page_title_var()
 
 
 def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
@@ -79,7 +83,7 @@ def _section_loading() -> rx.Component:
 def sector_research_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
-            rx.heading(ResearchState.page_title, size="6"),
+            rx.heading(PAGE_TITLE, size="6"),
             rx.text("板块内最近最强信号", class_name="av-research-muted"),
             class_name="av-research-head",
         ),
@@ -96,7 +100,7 @@ def sector_research_page() -> rx.Component:
             rx.el.div(
                 rx.heading("板块信号", size="4"),
                 rx.cond(
-                    ResearchState.show_loading,
+                    PAGE_LOADING,
                     _section_loading(),
                     rx.cond(
                         ResearchState.has_signals,
@@ -116,7 +120,7 @@ def sector_research_page() -> rx.Component:
             rx.el.aside(
                 rx.heading("板块内个股", size="4"),
                 rx.cond(
-                    ResearchState.show_loading,
+                    PAGE_LOADING,
                     _section_loading(),
                     rx.cond(
                         ResearchState.has_related_items,
@@ -133,7 +137,7 @@ def sector_research_page() -> rx.Component:
                 ),
                 rx.heading("待确认关系", size="4", margin_top="18px"),
                 rx.cond(
-                    ResearchState.show_loading,
+                    PAGE_LOADING,
                     _section_loading(),
                     rx.cond(
                         ResearchState.has_pending_candidates,
