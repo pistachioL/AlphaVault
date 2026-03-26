@@ -38,6 +38,8 @@ AI_STATUS_SKIPPED = "skipped"
 AI_STATUS_RANKED = "ranked"
 AI_STATUS_ERROR = "error"
 STOCK_KEY_PREFIX = "stock:"
+AI_RANK_TIMEOUT_SECONDS_CAP = 20.0
+AI_RANK_RETRY_CAP = 1
 
 
 @dataclass(frozen=True)
@@ -251,8 +253,8 @@ relation_type: {relation_type}
         model_name=config.model,
         base_url=config.base_url,
         api_key=config.api_key,
-        timeout_seconds=float(config.timeout_seconds),
-        retry_count=int(config.retries),
+        timeout_seconds=min(float(config.timeout_seconds), AI_RANK_TIMEOUT_SECONDS_CAP),
+        retry_count=min(int(config.retries), AI_RANK_RETRY_CAP),
         temperature=float(config.temperature),
         reasoning_effort=str(config.reasoning_effort),
         trace_out=None,

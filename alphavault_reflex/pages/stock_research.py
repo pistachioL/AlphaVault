@@ -91,7 +91,7 @@ def _backfill_item(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.text(row["preview"], class_name="av-research-muted"),
         rx.hstack(
             rx.button(
-                "立即 AI 回补",
+                "排队 AI 回补",
                 on_click=lambda: ResearchState.queue_backfill_post(row["post_uid"]),
                 class_name="av-btn av-btn-small",
             ),
