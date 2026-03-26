@@ -11,6 +11,7 @@ from alphavault.research_workbench import (
     ensure_research_workbench_schema,
     ignore_relation_candidate,
     list_pending_candidates,
+    record_stock_alias_relation,
     record_stock_sector_relation,
     upsert_relation_candidate,
 )
@@ -42,6 +43,36 @@ def test_record_stock_sector_relation_and_pending_candidates() -> None:
             }
         ]
         assert list_pending_candidates(conn) == []
+    finally:
+        conn.close()
+
+
+def test_record_stock_alias_relation_writes_alias_of_relation() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+        record_stock_alias_relation(
+            conn,
+            stock_key="stock:601899.SH",
+            alias_key="stock:紫金",
+            source="ai_worker",
+        )
+        rows = (
+            conn.execute(
+                f"SELECT relation_type, left_key, right_key, relation_label, source FROM {RESEARCH_RELATIONS_TABLE}"
+            )
+            .mappings()
+            .all()
+        )
+        assert rows == [
+            {
+                "relation_type": "stock_alias",
+                "left_key": "stock:601899.SH",
+                "right_key": "stock:紫金",
+                "relation_label": "alias_of",
+                "source": "ai_worker",
+            }
+        ]
     finally:
         conn.close()
 

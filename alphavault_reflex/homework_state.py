@@ -16,7 +16,6 @@ from alphavault_reflex.services.research_models import (
     build_stock_route,
 )
 from alphavault_reflex.services.stock_objects import (
-    build_ai_stock_alias_map,
     build_stock_object_index,
 )
 from alphavault_reflex.services.turso_read import (
@@ -221,14 +220,9 @@ def _prepare_board_assertions(
     if assertions.empty:
         return assertions.copy(), {}
     board_assertions = assertions.copy()
-    ai_alias_map = build_ai_stock_alias_map(
-        board_assertions,
-        stock_relations=stock_relations,
-    )
     stock_index = build_stock_object_index(
         board_assertions,
         stock_relations=stock_relations,
-        ai_alias_map=ai_alias_map,
     )
     board_group_keys: list[str] = []
     board_topic_labels: dict[str, str] = {}

@@ -9,7 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from sqlalchemy.engine import Engine
 
@@ -19,6 +19,7 @@ from alphavault.constants import (
     ENV_AI_TRACE_OUT,
     ENV_RSS_ACTIVE_HOURS,
     ENV_RSS_INTERVAL_SECONDS,
+    ENV_WORKER_STOCK_ALIAS_SYNC_INTERVAL_SECONDS,
 )
 from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
@@ -73,6 +74,8 @@ from alphavault.worker.cli import (
 from alphavault.worker.ingest import ingest_rss_many_once
 from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
 from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
+from alphavault.worker.stock_alias_sync import sync_stock_alias_relations
+from alphavault_reflex.services.stock_objects import AiRuntimeConfig
 
 from alphavault.weibo.topic_prompt_tree import (
     MAX_THREAD_POSTS,
@@ -896,6 +899,84 @@ def _seconds_until_next_active_start(
     return max(1.0, (next_dt - now_dt).total_seconds())
 
 
+def _resolve_stock_alias_sync_interval_seconds() -> float:
+    raw_value = os.getenv(ENV_WORKER_STOCK_ALIAS_SYNC_INTERVAL_SECONDS, "").strip()
+    if not raw_value:
+        return 1800.0
+    try:
+        seconds = float(raw_value)
+    except Exception:
+        return 1800.0
+    return max(60.0, seconds)
+
+
+def _build_alias_ai_runtime_config(config: LLMConfig) -> AiRuntimeConfig:
+    return AiRuntimeConfig(
+        api_key=str(config.api_key or "").strip(),
+        model=str(config.model or "").strip() or DEFAULT_MODEL,
+        base_url=str(config.base_url or "").strip(),
+        api_mode=str(config.api_mode or DEFAULT_AI_MODE).strip() or DEFAULT_AI_MODE,
+        temperature=float(config.ai_temperature),
+        reasoning_effort=str(config.ai_reasoning_effort or "").strip()
+        or DEFAULT_AI_REASONING_EFFORT,
+        timeout_seconds=float(config.ai_timeout_seconds),
+        retries=int(config.ai_retries),
+    )
+
+
+def _collect_periodic_job_result(
+    *,
+    job_name: str,
+    future: Future | None,
+    engine: Engine,
+    verbose: bool,
+) -> tuple[Future | None, dict[str, int | bool], bool, bool]:
+    if future is None or not future.done():
+        return future, {}, False, False
+    try:
+        raw = future.result()
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=engine, err=e, verbose=bool(verbose)
+        )
+        if verbose:
+            print(f"[{job_name}] sync_error {type(e).__name__}: {e}", flush=True)
+        return None, {}, True, True
+    stats = raw if isinstance(raw, dict) else {}
+    return None, stats, True, False
+
+
+def _maybe_start_periodic_job(
+    *,
+    executor: ThreadPoolExecutor,
+    future: Future | None,
+    active_engine: Optional[Engine],
+    trigger: bool,
+    now: float,
+    next_run_at: float,
+    interval_seconds: float,
+    wakeup_event: threading.Event,
+    submit_fn: Callable[[Engine], dict[str, int | bool]],
+) -> tuple[Future | None, float, bool]:
+    engine_for_job = active_engine
+    if (
+        not trigger
+        or engine_for_job is None
+        or future is not None
+        or now < float(next_run_at)
+    ):
+        return future, next_run_at, False
+    new_future = executor.submit(submit_fn, engine_for_job)
+    new_future.add_done_callback(lambda _f: wakeup_event.set())
+    if bool(interval_seconds) and float(interval_seconds) > 0:
+        next_at = now + float(interval_seconds)
+    else:
+        next_at = now
+    return new_future, next_at, True
+
+
 def _schedule_ai(
     executor: ThreadPoolExecutor,
     *,
@@ -1065,12 +1146,26 @@ def main() -> None:
     if rss_interval_seconds is None or rss_interval_seconds <= 0:
         rss_interval_seconds = 600.0
     rss_interval_seconds = max(1.0, float(rss_interval_seconds))
+    alias_sync_interval_seconds = _resolve_stock_alias_sync_interval_seconds()
+    alias_ai_runtime_config = _build_alias_ai_runtime_config(config)
+
+    def _submit_alias_sync_job(sync_engine: Engine) -> dict[str, int | bool]:
+        return sync_stock_alias_relations(
+            sync_engine,
+            ai_runtime_config=alias_ai_runtime_config,
+        )
+
     rss_next_ingest_at = 0.0 if rss_urls else float("inf")
     maintenance_next_at = 0.0
+    alias_sync_next_at = 0.0
 
-    with ThreadPoolExecutor(max_workers=worker_threads) as executor:
+    with (
+        ThreadPoolExecutor(max_workers=worker_threads) as executor,
+        ThreadPoolExecutor(max_workers=1) as alias_executor,
+    ):
         wakeup_event = threading.Event()
         inflight_futures: set[Future] = set()
+        alias_sync_future: Future | None = None
         turso_ready = False
         turso_next_ready_check_at = 0.0
         while True:
@@ -1082,6 +1177,35 @@ def main() -> None:
             inflight_futures.difference_update(
                 {f for f in inflight_futures if f.done()}
             )
+            alias_resolved = 0
+            alias_inserted = 0
+            alias_sync_finished = False
+            alias_has_more = False
+            (
+                alias_sync_future,
+                alias_stats,
+                alias_sync_finished,
+                alias_sync_error,
+            ) = _collect_periodic_job_result(
+                job_name="alias",
+                future=alias_sync_future,
+                engine=engine,
+                verbose=verbose,
+            )
+            alias_resolved = int(alias_stats.get("resolved", 0))
+            alias_inserted = int(alias_stats.get("inserted", 0))
+            alias_has_more = bool(alias_stats.get("has_more", False))
+            if (
+                alias_sync_finished
+                and verbose
+                and (alias_resolved > 0 or alias_inserted > 0)
+            ):
+                print(
+                    f"[alias] sync_done resolved={alias_resolved} inserted={alias_inserted}",
+                    flush=True,
+                )
+            if alias_has_more:
+                alias_sync_next_at = 0.0
 
             now = time.time()
             do_maintenance = bool(now >= maintenance_next_at)
@@ -1165,6 +1289,23 @@ def main() -> None:
                     )
                 )
 
+            alias_trigger = bool(do_maintenance or force_maintenance or alias_has_more)
+            (
+                alias_sync_future,
+                alias_sync_next_at,
+                start_alias_sync,
+            ) = _maybe_start_periodic_job(
+                executor=alias_executor,
+                future=alias_sync_future,
+                active_engine=active_engine,
+                trigger=alias_trigger,
+                now=now,
+                next_run_at=alias_sync_next_at,
+                interval_seconds=alias_sync_interval_seconds,
+                wakeup_event=wakeup_event,
+                submit_fn=_submit_alias_sync_job,
+            )
+
             scheduled = 0
             schedule_error = False
             if active_engine is not None:
@@ -1180,7 +1321,10 @@ def main() -> None:
                 )
 
             turso_error = bool(
-                ingest_turso_error or maintenance_error or schedule_error
+                ingest_turso_error
+                or maintenance_error
+                or schedule_error
+                or alias_sync_error
             )
             if turso_error:
                 turso_ready = False
@@ -1191,12 +1335,17 @@ def main() -> None:
 
             if verbose and (
                 do_maintenance
+                or start_alias_sync
+                or alias_sync_finished
+                or alias_has_more
                 or inserted > 0
                 or recovered > 0
                 or flushed_redis > 0
                 or flushed_spool > 0
+                or alias_inserted > 0
             ):
                 next_maintenance_in = max(0.0, maintenance_next_at - time.time())
+                next_alias_sync_in = max(0.0, alias_sync_next_at - time.time())
                 next_rss_in = (
                     -1.0
                     if rss_next_ingest_at == float("inf")
@@ -1209,22 +1358,27 @@ def main() -> None:
                     )
                 print(
                     f"[tick] turso_ready={1 if active_engine is not None else 0} "
-                    f"inflight={len(inflight_futures)} ai_scheduled={scheduled} "
+                    f"inflight={len(inflight_futures)} alias_inflight={1 if alias_sync_future is not None else 0} "
+                    f"ai_scheduled={scheduled} "
                     f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
+                    f"alias_resolved={alias_resolved} alias_inserted={alias_inserted} "
                     f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
                     f"next_maint={int(next_maintenance_in)}s "
+                    f"next_alias={int(next_alias_sync_in)}s "
                     f"next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s "
                     f"next_turso={int(next_turso_in) if next_turso_in >= 0 else -1}s",
                     flush=True,
                 )
 
             next_deadline = maintenance_next_at
+            if alias_sync_next_at > 0:
+                next_deadline = min(next_deadline, alias_sync_next_at)
             if rss_next_ingest_at != float("inf"):
                 next_deadline = min(next_deadline, rss_next_ingest_at)
             if not turso_ready:
                 next_deadline = min(next_deadline, float(turso_next_ready_check_at))
             timeout = max(0.0, next_deadline - time.time())
-            if inflight_futures:
+            if inflight_futures or alias_sync_future is not None:
                 wakeup_event.wait(timeout)
             else:
                 time.sleep(timeout)

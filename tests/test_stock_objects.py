@@ -124,3 +124,127 @@ def test_filter_assertions_for_stock_object_uses_accepted_alias_relations() -> N
     )
 
     assert filtered["post_uid"].tolist() == ["p1", "p2"]
+
+
+def test_build_ai_stock_alias_map_ignores_non_stock_like_topic_keys(
+    monkeypatch,
+) -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:601899.SH",
+                "summary": "先建仓",
+                "author": "alice",
+                "created_at": "2026-03-25 10:00:00",
+                "stock_codes_json": '["601899.SH"]',
+                "stock_names_json": '["紫金矿业"]',
+            },
+            {
+                "post_uid": "p2",
+                "topic_key": "stock:commodity:黄金",
+                "summary": "看黄金波动",
+                "author": "alice",
+                "created_at": "2026-03-26 10:00:00",
+                "stock_codes_json": "[]",
+                "stock_names_json": "[]",
+            },
+        ]
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        lambda: (True, ""),
+    )
+
+    def _fake_ai(**kwargs):
+        calls.append(str(kwargs.get("trace_label") or ""))
+        return {"target_object_key": "", "ai_reason": ""}
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects._call_ai_with_litellm",
+        _fake_ai,
+    )
+
+    ai_alias_map = build_ai_stock_alias_map(assertions)
+
+    assert ai_alias_map == {}
+    assert calls == []
+
+
+def test_build_ai_stock_alias_map_respects_max_alias_keys_and_stats(
+    monkeypatch,
+) -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:601899.SH",
+                "summary": "先建仓",
+                "author": "alice",
+                "created_at": "2026-03-25 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": '["601899.SH"]',
+                "stock_names_json": '["紫金矿业"]',
+            },
+            {
+                "post_uid": "p2",
+                "topic_key": "stock:紫金",
+                "summary": "看多",
+                "author": "alice",
+                "created_at": "2026-03-26 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["紫金"]',
+            },
+            {
+                "post_uid": "p3",
+                "topic_key": "stock:阿紫",
+                "summary": "继续看",
+                "author": "alice",
+                "created_at": "2026-03-26 11:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["阿紫"]',
+            },
+            {
+                "post_uid": "p4",
+                "topic_key": "stock:小紫",
+                "summary": "再观察",
+                "author": "alice",
+                "created_at": "2026-03-26 12:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["小紫"]',
+            },
+        ]
+    )
+    calls: list[str] = []
+    stats: dict[str, int] = {}
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        lambda: (True, ""),
+    )
+
+    def _fake_ai(**kwargs):
+        calls.append(str(kwargs.get("trace_label") or ""))
+        return {"target_object_key": "", "ai_reason": ""}
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects._call_ai_with_litellm",
+        _fake_ai,
+    )
+
+    ai_alias_map = build_ai_stock_alias_map(
+        assertions,
+        max_alias_keys=2,
+        stats_out=stats,
+    )
+
+    assert ai_alias_map == {}
+    assert len(calls) == 2
+    assert stats["unresolved_total"] == 3
+    assert stats["processed_aliases"] == 2
+    assert stats["remaining_aliases"] == 1
