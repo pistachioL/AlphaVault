@@ -20,6 +20,8 @@ from alphavault_reflex.services.thread_tree import build_post_tree
 
 
 STOCK_KEY_PREFIX = "stock:"
+MINUTES_PER_HOUR = 60
+MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,7 @@ def build_stock_research_view(
     assertions: pd.DataFrame,
     *,
     stock_key: str,
+    now: pd.Timestamp | None = None,
 ) -> StockResearchView:
     stock_key = str(stock_key or "").strip()
     if assertions.empty or not stock_key:
@@ -100,7 +103,7 @@ def build_stock_research_view(
     stock_view = _merge_post_fields(stock_view.copy(), posts)
     return StockResearchView(
         header_title=_stock_title(stock_key),
-        signals=_build_signal_rows(stock_view, posts=posts),
+        signals=_build_signal_rows(stock_view, posts=posts, now=now),
         related_sectors=_build_related_sector_rows(stock_view),
         pending_candidates=[],
     )
@@ -276,6 +279,7 @@ def _build_signal_rows(
     view: pd.DataFrame,
     *,
     posts: pd.DataFrame,
+    now: pd.Timestamp | None = None,
 ) -> list[dict[str, str]]:
     if view.empty:
         return []
@@ -285,11 +289,11 @@ def _build_signal_rows(
         rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
     out: list[dict[str, str]] = []
     tree_cache: dict[str, tuple[str, str]] = {}
+    reference_now = _coerce_signal_timestamp(now) or _default_signal_reference_time()
     for _, row in rows.iterrows():
         created = row.get("created_at")
-        created_text = ""
-        if pd.notna(created):
-            created_text = str(pd.Timestamp(created))
+        created_text = _format_signal_timestamp(created)
+        created_at_line = _format_signal_created_at_line(created, now=reference_now)
         post_uid = str(row.get("post_uid") or "").strip()
         tree_label = ""
         tree_text = ""
@@ -306,6 +310,7 @@ def _build_signal_rows(
                 "action_strength": str(row.get("action_strength") or "").strip(),
                 "author": str(row.get("author") or "").strip(),
                 "created_at": created_text,
+                "created_at_line": created_at_line,
                 "raw_text": str(row.get("raw_text") or "").strip(),
                 "display_md": str(row.get("display_md") or "").strip(),
                 "tree_label": tree_label,
@@ -339,6 +344,49 @@ def _build_related_stock_rows(view: pd.DataFrame) -> list[dict[str, str]]:
         {"stock_key": stock_key, "mention_count": str(count)}
         for stock_key, count in ranked
     ]
+
+
+def _coerce_signal_timestamp(value: object) -> pd.Timestamp | None:
+    ts = pd.to_datetime(value, errors="coerce")
+    if pd.isna(ts):
+        return None
+    if getattr(ts, "tzinfo", None) is not None:
+        return ts.tz_convert(None)
+    return pd.Timestamp(ts)
+
+
+def _default_signal_reference_time() -> pd.Timestamp:
+    return pd.Timestamp.now(tz="UTC").tz_convert(None)
+
+
+def _format_signal_timestamp(value: object) -> str:
+    ts = _coerce_signal_timestamp(value)
+    if ts is None:
+        return ""
+    return ts.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_signal_age(value: object, *, now: pd.Timestamp) -> str:
+    ts = _coerce_signal_timestamp(value)
+    if ts is None:
+        return ""
+    delta_seconds = max((now - ts).total_seconds(), 0)
+    minutes = int(delta_seconds // MINUTES_PER_HOUR)
+    if minutes < MINUTES_PER_HOUR:
+        return f"{minutes}分钟前"
+    if minutes < MINUTES_PER_DAY:
+        return f"{minutes // MINUTES_PER_HOUR}小时前"
+    return f"{minutes // MINUTES_PER_DAY}天前"
+
+
+def _format_signal_created_at_line(value: object, *, now: pd.Timestamp) -> str:
+    created_at_text = _format_signal_timestamp(value)
+    if not created_at_text:
+        return ""
+    age_text = _format_signal_age(value, now=now)
+    if not age_text:
+        return created_at_text
+    return f"{created_at_text} · {age_text}"
 
 
 def _sector_mask(assertions: pd.DataFrame, sector_key: str) -> pd.Series:

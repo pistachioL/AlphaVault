@@ -9,11 +9,28 @@ LOADING_TEXT = "加载中…"
 NO_SIGNAL_TEXT = "没有信号。"
 
 
+def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.div(
+        rx.text(row["action"], class_name="av-research-muted"),
+        rx.text(row["author"], class_name="av-research-muted"),
+        rx.cond(
+            row["created_at_line"] != "",
+            rx.text(row["created_at_line"], class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        style={
+            "display": "flex",
+            "flexWrap": "wrap",
+            "gap": "10px",
+            "alignItems": "center",
+        },
+    )
+
+
 def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.div(
         rx.text(row["summary"], class_name="av-research-signal-title"),
-        rx.text(row["action"], class_name="av-research-muted"),
-        rx.text(row["author"], class_name="av-research-muted"),
+        _signal_meta_row(row),
         rx.cond(
             row["tree_text"] != "",
             rx.el.pre(row["tree_text"], class_name="av-research-signal-tree"),
