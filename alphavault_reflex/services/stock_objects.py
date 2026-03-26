@@ -291,6 +291,9 @@ def build_ai_stock_alias_map(
     *,
     stock_relations: pd.DataFrame | None = None,
     alias_keys: list[str] | None = None,
+    runtime_config: AiRuntimeConfig | None = None,
+    max_alias_keys: int | None = None,
+    stats_out: dict[str, int] | None = None,
 ) -> dict[str, str]:
     enriched = _ensure_stock_columns(assertions)
     if enriched.empty:
@@ -305,15 +308,30 @@ def build_ai_stock_alias_map(
         base_index=base_index,
         alias_keys=alias_keys,
     )
+    unresolved_total = len(unresolved)
+    if stats_out is not None:
+        stats_out["unresolved_total"] = int(unresolved_total)
     if not unresolved:
+        if stats_out is not None:
+            stats_out["processed_aliases"] = 0
+            stats_out["remaining_aliases"] = 0
         return {}
 
+    unresolved_to_process = unresolved
+    if max_alias_keys is not None and int(max_alias_keys) > 0:
+        unresolved_to_process = unresolved[: int(max_alias_keys)]
+    remaining_aliases = max(0, len(unresolved) - len(unresolved_to_process))
+    if stats_out is not None:
+        stats_out["processed_aliases"] = int(len(unresolved_to_process))
+        stats_out["remaining_aliases"] = int(remaining_aliases)
+
     out: dict[str, str] = {}
-    for alias_key in unresolved:
+    for alias_key in unresolved_to_process:
         target_key = _resolve_single_alias_with_ai(
             enriched,
             alias_key=alias_key,
             base_index=base_index,
+            runtime_config=runtime_config,
         )
         if target_key:
             out[alias_key] = target_key
@@ -399,26 +417,36 @@ def _pick_unresolved_alias_keys(
     base_index: StockObjectIndex,
     alias_keys: list[str] | None,
 ) -> list[str]:
-    candidates: list[str]
-    if alias_keys:
-        candidates = [
-            _normalize_stock_key(key) for key in alias_keys if _normalize_stock_key(key)
+    candidates: list[str] = []
+    seen: set[str] = set()
+    raw_candidates = (
+        [str(key or "").strip() for key in alias_keys]
+        if alias_keys
+        else [
+            str(item or "").strip()
+            for item in assertions.get("topic_key", pd.Series(dtype=str)).tolist()
         ]
-    else:
-        seen: set[str] = set()
-        candidates = []
-        for raw_key in assertions.get("topic_key", pd.Series(dtype=str)).tolist():
-            stock_key = _normalize_stock_key(raw_key)
-            if not stock_key or not stock_key.startswith(STOCK_KEY_PREFIX):
-                continue
-            if is_stock_code_value(_stock_value(stock_key)):
-                continue
-            if base_index.resolve(stock_key) != stock_key:
-                continue
-            if stock_key in seen:
-                continue
-            seen.add(stock_key)
-            candidates.append(stock_key)
+    )
+
+    for raw_key in raw_candidates:
+        if not raw_key:
+            continue
+        if (not alias_keys) and (not raw_key.startswith(STOCK_KEY_PREFIX)):
+            continue
+        stock_key = _normalize_stock_key(raw_key)
+        if not stock_key or not stock_key.startswith(STOCK_KEY_PREFIX):
+            continue
+        stock_value = _stock_value(stock_key)
+        if ":" in stock_value:
+            continue
+        if is_stock_code_value(stock_value):
+            continue
+        if base_index.resolve(stock_key) != stock_key:
+            continue
+        if stock_key in seen:
+            continue
+        seen.add(stock_key)
+        candidates.append(stock_key)
     return candidates
 
 
@@ -427,6 +455,7 @@ def _resolve_single_alias_with_ai(
     *,
     alias_key: str,
     base_index: StockObjectIndex,
+    runtime_config: AiRuntimeConfig | None = None,
 ) -> str:
     alias_rows = _filter_alias_rows(assertions, alias_key=alias_key)
     if alias_rows.empty:
@@ -437,7 +466,7 @@ def _resolve_single_alias_with_ai(
     if not candidates:
         return ""
 
-    config = _get_ai_runtime_config()
+    config = runtime_config or _get_ai_runtime_config()
     alias_value = _stock_value(alias_key)
     alias_examples = _format_alias_examples(alias_rows)
     candidate_lines = [

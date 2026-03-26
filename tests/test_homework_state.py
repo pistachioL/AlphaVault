@@ -5,7 +5,9 @@ import pandas as pd
 from alphavault_reflex.homework_state import HomeworkState
 
 
-def test_homework_state_groups_same_stock_object_into_one_row(monkeypatch) -> None:
+def test_homework_state_keeps_unlinked_stock_alias_as_separate_rows(
+    monkeypatch,
+) -> None:
     assertions = pd.DataFrame(
         [
             {
@@ -42,10 +44,6 @@ def test_homework_state_groups_same_stock_object_into_one_row(monkeypatch) -> No
         lambda: (pd.DataFrame(), ""),
     )
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.build_ai_stock_alias_map",
-        lambda assertions, stock_relations: {"stock:紫金": "stock:601899.SH"},
-    )
-    monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
         lambda post_uids: ({}, ""),
     )
@@ -53,12 +51,9 @@ def test_homework_state_groups_same_stock_object_into_one_row(monkeypatch) -> No
     state = HomeworkState()
     state._refresh()
 
-    assert len(state.rows) == 1
-    assert state.rows[0]["topic"] == "stock:601899.SH"
-    assert state.rows[0]["topic_label"] == "紫金矿业 (601899.SH)"
-    assert state.rows[0]["stock_route"] == "/research/stocks/601899.SH"
-    assert state.rows[0]["mentions"] == "2"
-    assert state.rows[0]["summary"] == "继续拿着"
+    assert len(state.rows) == 2
+    topics = {row["topic"] for row in state.rows}
+    assert topics == {"stock:601899.SH", "stock:紫金"}
 
 
 def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
@@ -110,10 +105,6 @@ def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
         lambda: (relations, ""),
     )
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.build_ai_stock_alias_map",
-        lambda assertions, stock_relations: {"stock:阿紫": "stock:601899.SH"},
-    )
-    monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
         lambda post_uids: ({}, ""),
     )
@@ -124,3 +115,48 @@ def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
     assert len(state.rows) == 1
     assert state.rows[0]["topic"] == "stock:601899.SH"
     assert state.rows[0]["stock_route"] == "/research/stocks/601899.SH"
+
+
+def test_homework_state_refresh_does_not_call_ai_alias_map(monkeypatch) -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "小仓试错",
+                "author": "alice",
+                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
+                "stock_codes_json": '["600519.SH"]',
+                "stock_names_json": '["贵州茅台"]',
+            }
+        ]
+    )
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_trade_assertions_from_env",
+        lambda: (assertions, ""),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
+        lambda: (pd.DataFrame(), ""),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_post_urls_from_env",
+        lambda post_uids: ({}, ""),
+    )
+
+    def _should_not_call(*args, **kwargs):
+        raise AssertionError("build_ai_stock_alias_map should not be called on refresh")
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects.build_ai_stock_alias_map",
+        _should_not_call,
+    )
+
+    state = HomeworkState()
+    state._refresh()
+
+    assert len(state.rows) == 1
+    assert state.rows[0]["topic"] == "stock:600519.SH"

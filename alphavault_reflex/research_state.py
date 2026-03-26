@@ -39,7 +39,6 @@ from alphavault_reflex.services.turso_read import (
     load_stock_alias_relations_from_env,
     load_sources_from_env,
 )
-from alphavault_reflex.services.stock_objects import build_ai_stock_alias_map
 from alphavault_reflex.services.stock_backfill import (
     BACKFILL_PROMPT_VERSION,
     merge_post_assertions,
@@ -63,17 +62,11 @@ def load_stock_page_view(stock_slug: str) -> dict[str, object]:
     stock_relations, relation_err = load_stock_alias_relations_from_env()
     if relation_err:
         stock_relations = None
-    ai_alias_map = build_ai_stock_alias_map(
-        assertions,
-        stock_relations=stock_relations,
-        alias_keys=[stock_key],
-    )
     view = build_stock_research_view(
         posts,
         assertions,
         stock_key=stock_key,
         stock_relations=stock_relations,
-        ai_alias_map=ai_alias_map,
     )
     result = asdict(view)
     result["pending_candidates"] = _filter_pending_candidates(

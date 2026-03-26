@@ -45,6 +45,8 @@ STATUS_IGNORED = "ignored"
 STATUS_BLOCKED = "blocked"
 
 RELATION_TYPE_STOCK_SECTOR = "stock_sector"
+RELATION_TYPE_STOCK_ALIAS = "stock_alias"
+RELATION_LABEL_ALIAS = "alias_of"
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
@@ -215,6 +217,28 @@ def record_stock_sector_relation(
                     left_key=stock_key,
                     right_key=sector_key,
                     relation_label="member_of",
+                    source=source,
+                )
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+
+
+def record_stock_alias_relation(
+    engine_or_conn: TursoEngine | TursoConnection,
+    *,
+    stock_key: str,
+    alias_key: str,
+    source: str,
+) -> None:
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            with turso_savepoint(conn):
+                _record_relation(
+                    conn,
+                    relation_type=RELATION_TYPE_STOCK_ALIAS,
+                    left_key=stock_key,
+                    right_key=alias_key,
+                    relation_label=RELATION_LABEL_ALIAS,
                     source=source,
                 )
     except BaseException as err:
@@ -413,6 +437,7 @@ __all__ = [
     "list_pending_candidates",
     "list_candidate_status_map",
     "make_candidate_id",
+    "record_stock_alias_relation",
     "record_stock_sector_relation",
     "upsert_relation_candidate",
 ]
