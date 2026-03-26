@@ -4,6 +4,7 @@ from dataclasses import asdict
 from urllib.parse import unquote
 
 import reflex as rx
+from reflex import constants as rx_constants
 
 from alphavault.research_workbench import (
     accept_relation_candidate,
@@ -238,6 +239,53 @@ class ResearchState(rx.State):
         ]
 
 
+_RESEARCH_ROUTE_ARGS = {
+    "stock_slug": rx_constants.RouteArgType.SINGLE,
+    "sector_slug": rx_constants.RouteArgType.SINGLE,
+}
+rx.State.setup_dynamic_args(_RESEARCH_ROUTE_ARGS)
+
+
+def research_page_loading_var() -> rx.Var[bool]:
+    return ResearchState.show_loading | (~rx.State.is_hydrated)
+
+
+def stock_page_title_var() -> rx.Var[str]:
+    loading = research_page_loading_var()
+    return rx.cond(
+        loading & (ResearchState.stock_slug != ""),
+        ResearchState.stock_slug,
+        ResearchState.page_title,
+    )
+
+
+def stock_browser_title_var() -> rx.Var[str]:
+    page_title = stock_page_title_var()
+    return rx.cond(
+        page_title != "",
+        page_title + " | 个股研究",
+        "个股研究",
+    )
+
+
+def sector_page_title_var() -> rx.Var[str]:
+    loading = research_page_loading_var()
+    return rx.cond(
+        loading & (ResearchState.sector_slug != ""),
+        ResearchState.sector_slug,
+        ResearchState.page_title,
+    )
+
+
+def sector_browser_title_var() -> rx.Var[str]:
+    page_title = sector_page_title_var()
+    return rx.cond(
+        page_title != "",
+        page_title + " | 板块研究",
+        "板块研究",
+    )
+
+
 def _resolve_route_slug(
     state: object,
     *,
@@ -247,12 +295,15 @@ def _resolve_route_slug(
     slug = str(explicit_slug or "").strip()
     if slug:
         return slug
+    router = getattr(state, "router", None)
+    slug = _resolve_route_slug_from_url(router, route_key=route_key)
+    if slug:
+        return slug
     route_value = getattr(state, route_key, "")
     slug = str(route_value or "").strip()
     if slug:
         return slug
-    router = getattr(state, "router", None)
-    return _resolve_route_slug_from_url(router, route_key=route_key)
+    return ""
 
 
 def _resolve_route_slug_from_url(router: object, *, route_key: str) -> str:

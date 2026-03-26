@@ -10,6 +10,8 @@ from alphavault_reflex.services.homework_board import (
     build_tree,
 )
 from alphavault_reflex.services.research_models import (
+    CLUSTER_KEY_PREFIX,
+    STOCK_KEY_PREFIX,
     build_sector_route,
     build_stock_route,
 )
@@ -93,15 +95,21 @@ class HomeworkState(rx.State):
                     row["url"] = url_map[uid]
         for row in result.rows:
             topic_key = str(row.get("topic") or "").strip()
-            row["topic_label"] = _topic_label(topic_key)
-            row["stock_route"] = (
-                build_stock_route(topic_key) if topic_key.startswith("stock:") else ""
-            )
-            row["sector_route"] = (
-                build_sector_route(topic_key)
-                if topic_key.startswith("cluster:")
+            stock_slug = (
+                topic_key.removeprefix(STOCK_KEY_PREFIX)
+                if topic_key.startswith(STOCK_KEY_PREFIX)
                 else ""
             )
+            sector_slug = (
+                topic_key.removeprefix(CLUSTER_KEY_PREFIX)
+                if topic_key.startswith(CLUSTER_KEY_PREFIX)
+                else ""
+            )
+            row["topic_label"] = _topic_label(topic_key)
+            row["stock_slug"] = stock_slug
+            row["sector_slug"] = sector_slug
+            row["stock_route"] = build_stock_route(topic_key) if stock_slug else ""
+            row["sector_route"] = build_sector_route(topic_key) if sector_slug else ""
 
         self.caption = result.caption
         self.window_max_days = int(result.window_max_days or 1)

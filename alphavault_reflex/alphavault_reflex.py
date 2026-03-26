@@ -10,6 +10,8 @@ from alphavault_reflex.homework_state import HomeworkState
 from alphavault_reflex.pages.sector_research import sector_research_page
 from alphavault_reflex.pages.stock_research import stock_research_page
 from alphavault_reflex.research_state import ResearchState
+from alphavault_reflex.research_state import sector_browser_title_var
+from alphavault_reflex.research_state import stock_browser_title_var
 
 app = rx.App(
     theme=rx.theme(appearance="light"),
@@ -32,13 +34,13 @@ app.add_page(
 app.add_page(
     stock_research_page,
     route="/research/stocks/[stock_slug]",
-    title="个股研究",
+    title=stock_browser_title_var(),
     on_load=ResearchState.load_stock_page,
 )
 app.add_page(
     sector_research_page,
     route="/research/sectors/[sector_slug]",
-    title="板块研究",
+    title=sector_browser_title_var(),
     on_load=ResearchState.load_sector_page,
 )
 app.add_page(
