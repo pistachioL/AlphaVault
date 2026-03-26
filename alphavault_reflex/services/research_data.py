@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import pandas as pd
 
@@ -16,6 +17,11 @@ from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
+from alphavault_reflex.services.stock_objects import (
+    build_stock_object_index,
+    build_stock_search_rows,
+    filter_assertions_for_stock_object,
+)
 
 
 STOCK_KEY_PREFIX = "stock:"
@@ -23,10 +29,12 @@ STOCK_KEY_PREFIX = "stock:"
 
 @dataclass(frozen=True)
 class StockResearchView:
+    entity_key: str
     header_title: str
     signals: list[dict[str, str]]
     related_sectors: list[dict[str, str]]
     pending_candidates: list[dict[str, str]]
+    backfill_posts: list[dict[str, str]]
 
 
 @dataclass(frozen=True)
@@ -40,27 +48,20 @@ class SectorResearchView:
 def build_search_index(
     posts: pd.DataFrame,
     assertions: pd.DataFrame,
+    *,
+    stock_relations: pd.DataFrame | None = None,
+    ai_alias_map: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     del posts
     if assertions.empty:
         return []
 
-    stock_hits: dict[str, dict[str, str]] = {}
+    stock_hits = build_stock_search_rows(
+        assertions,
+        stock_relations=stock_relations,
+        ai_alias_map=ai_alias_map,
+    )
     sector_hits: dict[str, dict[str, str]] = {}
-
-    for raw_key in assertions.get("topic_key", pd.Series(dtype=str)).tolist():
-        stock_key = str(raw_key or "").strip()
-        if not stock_key.startswith(STOCK_KEY_PREFIX):
-            continue
-        stock_hits.setdefault(
-            stock_key,
-            {
-                "entity_type": "stock",
-                "entity_key": stock_key,
-                "label": _stock_title(stock_key),
-                "href": build_stock_route(stock_key),
-            },
-        )
 
     for item in assertions.get("cluster_keys", pd.Series(dtype=object)).tolist():
         for sector_key in _coerce_list(item):
@@ -73,7 +74,16 @@ def build_search_index(
                     "href": build_sector_route(f"cluster:{sector_key}"),
                 },
             )
-    ranked_stocks = sorted(stock_hits.values(), key=lambda row: row["label"])
+    ranked_stocks = sorted(
+        [
+            {
+                **row,
+                "href": build_stock_route(str(row.get("entity_key") or "").strip()),
+            }
+            for row in stock_hits
+        ],
+        key=lambda row: row["label"],
+    )
     ranked_sectors = sorted(sector_hits.values(), key=lambda row: row["label"])
     return ranked_stocks + ranked_sectors
 
@@ -83,25 +93,44 @@ def build_stock_research_view(
     assertions: pd.DataFrame,
     *,
     stock_key: str,
+    stock_relations: pd.DataFrame | None = None,
+    ai_alias_map: dict[str, str] | None = None,
 ) -> StockResearchView:
     stock_key = str(stock_key or "").strip()
     if assertions.empty or not stock_key:
         return StockResearchView(
+            entity_key=stock_key,
             header_title=_stock_title(stock_key),
             signals=[],
             related_sectors=[],
             pending_candidates=[],
+            backfill_posts=[],
         )
 
-    stock_view = assertions[
-        assertions["topic_key"].astype(str).str.strip() == stock_key
-    ]
+    stock_index = build_stock_object_index(
+        assertions,
+        stock_relations=stock_relations,
+        ai_alias_map=ai_alias_map,
+    )
+    entity_key = stock_index.resolve(stock_key)
+    stock_view = filter_assertions_for_stock_object(
+        assertions,
+        stock_key=entity_key,
+        stock_relations=stock_relations,
+        ai_alias_map=ai_alias_map,
+    )
     stock_view = _merge_post_fields(stock_view.copy(), posts)
     return StockResearchView(
-        header_title=_stock_title(stock_key),
+        entity_key=entity_key,
+        header_title=stock_index.header_title(entity_key),
         signals=_build_signal_rows(stock_view),
         related_sectors=_build_related_sector_rows(stock_view),
         pending_candidates=[],
+        backfill_posts=_build_stock_backfill_rows(
+            posts,
+            stock_view,
+            object_terms=_stock_object_terms(stock_index, entity_key),
+        ),
     )
 
 
@@ -325,6 +354,64 @@ def _build_related_stock_rows(view: pd.DataFrame) -> list[dict[str, str]]:
     ]
 
 
+def _build_stock_backfill_rows(
+    posts: pd.DataFrame,
+    stock_view: pd.DataFrame,
+    *,
+    object_terms: list[str],
+) -> list[dict[str, str]]:
+    if posts.empty or not object_terms:
+        return []
+    existing_post_uids = {
+        str(uid or "").strip()
+        for uid in stock_view.get("post_uid", pd.Series(dtype=str)).tolist()
+        if str(uid or "").strip()
+    }
+    rows = posts.copy()
+    if "post_uid" in rows.columns:
+        rows["post_uid"] = rows["post_uid"].fillna("").astype(str).str.strip()
+        rows = rows[rows["post_uid"].ne("")]
+        rows = rows[~rows["post_uid"].isin(existing_post_uids)]
+    if rows.empty:
+        return []
+    if "created_at" in rows.columns:
+        rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
+        rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
+
+    out: list[dict[str, str]] = []
+    for _, row in rows.iterrows():
+        raw_text = str(row.get("raw_text") or "").strip()
+        display_md = str(row.get("display_md") or "").strip()
+        haystack = (raw_text or display_md).strip()
+        if not haystack:
+            continue
+        matched_terms = [
+            term for term in object_terms if term and term.lower() in haystack.lower()
+        ]
+        if not matched_terms:
+            continue
+        preview = re.sub(r"\s+", " ", haystack).strip()
+        if len(preview) > 180:
+            preview = f"{preview[:177]}..."
+        created_text = ""
+        created = row.get("created_at")
+        if pd.notna(created):
+            created_text = str(pd.Timestamp(created))
+        out.append(
+            {
+                "post_uid": str(row.get("post_uid") or "").strip(),
+                "author": str(row.get("author") or "").strip(),
+                "created_at": created_text,
+                "url": str(row.get("url") or "").strip(),
+                "matched_terms": ", ".join(matched_terms[:3]),
+                "preview": preview,
+            }
+        )
+        if len(out) >= 12:
+            break
+    return out
+
+
 def _sector_mask(assertions: pd.DataFrame, sector_key: str) -> pd.Series:
     if "cluster_keys" in assertions.columns:
         return assertions["cluster_keys"].apply(
@@ -341,6 +428,32 @@ def _coerce_list(value: object) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _stock_object_terms(stock_index, entity_key: str) -> list[str]:
+    member_keys = set(stock_index.member_keys_by_object_key.get(entity_key, set()))
+    member_keys.add(entity_key)
+    terms: list[str] = []
+    for member_key in member_keys:
+        stock_value = _stock_title(member_key)
+        if not stock_value:
+            continue
+        terms.append(stock_value)
+        if "." in stock_value:
+            short_code = stock_value.split(".", 1)[0].strip()
+            if short_code:
+                terms.append(short_code)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for term in sorted(terms, key=lambda item: (-len(item), item)):
+        text = str(term or "").strip()
+        if not text or text in seen:
+            continue
+        if len(text) < 2 and not any(char.isdigit() for char in text):
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped
 
 
 def _finalize_candidate_rows(value: object) -> list[dict[str, str]]:

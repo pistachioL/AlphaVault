@@ -13,9 +13,14 @@ from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
+from alphavault_reflex.services.stock_objects import (
+    build_ai_stock_alias_map,
+    build_stock_object_index,
+)
 from alphavault_reflex.services.turso_read import (
     load_post_urls_from_env,
     load_posts_for_tree_from_env,
+    load_stock_alias_relations_from_env,
     load_trade_assertions_from_env,
 )
 
@@ -71,10 +76,18 @@ class HomeworkState(rx.State):
             self.selected_tree_message = ""
             return
 
-        result = build_board(
+        stock_relations, relation_err = load_stock_alias_relations_from_env()
+        if relation_err:
+            stock_relations = pd.DataFrame()
+        board_assertions, board_topic_labels = _prepare_board_assertions(
             assertions,
+            stock_relations=stock_relations,
+        )
+
+        result = build_board(
+            board_assertions,
             pd.DataFrame(),
-            group_col="topic_key",
+            group_col="board_group_key",
             group_label="主题",
             window_days=int(self.window_days),
             sort_mode=str(self.sort_mode),
@@ -93,7 +106,9 @@ class HomeworkState(rx.State):
                     row["url"] = url_map[uid]
         for row in result.rows:
             topic_key = str(row.get("topic") or "").strip()
-            row["topic_label"] = _topic_label(topic_key)
+            row["topic_label"] = str(
+                board_topic_labels.get(topic_key) or _topic_label(topic_key)
+            ).strip()
             row["stock_route"] = (
                 build_stock_route(topic_key) if topic_key.startswith("stock:") else ""
             )
@@ -180,3 +195,37 @@ def _topic_label(topic_key: str) -> str:
     if ":" not in value:
         return value
     return value.split(":", 1)[1].strip()
+
+
+def _prepare_board_assertions(
+    assertions: pd.DataFrame,
+    *,
+    stock_relations: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    if assertions.empty:
+        return assertions.copy(), {}
+    board_assertions = assertions.copy()
+    ai_alias_map = build_ai_stock_alias_map(
+        board_assertions,
+        stock_relations=stock_relations,
+    )
+    stock_index = build_stock_object_index(
+        board_assertions,
+        stock_relations=stock_relations,
+        ai_alias_map=ai_alias_map,
+    )
+    board_group_keys: list[str] = []
+    board_topic_labels: dict[str, str] = {}
+    for topic_key in board_assertions.get("topic_key", pd.Series(dtype=str)).tolist():
+        topic = str(topic_key or "").strip()
+        if topic.startswith("stock:"):
+            group_key = stock_index.resolve(topic)
+            board_group_keys.append(group_key)
+            if group_key:
+                board_topic_labels[group_key] = stock_index.header_title(group_key)
+            continue
+        board_group_keys.append(topic)
+        if topic:
+            board_topic_labels[topic] = _topic_label(topic)
+    board_assertions["board_group_key"] = board_group_keys
+    return board_assertions, board_topic_labels

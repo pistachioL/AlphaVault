@@ -16,8 +16,10 @@ from alphavault_reflex.services.research_data import (
 )
 from alphavault_reflex.services.turso_read import (
     clear_reflex_source_caches,
+    load_stock_alias_relations_from_env,
     load_sources_from_env,
 )
+from alphavault_reflex.services.stock_objects import build_ai_stock_alias_map
 
 
 SECTION_STOCK_ALIAS = "stock_alias"
@@ -92,8 +94,26 @@ def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
     posts, assertions, err = load_sources_from_env()
     if err:
         return [], err
-    rows = build_search_index(posts, assertions)
-    needle = str(query or "").strip().lower()
+    needle = str(query or "").strip()
+    stock_relations, relation_err = load_stock_alias_relations_from_env()
+    if relation_err:
+        stock_relations = None
+    ai_alias_map = (
+        build_ai_stock_alias_map(
+            assertions,
+            stock_relations=stock_relations,
+            alias_keys=[f"stock:{needle}"] if needle else None,
+        )
+        if needle
+        else {}
+    )
+    rows = build_search_index(
+        posts,
+        assertions,
+        stock_relations=stock_relations,
+        ai_alias_map=ai_alias_map,
+    )
+    needle = needle.lower()
     if not needle:
         return rows[:20], ""
     filtered = [
@@ -101,6 +121,7 @@ def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
         for row in rows
         if needle in str(row.get("label") or "").lower()
         or needle in str(row.get("entity_key") or "").lower()
+        or needle in str(row.get("search_text") or "").lower()
     ]
     return filtered[:20], ""
 

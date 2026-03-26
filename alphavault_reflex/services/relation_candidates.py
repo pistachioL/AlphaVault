@@ -26,6 +26,10 @@ from alphavault.constants import (
     ENV_AI_TEMPERATURE,
     ENV_AI_TIMEOUT_SEC,
 )
+from alphavault_reflex.services.stock_objects import (
+    build_stock_object_index,
+    filter_assertions_for_stock_object,
+)
 
 
 RELATION_LABEL_RELATED = "related"
@@ -57,14 +61,30 @@ def build_stock_alias_candidates(
     if assertions.empty or not target or "topic_key" not in assertions.columns:
         return []
 
+    stock_view = filter_assertions_for_stock_object(assertions, stock_key=target)
+    if stock_view.empty:
+        return []
+    stock_index = build_stock_object_index(assertions)
+    entity_key = stock_index.resolve(target)
+    member_keys = stock_index.member_keys_by_object_key.get(entity_key, set())
+
     alias_scores: Counter[str] = Counter()
-    for _, row in assertions.iterrows():
-        topic_key = str(row.get("topic_key") or "").strip()
-        if topic_key != target:
+    for member_key in member_keys:
+        alias_key = str(member_key or "").strip()
+        if not alias_key or alias_key == entity_key:
             continue
+        topic_hits = (
+            stock_view["topic_key"].astype(str).str.strip().eq(alias_key).sum()
+            if "topic_key" in stock_view.columns
+            else 0
+        )
+        if topic_hits:
+            alias_scores[alias_key] += int(topic_hits)
+
+    for _, row in stock_view.iterrows():
         for name in _coerce_list(row.get("stock_names")):
             alias_key = f"{STOCK_KEY_PREFIX}{name}"
-            if alias_key != target:
+            if alias_key != entity_key:
                 alias_scores[alias_key] += 1
 
     return [
@@ -88,11 +108,12 @@ def build_stock_sector_candidates(
     if assertions.empty or not target or "topic_key" not in assertions.columns:
         return []
 
+    stock_view = filter_assertions_for_stock_object(assertions, stock_key=target)
+    if stock_view.empty:
+        return []
+
     sector_scores: Counter[str] = Counter()
-    for _, row in assertions.iterrows():
-        topic_key = str(row.get("topic_key") or "").strip()
-        if topic_key != target:
-            continue
+    for _, row in stock_view.iterrows():
         for sector_key in _row_sector_keys(row):
             sector_scores[sector_key] += 1
 

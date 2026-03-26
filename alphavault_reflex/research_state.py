@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime
+import os
 from urllib.parse import unquote
 
 import reflex as rx
 
+from alphavault.db.turso_db import get_turso_engine_from_env
+from alphavault.db.turso_db import turso_connect_autocommit
+from alphavault.db.turso_queue import (
+    ensure_cloud_queue_schema,
+    reset_ai_results_for_post_uids,
+    write_assertions_and_mark_done,
+)
 from alphavault.research_workbench import (
     accept_relation_candidate,
     ensure_research_workbench_schema,
@@ -26,7 +35,14 @@ from alphavault_reflex.services.research_models import (
 )
 from alphavault_reflex.services.turso_read import (
     clear_reflex_source_caches,
+    load_stock_alias_relations_from_env,
     load_sources_from_env,
+)
+from alphavault_reflex.services.stock_objects import build_ai_stock_alias_map
+from alphavault_reflex.services.stock_backfill import (
+    BACKFILL_PROMPT_VERSION,
+    merge_post_assertions,
+    run_targeted_stock_backfill,
 )
 
 
@@ -35,23 +51,130 @@ def load_stock_page_view(stock_slug: str) -> dict[str, object]:
     posts, assertions, err = load_sources_from_env()
     if err:
         return {
+            "entity_key": stock_key,
             "header_title": stock_key.removeprefix("stock:"),
             "signals": [],
             "related_sectors": [],
             "pending_candidates": [],
+            "backfill_posts": [],
             "load_error": err,
         }
-    view = build_stock_research_view(posts, assertions, stock_key=stock_key)
+    stock_relations, relation_err = load_stock_alias_relations_from_env()
+    if relation_err:
+        stock_relations = None
+    ai_alias_map = build_ai_stock_alias_map(
+        assertions,
+        stock_relations=stock_relations,
+        alias_keys=[stock_key],
+    )
+    view = build_stock_research_view(
+        posts,
+        assertions,
+        stock_key=stock_key,
+        stock_relations=stock_relations,
+        ai_alias_map=ai_alias_map,
+    )
     result = asdict(view)
     result["pending_candidates"] = _filter_pending_candidates(
         build_stock_pending_candidates(
             assertions,
-            stock_key=stock_key,
+            stock_key=str(result.get("entity_key") or stock_key).strip(),
             ai_enabled=True,
         )
     )
+    result.setdefault("backfill_posts", [])
     result["load_error"] = ""
     return result
+
+
+def queue_post_for_ai_backfill(post_uid: str) -> None:
+    target = str(post_uid or "").strip()
+    if not target:
+        return
+    engine = get_turso_engine_from_env()
+    ensure_cloud_queue_schema(engine, verbose=False)
+    archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    reset_ai_results_for_post_uids(
+        engine,
+        post_uids=[target],
+        archived_at=archived_at,
+        chunk_size=1,
+    )
+
+
+def run_direct_stock_backfill(post_uid: str, stock_key: str, display_name: str) -> int:
+    target_post_uid = str(post_uid or "").strip()
+    target_stock_key = str(stock_key or "").strip()
+    if not target_post_uid or not target_stock_key:
+        return 0
+    posts, _assertions, err = load_sources_from_env()
+    if err:
+        raise RuntimeError(err)
+    if posts.empty:
+        raise RuntimeError("posts_empty")
+    matched = posts[posts["post_uid"].astype(str).str.strip() == target_post_uid]
+    if matched.empty:
+        raise RuntimeError("post_not_found")
+    post_row = {
+        str(key): str(value or "").strip()
+        for key, value in matched.iloc[0].to_dict().items()
+    }
+    new_assertions = run_targeted_stock_backfill(
+        post_row,
+        stock_key=target_stock_key,
+        display_name=display_name,
+    )
+    if not new_assertions:
+        return 0
+    engine = get_turso_engine_from_env()
+    ensure_cloud_queue_schema(engine, verbose=False)
+    existing_assertions = _load_assertions_for_post(engine, post_uid=target_post_uid)
+    merged = merge_post_assertions(existing_assertions, new_assertions)
+    archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    write_assertions_and_mark_done(
+        engine,
+        post_uid=target_post_uid,
+        final_status="relevant",
+        invest_score=1.0,
+        processed_at=archived_at,
+        model=os.getenv("AI_MODEL", "").strip() or "targeted-stock-backfill",
+        prompt_version=BACKFILL_PROMPT_VERSION,
+        archived_at=archived_at,
+        ai_result_json=None,
+        assertions=merged,
+    )
+    return max(0, len(merged) - len(existing_assertions))
+
+
+def _load_assertions_for_post(engine, *, post_uid: str) -> list[dict[str, object]]:
+    target = str(post_uid or "").strip()
+    if not target:
+        return []
+    sql = """
+SELECT topic_key, action, action_strength, summary, evidence, confidence,
+       stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
+FROM assertions
+WHERE post_uid = :post_uid
+ORDER BY idx ASC
+"""
+    with turso_connect_autocommit(engine) as conn:
+        rows = conn.execute(sql, {"post_uid": target}).mappings().all()
+    return [
+        {
+            "topic_key": str(row.get("topic_key") or "").strip(),
+            "action": str(row.get("action") or "").strip(),
+            "action_strength": int(row.get("action_strength") or 0),
+            "summary": str(row.get("summary") or "").strip(),
+            "evidence": str(row.get("evidence") or "").strip(),
+            "confidence": float(row.get("confidence") or 0),
+            "stock_codes_json": str(row.get("stock_codes_json") or "[]"),
+            "stock_names_json": str(row.get("stock_names_json") or "[]"),
+            "industries_json": str(row.get("industries_json") or "[]"),
+            "commodities_json": str(row.get("commodities_json") or "[]"),
+            "indices_json": str(row.get("indices_json") or "[]"),
+        }
+        for row in rows
+    ]
 
 
 def load_sector_page_view(sector_slug: str) -> dict[str, object]:
@@ -115,6 +238,8 @@ class ResearchState(rx.State):
     primary_signals: list[dict[str, str]] = []
     related_items: list[dict[str, str]] = []
     pending_candidates: list[dict[str, str]] = []
+    backfill_posts: list[dict[str, str]] = []
+    backfill_notice: str = ""
 
     @rx.var
     def has_signals(self) -> bool:
@@ -152,12 +277,25 @@ class ResearchState(rx.State):
         )
 
     @rx.var
+    def show_backfill_empty(self) -> bool:
+        return bool(
+            self.loaded_once
+            and (not self.loading)
+            and (str(self.load_error or "").strip() == "")
+            and (not self.backfill_posts)
+        )
+
+    @rx.var
     def has_pending_candidates(self) -> bool:
         return bool(self.pending_candidates)
 
     @rx.var
     def has_related_items(self) -> bool:
         return bool(self.related_items)
+
+    @rx.var
+    def has_backfill_posts(self) -> bool:
+        return bool(self.backfill_posts)
 
     @rx.event
     def load_stock_page(self, stock_slug: str | None = None) -> None:
@@ -168,12 +306,13 @@ class ResearchState(rx.State):
         stock_key = _normalize_stock_key(slug)
         view = load_stock_page_view(slug)
         self.page_title = str(view.get("header_title") or "").strip()
-        self.entity_key = stock_key
+        self.entity_key = str(view.get("entity_key") or stock_key).strip()
         self.entity_type = "stock"
         self.load_error = str(view.get("load_error") or "").strip()
         self.primary_signals = _coerce_rows(view.get("signals"))
         self.related_items = _prepare_sector_links(view.get("related_sectors"))
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
+        self.backfill_posts = _coerce_rows(view.get("backfill_posts"))
         self.loaded_once = True
         self.loading = False
 
@@ -208,6 +347,31 @@ class ResearchState(rx.State):
     @rx.event
     def block_candidate(self, candidate_id: str) -> None:
         self._mutate_candidate(candidate_id, action="block")
+
+    @rx.event
+    def queue_backfill_post(self, post_uid: str) -> None:
+        target = str(post_uid or "").strip()
+        if not target:
+            return
+        try:
+            added = run_direct_stock_backfill(
+                target,
+                stock_key=self.entity_key,
+                display_name=self.page_title,
+            )
+        except BaseException as err:
+            if isinstance(err, (KeyboardInterrupt, SystemExit)):
+                raise
+            self.backfill_notice = f"AI 回补失败：{type(err).__name__}"
+            return
+        clear_reflex_source_caches()
+        if self.entity_key:
+            self.load_stock_page(self.entity_key.removeprefix("stock:"))
+        self.backfill_notice = (
+            f"AI 已回补 {added} 条信号：{target}"
+            if added > 0
+            else f"AI 没补出新信号：{target}"
+        )
 
     def _mutate_candidate(self, candidate_id: str, *, action: str) -> None:
         target = str(candidate_id or "").strip()

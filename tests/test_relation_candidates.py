@@ -67,6 +67,37 @@ def test_build_stock_alias_candidates_and_sector_relation_candidates() -> None:
     assert sector_rows[0]["sector_key"] == "consumer"
 
 
+def test_build_stock_alias_candidates_and_sector_candidates_use_stock_object_rows() -> (
+    None
+):
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:601899.SH",
+                "stock_codes_json": '["601899.SH"]',
+                "stock_names_json": '["紫金矿业"]',
+                "cluster_keys": ["gold"],
+            },
+            {
+                "post_uid": "p2",
+                "topic_key": "stock:紫金",
+                "stock_codes_json": "[]",
+                "stock_names_json": '["紫金"]',
+                "cluster_keys": ["copper"],
+            },
+        ]
+    )
+
+    alias_rows = build_stock_alias_candidates(assertions, stock_key="stock:601899.SH")
+    alias_keys = {row["alias_key"] for row in alias_rows}
+    assert "stock:紫金矿业" in alias_keys
+
+    sector_rows = build_stock_sector_candidates(assertions, stock_key="stock:601899.SH")
+    sector_keys = {row["sector_key"] for row in sector_rows}
+    assert sector_keys == {"gold"}
+
+
 def test_enrich_candidates_with_ai_skips_when_disabled() -> None:
     rows = enrich_candidates_with_ai(
         [

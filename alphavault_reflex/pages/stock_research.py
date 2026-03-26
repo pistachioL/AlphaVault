@@ -59,6 +59,29 @@ def _pending_item(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
+def _backfill_item(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.div(
+        rx.text(row["matched_terms"], class_name="av-research-side-title"),
+        rx.text(row["author"], class_name="av-research-muted"),
+        rx.text(row["preview"], class_name="av-research-muted"),
+        rx.hstack(
+            rx.button(
+                "立即 AI 回补",
+                on_click=lambda: ResearchState.queue_backfill_post(row["post_uid"]),
+                class_name="av-btn av-btn-small",
+            ),
+            rx.cond(
+                row["url"] != "",
+                rx.link("打开原文", href=row["url"], is_external=True),
+                rx.el.span(""),
+            ),
+            spacing="3",
+            margin_top="10px",
+        ),
+        class_name="av-research-side-item",
+    )
+
+
 def _section_loading() -> rx.Component:
     return rx.el.div(
         rx.spinner(size="3"),
@@ -107,6 +130,23 @@ def stock_research_page() -> rx.Component:
                         ),
                     ),
                 ),
+                rx.heading("待回补文章", size="4", margin_top="24px"),
+                rx.cond(
+                    ResearchState.show_loading,
+                    _section_loading(),
+                    rx.cond(
+                        ResearchState.has_backfill_posts,
+                        rx.el.div(
+                            rx.foreach(ResearchState.backfill_posts, _backfill_item),
+                            class_name="av-research-side-list",
+                        ),
+                        rx.cond(
+                            ResearchState.show_backfill_empty,
+                            rx.text(EMPTY_TEXT, class_name="av-research-muted"),
+                            rx.el.div(),
+                        ),
+                    ),
+                ),
                 class_name="av-research-main",
             ),
             rx.el.aside(
@@ -143,6 +183,13 @@ def stock_research_page() -> rx.Component:
                             rx.el.div(),
                         ),
                     ),
+                ),
+                rx.cond(
+                    ResearchState.backfill_notice != "",
+                    rx.text(
+                        ResearchState.backfill_notice, class_name="av-research-muted"
+                    ),
+                    rx.el.div(),
                 ),
                 class_name="av-research-side",
             ),

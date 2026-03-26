@@ -238,6 +238,18 @@ def _load_trade_assertions_cached(db_url: str, auth_token: str) -> pd.DataFrame:
     return assertions
 
 
+@lru_cache(maxsize=2)
+def _load_stock_alias_relations_cached(db_url: str, auth_token: str) -> pd.DataFrame:
+    engine = ensure_turso_engine(db_url, auth_token)
+    sql = """
+SELECT relation_type, left_key, right_key, relation_label, source, updated_at
+FROM research_relations
+WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
+"""
+    with turso_connect_autocommit(engine) as conn:
+        return turso_read_sql_df(conn, sql)
+
+
 def _ensure_platform_post_id(posts: pd.DataFrame) -> pd.DataFrame:
     if posts.empty:
         return posts
@@ -348,6 +360,21 @@ def load_sources_from_env() -> tuple[pd.DataFrame, pd.DataFrame, str]:
     return posts, assertions, ""
 
 
+def load_stock_alias_relations_from_env() -> tuple[pd.DataFrame, str]:
+    load_dotenv_if_present()
+    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
+    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
+    if not db_url:
+        return pd.DataFrame(), f"Missing {ENV_TURSO_DATABASE_URL}"
+    try:
+        return _load_stock_alias_relations_cached(db_url, auth_token), ""
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        return pd.DataFrame(), f"turso_connect_error:{type(e).__name__}"
+
+
 def clear_reflex_source_caches() -> None:
     _load_trade_sources_cached.cache_clear()
     _load_post_urls_cached.cache_clear()
+    _load_stock_alias_relations_cached.cache_clear()
