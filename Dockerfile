@@ -23,13 +23,17 @@ COPY pyproject.toml uv.lock /app/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
+RUN --mount=type=cache,target=/root/.cache/pip \
+    /app/.venv/bin/python -m pip install gunicorn uvicorn
+
 COPY . /app
 
 RUN uv run reflex export --frontend-only --no-zip
+RUN test -d /app/.web/build/client
 
 FROM base AS runtime
 
-ENV REFLEX_SKIP_COMPILE=true \
+ENV __REFLEX_SKIP_COMPILE=true \
     REFLEX_DIR=/root/.local/share/reflex
 
 RUN apt-get update \
