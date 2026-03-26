@@ -23,8 +23,8 @@ COPY pyproject.toml uv.lock /app/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
-RUN --mount=type=cache,target=/root/.cache/pip \
-    /app/.venv/bin/python -m pip install gunicorn uvicorn
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -p /app/.venv/bin/python gunicorn uvicorn
 
 COPY . /app
 
