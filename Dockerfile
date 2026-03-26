@@ -4,6 +4,7 @@ FROM python:3.11-slim AS base
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PATH="/app/.venv/bin:/root/.local/bin:${PATH}" \
+    WEB_CONCURRENCY=1 \
     PORT=8080
 
 WORKDIR /app
