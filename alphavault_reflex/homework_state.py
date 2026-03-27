@@ -27,10 +27,9 @@ from alphavault_reflex.services.stock_objects import (
 )
 from alphavault_reflex.services.turso_read import (
     clear_reflex_source_caches,
+    load_homework_board_payload_from_env,
     load_post_urls_from_env,
     load_single_post_for_tree_from_env,
-    load_stock_alias_relations_from_env,
-    load_trade_board_assertions_from_env,
 )
 
 TREE_MESSAGE_EMPTY = "没有对话流。"
@@ -85,7 +84,9 @@ class HomeworkState(rx.State):
         )
 
     def _refresh(self) -> None:
-        assertions, err = load_trade_board_assertions_from_env(int(self.window_days))
+        assertions, stock_relations, err = load_homework_board_payload_from_env(
+            int(self.window_days)
+        )
         if err:
             self.load_error = err
             self.caption = ""
@@ -96,9 +97,6 @@ class HomeworkState(rx.State):
             self.selected_tree_debug_text = ""
             return
 
-        stock_relations, relation_err = load_stock_alias_relations_from_env()
-        if relation_err:
-            stock_relations = pd.DataFrame()
         board_assertions, board_topic_labels = _prepare_board_assertions(
             assertions,
             stock_relations=stock_relations,

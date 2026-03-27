@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import threading
 from typing import Iterator, TypedDict
 
 from alphavault.timeutil import now_cst_str
@@ -57,6 +58,8 @@ RELATION_TYPE_STOCK_ALIAS = "stock_alias"
 RELATION_LABEL_ALIAS = "alias_of"
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_SCHEMA_READY_LOCK = threading.RLock()
+_SCHEMA_READY_KEYS: set[str] = set()
 
 
 def _now_str() -> str:
@@ -92,8 +95,61 @@ def _handle_turso_error(
     if engine is not None and (
         is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)
     ):
+        _clear_schema_ready(engine_or_conn)
         engine.dispose()
     raise err
+
+
+def _schema_cache_key(engine_or_conn: TursoEngine | TursoConnection) -> str:
+    engine = (
+        engine_or_conn._engine
+        if isinstance(engine_or_conn, TursoConnection)
+        else engine_or_conn
+    )
+    if engine is None:
+        return ""
+    return (
+        f"{str(engine.remote_url or '').strip()}|{str(engine.auth_token or '').strip()}"
+    )
+
+
+def _clear_schema_ready(engine_or_conn: TursoEngine | TursoConnection) -> None:
+    cache_key = _schema_cache_key(engine_or_conn)
+    if not cache_key:
+        return
+    with _SCHEMA_READY_LOCK:
+        _SCHEMA_READY_KEYS.discard(cache_key)
+
+
+def _run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
+    with _use_conn(engine_or_conn) as conn:
+        conn.execute(create_research_objects_table(RESEARCH_OBJECTS_TABLE))
+        conn.execute(create_research_relations_table(RESEARCH_RELATIONS_TABLE))
+        conn.execute(
+            create_research_relation_candidates_table(
+                RESEARCH_RELATION_CANDIDATES_TABLE
+            )
+        )
+        conn.execute(
+            create_research_alias_resolve_tasks_table(
+                RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
+            )
+        )
+        conn.execute(create_research_object_index(RESEARCH_OBJECTS_TABLE))
+        conn.execute(create_research_relation_index(RESEARCH_RELATIONS_TABLE))
+        conn.execute(
+            create_research_relation_candidate_index(RESEARCH_RELATION_CANDIDATES_TABLE)
+        )
+        conn.execute(
+            create_research_relation_candidate_left_key_index(
+                RESEARCH_RELATION_CANDIDATES_TABLE
+            )
+        )
+        conn.execute(
+            create_research_alias_resolve_tasks_index(
+                RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
+            )
+        )
 
 
 def _display_name_from_key(object_key: str) -> str:
@@ -147,37 +203,20 @@ def make_candidate_id(
 def ensure_research_workbench_schema(
     engine_or_conn: TursoEngine | TursoConnection,
 ) -> None:
+    cache_key = _schema_cache_key(engine_or_conn)
+    if cache_key:
+        with _SCHEMA_READY_LOCK:
+            if cache_key in _SCHEMA_READY_KEYS:
+                return
+            try:
+                _run_schema_ddl(engine_or_conn)
+            except BaseException as err:
+                _handle_turso_error(engine_or_conn, err)
+            _SCHEMA_READY_KEYS.add(cache_key)
+        return
+
     try:
-        with _use_conn(engine_or_conn) as conn:
-            conn.execute(create_research_objects_table(RESEARCH_OBJECTS_TABLE))
-            conn.execute(create_research_relations_table(RESEARCH_RELATIONS_TABLE))
-            conn.execute(
-                create_research_relation_candidates_table(
-                    RESEARCH_RELATION_CANDIDATES_TABLE
-                )
-            )
-            conn.execute(
-                create_research_alias_resolve_tasks_table(
-                    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
-                )
-            )
-            conn.execute(create_research_object_index(RESEARCH_OBJECTS_TABLE))
-            conn.execute(create_research_relation_index(RESEARCH_RELATIONS_TABLE))
-            conn.execute(
-                create_research_relation_candidate_index(
-                    RESEARCH_RELATION_CANDIDATES_TABLE
-                )
-            )
-            conn.execute(
-                create_research_relation_candidate_left_key_index(
-                    RESEARCH_RELATION_CANDIDATES_TABLE
-                )
-            )
-            conn.execute(
-                create_research_alias_resolve_tasks_index(
-                    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
-                )
-            )
+        _run_schema_ddl(engine_or_conn)
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
 

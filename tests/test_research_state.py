@@ -17,39 +17,47 @@ def test_research_state_starts_in_loading_state() -> None:
 
 def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
     monkeypatch.setattr(
-        "alphavault_reflex.research_state.load_stock_page_view",
+        "alphavault_reflex.research_state.load_stock_page_primary_view_fast",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
             "related_sectors": [{"sector_key": "white_liquor"}],
-            "pending_candidates": [],
-            "backfill_posts": [{"post_uid": "p2", "preview": "补一篇"}],
+            "signal_total": 1,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
         },
     )
 
     state = ResearchState()
-    state.load_stock_page("600519.SH")
+    events = state.load_stock_page("600519.SH")
     assert state.page_title == "600519.SH"
     assert state.entity_key == "stock:600519.SH"
     assert state.loaded_once is True
     assert state.show_loading is False
     assert state.show_signal_empty is False
+    assert state.extras_loading is True
+    assert state.full_refreshing is True
     assert state.primary_signals[0]["summary"] == "继续加仓"
     assert state.related_items[0]["sector_key"] == "white_liquor"
-    assert state.backfill_posts[0]["post_uid"] == "p2"
+    assert state.backfill_posts == []
+    assert state.pending_candidates == []
+    assert isinstance(events, list)
+    assert len(events) == 2
 
 
 def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
     monkeypatch.setattr(
-        "alphavault_reflex.research_state.load_stock_page_view",
+        "alphavault_reflex.research_state.load_stock_page_primary_view_fast",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:000001.SZ",
             "header_title": "000001.SZ",
             "signals": [],
             "related_sectors": [],
-            "pending_candidates": [],
-            "backfill_posts": [],
+            "signal_total": 0,
+            "signal_page": 1,
+            "signal_page_size": 5,
             "load_error": "",
         },
     )
@@ -61,20 +69,25 @@ def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
     assert state.show_loading is False
     assert state.show_signal_empty is True
     assert state.show_related_empty is True
+    assert state.show_pending_empty is False
+    assert state.show_backfill_empty is False
+
+    state.extras_loading = False
     assert state.show_pending_empty is True
     assert state.show_backfill_empty is True
 
 
 def test_load_stock_page_uses_canonical_entity_key_from_view(monkeypatch) -> None:
     monkeypatch.setattr(
-        "alphavault_reflex.research_state.load_stock_page_view",
+        "alphavault_reflex.research_state.load_stock_page_primary_view_fast",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:601899.SH",
             "header_title": "紫金矿业 (601899.SH)",
             "signals": [{"summary": "继续拿着"}],
             "related_sectors": [],
-            "pending_candidates": [],
-            "backfill_posts": [],
+            "signal_total": 1,
+            "signal_page": 1,
+            "signal_page_size": 5,
             "load_error": "",
         },
     )
@@ -121,14 +134,16 @@ def test_accept_candidate_clears_caches_and_marks_candidate_accepted(
         lambda: calls.append("cleared"),
     )
     monkeypatch.setattr(
-        "alphavault_reflex.research_state.load_stock_page_view",
+        "alphavault_reflex.research_state.load_stock_page_primary_view_fast",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
             "related_sectors": [{"sector_key": "white_liquor"}],
-            "pending_candidates": [],
-            "backfill_posts": [],
+            "signal_total": 1,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
         },
     )
 
