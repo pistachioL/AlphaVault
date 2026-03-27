@@ -12,6 +12,7 @@ from typing import Any, Dict, cast
 
 import pandas as pd
 
+from alphavault.rss.utils import split_xueqiu_context_segments
 from alphavault.ui.thread_tree_parse import (
     _clean_id,
     _extract_forward_original_text,
@@ -30,6 +31,18 @@ from alphavault.ui.thread_tree_render import (
     _short_text,
     _to_ts,
 )
+
+
+def _select_xueqiu_display_source(*, raw_text: str, display_md: str) -> str:
+    raw_value = str(raw_text or "")
+    display_value = str(display_md or "")
+    raw_segments = split_xueqiu_context_segments(raw_value)
+    display_segments = split_xueqiu_context_segments(display_value)
+    if len(display_segments) > len(raw_segments):
+        return display_value
+    if raw_segments:
+        return raw_value
+    return display_value or raw_value
 
 
 def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
@@ -82,7 +95,15 @@ def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
                     [""] * int(xueqiu_mask.sum()), index=posts.index[xueqiu_mask]
                 )
             )
-            posts.loc[xueqiu_mask, "display_md"] = raw_series.str.replace(
+            display_series = posts.loc[xueqiu_mask, "display_md"].fillna("").astype(str)
+            resolved_display = raw_series.combine(
+                display_series,
+                lambda raw_text, display_md: _select_xueqiu_display_source(
+                    raw_text=str(raw_text or ""),
+                    display_md=str(display_md or ""),
+                ),
+            )
+            posts.loc[xueqiu_mask, "display_md"] = resolved_display.str.replace(
                 xueqiu_separator_re,
                 xueqiu_separator_norm,
                 regex=True,

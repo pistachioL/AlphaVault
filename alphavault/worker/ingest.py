@@ -16,6 +16,7 @@ from alphavault.rss.utils import (
     infer_user_id_from_rss_url,
     now_str,
     parse_datetime,
+    split_xueqiu_context_segments,
 )
 from alphavault.text.html import html_to_text
 from alphavault.weibo.display import (
@@ -34,6 +35,24 @@ def _build_raw_text(*, title: str, content_text: str) -> str:
     if resolved_content:
         return resolved_content
     return str(title or "").strip()
+
+
+def _build_post_texts(
+    *,
+    title: str,
+    content_text: str,
+    platform: str,
+) -> tuple[str, str]:
+    resolved_text = _build_raw_text(title=title, content_text=content_text)
+    if str(platform or "").strip().lower() != "xueqiu":
+        return resolved_text, resolved_text
+
+    segments = split_xueqiu_context_segments(resolved_text)
+    if not segments:
+        return resolved_text, resolved_text
+
+    display_text = "\n\n---\n\n".join(segments)
+    return segments[-1], display_text
 
 
 def _try_push_to_redis(
@@ -125,7 +144,11 @@ def ingest_rss_many_once(
             content_text = html_to_text(content_html)
             image_urls = extract_image_urls_from_html(content_html)
 
-            raw_text = _build_raw_text(title=title, content_text=content_text)
+            raw_text, display_text = _build_post_texts(
+                title=title,
+                content_text=content_text,
+                platform=normalized_platform,
+            )
             if not raw_text:
                 continue
 
@@ -134,7 +157,7 @@ def ingest_rss_many_once(
                 entry, feed, author, platform=normalized_platform
             )
             display_md = build_display_md(
-                text=raw_text,
+                text=display_text,
                 author_name=resolved_author,
                 image_urls=list(image_urls or []),
             )

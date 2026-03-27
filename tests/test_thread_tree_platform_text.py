@@ -29,6 +29,28 @@ def test_build_post_tree_uses_raw_text_for_xueqiu() -> None:
     assert "MD_BAD" not in tree_text
 
 
+def test_build_post_tree_uses_richer_display_md_for_xueqiu() -> None:
+    post_uid = "xueqiu:400776256"
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": post_uid,
+                "platform_post_id": "400776256",
+                "author": "雪球作者",
+                "raw_text": "A：叶",
+                "display_md": "A：根\n\n---\n\nB：中\n\n---\n\nA：叶",
+                "created_at": "2026-03-25 10:23:49",
+            }
+        ]
+    )
+
+    _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
+
+    assert "A：根" in tree_text
+    assert "B：中" in tree_text
+    assert "A：叶" in tree_text
+
+
 def test_build_post_tree_keeps_display_md_for_weibo() -> None:
     post_uid = "weibo:5281025354637435"
     display_md = "老：根\n\n---\n\n新：叶"
