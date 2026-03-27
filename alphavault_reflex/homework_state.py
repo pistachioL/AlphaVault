@@ -3,6 +3,11 @@ from __future__ import annotations
 import pandas as pd
 import reflex as rx
 
+from alphavault.db.turso_env import infer_platform_from_post_uid
+from alphavault_reflex.services.homework_constants import (
+    TRADE_BOARD_DEFAULT_WINDOW_DAYS,
+    TRADE_BOARD_MAX_WINDOW_DAYS,
+)
 from alphavault_reflex.services.homework_board import (
     CONSENSUS_FILTER_OPTIONS,
     SORT_MODE_OPTIONS,
@@ -15,16 +20,27 @@ from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
+from alphavault_reflex.services.thread_tree import normalize_tree_lookup_post_uid
 from alphavault_reflex.services.thread_tree import slice_posts_for_single_post_tree
 from alphavault_reflex.services.stock_objects import (
     build_stock_object_index,
 )
 from alphavault_reflex.services.turso_read import (
+    clear_reflex_source_caches,
     load_post_urls_from_env,
     load_single_post_for_tree_from_env,
     load_stock_alias_relations_from_env,
-    load_trade_assertions_from_env,
+    load_trade_board_assertions_from_env,
 )
+
+TREE_MESSAGE_EMPTY = "没有对话流。"
+TREE_MESSAGE_LOAD_ERROR_PREFIX = "加载失败："
+TREE_DEBUG_UNKNOWN = "-"
+TREE_DEBUG_STAGE_UID_EMPTY = "uid_empty"
+TREE_DEBUG_STAGE_LOAD_ERROR = "load_error"
+TREE_DEBUG_STAGE_POSTS_EMPTY = "posts_empty"
+TREE_DEBUG_STAGE_SLICE_EMPTY = "slice_empty"
+TREE_DEBUG_STAGE_TREE_EMPTY = "tree_empty"
 
 
 class HomeworkState(rx.State):
@@ -33,8 +49,8 @@ class HomeworkState(rx.State):
     load_error: str = ""
     caption: str = ""
 
-    window_max_days: int = 60
-    window_days: int = 7
+    window_max_days: int = TRADE_BOARD_MAX_WINDOW_DAYS
+    window_days: int = TRADE_BOARD_DEFAULT_WINDOW_DAYS
     sort_mode: str = SORT_MODE_OPTIONS[0]
     consensus_filter: str = CONSENSUS_FILTER_OPTIONS[0]
 
@@ -45,6 +61,7 @@ class HomeworkState(rx.State):
     selected_tree_label: str = ""
     selected_tree_text: str = ""
     selected_tree_message: str = ""
+    selected_tree_debug_text: str = ""
 
     @rx.var
     def sort_mode_options(self) -> list[str]:
@@ -68,7 +85,7 @@ class HomeworkState(rx.State):
         )
 
     def _refresh(self) -> None:
-        assertions, err = load_trade_assertions_from_env()
+        assertions, err = load_trade_board_assertions_from_env(int(self.window_days))
         if err:
             self.load_error = err
             self.caption = ""
@@ -76,6 +93,7 @@ class HomeworkState(rx.State):
             self.selected_tree_label = ""
             self.selected_tree_text = ""
             self.selected_tree_message = ""
+            self.selected_tree_debug_text = ""
             return
 
         stock_relations, relation_err = load_stock_alias_relations_from_env()
@@ -95,17 +113,7 @@ class HomeworkState(rx.State):
             sort_mode=str(self.sort_mode),
             consensus_filter=str(self.consensus_filter),
         )
-        url_map: dict[str, str] = {}
-        if result.rows:
-            post_uids = [row.get("tree_post_uid", "") for row in result.rows]
-            url_map, _ = load_post_urls_from_env(post_uids)
-        if url_map:
-            for row in result.rows:
-                if row.get("url"):
-                    continue
-                uid = str(row.get("tree_post_uid") or "").strip()
-                if uid and uid in url_map:
-                    row["url"] = url_map[uid]
+        _fill_trade_board_urls(result.rows)
         for row in result.rows:
             topic_key = str(row.get("topic") or "").strip()
             stock_slug = (
@@ -127,19 +135,22 @@ class HomeworkState(rx.State):
             row["sector_route"] = build_sector_route(topic_key) if sector_slug else ""
 
         self.caption = result.caption
-        self.window_max_days = int(result.window_max_days or 1)
+        self.window_max_days = TRADE_BOARD_MAX_WINDOW_DAYS
         self.window_days = int(result.used_window_days or 1)
         self.rows = result.rows
         if not self.rows:
             self.selected_tree_label = ""
             self.selected_tree_text = ""
             self.selected_tree_message = ""
+            self.selected_tree_debug_text = ""
 
     def _refresh_with_loading(self):
         self.loading = True
         self.load_error = ""
         self.tree_dialog_open = False
         self.tree_loading = False
+        self.selected_tree_debug_text = ""
+        clear_reflex_source_caches()
         yield
         self._refresh()
         self.loaded_once = True
@@ -176,39 +187,93 @@ class HomeworkState(rx.State):
     def close_tree_dialog(self) -> None:
         self.tree_dialog_open = False
         self.tree_loading = False
+        self.selected_tree_debug_text = ""
 
     @rx.event
     def open_tree_dialog(self, post_uid: str):
-        uid = str(post_uid or "").strip()
+        uid = normalize_tree_lookup_post_uid(post_uid)
+        debug_platform = infer_platform_from_post_uid(uid) or TREE_DEBUG_UNKNOWN
+        debug_posts_count: int | None = None
+        debug_slice_count: int | None = None
         self.tree_dialog_open = True
         self.tree_loading = True
         self.selected_tree_label = ""
         self.selected_tree_text = ""
         self.selected_tree_message = ""
+        self.selected_tree_debug_text = ""
         if not uid:
             self.tree_loading = False
-            self.selected_tree_message = "没有对话流。"
+            self.selected_tree_message = TREE_MESSAGE_EMPTY
+            self.selected_tree_debug_text = _build_tree_debug_text(
+                requested_uid=uid,
+                platform=debug_platform,
+                stage_code=TREE_DEBUG_STAGE_UID_EMPTY,
+                posts_count=debug_posts_count,
+                slice_count=debug_slice_count,
+                error_text="",
+            )
             return
 
         yield
         posts, err = load_single_post_for_tree_from_env(uid)
+        debug_posts_count = int(len(posts.index))
         if err:
             self.tree_loading = False
-            self.selected_tree_message = f"加载失败：{err}"
+            self.selected_tree_message = f"{TREE_MESSAGE_LOAD_ERROR_PREFIX}{err}"
+            self.selected_tree_debug_text = _build_tree_debug_text(
+                requested_uid=uid,
+                platform=debug_platform,
+                stage_code=TREE_DEBUG_STAGE_LOAD_ERROR,
+                posts_count=debug_posts_count,
+                slice_count=debug_slice_count,
+                error_text=err,
+            )
+            return
+
+        if posts.empty:
+            self.tree_loading = False
+            self.selected_tree_message = TREE_MESSAGE_EMPTY
+            self.selected_tree_debug_text = _build_tree_debug_text(
+                requested_uid=uid,
+                platform=debug_platform,
+                stage_code=TREE_DEBUG_STAGE_POSTS_EMPTY,
+                posts_count=debug_posts_count,
+                slice_count=debug_slice_count,
+                error_text="",
+            )
             return
 
         posts_view = slice_posts_for_single_post_tree(post_uid=uid, posts=posts)
+        debug_slice_count = int(len(posts_view.index))
         if posts_view.empty:
             self.tree_loading = False
-            self.selected_tree_message = "没有对话流。"
+            self.selected_tree_message = TREE_MESSAGE_EMPTY
+            self.selected_tree_debug_text = _build_tree_debug_text(
+                requested_uid=uid,
+                platform=debug_platform,
+                stage_code=TREE_DEBUG_STAGE_SLICE_EMPTY,
+                posts_count=debug_posts_count,
+                slice_count=debug_slice_count,
+                error_text="",
+            )
             return
 
         label, tree_text = build_tree(post_uid=uid, posts=posts_view)
         self.selected_tree_label = label
         self.selected_tree_text = tree_text
-        self.selected_tree_message = (
-            "" if str(tree_text or "").strip() else "没有对话流。"
-        )
+        if str(tree_text or "").strip():
+            self.selected_tree_message = ""
+            self.selected_tree_debug_text = ""
+        else:
+            self.selected_tree_message = TREE_MESSAGE_EMPTY
+            self.selected_tree_debug_text = _build_tree_debug_text(
+                requested_uid=uid,
+                platform=debug_platform,
+                stage_code=TREE_DEBUG_STAGE_TREE_EMPTY,
+                posts_count=debug_posts_count,
+                slice_count=debug_slice_count,
+                error_text="",
+            )
         self.tree_loading = False
 
 
@@ -217,6 +282,29 @@ def _topic_label(topic_key: str) -> str:
     if ":" not in value:
         return value
     return value.split(":", 1)[1].strip()
+
+
+def _build_tree_debug_text(
+    *,
+    requested_uid: str,
+    platform: str,
+    stage_code: str,
+    posts_count: int | None,
+    slice_count: int | None,
+    error_text: str,
+) -> str:
+    post_rows = TREE_DEBUG_UNKNOWN if posts_count is None else str(int(posts_count))
+    slice_rows = TREE_DEBUG_UNKNOWN if slice_count is None else str(int(slice_count))
+    error_line = str(error_text or "").strip() or TREE_DEBUG_UNKNOWN
+    lines = [
+        f"请求UID: {str(requested_uid or TREE_DEBUG_UNKNOWN)}",
+        f"平台: {str(platform or TREE_DEBUG_UNKNOWN)}",
+        f"阶段码: {str(stage_code or TREE_DEBUG_UNKNOWN)}",
+        f"DB行数: {post_rows}",
+        f"切片行数: {slice_rows}",
+        f"错误: {error_line}",
+    ]
+    return "\n".join(lines)
 
 
 def _prepare_board_assertions(
@@ -246,3 +334,24 @@ def _prepare_board_assertions(
             board_topic_labels[topic] = _topic_label(topic)
     board_assertions["board_group_key"] = board_group_keys
     return board_assertions, board_topic_labels
+
+
+def _fill_trade_board_urls(rows: list[dict[str, str]]) -> None:
+    if not rows:
+        return
+
+    needs_urls = any(str(row.get("url") or "").strip() == "" for row in rows)
+    if not needs_urls:
+        return
+
+    post_uids = [row.get("tree_post_uid", "") for row in rows]
+    url_map, _ = load_post_urls_from_env(post_uids)
+    if not url_map:
+        return
+
+    for row in rows:
+        if str(row.get("url") or "").strip():
+            continue
+        uid = str(row.get("tree_post_uid") or "").strip()
+        if uid and uid in url_map:
+            row["url"] = url_map[uid]

@@ -6,12 +6,16 @@ import math
 
 import pandas as pd
 
+from alphavault_reflex.services.homework_constants import (
+    TRADE_BOARD_DEFAULT_WINDOW_DAYS,
+    TRADE_BOARD_MAX_WINDOW_DAYS,
+)
 from alphavault_reflex.services.thread_tree import build_post_tree
+from alphavault_reflex.services.thread_tree import normalize_tree_lookup_post_uid
 
 TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})
 TRADE_HOLD_ACTIONS = frozenset({"trade.hold"})
-TRADE_BOARD_MAX_WINDOW_DAYS = 60
 
 CONSENSUS_BUY = "↑偏买"
 CONSENSUS_SELL = "↓偏卖"
@@ -138,8 +142,9 @@ def _build_latest_post_uid_candidates(
     ):
         return {}
     view = board_view[[group_col, "created_at", "post_uid"]].copy()
-    view["post_uid"] = view["post_uid"].apply(lambda v: "" if pd.isna(v) else str(v))
-    view["post_uid"] = view["post_uid"].astype(str).str.strip()
+    view["post_uid"] = view["post_uid"].apply(
+        lambda value: "" if pd.isna(value) else normalize_tree_lookup_post_uid(value)
+    )
     view = view[view["post_uid"].ne("")]
     if view.empty:
         return {}
@@ -183,18 +188,17 @@ def build_board(
     if trade_df.empty:
         return BoardResult(caption="", window_max_days=1, used_window_days=1, rows=[])
 
-    coverage_days, min_ts, max_ts_full = _trade_data_coverage(trade_df)
+    coverage_days, _min_ts, max_ts_full = _trade_data_coverage(trade_df)
     window_max_days = max(1, min(int(coverage_days), TRADE_BOARD_MAX_WINDOW_DAYS))
-    used_window_days = max(1, min(int(window_days or 7), window_max_days))
+    used_window_days = max(
+        1, min(int(window_days or TRADE_BOARD_DEFAULT_WINDOW_DAYS), window_max_days)
+    )
 
     caption = ""
-    if min_ts and max_ts_full:
-        total_line = (
-            f"总时间：{min_ts.date()} ~ {max_ts_full.date()}（{coverage_days}天）"
-        )
+    if max_ts_full:
         window_start = max_ts_full - timedelta(days=max(0, used_window_days - 1))
         window_line = f"窗口：最近 {used_window_days} 天：{window_start.date()} ~ {max_ts_full.date()}"
-        caption = "\n".join([total_line, window_line])
+        caption = window_line
 
     if "created_at" not in trade_df.columns:
         return BoardResult(
@@ -339,12 +343,12 @@ def build_board(
         post_uid = (
             ""
             if pd.isna(row.get("post_uid"))
-            else str(row.get("post_uid") or "").strip()
+            else normalize_tree_lookup_post_uid(row.get("post_uid"))
         )
         tree_post_uid = post_uid if post_uid else ""
         if not tree_post_uid:
             for cand in candidates_by_topic.get(topic, []):
-                cand_uid = str(cand or "").strip()
+                cand_uid = normalize_tree_lookup_post_uid(cand)
                 if cand_uid:
                     tree_post_uid = cand_uid
                     break
