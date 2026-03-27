@@ -4,6 +4,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from functools import lru_cache
 import json
+import logging
+import os
+import time
 
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
@@ -25,6 +28,9 @@ from alphavault.ui.thread_tree import extract_platform_post_id
 from alphavault_reflex.services.homework_constants import TRADE_BOARD_MAX_WINDOW_DAYS
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_logger = logging.getLogger(__name__)
+ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = "REFLEX_HOMEWORK_SOURCE_MAX_WORKERS"
+DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = 2
 
 MISSING_TURSO_SOURCES_ERROR = (
     f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}"
@@ -67,6 +73,12 @@ WANTED_POST_COLUMNS_FOR_TREE = [
     "url",
     "raw_text",
 ]
+
+STOCK_ALIAS_RELATIONS_SQL = """
+SELECT relation_type, left_key, right_key, relation_label, source, updated_at
+FROM research_relations
+WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
+"""
 
 
 def _normalize_posts_datetime(posts: pd.DataFrame) -> pd.DataFrame:
@@ -269,35 +281,29 @@ def _trade_board_cutoff_from_utc_now(*, lookback_days: int) -> str:
     return cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
 
-@lru_cache(maxsize=8)
-def _load_trade_board_assertions_cached(
-    db_url: str,
-    auth_token: str,
-    source_name: str,
-    lookback_days: int,
+def _trade_board_select_expr() -> str:
+    return ", ".join(
+        [f"a.{col} AS {col}" for col in TRADE_BOARD_ASSERTION_COLUMNS]
+        + [
+            "p.author AS author",
+            "p.created_at AS created_at",
+            "p.url AS url",
+        ]
+    )
+
+
+def _query_trade_board_assertions(
+    *, conn: object, cutoff: str, source_name: str
 ) -> pd.DataFrame:
-    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
-    cutoff = _trade_board_cutoff_from_utc_now(lookback_days=lookback)
-    engine = ensure_turso_engine(db_url, auth_token)
-    with turso_connect_autocommit(engine) as conn:
-        select_expr = ", ".join(
-            [f"a.{col} AS {col}" for col in TRADE_BOARD_ASSERTION_COLUMNS]
-            + [
-                "p.author AS author",
-                "p.created_at AS created_at",
-                "p.url AS url",
-            ]
-        )
-        sql = f"""
-SELECT {select_expr}
+    sql = f"""
+SELECT {_trade_board_select_expr()}
 FROM posts p
 JOIN assertions a ON a.post_uid = p.post_uid
 WHERE p.processed_at IS NOT NULL
   AND p.created_at >= :cutoff
   AND a.action LIKE 'trade.%'
 """
-        df = turso_read_sql_df(conn, sql, params={"cutoff": cutoff})
-
+    df = turso_read_sql_df(conn, sql, params={"cutoff": cutoff})
     if df.empty:
         return df
     df = df.copy()
@@ -309,16 +315,40 @@ WHERE p.processed_at IS NOT NULL
     return df
 
 
+def _query_stock_alias_relations(*, conn: object, source_name: str) -> pd.DataFrame:
+    df = turso_read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
+    if df.empty:
+        return df
+    df = df.copy()
+    df["db_source"] = source_name
+    return df
+
+
+@lru_cache(maxsize=8)
+def _load_trade_board_assertions_cached(
+    db_url: str,
+    auth_token: str,
+    source_name: str,
+    lookback_days: int,
+) -> pd.DataFrame:
+    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+    cutoff = _trade_board_cutoff_from_utc_now(lookback_days=lookback)
+    engine = ensure_turso_engine(db_url, auth_token)
+    with turso_connect_autocommit(engine) as conn:
+        return _query_trade_board_assertions(
+            conn=conn,
+            cutoff=cutoff,
+            source_name=source_name,
+        )
+
+
 def load_trade_board_assertions_from_env(
     lookback_days: int,
 ) -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
     sources = load_configured_turso_sources_from_env()
     if not sources:
-        return (
-            pd.DataFrame(),
-            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
-        )
+        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
 
@@ -357,18 +387,161 @@ def _load_stock_alias_relations_cached(
     db_url: str, auth_token: str, source_name: str
 ) -> pd.DataFrame:
     engine = ensure_turso_engine(db_url, auth_token)
-    sql = """
-SELECT relation_type, left_key, right_key, relation_label, source, updated_at
-FROM research_relations
-WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
-"""
     with turso_connect_autocommit(engine) as conn:
-        df = turso_read_sql_df(conn, sql)
-    if df.empty:
-        return df
-    df = df.copy()
-    df["db_source"] = source_name
-    return df
+        return _query_stock_alias_relations(
+            conn=conn,
+            source_name=source_name,
+        )
+
+
+def _resolve_homework_source_workers(*, source_count: int) -> int:
+    total = max(1, int(source_count or 1))
+    raw = os.getenv(ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "").strip()
+    if not raw:
+        wanted = int(DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS)
+    else:
+        try:
+            wanted = int(raw)
+        except ValueError:
+            wanted = int(DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS)
+    return max(1, min(int(wanted), total))
+
+
+@lru_cache(maxsize=8)
+def _load_homework_board_payload_cached(
+    db_url: str,
+    auth_token: str,
+    source_name: str,
+    lookback_days: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    start = time.perf_counter()
+    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+    cutoff = _trade_board_cutoff_from_utc_now(lookback_days=lookback)
+    engine = ensure_turso_engine(db_url, auth_token)
+    assertion_count = 0
+    relation_count = 0
+    with turso_connect_autocommit(engine) as conn:
+        assertions = _query_trade_board_assertions(
+            conn=conn,
+            cutoff=cutoff,
+            source_name=source_name,
+        )
+        assertion_count = int(len(assertions))
+        try:
+            relations = _query_stock_alias_relations(
+                conn=conn,
+                source_name=source_name,
+            )
+            relation_count = int(len(relations))
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            _logger.debug(
+                "homework_payload relation_query_failed source=%s err=%s",
+                source_name,
+                type(e).__name__,
+            )
+            relations = pd.DataFrame()
+    _logger.debug(
+        "homework_payload source_query source=%s lookback_days=%d assertions=%d relations=%d elapsed=%.3fs",
+        source_name,
+        int(lookback),
+        assertion_count,
+        relation_count,
+        time.perf_counter() - start,
+    )
+    return assertions, relations
+
+
+def load_homework_board_payload_from_env(
+    lookback_days: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    start = time.perf_counter()
+    load_dotenv_if_present()
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return pd.DataFrame(), pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+
+    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+    assertions_frames: list[pd.DataFrame] = []
+    relation_frames: list[pd.DataFrame] = []
+
+    max_workers = _resolve_homework_source_workers(source_count=len(sources))
+    if max_workers == 1:
+        for source in sources:
+            source_start = time.perf_counter()
+            try:
+                assertions, relations = _load_homework_board_payload_cached(
+                    source.url,
+                    source.token,
+                    source.name,
+                    lookback,
+                )
+            except BaseException as e:
+                if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                    raise
+                return (
+                    pd.DataFrame(),
+                    pd.DataFrame(),
+                    f"turso_connect_error:{source.name}:{type(e).__name__}",
+                )
+            assertions_frames.append(assertions)
+            relation_frames.append(relations)
+            _logger.debug(
+                "homework_payload source_done source=%s mode=serial assertions=%d relations=%d elapsed=%.3fs",
+                source.name,
+                int(len(assertions)),
+                int(len(relations)),
+                time.perf_counter() - source_start,
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {}
+            for source in sources:
+                futures[
+                    pool.submit(
+                        _load_homework_board_payload_cached,
+                        source.url,
+                        source.token,
+                        source.name,
+                        lookback,
+                    )
+                ] = (source.name, time.perf_counter())
+            for fut in as_completed(futures):
+                name, source_start = futures.get(fut, ("", time.perf_counter()))
+                try:
+                    assertions, relations = fut.result()
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    return (
+                        pd.DataFrame(),
+                        pd.DataFrame(),
+                        f"turso_connect_error:{name}:{type(e).__name__}",
+                    )
+                assertions_frames.append(assertions)
+                relation_frames.append(relations)
+                _logger.debug(
+                    "homework_payload source_done source=%s mode=parallel assertions=%d relations=%d elapsed=%.3fs",
+                    name,
+                    int(len(assertions)),
+                    int(len(relations)),
+                    time.perf_counter() - source_start,
+                )
+
+    if not assertions_frames:
+        return pd.DataFrame(), pd.DataFrame(), "turso_sources_empty"
+    assertions_all = pd.concat(assertions_frames, ignore_index=True)
+    relations_all = pd.concat(relation_frames, ignore_index=True)
+    _logger.debug(
+        "homework_payload done sources=%d workers=%d assertions=%d relations=%d elapsed=%.3fs",
+        int(len(sources)),
+        int(max_workers),
+        int(len(assertions_all)),
+        int(len(relations_all)),
+        time.perf_counter() - start,
+    )
+    return assertions_all, relations_all, ""
 
 
 def _ensure_platform_post_id(posts: pd.DataFrame) -> pd.DataFrame:
@@ -612,6 +785,7 @@ def load_stock_alias_relations_from_env() -> tuple[pd.DataFrame, str]:
 def clear_reflex_source_caches() -> None:
     _load_trade_sources_cached.cache_clear()
     _load_trade_board_assertions_cached.cache_clear()
+    _load_homework_board_payload_cached.cache_clear()
     _load_single_post_for_tree_cached.cache_clear()
     _load_post_urls_cached.cache_clear()
     _load_stock_alias_relations_cached.cache_clear()
