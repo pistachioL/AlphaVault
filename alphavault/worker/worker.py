@@ -9,7 +9,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from sqlalchemy.engine import Engine
 
@@ -68,7 +68,6 @@ from alphavault.rss.utils import (
 from alphavault.worker.cli import (
     _parse_worker_active_hours_from_args,
     _resolve_worker_interval_seconds,
-    _resolve_worker_threads,
     parse_args,
     resolve_rss_source_configs,
 )
@@ -93,6 +92,7 @@ from alphavault.weibo.topic_prompt_tree import (
 
 TURSO_READY_RETRY_SECONDS = 5.0
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+LOW_PRIORITY_SCHEDULER_MODE = "rss_priority_fill"
 
 
 @dataclass(frozen=True)
@@ -1088,7 +1088,8 @@ def _maybe_start_periodic_job(
     next_run_at: float,
     interval_seconds: float,
     wakeup_event: threading.Event,
-    submit_fn: Callable[[Engine], dict[str, int | bool]],
+    submit_fn: Callable[..., dict[str, int | bool]],
+    submit_kwargs: dict[str, Any] | None = None,
 ) -> tuple[Future | None, float, bool]:
     engine_for_job = active_engine
     if (
@@ -1098,7 +1099,7 @@ def _maybe_start_periodic_job(
         or now < float(next_run_at)
     ):
         return future, next_run_at, False
-    new_future = executor.submit(submit_fn, engine_for_job)
+    new_future = executor.submit(submit_fn, engine_for_job, **(submit_kwargs or {}))
     new_future.add_done_callback(lambda _f: wakeup_event.set())
     if bool(interval_seconds) and float(interval_seconds) > 0:
         next_at = now + float(interval_seconds)
@@ -1134,12 +1135,75 @@ def _count_inflight_for_owner(
     )
 
 
+def _compute_low_priority_budget(*, ai_cap: int, rss_inflight_now: int) -> int:
+    return max(0, int(ai_cap) - max(0, int(rss_inflight_now)))
+
+
+def _compute_rss_available_slots(
+    *,
+    ai_cap: int,
+    rss_inflight_now: int,
+    low_inflight_now: int,
+) -> int:
+    return max(
+        0,
+        int(ai_cap) - max(0, int(rss_inflight_now)) - max(0, int(low_inflight_now)),
+    )
+
+
+def _build_low_priority_should_continue(
+    *,
+    ai_cap: int,
+    rss_inflight_now_get: Callable[[], int],
+) -> Callable[[], bool]:
+    def _should_continue() -> bool:
+        return (
+            _compute_low_priority_budget(
+                ai_cap=int(ai_cap),
+                rss_inflight_now=int(rss_inflight_now_get()),
+            )
+            > 0
+        )
+
+    return _should_continue
+
+
+class _LowPriorityAISlotGate:
+    def __init__(self, *, cap_getter: Callable[[], int]) -> None:
+        self._cap_getter = cap_getter
+        self._lock = threading.Lock()
+        self._inflight = 0
+
+    def try_acquire(self) -> bool:
+        try:
+            cap_now = max(0, int(self._cap_getter()))
+        except Exception:
+            cap_now = 0
+        with self._lock:
+            if cap_now <= 0 or int(self._inflight) >= int(cap_now):
+                return False
+            self._inflight += 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            if self._inflight <= 0:
+                self._inflight = 0
+                return
+            self._inflight -= 1
+
+    def inflight(self) -> int:
+        with self._lock:
+            return int(self._inflight)
+
+
 def _schedule_ai(
     executor: ThreadPoolExecutor,
     *,
     engine: Optional[Engine],
     platform: str,
-    worker_threads: int,
+    ai_cap: int,
+    low_inflight_now_get: Callable[[], int],
     inflight_futures: set[Future],
     inflight_owner_by_future: dict[Future, str],
     inflight_owner: str,
@@ -1150,9 +1214,18 @@ def _schedule_ai(
 ) -> Tuple[int, bool]:
     if engine is None:
         return 0, False
-    # Keep inflight bounded: do not queue more than worker_threads tasks.
+    # Keep inflight bounded: RSS + low-priority inflight must not exceed ai_cap.
     _prune_inflight_futures(inflight_futures, inflight_owner_by_future)
-    available = max(0, int(worker_threads) - len(inflight_futures))
+    rss_inflight_now = int(len(inflight_futures))
+    try:
+        low_inflight_now = max(0, int(low_inflight_now_get()))
+    except Exception:
+        low_inflight_now = 0
+    available = _compute_rss_available_slots(
+        ai_cap=int(ai_cap),
+        rss_inflight_now=int(rss_inflight_now),
+        low_inflight_now=int(low_inflight_now),
+    )
     if available <= 0:
         return 0, False
     now_epoch = int(time.time())
@@ -1310,7 +1383,7 @@ def main() -> None:
     worker_interval = _resolve_worker_interval_seconds(args)
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
-    worker_threads = _resolve_worker_threads(args)
+    ai_cap = max(1, int(args.ai_max_inflight or 1))
     multi_source = len(source_configs) > 1
     base_spool_dir = ensure_spool_dir()
     redis_client, base_redis_queue_key = try_get_redis()
@@ -1350,11 +1423,29 @@ def main() -> None:
     stock_hot_cache_interval_seconds = _resolve_stock_hot_cache_interval_seconds()
     alias_ai_runtime_config = _build_alias_ai_runtime_config(config)
     research_cache_interval_seconds = float(alias_sync_interval_seconds)
+    low_priority_ai_gate: _LowPriorityAISlotGate | None = None
 
-    def _submit_alias_sync_job(sync_engine: Engine) -> dict[str, int | bool]:
+    def _submit_alias_sync_job(
+        sync_engine: Engine,
+        *,
+        ai_max_inflight: int,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> dict[str, int | bool]:
         return sync_stock_alias_relations(
             sync_engine,
             ai_runtime_config=alias_ai_runtime_config,
+            ai_max_inflight=max(1, int(ai_max_inflight)),
+            should_continue=should_continue,
+            acquire_low_priority_slot=(
+                low_priority_ai_gate.try_acquire
+                if low_priority_ai_gate is not None
+                else None
+            ),
+            release_low_priority_slot=(
+                low_priority_ai_gate.release
+                if low_priority_ai_gate is not None
+                else None
+            ),
         )
 
     def _submit_backfill_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
@@ -1362,11 +1453,26 @@ def main() -> None:
 
     def _submit_relation_candidates_cache_job(
         sync_engine: Engine,
+        *,
+        ai_max_inflight: int,
+        should_continue: Callable[[], bool] | None = None,
     ) -> dict[str, int | bool]:
         return sync_relation_candidates_cache(
             sync_engine,
             limiter=limiter,
             ai_enabled=True,
+            ai_max_inflight=max(1, int(ai_max_inflight)),
+            should_continue=should_continue,
+            acquire_low_priority_slot=(
+                low_priority_ai_gate.try_acquire
+                if low_priority_ai_gate is not None
+                else None
+            ),
+            release_low_priority_slot=(
+                low_priority_ai_gate.release
+                if low_priority_ai_gate is not None
+                else None
+            ),
         )
 
     def _submit_stock_hot_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
@@ -1375,7 +1481,7 @@ def main() -> None:
     maintenance_next_at = 0.0
 
     with (
-        ThreadPoolExecutor(max_workers=worker_threads) as executor,
+        ThreadPoolExecutor(max_workers=ai_cap) as executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as alias_executor,
         ThreadPoolExecutor(max_workers=1) as research_executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as rss_executor,
@@ -1383,6 +1489,22 @@ def main() -> None:
         wakeup_event = threading.Event()
         inflight_futures: set[Future] = set()
         inflight_owner_by_future: dict[Future, str] = {}
+        scheduler_state: dict[str, int] = {"rss_inflight_now": 0}
+
+        def _rss_inflight_now() -> int:
+            try:
+                snapshot = tuple(inflight_futures)
+            except RuntimeError:
+                return int(scheduler_state.get("rss_inflight_now", 0))
+            return sum(1 for fut in snapshot if not fut.done())
+
+        low_priority_ai_gate = _LowPriorityAISlotGate(
+            cap_getter=lambda: _compute_low_priority_budget(
+                ai_cap=int(ai_cap),
+                rss_inflight_now=int(_rss_inflight_now()),
+            )
+        )
+
         while True:
             verbose = bool(args.verbose)
             if worker_active_hours is not None:
@@ -1390,6 +1512,7 @@ def main() -> None:
 
             wakeup_event.clear()
             _prune_inflight_futures(inflight_futures, inflight_owner_by_future)
+            scheduler_state["rss_inflight_now"] = int(_rss_inflight_now())
             now = time.time()
             do_maintenance = bool(now >= maintenance_next_at)
             if do_maintenance:
@@ -1475,6 +1598,7 @@ def main() -> None:
                     )
                 )
 
+            tick_runtime: list[dict[str, Any]] = []
             for (
                 source,
                 active_engine,
@@ -1630,8 +1754,118 @@ def main() -> None:
                         )
                     )
 
+                tick_runtime.append(
+                    {
+                        "source": source,
+                        "active_engine": active_engine,
+                        "force_maintenance": bool(force_maintenance),
+                        "rss_skip_reason": str(rss_skip_reason or ""),
+                        "alias_resolved": int(alias_resolved),
+                        "alias_inserted": int(alias_inserted),
+                        "alias_has_more": bool(alias_has_more),
+                        "alias_sync_finished": bool(alias_sync_finished),
+                        "alias_sync_error": bool(alias_sync_error),
+                        "backfill_processed": int(backfill_processed),
+                        "backfill_written": int(backfill_written),
+                        "backfill_has_more": bool(backfill_has_more),
+                        "backfill_finished": bool(backfill_finished),
+                        "backfill_cache_error": bool(backfill_cache_error),
+                        "relation_cache_processed": int(relation_cache_processed),
+                        "relation_cache_upserted": int(relation_cache_upserted),
+                        "relation_cache_deleted": int(relation_cache_deleted),
+                        "relation_cache_has_more": bool(relation_cache_has_more),
+                        "relation_cache_finished": bool(relation_cache_finished),
+                        "relation_cache_error": bool(relation_cache_error),
+                        "stock_hot_processed": int(stock_hot_processed),
+                        "stock_hot_written": int(stock_hot_written),
+                        "stock_hot_has_more": bool(stock_hot_has_more),
+                        "stock_hot_finished": bool(stock_hot_finished),
+                        "stock_hot_error": bool(stock_hot_error),
+                        "inserted": int(inserted),
+                        "ingest_turso_error": bool(ingest_turso_error),
+                        "recovered": int(recovered),
+                        "flushed_redis": int(flushed_redis),
+                        "flushed_spool": int(flushed_spool),
+                        "maintenance_error": bool(maintenance_error),
+                    }
+                )
+
+            for tick in tick_runtime:
+                source = tick["source"]
+                active_engine = tick["active_engine"]
+                scheduled = 0
+                schedule_error = False
+                if active_engine is not None:
+                    scheduled, schedule_error = _schedule_ai(
+                        executor,
+                        engine=active_engine,
+                        platform=source.config.platform,
+                        ai_cap=ai_cap,
+                        low_inflight_now_get=(
+                            low_priority_ai_gate.inflight
+                            if low_priority_ai_gate is not None
+                            else (lambda: 0)
+                        ),
+                        inflight_futures=inflight_futures,
+                        inflight_owner_by_future=inflight_owner_by_future,
+                        inflight_owner=source.config.name,
+                        wakeup_event=wakeup_event,
+                        config=config,
+                        limiter=limiter,
+                        verbose=verbose,
+                    )
+                tick["scheduled"] = int(scheduled)
+                tick["schedule_error"] = bool(schedule_error)
+
+            for tick in tick_runtime:
+                source = tick["source"]
+                active_engine = tick["active_engine"]
+                force_maintenance = bool(tick["force_maintenance"])
+                rss_skip_reason = str(tick["rss_skip_reason"] or "")
+                alias_resolved = int(tick["alias_resolved"])
+                alias_inserted = int(tick["alias_inserted"])
+                alias_has_more = bool(tick["alias_has_more"])
+                alias_sync_finished = bool(tick["alias_sync_finished"])
+                alias_sync_error = bool(tick["alias_sync_error"])
+                backfill_processed = int(tick["backfill_processed"])
+                backfill_written = int(tick["backfill_written"])
+                backfill_has_more = bool(tick["backfill_has_more"])
+                backfill_finished = bool(tick["backfill_finished"])
+                backfill_cache_error = bool(tick["backfill_cache_error"])
+                relation_cache_processed = int(tick["relation_cache_processed"])
+                relation_cache_upserted = int(tick["relation_cache_upserted"])
+                relation_cache_deleted = int(tick["relation_cache_deleted"])
+                relation_cache_has_more = bool(tick["relation_cache_has_more"])
+                relation_cache_finished = bool(tick["relation_cache_finished"])
+                relation_cache_error = bool(tick["relation_cache_error"])
+                stock_hot_processed = int(tick["stock_hot_processed"])
+                stock_hot_written = int(tick["stock_hot_written"])
+                stock_hot_has_more = bool(tick["stock_hot_has_more"])
+                stock_hot_finished = bool(tick["stock_hot_finished"])
+                stock_hot_error = bool(tick["stock_hot_error"])
+                inserted = int(tick["inserted"])
+                ingest_turso_error = bool(tick["ingest_turso_error"])
+                recovered = int(tick["recovered"])
+                flushed_redis = int(tick["flushed_redis"])
+                flushed_spool = int(tick["flushed_spool"])
+                maintenance_error = bool(tick["maintenance_error"])
+                scheduled = int(tick["scheduled"])
+                schedule_error = bool(tick["schedule_error"])
+
+                scheduler_state["rss_inflight_now"] = int(_rss_inflight_now())
+                rss_inflight_now = int(scheduler_state["rss_inflight_now"])
+                low_budget = _compute_low_priority_budget(
+                    ai_cap=int(ai_cap),
+                    rss_inflight_now=int(rss_inflight_now),
+                )
+                should_continue_low_priority = _build_low_priority_should_continue(
+                    ai_cap=int(ai_cap),
+                    rss_inflight_now_get=lambda: int(_rss_inflight_now()),
+                )
+
                 alias_trigger = bool(
-                    do_maintenance or force_maintenance or alias_has_more
+                    (do_maintenance or force_maintenance or alias_has_more)
+                    and int(low_budget) > 0
                 )
                 (
                     source.alias_sync_future,
@@ -1647,6 +1881,10 @@ def main() -> None:
                     interval_seconds=alias_sync_interval_seconds,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_alias_sync_job,
+                    submit_kwargs={
+                        "ai_max_inflight": int(low_budget),
+                        "should_continue": should_continue_low_priority,
+                    },
                 )
 
                 backfill_trigger = bool(
@@ -1669,7 +1907,8 @@ def main() -> None:
                 )
 
                 relation_trigger = bool(
-                    do_maintenance or force_maintenance or relation_cache_has_more
+                    (do_maintenance or force_maintenance or relation_cache_has_more)
+                    and int(low_budget) > 0
                 )
                 (
                     source.relation_cache_future,
@@ -1685,6 +1924,10 @@ def main() -> None:
                     interval_seconds=research_cache_interval_seconds,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_relation_candidates_cache_job,
+                    submit_kwargs={
+                        "ai_max_inflight": int(low_budget),
+                        "should_continue": should_continue_low_priority,
+                    },
                 )
 
                 stock_hot_trigger = bool(
@@ -1705,23 +1948,6 @@ def main() -> None:
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_stock_hot_cache_job,
                 )
-
-                scheduled = 0
-                schedule_error = False
-                if active_engine is not None:
-                    scheduled, schedule_error = _schedule_ai(
-                        executor,
-                        engine=active_engine,
-                        platform=source.config.platform,
-                        worker_threads=worker_threads,
-                        inflight_futures=inflight_futures,
-                        inflight_owner_by_future=inflight_owner_by_future,
-                        inflight_owner=source.config.name,
-                        wakeup_event=wakeup_event,
-                        config=config,
-                        limiter=limiter,
-                        verbose=verbose,
-                    )
 
                 turso_error = bool(
                     ingest_turso_error
@@ -1786,6 +2012,9 @@ def main() -> None:
                     )
                     print(
                         f"[tick:{source.config.name}] turso_ready={1 if active_engine is not None else 0} "
+                        f"ai_cap={int(ai_cap)} rss_inflight_now={int(rss_inflight_now)} low_budget={int(low_budget)} "
+                        f"low_mode={LOW_PRIORITY_SCHEDULER_MODE} "
+                        f"low_ai_inflight={low_priority_ai_gate.inflight() if low_priority_ai_gate is not None else 0} "
                         f"inflight={inflight_for_source} alias_inflight={1 if source.alias_sync_future is not None else 0} "
                         f"backfill_inflight={1 if source.backfill_cache_future is not None else 0} "
                         f"relation_inflight={1 if source.relation_cache_future is not None else 0} "

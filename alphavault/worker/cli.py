@@ -142,9 +142,6 @@ def parse_args() -> argparse.Namespace:
         help="worker 维护间隔秒数（0=读 WORKER_INTERVAL_SECONDS 或默认 600）",
     )
     parser.add_argument(
-        "--worker-threads", type=int, default=0, help="后台 AI 线程数（0=自动）"
-    )
-    parser.add_argument(
         "--ai-stuck-seconds",
         type=int,
         default=3600,
@@ -270,15 +267,3 @@ def _resolve_worker_interval_seconds(args: argparse.Namespace) -> float:
     if interval <= 0:
         interval = float(os.getenv(ENV_WORKER_INTERVAL_SECONDS, "600") or "600")
     return max(1.0, interval)
-
-
-def _resolve_worker_threads(args: argparse.Namespace) -> int:
-    if args.worker_threads and args.worker_threads > 0:
-        worker_threads = int(args.worker_threads)
-    elif args.ai_max_inflight and args.ai_max_inflight > 0:
-        worker_threads = int(args.ai_max_inflight)
-    else:
-        worker_threads = 4
-    if args.ai_max_inflight and args.ai_max_inflight > 0:
-        worker_threads = min(worker_threads, int(args.ai_max_inflight))
-    return max(1, int(worker_threads))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from typing import Callable
 
 import pandas as pd
 
@@ -185,6 +186,7 @@ def build_stock_pending_candidates(
     *,
     stock_key: str,
     ai_enabled: bool,
+    should_continue: Callable[[], bool] | None = None,
 ) -> list[dict[str, str]]:
     alias_rows = build_stock_alias_candidates(assertions, stock_key=stock_key)
     sector_rows = build_stock_sector_candidates(assertions, stock_key=stock_key)
@@ -237,6 +239,7 @@ def build_stock_pending_candidates(
             candidates,
             relation_type="stock_sector",
             ai_enabled=ai_enabled,
+            should_continue=should_continue,
         )
     )
 
@@ -246,6 +249,7 @@ def build_sector_pending_candidates(
     *,
     sector_key: str,
     ai_enabled: bool,
+    should_continue: Callable[[], bool] | None = None,
 ) -> list[dict[str, str]]:
     candidates = build_sector_relation_candidates(assertions, sector_key=sector_key)
     rows: list[dict[str, str]] = []
@@ -275,6 +279,7 @@ def build_sector_pending_candidates(
             rows,
             relation_type="sector_sector",
             ai_enabled=ai_enabled,
+            should_continue=should_continue,
         )
     )
 

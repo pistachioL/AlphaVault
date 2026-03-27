@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+from alphavault.worker.worker import (
+    _LowPriorityAISlotGate,
+    _build_low_priority_should_continue,
+    _compute_low_priority_budget,
+    _compute_rss_available_slots,
+)
+
+
+def test_compute_low_priority_budget_zero_when_rss_is_full() -> None:
+    assert _compute_low_priority_budget(ai_cap=6, rss_inflight_now=6) == 0
+    assert _compute_low_priority_budget(ai_cap=6, rss_inflight_now=9) == 0
+
+
+def test_compute_low_priority_budget_uses_remaining_slots() -> None:
+    assert _compute_low_priority_budget(ai_cap=6, rss_inflight_now=2) == 4
+
+
+def test_compute_rss_available_slots_subtracts_low_inflight() -> None:
+    assert (
+        _compute_rss_available_slots(
+            ai_cap=6,
+            rss_inflight_now=1,
+            low_inflight_now=2,
+        )
+        == 3
+    )
+
+
+def test_compute_rss_available_slots_never_negative() -> None:
+    assert (
+        _compute_rss_available_slots(
+            ai_cap=6,
+            rss_inflight_now=6,
+            low_inflight_now=1,
+        )
+        == 0
+    )
+
+
+def test_should_continue_turns_false_when_rss_becomes_busy() -> None:
+    state = {"rss_inflight_now": 1}
+    should_continue = _build_low_priority_should_continue(
+        ai_cap=4,
+        rss_inflight_now_get=lambda: int(state["rss_inflight_now"]),
+    )
+
+    assert should_continue() is True
+    state["rss_inflight_now"] = 4
+    assert should_continue() is False
+
+
+def test_low_priority_slot_gate_respects_dynamic_cap() -> None:
+    state = {"cap": 2}
+    gate = _LowPriorityAISlotGate(cap_getter=lambda: int(state["cap"]))
+
+    assert gate.try_acquire() is True
+    assert gate.try_acquire() is True
+    assert gate.try_acquire() is False
+    assert gate.inflight() == 2
+
+    gate.release()
+    assert gate.inflight() == 1
+    state["cap"] = 1
+    assert gate.try_acquire() is False
+
+    gate.release()
+    assert gate.inflight() == 0
+    assert gate.try_acquire() is True

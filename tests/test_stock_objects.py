@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import threading
+import time
+
 import pandas as pd
 
 from alphavault_reflex.services.stock_objects import (
@@ -248,3 +251,265 @@ def test_build_ai_stock_alias_map_respects_max_alias_keys_and_stats(
     assert stats["unresolved_total"] == 3
     assert stats["processed_aliases"] == 2
     assert stats["remaining_aliases"] == 1
+
+
+def test_build_ai_stock_alias_map_respects_ai_max_inflight(monkeypatch) -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:601899.SH",
+                "summary": "先建仓",
+                "author": "alice",
+                "created_at": "2026-03-25 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": '["601899.SH"]',
+                "stock_names_json": '["紫金矿业"]',
+            },
+            {
+                "post_uid": "p2",
+                "topic_key": "stock:紫金",
+                "summary": "看多",
+                "author": "alice",
+                "created_at": "2026-03-26 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["紫金"]',
+            },
+            {
+                "post_uid": "p3",
+                "topic_key": "stock:阿紫",
+                "summary": "继续看",
+                "author": "alice",
+                "created_at": "2026-03-26 11:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["阿紫"]',
+            },
+            {
+                "post_uid": "p4",
+                "topic_key": "stock:小紫",
+                "summary": "再观察",
+                "author": "alice",
+                "created_at": "2026-03-26 12:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["小紫"]',
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        lambda: (True, ""),
+    )
+
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    calls: list[str] = []
+
+    def _fake_resolve(*_args, **kwargs) -> str:
+        nonlocal active, max_active
+        alias_key = str(kwargs.get("alias_key") or "").strip()
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        calls.append(alias_key)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return ""
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects._resolve_single_alias_with_ai",
+        _fake_resolve,
+    )
+
+    build_ai_stock_alias_map(
+        assertions,
+        alias_keys=["stock:紫金", "stock:阿紫", "stock:小紫"],
+        ai_max_inflight=2,
+    )
+
+    assert len(calls) == 3
+    assert max_active <= 2
+
+
+def test_build_ai_stock_alias_map_respects_shared_slot_gate(monkeypatch) -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:601899.SH",
+                "summary": "先建仓",
+                "author": "alice",
+                "created_at": "2026-03-25 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": '["601899.SH"]',
+                "stock_names_json": '["紫金矿业"]',
+            },
+            {
+                "post_uid": "p2",
+                "topic_key": "stock:紫金",
+                "summary": "看多",
+                "author": "alice",
+                "created_at": "2026-03-26 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["紫金"]',
+            },
+            {
+                "post_uid": "p3",
+                "topic_key": "stock:阿紫",
+                "summary": "继续看",
+                "author": "alice",
+                "created_at": "2026-03-26 11:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["阿紫"]',
+            },
+            {
+                "post_uid": "p4",
+                "topic_key": "stock:小紫",
+                "summary": "再观察",
+                "author": "alice",
+                "created_at": "2026-03-26 12:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["小紫"]',
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        lambda: (True, ""),
+    )
+
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    gated_inflight = 0
+    calls: list[str] = []
+
+    def _acquire_slot() -> bool:
+        nonlocal gated_inflight
+        with lock:
+            if gated_inflight >= 1:
+                return False
+            gated_inflight += 1
+            return True
+
+    def _release_slot() -> None:
+        nonlocal gated_inflight
+        with lock:
+            if gated_inflight > 0:
+                gated_inflight -= 1
+
+    def _fake_resolve(*_args, **kwargs) -> str:
+        nonlocal active, max_active
+        alias_key = str(kwargs.get("alias_key") or "").strip()
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        calls.append(alias_key)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return ""
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects._resolve_single_alias_with_ai",
+        _fake_resolve,
+    )
+
+    build_ai_stock_alias_map(
+        assertions,
+        alias_keys=["stock:紫金", "stock:阿紫", "stock:小紫"],
+        ai_max_inflight=3,
+        acquire_low_priority_slot=_acquire_slot,
+        release_low_priority_slot=_release_slot,
+    )
+
+    assert len(calls) == 3
+    assert max_active <= 1
+    assert gated_inflight == 0
+
+
+def test_build_ai_stock_alias_map_stops_when_should_continue_false(
+    monkeypatch,
+) -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "topic_key": "stock:601899.SH",
+                "summary": "先建仓",
+                "author": "alice",
+                "created_at": "2026-03-25 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": '["601899.SH"]',
+                "stock_names_json": '["紫金矿业"]',
+            },
+            {
+                "post_uid": "p2",
+                "topic_key": "stock:紫金",
+                "summary": "看多",
+                "author": "alice",
+                "created_at": "2026-03-26 10:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["紫金"]',
+            },
+            {
+                "post_uid": "p3",
+                "topic_key": "stock:阿紫",
+                "summary": "继续看",
+                "author": "alice",
+                "created_at": "2026-03-26 11:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["阿紫"]',
+            },
+            {
+                "post_uid": "p4",
+                "topic_key": "stock:小紫",
+                "summary": "再观察",
+                "author": "alice",
+                "created_at": "2026-03-26 12:00:00",
+                "cluster_keys": ["gold"],
+                "stock_codes_json": "[]",
+                "stock_names_json": '["小紫"]',
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        lambda: (True, ""),
+    )
+
+    stop = {"value": False}
+    calls: list[str] = []
+    stats: dict[str, int] = {}
+
+    def _fake_resolve(*_args, **kwargs) -> str:
+        alias_key = str(kwargs.get("alias_key") or "").strip()
+        calls.append(alias_key)
+        stop["value"] = True
+        return ""
+
+    monkeypatch.setattr(
+        "alphavault_reflex.services.stock_objects._resolve_single_alias_with_ai",
+        _fake_resolve,
+    )
+
+    build_ai_stock_alias_map(
+        assertions,
+        alias_keys=["stock:紫金", "stock:阿紫", "stock:小紫"],
+        ai_max_inflight=1,
+        should_continue=lambda: not bool(stop["value"]),
+        stats_out=stats,
+    )
+
+    assert len(calls) == 1
+    assert stats["processed_aliases"] == 1
+    assert stats["remaining_aliases"] == 2
