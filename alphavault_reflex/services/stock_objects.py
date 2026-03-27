@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 import os
+from typing import Callable
 
 import pandas as pd
 
@@ -310,6 +312,11 @@ def build_ai_stock_alias_map(
     runtime_config: AiRuntimeConfig | None = None,
     max_alias_keys: int | None = None,
     stats_out: dict[str, int] | None = None,
+    ai_max_inflight: int = 1,
+    should_continue: Callable[[], bool] | None = None,
+    acquire_low_priority_slot: Callable[[], bool] | None = None,
+    release_low_priority_slot: Callable[[], None] | None = None,
+    attempted_aliases_out: list[str] | None = None,
 ) -> dict[str, str]:
     enriched = _ensure_stock_columns(assertions)
     if enriched.empty:
@@ -336,21 +343,104 @@ def build_ai_stock_alias_map(
     unresolved_to_process = unresolved
     if max_alias_keys is not None and int(max_alias_keys) > 0:
         unresolved_to_process = unresolved[: int(max_alias_keys)]
-    remaining_aliases = max(0, len(unresolved) - len(unresolved_to_process))
-    if stats_out is not None:
-        stats_out["processed_aliases"] = int(len(unresolved_to_process))
-        stats_out["remaining_aliases"] = int(remaining_aliases)
+    should_continue_fn = should_continue or (lambda: True)
+    acquire_slot_fn = acquire_low_priority_slot or (lambda: True)
+    release_slot_fn = release_low_priority_slot or (lambda: None)
+    effective_max_inflight = min(
+        max(1, int(ai_max_inflight)),
+        max(1, int(len(unresolved_to_process))),
+    )
 
     out: dict[str, str] = {}
-    for alias_key in unresolved_to_process:
-        target_key = _resolve_single_alias_with_ai(
-            enriched,
-            alias_key=alias_key,
-            base_index=base_index,
-            runtime_config=runtime_config,
-        )
-        if target_key:
-            out[alias_key] = target_key
+    attempted_aliases: list[str] = []
+    next_submit_index = 0
+
+    def _can_submit_more() -> bool:
+        try:
+            return bool(should_continue_fn())
+        except Exception:
+            return False
+
+    def _can_acquire_slot() -> bool:
+        try:
+            return bool(acquire_slot_fn())
+        except Exception:
+            return False
+
+    def _release_slot() -> None:
+        try:
+            release_slot_fn()
+        except Exception:
+            return
+
+    def _submit_more(
+        executor: ThreadPoolExecutor,
+        futures: dict[Future[str], str],
+    ) -> None:
+        nonlocal next_submit_index
+        while next_submit_index < len(unresolved_to_process) and len(futures) < int(
+            effective_max_inflight
+        ):
+            if not _can_submit_more():
+                break
+            alias_key = str(unresolved_to_process[next_submit_index] or "").strip()
+            if not alias_key:
+                next_submit_index += 1
+                continue
+            if not _can_acquire_slot():
+                break
+            next_submit_index += 1
+            attempted_aliases.append(alias_key)
+
+            def _run_one(target_alias_key: str) -> str:
+                try:
+                    return _resolve_single_alias_with_ai(
+                        enriched,
+                        alias_key=target_alias_key,
+                        base_index=base_index,
+                        runtime_config=runtime_config,
+                    )
+                finally:
+                    _release_slot()
+
+            try:
+                future = executor.submit(
+                    _run_one,
+                    alias_key,
+                )
+            except Exception:
+                _release_slot()
+                raise
+            futures[future] = alias_key
+
+    with ThreadPoolExecutor(max_workers=int(effective_max_inflight)) as executor:
+        inflight_futures: dict[Future[str], str] = {}
+        _submit_more(executor, inflight_futures)
+        while inflight_futures:
+            done, _pending = wait(
+                set(inflight_futures.keys()),
+                return_when=FIRST_COMPLETED,
+            )
+            for done_future in done:
+                alias_key = inflight_futures.pop(done_future, "")
+                if not alias_key:
+                    continue
+                target_key = ""
+                try:
+                    target_key = str(done_future.result() or "").strip()
+                except Exception:
+                    target_key = ""
+                if target_key:
+                    out[alias_key] = target_key
+            _submit_more(executor, inflight_futures)
+
+    processed_aliases = int(len(attempted_aliases))
+    remaining_aliases = max(0, int(len(unresolved) - processed_aliases))
+    if stats_out is not None:
+        stats_out["processed_aliases"] = int(processed_aliases)
+        stats_out["remaining_aliases"] = int(remaining_aliases)
+    if attempted_aliases_out is not None:
+        attempted_aliases_out.extend(attempted_aliases)
     return out
 
 

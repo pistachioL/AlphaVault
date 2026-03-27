@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
-from typing import Iterator
+from typing import Callable, Iterator
 
 import pandas as pd
 
@@ -163,6 +163,10 @@ def sync_stock_alias_relations(
     source: str = ALIAS_SYNC_SOURCE,
     ai_runtime_config: AiRuntimeConfig | None = None,
     max_alias_keys_per_run: int = ALIAS_SYNC_MAX_KEYS_PER_RUN,
+    ai_max_inflight: int = 1,
+    should_continue: Callable[[], bool] | None = None,
+    acquire_low_priority_slot: Callable[[], bool] | None = None,
+    release_low_priority_slot: Callable[[], None] | None = None,
 ) -> dict[str, int | bool]:
     ensure_research_workbench_schema(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
@@ -198,12 +202,7 @@ def sync_stock_alias_relations(
         eligible_aliases.append(alias_key)
 
     aliases_to_process = eligible_aliases[: max(0, int(max_alias_keys_per_run))]
-    attempt_counts: dict[str, int] = {}
-    if aliases_to_process:
-        attempt_counts = increment_alias_resolve_attempts(
-            engine_or_conn, aliases_to_process
-        )
-
+    attempted_aliases: list[str] = []
     ai_alias_map: dict[str, str] = {}
     if aliases_to_process:
         ai_alias_map = build_ai_stock_alias_map(
@@ -213,20 +212,30 @@ def sync_stock_alias_relations(
             runtime_config=ai_runtime_config,
             max_alias_keys=len(aliases_to_process),
             stats_out=alias_stats,
+            ai_max_inflight=max(1, int(ai_max_inflight)),
+            should_continue=should_continue,
+            acquire_low_priority_slot=acquire_low_priority_slot,
+            release_low_priority_slot=release_low_priority_slot,
+            attempted_aliases_out=attempted_aliases,
         )
 
-    for alias_key in ai_alias_map:
-        set_alias_resolve_task_status(
-            engine_or_conn,
-            alias_key=alias_key,
-            status=ALIAS_TASK_STATUS_RESOLVED,
-            attempt_count=int(attempt_counts.get(alias_key, 0) or 0),
+    attempt_counts: dict[str, int] = {}
+    if attempted_aliases:
+        attempt_counts = increment_alias_resolve_attempts(
+            engine_or_conn, attempted_aliases
         )
-    for alias_key in aliases_to_process:
-        if alias_key in ai_alias_map:
-            continue
+
+    for alias_key in attempted_aliases:
         attempts = int(attempt_counts.get(alias_key, 0) or 0)
-        if attempts >= max_retries:
+        if alias_key in ai_alias_map:
+            set_alias_resolve_task_status(
+                engine_or_conn,
+                alias_key=alias_key,
+                status=ALIAS_TASK_STATUS_RESOLVED,
+                attempt_count=attempts,
+            )
+            continue
+        if attempts >= int(max_retries):
             set_alias_resolve_task_status(
                 engine_or_conn,
                 alias_key=alias_key,
@@ -268,9 +277,9 @@ def sync_stock_alias_relations(
         "resolved": int(len(ai_alias_map)),
         "candidates": int(len(candidate_pairs)),
         "inserted": int(inserted),
-        "has_more": bool(len(eligible_aliases) > len(aliases_to_process)),
+        "has_more": bool(len(eligible_aliases) > len(attempted_aliases)),
         "remaining_aliases": max(
-            0, int(len(eligible_aliases) - len(aliases_to_process))
+            0, int(len(eligible_aliases) - len(attempted_aliases))
         ),
     }
 

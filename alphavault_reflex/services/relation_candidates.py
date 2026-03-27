@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 import os
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -200,6 +200,7 @@ def enrich_candidates_with_ai(
     *,
     relation_type: str,
     ai_enabled: bool,
+    should_continue: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     if not candidates:
         return []
@@ -209,7 +210,11 @@ def enrich_candidates_with_ai(
     if not ok:
         return [_with_ai_status(item, AI_STATUS_SKIPPED) for item in candidates]
     try:
-        return _rank_candidates_with_ai(candidates, relation_type=relation_type)
+        return _rank_candidates_with_ai(
+            candidates,
+            relation_type=relation_type,
+            should_continue=should_continue,
+        )
     except Exception:
         return [_with_ai_status(item, AI_STATUS_ERROR) for item in candidates]
 
@@ -226,7 +231,14 @@ def _rank_candidates_with_ai(
     candidates: list[dict[str, Any]],
     *,
     relation_type: str,
+    should_continue: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
+    if should_continue is not None:
+        try:
+            if not bool(should_continue()):
+                return [_with_ai_status(item, AI_STATUS_SKIPPED) for item in candidates]
+        except Exception:
+            return [_with_ai_status(item, AI_STATUS_SKIPPED) for item in candidates]
     config = _get_ai_runtime_config()
     candidate_lines = []
     for item in candidates[:10]:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import bisect
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 import time
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -237,6 +238,94 @@ def _upsert_candidate_batch(
     return upserted, unique_types, unique_ids, left_key
 
 
+def _collect_candidates_parallel(
+    *,
+    keys: list[str],
+    ai_enabled: bool,
+    ai_max_inflight: int,
+    should_continue: Callable[[], bool] | None,
+    acquire_low_priority_slot: Callable[[], bool] | None,
+    release_low_priority_slot: Callable[[], None] | None,
+    limiter: RateLimiter,
+    build_candidates: Callable[[str], list[dict[str, str]]],
+) -> tuple[list[tuple[str, list[dict[str, str]]]], bool]:
+    if not keys:
+        return [], False
+    if not bool(ai_enabled):
+        return [(key, build_candidates(key)) for key in keys], False
+
+    can_continue = should_continue or (lambda: True)
+    acquire_slot = acquire_low_priority_slot or (lambda: True)
+    release_slot = release_low_priority_slot or (lambda: None)
+    max_workers = min(max(1, int(ai_max_inflight)), len(keys))
+    next_submit_index = 0
+    stopped_early = False
+    futures: dict[Future[list[dict[str, str]]], str] = {}
+    results_by_key: dict[str, list[dict[str, str]]] = {}
+
+    def _submit_more(executor: ThreadPoolExecutor) -> None:
+        nonlocal next_submit_index, stopped_early
+        while next_submit_index < len(keys) and len(futures) < int(max_workers):
+            try:
+                continue_now = bool(can_continue())
+            except Exception:
+                continue_now = False
+            if not continue_now:
+                stopped_early = True
+                return
+            key = str(keys[next_submit_index] or "").strip()
+            if not key:
+                next_submit_index += 1
+                continue
+            try:
+                acquired = bool(acquire_slot())
+            except Exception:
+                acquired = False
+            if not acquired:
+                break
+            next_submit_index += 1
+
+            def _run_one(target_key: str) -> list[dict[str, str]]:
+                try:
+                    limiter.wait()
+                    return build_candidates(target_key)
+                finally:
+                    try:
+                        release_slot()
+                    except Exception:
+                        pass
+
+            try:
+                future = executor.submit(_run_one, key)
+            except Exception:
+                try:
+                    release_slot()
+                except Exception:
+                    pass
+                raise
+            futures[future] = key
+
+    with ThreadPoolExecutor(max_workers=int(max_workers)) as executor:
+        _submit_more(executor)
+        while futures:
+            done, _pending = wait(set(futures.keys()), return_when=FIRST_COMPLETED)
+            for done_future in done:
+                key = futures.pop(done_future, "")
+                if not key:
+                    continue
+                results_by_key[key] = done_future.result()
+            _submit_more(executor)
+
+    ordered_results = [
+        (key, results_by_key[key])
+        for key in keys
+        if str(key or "").strip() in results_by_key
+    ]
+    if next_submit_index < len(keys):
+        stopped_early = True
+    return ordered_results, bool(stopped_early)
+
+
 def sync_relation_candidates_cache(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
@@ -245,6 +334,10 @@ def sync_relation_candidates_cache(
     max_stocks_per_run: int = RELATION_CANDIDATES_MAX_STOCKS_PER_RUN,
     max_sectors_per_run: int = RELATION_CANDIDATES_MAX_SECTORS_PER_RUN,
     lock_lease_seconds: int = RELATION_CANDIDATES_LOCK_LEASE_SECONDS,
+    ai_max_inflight: int = 1,
+    should_continue: Callable[[], bool] | None = None,
+    acquire_low_priority_slot: Callable[[], bool] | None = None,
+    release_low_priority_slot: Callable[[], None] | None = None,
 ) -> dict[str, int | bool]:
     now_epoch = int(time.time())
     if not try_acquire_worker_job_lock(
@@ -295,14 +388,22 @@ def sync_relation_candidates_cache(
             upserted = 0
             deleted = 0
 
-            for stock_key in stocks_to_process:
-                if ai_enabled:
-                    limiter.wait()
-                candidates = build_stock_pending_candidates(
+            stock_results, stocks_stopped_early = _collect_candidates_parallel(
+                keys=stocks_to_process,
+                ai_enabled=bool(ai_enabled),
+                ai_max_inflight=max(1, int(ai_max_inflight)),
+                should_continue=should_continue,
+                acquire_low_priority_slot=acquire_low_priority_slot,
+                release_low_priority_slot=release_low_priority_slot,
+                limiter=limiter,
+                build_candidates=lambda stock_key: build_stock_pending_candidates(
                     assertions,
                     stock_key=stock_key,
                     ai_enabled=bool(ai_enabled),
-                )
+                    should_continue=should_continue,
+                ),
+            )
+            for stock_key, candidates in stock_results:
                 left_key_for_stock = stock_key
                 changed_for_stock = False
                 with turso_savepoint(conn):
@@ -335,15 +436,25 @@ def sync_relation_candidates_cache(
                     state_key=RELATION_CANDIDATES_STOCK_CURSOR_KEY,
                     cursor=stock_key,
                 )
+            if stocks_stopped_early:
+                stocks_has_more = True
 
-            for sector_key in sectors_to_process:
-                if ai_enabled:
-                    limiter.wait()
-                candidates = build_sector_pending_candidates(
+            sector_results, sectors_stopped_early = _collect_candidates_parallel(
+                keys=sectors_to_process,
+                ai_enabled=bool(ai_enabled),
+                ai_max_inflight=max(1, int(ai_max_inflight)),
+                should_continue=should_continue,
+                acquire_low_priority_slot=acquire_low_priority_slot,
+                release_low_priority_slot=release_low_priority_slot,
+                limiter=limiter,
+                build_candidates=lambda sector_key: build_sector_pending_candidates(
                     assertions,
                     sector_key=sector_key,
                     ai_enabled=bool(ai_enabled),
-                )
+                    should_continue=should_continue,
+                ),
+            )
+            for sector_key, candidates in sector_results:
                 left_key = f"cluster:{sector_key}" if sector_key else ""
                 with turso_savepoint(conn):
                     batch_upserted, rel_types, keep_ids, left_from_rows = (
@@ -362,6 +473,8 @@ def sync_relation_candidates_cache(
                     state_key=RELATION_CANDIDATES_SECTOR_CURSOR_KEY,
                     cursor=sector_key,
                 )
+            if sectors_stopped_early:
+                sectors_has_more = True
 
             has_more = bool(stocks_has_more or sectors_has_more)
             return {
