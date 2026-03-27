@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import asdict
 from datetime import datetime
 import os
@@ -11,7 +10,6 @@ from reflex import constants as rx_constants
 
 from alphavault.db.turso_db import (
     ensure_turso_engine,
-    get_turso_engine_from_env,
     turso_connect_autocommit,
 )
 from alphavault.db.turso_env import (
@@ -32,10 +30,9 @@ from alphavault.research_workbench import (
     upsert_relation_candidate,
     block_relation_candidate,
 )
-from alphavault.research_backfill_cache import list_stock_backfill_posts
+from alphavault.research_stock_cache import mark_stock_dirty
 from alphavault_reflex.services.research_data import (
     build_sector_research_view,
-    build_stock_research_view,
 )
 from alphavault_reflex.services.research_models import (
     build_sector_route,
@@ -43,9 +40,11 @@ from alphavault_reflex.services.research_models import (
 )
 from alphavault_reflex.services.turso_read import (
     clear_reflex_source_caches,
-    load_stock_sources_fast_from_env,
-    load_stock_alias_relations_from_env,
     load_sources_from_env,
+)
+from alphavault_reflex.services.stock_hot_read import (
+    clear_stock_hot_read_caches,
+    load_stock_cached_view_from_env,
 )
 from alphavault.env import load_dotenv_if_present
 from alphavault_reflex.services.stock_backfill import (
@@ -56,34 +55,8 @@ from alphavault_reflex.services.stock_backfill import (
 
 DEFAULT_SIGNAL_PAGE_SIZE = 5
 SIGNAL_PAGE_SIZE_OPTIONS = (5, 10, 20)
-FAST_STOCK_ASSERTIONS_PER_SOURCE = 240
+STOCK_CACHE_PREPARING_HINT = "缓存准备中"
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-
-
-def load_stock_page_view(
-    stock_slug: str,
-    *,
-    signal_page: int,
-    signal_page_size: int,
-) -> dict[str, object]:
-    primary = load_stock_page_primary_view_full(
-        stock_slug,
-        signal_page=signal_page,
-        signal_page_size=signal_page_size,
-    )
-    entity_key = str(
-        primary.get("entity_key") or _normalize_stock_key(stock_slug)
-    ).strip()
-    extras = load_stock_page_extras_view(entity_key)
-    primary["pending_candidates"] = extras.get("pending_candidates", [])
-    primary["backfill_posts"] = extras.get("backfill_posts", [])
-    extras_error = str(extras.get("extras_error") or "").strip()
-    if extras_error:
-        warning = str(primary.get("load_warning") or "").strip()
-        primary["load_warning"] = (
-            f"{warning} | {extras_error}" if warning else extras_error
-        )
-    return primary
 
 
 def _empty_stock_page_view(
@@ -106,110 +79,25 @@ def _empty_stock_page_view(
     }
 
 
-def load_stock_page_primary_view_fast(
+def load_stock_page_cached_view(
     stock_slug: str,
     *,
     signal_page: int,
     signal_page_size: int,
 ) -> dict[str, object]:
     stock_key = _normalize_stock_key(stock_slug)
-    posts, assertions, err = load_stock_sources_fast_from_env(
+    view = load_stock_cached_view_from_env(
         stock_key,
-        per_source_limit=FAST_STOCK_ASSERTIONS_PER_SOURCE,
-    )
-    if err and assertions.empty:
-        return _empty_stock_page_view(
-            stock_key,
-            signal_page_size=signal_page_size,
-            load_error=err,
-        )
-    view = build_stock_research_view(
-        posts,
-        assertions,
-        stock_key=stock_key,
-        stock_relations=None,
         signal_page=_normalize_signal_page(signal_page),
         signal_page_size=_normalize_signal_page_size(signal_page_size),
     )
-    result = asdict(view)
-    result["pending_candidates"] = []
-    result["backfill_posts"] = []
-    result["load_error"] = ""
-    result["load_warning"] = str(err or "").strip()
-    return result
-
-
-def load_stock_page_primary_view_full(
-    stock_slug: str,
-    *,
-    signal_page: int,
-    signal_page_size: int,
-) -> dict[str, object]:
-    stock_key = _normalize_stock_key(stock_slug)
-    posts, assertions, err = load_sources_from_env()
-    if err:
+    if str(view.get("entity_key") or "").strip() == "":
         return _empty_stock_page_view(
             stock_key,
             signal_page_size=signal_page_size,
-            load_error=err,
+            load_error=str(view.get("load_error") or "").strip(),
         )
-    stock_relations, relation_err = load_stock_alias_relations_from_env()
-    if relation_err:
-        stock_relations = None
-    view = build_stock_research_view(
-        posts,
-        assertions,
-        stock_key=stock_key,
-        stock_relations=stock_relations,
-        signal_page=_normalize_signal_page(signal_page),
-        signal_page_size=_normalize_signal_page_size(signal_page_size),
-    )
-    result = asdict(view)
-    result["pending_candidates"] = []
-    result["backfill_posts"] = []
-    result["load_error"] = ""
-    result["load_warning"] = ""
-    return result
-
-
-def load_stock_page_extras_view(entity_key: str) -> dict[str, object]:
-    key = str(entity_key or "").strip()
-    if not key:
-        return {"pending_candidates": [], "backfill_posts": [], "extras_error": ""}
-    pending_candidates: list[dict[str, object]] = []
-    backfill_posts: list[dict[str, object]] = []
-    errors: list[str] = []
-
-    try:
-        workbench = get_research_workbench_engine_from_env()
-        ensure_research_workbench_schema(workbench)
-        pending_candidates = list_pending_candidates_for_left_key(
-            workbench,
-            left_key=key,
-            limit=12,
-        )
-    except BaseException as err:
-        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-            raise
-        errors.append(f"pending_candidates:{type(err).__name__}")
-
-    try:
-        engine = get_turso_engine_from_env()
-        backfill_posts = list_stock_backfill_posts(
-            engine,
-            stock_key=key,
-            limit=12,
-        )
-    except BaseException as err:
-        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-            raise
-        errors.append(f"backfill_posts:{type(err).__name__}")
-
-    return {
-        "pending_candidates": pending_candidates,
-        "backfill_posts": backfill_posts,
-        "extras_error": " | ".join(errors),
-    }
+    return view
 
 
 def _get_turso_engine_for_post_uid(post_uid: str):
@@ -277,6 +165,11 @@ def run_direct_stock_backfill(post_uid: str, stock_key: str, display_name: str) 
         ai_result_json=None,
         assertions=merged,
     )
+    mark_stock_dirty(
+        engine,
+        stock_key=target_stock_key,
+        reason="direct_backfill",
+    )
     return max(0, len(merged) - len(existing_assertions))
 
 
@@ -309,6 +202,10 @@ ORDER BY idx ASC
         }
         for row in rows
     ]
+
+
+def _is_stock_cache_preparing_warning(warning: str) -> bool:
+    return STOCK_CACHE_PREPARING_HINT in str(warning or "").strip()
 
 
 def load_sector_page_view(sector_slug: str) -> dict[str, object]:
@@ -344,11 +241,12 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
 def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
     engine = get_research_workbench_engine_from_env()
     ensure_research_workbench_schema(engine)
+    left_key = str(candidate_row.get("left_key") or "").strip()
     upsert_relation_candidate(
         engine,
         candidate_id=str(candidate_row.get("candidate_id") or "").strip(),
         relation_type=str(candidate_row.get("relation_type") or "").strip(),
-        left_key=str(candidate_row.get("left_key") or "").strip(),
+        left_key=left_key,
         right_key=str(candidate_row.get("right_key") or "").strip(),
         relation_label=str(candidate_row.get("relation_label") or "").strip(),
         suggestion_reason=str(candidate_row.get("suggestion_reason") or "").strip(),
@@ -360,18 +258,20 @@ def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
     candidate_id = str(candidate_row.get("candidate_id") or "").strip()
     if action_name == "accept":
         accept_relation_candidate(engine, candidate_id=candidate_id, source="manual")
-        return
-    if action_name == "ignore":
+    elif action_name == "ignore":
         ignore_relation_candidate(engine, candidate_id=candidate_id)
-        return
-    if action_name == "block":
+    elif action_name == "block":
         block_relation_candidate(engine, candidate_id=candidate_id)
+    if left_key.startswith("stock:"):
+        mark_stock_dirty(engine, stock_key=left_key, reason="candidate_action")
 
 
 class ResearchState(rx.State):
     loading: bool = False
     extras_loading: bool = False
-    full_refreshing: bool = False
+    signals_ready: bool = False
+    extras_ready: bool = False
+    extras_updated_at: str = ""
     loaded_once: bool = False
     page_title: str = ""
     entity_key: str = ""
@@ -485,107 +385,43 @@ class ResearchState(rx.State):
             self.signal_page = 1
         stock_key = _normalize_stock_key(slug)
         self.stock_load_request_id = max(int(self.stock_load_request_id), 0) + 1
-        request_id = int(self.stock_load_request_id)
         self.entity_type = "stock"
         self.entity_key = stock_key
         self.load_error = ""
         self.stock_load_warning = ""
-        self.extras_loading = True
-        should_full_refresh = bool(stock_key) and (
-            _normalize_signal_page(self.signal_page) == 1
-        )
-        self.full_refreshing = bool(should_full_refresh)
+        self.extras_loading = False
+        self.signals_ready = False
+        self.extras_ready = False
+        self.extras_updated_at = ""
         self.pending_candidates = []
         self.backfill_posts = []
 
-        view = load_stock_page_primary_view_fast(
+        view = load_stock_page_cached_view(
             slug,
             signal_page=_normalize_signal_page(self.signal_page),
             signal_page_size=_normalize_signal_page_size(self.signal_page_size),
         )
         self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
+        self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
+        self.backfill_posts = _coerce_rows(view.get("backfill_posts"))
+        self.extras_updated_at = str(view.get("extras_updated_at") or "").strip()
         self.loaded_once = True
         self.loading = False
-        if not self.entity_key:
-            self.extras_loading = False
-            self.full_refreshing = False
-            return
-        events = [type(self).load_stock_extras_background(self.entity_key, request_id)]
-        if should_full_refresh:
-            events.append(
-                type(self).refresh_stock_page_full_background(slug, request_id)
+        cache_preparing = _is_stock_cache_preparing_warning(self.stock_load_warning)
+        self.signals_ready = bool(
+            str(self.load_error or "").strip() == ""
+            and self.loaded_once
+            and (not cache_preparing)
+        )
+        self.extras_ready = bool(
+            self.loaded_once
+            and (not self.extras_loading)
+            and (
+                self.extras_updated_at != ""
+                or bool(self.pending_candidates)
+                or bool(self.backfill_posts)
             )
-        return events
-
-    @rx.event(background=True)
-    async def load_stock_extras_background(self, entity_key: str, request_id: int):
-        key = str(entity_key or "").strip()
-        if not key:
-            async with self:
-                if int(request_id) == int(self.stock_load_request_id):
-                    self.extras_loading = False
-            return
-        try:
-            extras = await asyncio.to_thread(load_stock_page_extras_view, key)
-        except BaseException as err:
-            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-                raise
-            extras = {
-                "pending_candidates": [],
-                "backfill_posts": [],
-                "extras_error": f"extras:{type(err).__name__}",
-            }
-        async with self:
-            if int(request_id) != int(self.stock_load_request_id):
-                return
-            self.pending_candidates = _coerce_rows(extras.get("pending_candidates"))
-            self.backfill_posts = _coerce_rows(extras.get("backfill_posts"))
-            extras_error = str(extras.get("extras_error") or "").strip()
-            if extras_error:
-                current_warning = str(self.stock_load_warning or "").strip()
-                self.stock_load_warning = (
-                    f"{current_warning} | {extras_error}"
-                    if current_warning
-                    else extras_error
-                )
-            self.extras_loading = False
-
-    @rx.event(background=True)
-    async def refresh_stock_page_full_background(
-        self, stock_slug: str, request_id: int
-    ):
-        slug = str(stock_slug or "").strip()
-        stock_key = _normalize_stock_key(slug)
-        try:
-            view = await asyncio.to_thread(
-                load_stock_page_primary_view_full,
-                slug,
-                signal_page=_normalize_signal_page(self.signal_page),
-                signal_page_size=_normalize_signal_page_size(self.signal_page_size),
-            )
-        except BaseException as err:
-            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-                raise
-            view = _empty_stock_page_view(
-                stock_key,
-                signal_page_size=_normalize_signal_page_size(self.signal_page_size),
-                load_error=f"full_refresh:{type(err).__name__}",
-            )
-        async with self:
-            if int(request_id) != int(self.stock_load_request_id):
-                return
-            load_error = str(view.get("load_error") or "").strip()
-            if load_error == "":
-                self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
-                self.stock_load_warning = ""
-            else:
-                current_warning = str(self.stock_load_warning or "").strip()
-                self.stock_load_warning = (
-                    f"{current_warning} | {load_error}"
-                    if current_warning
-                    else load_error
-                )
-            self.full_refreshing = False
+        )
 
     def _apply_stock_primary_view(
         self, view: dict[str, object], *, fallback_stock_key: str
@@ -646,7 +482,9 @@ class ResearchState(rx.State):
         self.load_error = str(view.get("load_error") or "").strip()
         self.stock_load_warning = ""
         self.extras_loading = False
-        self.full_refreshing = False
+        self.signals_ready = True
+        self.extras_ready = True
+        self.extras_updated_at = ""
         self.primary_signals = _coerce_rows(view.get("signals"))
         self.related_items = _prepare_stock_links(view.get("related_stocks"))
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
@@ -679,6 +517,17 @@ class ResearchState(rx.State):
             self.backfill_notice = f"排队失败：{type(err).__name__}"
             return
         clear_reflex_source_caches()
+        clear_stock_hot_read_caches()
+        if self.entity_key.startswith("stock:"):
+            try:
+                engine = _get_turso_engine_for_post_uid(target)
+                mark_stock_dirty(
+                    engine,
+                    stock_key=self.entity_key,
+                    reason="queue_backfill",
+                )
+            except BaseException:
+                pass
         self.backfill_notice = f"已排队：{target}（等一会再刷新）"
 
     def _mutate_candidate(self, candidate_id: str, *, action: str):
@@ -697,6 +546,7 @@ class ResearchState(rx.State):
             return
         apply_candidate_action(row, action)
         clear_reflex_source_caches()
+        clear_stock_hot_read_caches()
         if self.entity_type == "stock":
             return self.load_stock_page(self.entity_key.removeprefix("stock:"))
         if self.entity_type == "sector":

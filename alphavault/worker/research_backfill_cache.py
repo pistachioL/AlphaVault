@@ -10,7 +10,11 @@ from alphavault.db.turso_db import (
     TursoEngine,
     turso_connect_autocommit,
 )
-from alphavault.research_backfill_cache import replace_stock_backfill_posts
+from alphavault.research_backfill_cache import (
+    list_stock_backfill_posts,
+    replace_stock_backfill_posts,
+)
+from alphavault.research_stock_cache import mark_stock_dirty
 from alphavault.worker.job_state import (
     load_worker_job_cursor,
     release_worker_job_lock,
@@ -214,6 +218,22 @@ def _build_backfill_candidates_for_stock(
     return out
 
 
+def _backfill_rows_signature(rows: list[dict[str, Any]]) -> list[tuple[str, ...]]:
+    normalized = [
+        (
+            str(row.get("post_uid") or "").strip(),
+            str(row.get("author") or "").strip(),
+            str(row.get("created_at") or "").strip(),
+            str(row.get("url") or "").strip(),
+            str(row.get("matched_terms") or "").strip(),
+            str(row.get("preview") or "").strip(),
+        )
+        for row in rows
+        if str(row.get("post_uid") or "").strip()
+    ]
+    return sorted(normalized, key=lambda item: (item[2], item[0]), reverse=True)
+
+
 def sync_stock_backfill_cache(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
@@ -255,6 +275,11 @@ def sync_stock_backfill_cache(
 
             total_written = 0
             for stock_key in stock_keys:
+                before_rows = list_stock_backfill_posts(
+                    conn,
+                    stock_key=stock_key,
+                    limit=max(1, int(max_rows_per_stock)),
+                )
                 rows = _build_backfill_candidates_for_stock(
                     conn,
                     stock_key=stock_key,
@@ -266,6 +291,14 @@ def sync_stock_backfill_cache(
                     stock_key=stock_key,
                     posts=rows,
                 )
+                if _backfill_rows_signature(before_rows) != _backfill_rows_signature(
+                    rows
+                ):
+                    mark_stock_dirty(
+                        conn,
+                        stock_key=stock_key,
+                        reason="backfill_cache",
+                    )
 
             new_cursor = stock_keys[-1]
             save_worker_job_cursor(
