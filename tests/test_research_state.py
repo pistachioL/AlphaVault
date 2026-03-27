@@ -18,7 +18,7 @@ def test_research_state_starts_in_loading_state() -> None:
 def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
     monkeypatch.setattr(
         "alphavault_reflex.research_state.load_stock_page_view",
-        lambda stock_slug: {
+        lambda stock_slug, **_kwargs: {
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
@@ -43,7 +43,7 @@ def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
 def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
     monkeypatch.setattr(
         "alphavault_reflex.research_state.load_stock_page_view",
-        lambda stock_slug: {
+        lambda stock_slug, **_kwargs: {
             "entity_key": "stock:000001.SZ",
             "header_title": "000001.SZ",
             "signals": [],
@@ -68,7 +68,7 @@ def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
 def test_load_stock_page_uses_canonical_entity_key_from_view(monkeypatch) -> None:
     monkeypatch.setattr(
         "alphavault_reflex.research_state.load_stock_page_view",
-        lambda stock_slug: {
+        lambda stock_slug, **_kwargs: {
             "entity_key": "stock:601899.SH",
             "header_title": "紫金矿业 (601899.SH)",
             "signals": [{"summary": "继续拿着"}],
@@ -122,7 +122,7 @@ def test_accept_candidate_clears_caches_and_marks_candidate_accepted(
     )
     monkeypatch.setattr(
         "alphavault_reflex.research_state.load_stock_page_view",
-        lambda stock_slug: {
+        lambda stock_slug, **_kwargs: {
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],

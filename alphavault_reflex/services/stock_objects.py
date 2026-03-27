@@ -248,15 +248,13 @@ def filter_assertions_for_stock_object(
     target_key = index.resolve(stock_key)
     if not target_key:
         return enriched.head(0).copy()
-
-    def _match_row(row: pd.Series) -> bool:
-        for member in _row_stock_member_keys(row):
-            if index.resolve(member) == target_key:
-                return True
-        return False
-
-    mask = enriched.apply(_match_row, axis=1)
-    return enriched[mask].copy()
+    member_keys = index.member_keys_by_object_key.get(target_key)
+    if not member_keys:
+        member_keys = {target_key}
+    if "topic_key" not in enriched.columns:
+        return enriched.head(0).copy()
+    topics = enriched["topic_key"].fillna("").astype(str).str.strip()
+    return enriched[topics.isin(member_keys)].copy()
 
 
 def build_stock_search_rows(

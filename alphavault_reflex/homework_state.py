@@ -15,12 +15,13 @@ from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
+from alphavault_reflex.services.thread_tree import slice_posts_for_single_post_tree
 from alphavault_reflex.services.stock_objects import (
     build_stock_object_index,
 )
 from alphavault_reflex.services.turso_read import (
     load_post_urls_from_env,
-    load_posts_for_tree_from_env,
+    load_single_post_for_tree_from_env,
     load_stock_alias_relations_from_env,
     load_trade_assertions_from_env,
 )
@@ -190,13 +191,19 @@ class HomeworkState(rx.State):
             return
 
         yield
-        posts, err = load_posts_for_tree_from_env()
+        posts, err = load_single_post_for_tree_from_env(uid)
         if err:
             self.tree_loading = False
             self.selected_tree_message = f"加载失败：{err}"
             return
 
-        label, tree_text = build_tree(post_uid=uid, posts=posts)
+        posts_view = slice_posts_for_single_post_tree(post_uid=uid, posts=posts)
+        if posts_view.empty:
+            self.tree_loading = False
+            self.selected_tree_message = "没有对话流。"
+            return
+
+        label, tree_text = build_tree(post_uid=uid, posts=posts_view)
         self.selected_tree_label = label
         self.selected_tree_text = tree_text
         self.selected_tree_message = (

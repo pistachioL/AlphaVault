@@ -22,12 +22,13 @@ from alphavault_reflex.services.stock_objects import (
     build_stock_search_rows,
     filter_assertions_for_stock_object,
 )
-from alphavault_reflex.services.thread_tree import build_post_tree
+from alphavault_reflex.services.thread_tree import build_post_tree_map
 
 
 STOCK_KEY_PREFIX = "stock:"
 MINUTES_PER_HOUR = 60
 MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR
+MAX_SIGNAL_ROWS = 60
 MAX_BACKFILL_SCAN_ROWS = 2000
 MAX_BACKFILL_TERM_COUNT = 12
 MAX_BACKFILL_ROWS = 12
@@ -38,6 +39,9 @@ class StockResearchView:
     entity_key: str
     header_title: str
     signals: list[dict[str, str]]
+    signal_total: int
+    signal_page: int
+    signal_page_size: int
     related_sectors: list[dict[str, str]]
     pending_candidates: list[dict[str, str]]
     backfill_posts: list[dict[str, str]]
@@ -101,6 +105,8 @@ def build_stock_research_view(
     stock_key: str,
     stock_relations: pd.DataFrame | None = None,
     ai_alias_map: dict[str, str] | None = None,
+    signal_page: int = 1,
+    signal_page_size: int = MAX_SIGNAL_ROWS,
     now: pd.Timestamp | None = None,
 ) -> StockResearchView:
     stock_key = str(stock_key or "").strip()
@@ -109,6 +115,9 @@ def build_stock_research_view(
             entity_key=stock_key,
             header_title=_stock_title(stock_key),
             signals=[],
+            signal_total=0,
+            signal_page=1,
+            signal_page_size=_clamp_signal_page_size(signal_page_size),
             related_sectors=[],
             pending_candidates=[],
             backfill_posts=[],
@@ -128,10 +137,18 @@ def build_stock_research_view(
         stock_index=stock_index,
     )
     stock_view = _merge_post_fields(stock_view.copy(), posts)
+    signal_slice, signal_total, signal_page = _slice_signal_view(
+        stock_view,
+        page=signal_page,
+        page_size=signal_page_size,
+    )
     return StockResearchView(
         entity_key=entity_key,
         header_title=stock_index.header_title(entity_key),
-        signals=_build_signal_rows(stock_view, posts=posts, now=now),
+        signals=_build_signal_rows(signal_slice, posts=posts, now=now),
+        signal_total=signal_total,
+        signal_page=signal_page,
+        signal_page_size=_clamp_signal_page_size(signal_page_size),
         related_sectors=_build_related_sector_rows(stock_view),
         pending_candidates=[],
         backfill_posts=[],
@@ -304,6 +321,50 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     )
 
 
+def _coerce_positive_int(value: object, *, default: int) -> int:
+    try:
+        parsed = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return int(default)
+    if parsed <= 0:
+        return int(default)
+    return int(parsed)
+
+
+def _clamp_signal_page_size(value: object) -> int:
+    size = _coerce_positive_int(value, default=MAX_SIGNAL_ROWS)
+    return max(1, min(size, MAX_SIGNAL_ROWS))
+
+
+def _slice_signal_view(
+    view: pd.DataFrame,
+    *,
+    page: int,
+    page_size: int,
+) -> tuple[pd.DataFrame, int, int]:
+    if view.empty:
+        return view, 0, 1
+
+    safe_page_size = _clamp_signal_page_size(page_size)
+    safe_page = _coerce_positive_int(page, default=1)
+
+    rows = view.copy()
+    if "created_at" in rows.columns:
+        rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
+        rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
+
+    total = int(len(rows.index))
+    if total <= 0:
+        return rows.head(0), 0, 1
+
+    total_pages = max(1, (total + safe_page_size - 1) // safe_page_size)
+    safe_page = min(safe_page, total_pages)
+
+    start = (safe_page - 1) * safe_page_size
+    end = start + safe_page_size
+    return rows.iloc[start:end], total, safe_page
+
+
 def _build_signal_rows(
     view: pd.DataFrame,
     *,
@@ -316,8 +377,16 @@ def _build_signal_rows(
     if "created_at" in rows.columns:
         rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
         rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
+    rows = rows.head(MAX_SIGNAL_ROWS)
     out: list[dict[str, str]] = []
-    tree_cache: dict[str, tuple[str, str]] = {}
+    tree_map = build_post_tree_map(
+        post_uids=[
+            str(uid or "").strip()
+            for uid in rows.get("post_uid", pd.Series(dtype=str)).tolist()
+            if str(uid or "").strip()
+        ],
+        posts=posts,
+    )
     reference_now = _coerce_signal_timestamp(now) or _default_signal_reference_time()
     for _, row in rows.iterrows():
         created = row.get("created_at")
@@ -327,10 +396,7 @@ def _build_signal_rows(
         tree_label = ""
         tree_text = ""
         if post_uid:
-            tree_label, tree_text = tree_cache.setdefault(
-                post_uid,
-                build_post_tree(post_uid=post_uid, posts=posts),
-            )
+            tree_label, tree_text = tree_map.get(post_uid, ("", ""))
         out.append(
             {
                 "post_uid": post_uid,

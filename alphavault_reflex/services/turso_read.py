@@ -23,6 +23,10 @@ from alphavault.ui.thread_tree import extract_platform_post_id
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
+MISSING_TURSO_SOURCES_ERROR = (
+    f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}"
+)
+
 WANTED_TRADE_ASSERTION_COLUMNS = [
     "post_uid",
     "idx",
@@ -39,6 +43,15 @@ WANTED_TRADE_ASSERTION_COLUMNS = [
     "indices_json",
     "author",
     "created_at",
+]
+
+WANTED_POST_COLUMNS_FOR_TREE = [
+    "post_uid",
+    "platform_post_id",
+    "author",
+    "created_at",
+    "url",
+    "raw_text",
 ]
 
 
@@ -200,16 +213,7 @@ def _load_trade_sources_cached(
         post_cols = table_columns(conn, "posts")
         display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
         selected_post_cols = [
-            col
-            for col in [
-                "post_uid",
-                "platform_post_id",
-                "author",
-                "created_at",
-                "url",
-                "raw_text",
-            ]
-            if col in post_cols
+            col for col in WANTED_POST_COLUMNS_FOR_TREE if col in post_cols
         ]
         post_select_expr = ", ".join(selected_post_cols + [display_expr])
         posts_query = f"""
@@ -287,14 +291,74 @@ def _load_posts_for_tree_cached(
     return posts
 
 
+@lru_cache(maxsize=64)
+def _load_single_post_for_tree_cached(
+    db_url: str, auth_token: str, source_name: str, post_uid: str
+) -> pd.DataFrame:
+    uid = str(post_uid or "").strip()
+    if not uid:
+        return pd.DataFrame()
+
+    engine = ensure_turso_engine(db_url, auth_token)
+    with turso_connect_autocommit(engine) as conn:
+        post_cols = table_columns(conn, "posts")
+        display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
+        selected_post_cols = [
+            col for col in WANTED_POST_COLUMNS_FOR_TREE if col in post_cols
+        ]
+        post_select_expr = ", ".join(selected_post_cols + [display_expr])
+        sql = f"""
+SELECT {post_select_expr}
+FROM posts
+WHERE processed_at IS NOT NULL AND post_uid = ?
+"""
+        posts = turso_read_sql_df(conn, sql, params=[uid])
+
+    posts = _standardize_posts(posts, source_name=source_name)
+    posts = _normalize_posts_datetime(posts)
+    posts = _ensure_platform_post_id(posts)
+    return posts
+
+
+def load_single_post_for_tree_from_env(post_uid: str) -> tuple[pd.DataFrame, str]:
+    uid = str(post_uid or "").strip()
+    if not uid:
+        return pd.DataFrame(), ""
+
+    load_dotenv_if_present()
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+
+    sources_by_name = {source.name: source for source in sources}
+    platform = infer_platform_from_post_uid(uid)
+    if platform and platform in sources_by_name:
+        sources = [sources_by_name[platform]]
+
+    errors: list[str] = []
+    for source in sources:
+        try:
+            posts = _load_single_post_for_tree_cached(
+                source.url, source.token, source.name, uid
+            )
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            errors.append(f"turso_connect_error:{source.name}:{type(e).__name__}")
+            continue
+        if not posts.empty:
+            return posts, ""
+
+    if errors:
+        return pd.DataFrame(), errors[0]
+    return pd.DataFrame(), ""
+
+
 def load_trade_assertions_from_env() -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
     sources = load_configured_turso_sources_from_env()
     if not sources:
-        return (
-            pd.DataFrame(),
-            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
-        )
+        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 
     frames: list[pd.DataFrame] = []
     for source in sources:
@@ -319,10 +383,7 @@ def load_posts_for_tree_from_env() -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
     sources = load_configured_turso_sources_from_env()
     if not sources:
-        return (
-            pd.DataFrame(),
-            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
-        )
+        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 
     frames: list[pd.DataFrame] = []
     for source in sources:
@@ -352,10 +413,7 @@ def load_post_urls_from_env(post_uids: list[str]) -> tuple[dict[str, str], str]:
     load_dotenv_if_present()
     sources = load_configured_turso_sources_from_env()
     if not sources:
-        return (
-            {},
-            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
-        )
+        return {}, MISSING_TURSO_SOURCES_ERROR
 
     sources_by_name = {s.name: s for s in sources}
     groups: dict[str, list[str]] = {}
@@ -424,10 +482,7 @@ def load_stock_alias_relations_from_env() -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
     sources = load_configured_turso_sources_from_env()
     if not sources:
-        return (
-            pd.DataFrame(),
-            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
-        )
+        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
     frames: list[pd.DataFrame] = []
     for source in sources:
         try:
@@ -451,5 +506,6 @@ def load_stock_alias_relations_from_env() -> tuple[pd.DataFrame, str]:
 
 def clear_reflex_source_caches() -> None:
     _load_trade_sources_cached.cache_clear()
+    _load_single_post_for_tree_cached.cache_clear()
     _load_post_urls_cached.cache_clear()
     _load_stock_alias_relations_cached.cache_clear()
