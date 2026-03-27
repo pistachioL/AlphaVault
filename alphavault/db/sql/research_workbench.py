@@ -85,6 +85,13 @@ ON {table}(status, relation_type, score, updated_at)
 """
 
 
+def create_research_relation_candidate_left_key_index(table: str) -> str:
+    return f"""
+CREATE INDEX IF NOT EXISTS idx_{table}_left_key_pending
+ON {table}(left_key, status, score, updated_at)
+"""
+
+
 def upsert_research_object(table: str) -> str:
     return f"""
 INSERT INTO {table}(object_key, object_type, display_name, created_at, updated_at)
@@ -163,19 +170,53 @@ ON CONFLICT(candidate_id) DO UPDATE SET
     evidence_summary = excluded.evidence_summary,
     score = excluded.score,
     ai_status = excluded.ai_status,
-    status = excluded.status,
+    status = CASE
+        WHEN status IN ('accepted', 'ignored', 'blocked') THEN status
+        ELSE excluded.status
+    END,
     updated_at = excluded.updated_at
 """
 
 
 def select_pending_candidates(table: str) -> str:
     return f"""
-SELECT candidate_id, relation_type, left_key, right_key, relation_label,
+SELECT candidate_id,
+       relation_type,
+       left_key,
+       right_key,
+       CASE
+           WHEN relation_type IN ('stock_sector', 'sector_sector') AND right_key LIKE 'cluster:%'
+               THEN substr(right_key, 9)
+           ELSE right_key
+       END AS candidate_key,
+       relation_label,
        suggestion_reason, evidence_summary, score, ai_status, status,
        created_at, updated_at
 FROM {table}
 WHERE status = 'pending'
 ORDER BY score DESC, updated_at DESC, candidate_id ASC
+"""
+
+
+def select_pending_candidates_for_left_key(table: str) -> str:
+    return f"""
+SELECT candidate_id,
+       relation_type,
+       left_key,
+       right_key,
+       CASE
+           WHEN relation_type IN ('stock_sector', 'sector_sector') AND right_key LIKE 'cluster:%'
+               THEN substr(right_key, 9)
+           ELSE right_key
+       END AS candidate_key,
+       relation_label,
+       suggestion_reason, evidence_summary, score, ai_status, status,
+       created_at, updated_at
+FROM {table}
+WHERE status = 'pending'
+  AND left_key = :left_key
+ORDER BY score DESC, updated_at DESC, candidate_id ASC
+LIMIT :limit
 """
 
 

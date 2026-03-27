@@ -74,6 +74,10 @@ from alphavault.worker.cli import (
 from alphavault.worker.ingest import ingest_rss_many_once
 from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
 from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
+from alphavault.worker.research_backfill_cache import sync_stock_backfill_cache
+from alphavault.worker.research_relation_candidates_cache import (
+    sync_relation_candidates_cache,
+)
 from alphavault.worker.stock_alias_sync import sync_stock_alias_relations
 from alphavault_reflex.services.stock_objects import AiRuntimeConfig
 
@@ -110,30 +114,26 @@ class WorkerSourceRuntime:
     turso_next_ready_check_at: float = 0.0
     alias_sync_future: Future | None = None
     alias_sync_next_at: float = 0.0
+    backfill_cache_future: Future | None = None
+    backfill_cache_next_at: float = 0.0
+    relation_cache_future: Future | None = None
+    relation_cache_next_at: float = 0.0
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
     try:
-        val = float(value)  # type: ignore[arg-type]
+        v = float(str(value).strip())
     except Exception:
-        return default
-    if val < low:
-        return low
-    if val > high:
-        return high
-    return val
+        return float(default)
+    return float(max(low, min(high, v)))
 
 
 def _clamp_int(value: object, low: int, high: int, default: int) -> int:
     try:
-        val = int(value)  # type: ignore[arg-type]
+        v = int(str(value).strip())
     except Exception:
-        return default
-    if val < low:
-        return low
-    if val > high:
-        return high
-    return val
+        return int(default)
+    return int(max(low, min(high, v)))
 
 
 def _score_from_assertions(rows: list[dict[str, object]]) -> float:
@@ -391,22 +391,6 @@ def _build_topic_prompt_v3_with_prompt_chars_limit(
         )
 
     raise RuntimeError(f"topic_prompt_too_long max_prompt_chars={max_prompt_chars}")
-
-
-def _clamp_int(value: object, low: int, high: int, default: int) -> int:
-    try:
-        v = int(str(value).strip())
-    except Exception:
-        return int(default)
-    return int(max(low, min(high, v)))
-
-
-def _clamp_float(value: object, low: float, high: float, default: float) -> float:
-    try:
-        v = float(str(value).strip())
-    except Exception:
-        return float(default)
-    return float(max(low, min(high, v)))
 
 
 def _as_str_list(value: object) -> list[str]:
@@ -925,7 +909,9 @@ def _build_source_redis_queue_key(
     return f"{base_queue_key}:{source_name}"
 
 
-def _log_source_runtime(*, verbose: bool, source: WorkerSourceRuntime, redis_client) -> None:
+def _log_source_runtime(
+    *, verbose: bool, source: WorkerSourceRuntime, redis_client
+) -> None:
     if not verbose:
         return
     cfg = source.config
@@ -1276,6 +1262,7 @@ def main() -> None:
     rss_interval_seconds = max(1.0, float(rss_interval_seconds))
     alias_sync_interval_seconds = _resolve_stock_alias_sync_interval_seconds()
     alias_ai_runtime_config = _build_alias_ai_runtime_config(config)
+    research_cache_interval_seconds = float(alias_sync_interval_seconds)
 
     def _submit_alias_sync_job(sync_engine: Engine) -> dict[str, int | bool]:
         return sync_stock_alias_relations(
@@ -1283,11 +1270,24 @@ def main() -> None:
             ai_runtime_config=alias_ai_runtime_config,
         )
 
+    def _submit_backfill_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
+        return sync_stock_backfill_cache(sync_engine)
+
+    def _submit_relation_candidates_cache_job(
+        sync_engine: Engine,
+    ) -> dict[str, int | bool]:
+        return sync_relation_candidates_cache(
+            sync_engine,
+            limiter=limiter,
+            ai_enabled=True,
+        )
+
     maintenance_next_at = 0.0
 
     with (
         ThreadPoolExecutor(max_workers=worker_threads) as executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as alias_executor,
+        ThreadPoolExecutor(max_workers=1) as research_executor,
     ):
         wakeup_event = threading.Event()
         inflight_futures: set[Future] = set()
@@ -1333,8 +1333,61 @@ def main() -> None:
                         f"[alias:{source.config.name}] sync_done resolved={alias_resolved} inserted={alias_inserted}",
                         flush=True,
                     )
-                if alias_has_more:
+                alias_fast_retry = bool(
+                    alias_has_more and (alias_resolved > 0 or alias_inserted > 0)
+                )
+                if alias_fast_retry:
                     source.alias_sync_next_at = 0.0
+
+                backfill_processed = 0
+                backfill_written = 0
+                backfill_finished = False
+                backfill_has_more = False
+                (
+                    source.backfill_cache_future,
+                    backfill_stats,
+                    backfill_finished,
+                    backfill_cache_error,
+                ) = _collect_periodic_job_result(
+                    job_name=f"backfill_cache:{source.config.name}",
+                    future=source.backfill_cache_future,
+                    engine=source.engine,
+                    verbose=verbose,
+                )
+                backfill_processed = int(backfill_stats.get("processed", 0))
+                backfill_written = int(backfill_stats.get("written", 0))
+                backfill_has_more = bool(backfill_stats.get("has_more", False))
+                backfill_fast_retry = bool(backfill_has_more and backfill_processed > 0)
+                if backfill_fast_retry:
+                    source.backfill_cache_next_at = 0.0
+
+                relation_cache_processed = 0
+                relation_cache_upserted = 0
+                relation_cache_deleted = 0
+                relation_cache_finished = False
+                relation_cache_has_more = False
+                (
+                    source.relation_cache_future,
+                    relation_cache_stats,
+                    relation_cache_finished,
+                    relation_cache_error,
+                ) = _collect_periodic_job_result(
+                    job_name=f"relation_cache:{source.config.name}",
+                    future=source.relation_cache_future,
+                    engine=source.engine,
+                    verbose=verbose,
+                )
+                relation_cache_processed = int(relation_cache_stats.get("processed", 0))
+                relation_cache_upserted = int(relation_cache_stats.get("upserted", 0))
+                relation_cache_deleted = int(relation_cache_stats.get("deleted", 0))
+                relation_cache_has_more = bool(
+                    relation_cache_stats.get("has_more", False)
+                )
+                relation_cache_fast_retry = bool(
+                    relation_cache_has_more and relation_cache_processed > 0
+                )
+                if relation_cache_fast_retry:
+                    source.relation_cache_next_at = 0.0
 
                 do_ingest_rss = False
                 rss_skip_reason = ""
@@ -1346,8 +1399,9 @@ def main() -> None:
                         now_dt, rss_active_hours
                     ):
                         rss_skip_reason = "inactive"
-                        source.rss_next_ingest_at = now + _seconds_until_next_active_start(
-                            now_dt, rss_active_hours
+                        source.rss_next_ingest_at = (
+                            now
+                            + _seconds_until_next_active_start(now_dt, rss_active_hours)
                         )
                     elif now < source.rss_next_ingest_at:
                         rss_skip_reason = "interval"
@@ -1356,7 +1410,9 @@ def main() -> None:
                         source.rss_next_ingest_at = now + float(rss_interval_seconds)
 
                 force_maintenance = False
-                if not source.turso_ready and now >= float(source.turso_next_ready_check_at):
+                if not source.turso_ready and now >= float(
+                    source.turso_next_ready_check_at
+                ):
                     source.turso_ready = _ensure_turso_ready(
                         engine=source.engine,
                         verbose=verbose,
@@ -1412,7 +1468,9 @@ def main() -> None:
                 if (do_maintenance or force_maintenance) and active_engine is not None:
                     if force_maintenance:
                         maintenance_next_at = now + float(worker_interval)
-                        next_maintenance_in = max(0.0, maintenance_next_at - time.time())
+                        next_maintenance_in = max(
+                            0.0, maintenance_next_at - time.time()
+                        )
                     recovered, flushed_redis, flushed_spool, maintenance_error = (
                         _run_turso_maintenance(
                             engine=active_engine,
@@ -1443,6 +1501,44 @@ def main() -> None:
                     submit_fn=_submit_alias_sync_job,
                 )
 
+                backfill_trigger = bool(
+                    do_maintenance or force_maintenance or backfill_has_more
+                )
+                (
+                    source.backfill_cache_future,
+                    source.backfill_cache_next_at,
+                    start_backfill_cache,
+                ) = _maybe_start_periodic_job(
+                    executor=research_executor,
+                    future=source.backfill_cache_future,
+                    active_engine=active_engine,
+                    trigger=backfill_trigger,
+                    now=now,
+                    next_run_at=source.backfill_cache_next_at,
+                    interval_seconds=research_cache_interval_seconds,
+                    wakeup_event=wakeup_event,
+                    submit_fn=_submit_backfill_cache_job,
+                )
+
+                relation_trigger = bool(
+                    do_maintenance or force_maintenance or relation_cache_has_more
+                )
+                (
+                    source.relation_cache_future,
+                    source.relation_cache_next_at,
+                    start_relation_cache,
+                ) = _maybe_start_periodic_job(
+                    executor=research_executor,
+                    future=source.relation_cache_future,
+                    active_engine=active_engine,
+                    trigger=relation_trigger,
+                    now=now,
+                    next_run_at=source.relation_cache_next_at,
+                    interval_seconds=research_cache_interval_seconds,
+                    wakeup_event=wakeup_event,
+                    submit_fn=_submit_relation_candidates_cache_job,
+                )
+
                 scheduled = 0
                 schedule_error = False
                 if active_engine is not None:
@@ -1462,6 +1558,8 @@ def main() -> None:
                     or maintenance_error
                     or schedule_error
                     or alias_sync_error
+                    or backfill_cache_error
+                    or relation_cache_error
                 )
                 if turso_error:
                     source.turso_ready = False
@@ -1475,6 +1573,12 @@ def main() -> None:
                     or start_alias_sync
                     or alias_sync_finished
                     or alias_has_more
+                    or start_backfill_cache
+                    or backfill_finished
+                    or backfill_has_more
+                    or start_relation_cache
+                    or relation_cache_finished
+                    or relation_cache_has_more
                     or inserted > 0
                     or recovered > 0
                     or flushed_redis > 0
@@ -1483,6 +1587,12 @@ def main() -> None:
                 ):
                     next_alias_sync_in = max(
                         0.0, source.alias_sync_next_at - time.time()
+                    )
+                    next_backfill_in = max(
+                        0.0, source.backfill_cache_next_at - time.time()
+                    )
+                    next_relation_in = max(
+                        0.0, source.relation_cache_next_at - time.time()
                     )
                     next_rss_in = (
                         -1.0
@@ -1497,12 +1607,18 @@ def main() -> None:
                     print(
                         f"[tick:{source.config.name}] turso_ready={1 if active_engine is not None else 0} "
                         f"inflight={len(inflight_futures)} alias_inflight={1 if source.alias_sync_future is not None else 0} "
+                        f"backfill_inflight={1 if source.backfill_cache_future is not None else 0} "
+                        f"relation_inflight={1 if source.relation_cache_future is not None else 0} "
                         f"ai_scheduled={scheduled} "
                         f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
                         f"alias_resolved={alias_resolved} alias_inserted={alias_inserted} "
+                        f"backfill_processed={backfill_processed} backfill_written={backfill_written} "
+                        f"relation_processed={relation_cache_processed} relation_upserted={relation_cache_upserted} relation_deleted={relation_cache_deleted} "
                         f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
                         f"next_maint={int(next_maintenance_in)}s "
                         f"next_alias={int(next_alias_sync_in)}s "
+                        f"next_backfill={int(next_backfill_in)}s "
+                        f"next_relation={int(next_relation_in)}s "
                         f"next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s "
                         f"next_turso={int(next_turso_in) if next_turso_in >= 0 else -1}s",
                         flush=True,
@@ -1510,11 +1626,21 @@ def main() -> None:
 
             next_deadline = maintenance_next_at
             any_alias_inflight = False
+            any_backfill_inflight = False
+            any_relation_inflight = False
             for source in sources:
                 if source.alias_sync_future is not None:
                     any_alias_inflight = True
+                if source.backfill_cache_future is not None:
+                    any_backfill_inflight = True
+                if source.relation_cache_future is not None:
+                    any_relation_inflight = True
                 if source.alias_sync_next_at > 0:
                     next_deadline = min(next_deadline, source.alias_sync_next_at)
+                if source.backfill_cache_next_at > 0:
+                    next_deadline = min(next_deadline, source.backfill_cache_next_at)
+                if source.relation_cache_next_at > 0:
+                    next_deadline = min(next_deadline, source.relation_cache_next_at)
                 if source.rss_next_ingest_at != float("inf"):
                     next_deadline = min(next_deadline, source.rss_next_ingest_at)
                 if not source.turso_ready:
@@ -1522,7 +1648,12 @@ def main() -> None:
                         next_deadline, float(source.turso_next_ready_check_at)
                     )
             timeout = max(0.0, next_deadline - time.time())
-            if inflight_futures or any_alias_inflight:
+            if (
+                inflight_futures
+                or any_alias_inflight
+                or any_backfill_inflight
+                or any_relation_inflight
+            ):
                 wakeup_event.wait(timeout)
             else:
                 time.sleep(timeout)

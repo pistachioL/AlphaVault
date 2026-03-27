@@ -16,12 +16,14 @@ from alphavault.db.sql.research_workbench import (
     create_research_object_index,
     create_research_objects_table,
     create_research_relation_candidate_index,
+    create_research_relation_candidate_left_key_index,
     create_research_relation_candidates_table,
     create_research_relation_index,
     create_research_relations_table,
     select_alias_resolve_tasks_by_status,
     select_candidate_by_id,
     select_pending_candidates as select_pending_candidates_sql,
+    select_pending_candidates_for_left_key as select_pending_candidates_for_left_key_sql,
     upsert_alias_resolve_task_attempt,
     upsert_alias_resolve_task_status,
     update_candidate_status,
@@ -172,6 +174,11 @@ def ensure_research_workbench_schema(
                 )
             )
             conn.execute(
+                create_research_relation_candidate_left_key_index(
+                    RESEARCH_RELATION_CANDIDATES_TABLE
+                )
+            )
+            conn.execute(
                 create_research_alias_resolve_tasks_index(
                     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
                 )
@@ -316,6 +323,32 @@ def list_pending_candidates(
             return (
                 conn.execute(
                     select_pending_candidates_sql(RESEARCH_RELATION_CANDIDATES_TABLE)
+                )
+                .mappings()
+                .all()
+            )
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+    raise AssertionError("unreachable")
+
+
+def list_pending_candidates_for_left_key(
+    engine_or_conn: TursoEngine | TursoConnection,
+    *,
+    left_key: str,
+    limit: int = 12,
+) -> list[dict[str, object]]:
+    key = str(left_key or "").strip()
+    if not key:
+        return []
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            return (
+                conn.execute(
+                    select_pending_candidates_for_left_key_sql(
+                        RESEARCH_RELATION_CANDIDATES_TABLE
+                    ),
+                    {"left_key": key, "limit": max(0, int(limit))},
                 )
                 .mappings()
                 .all()
@@ -587,6 +620,7 @@ __all__ = [
     "list_pending_candidates",
     "list_manual_alias_resolve_tasks",
     "list_candidate_status_map",
+    "list_pending_candidates_for_left_key",
     "make_candidate_id",
     "record_stock_alias_relation",
     "record_stock_sector_relation",

@@ -20,14 +20,13 @@ from alphavault.research_workbench import (
     ensure_research_workbench_schema,
     get_research_workbench_engine_from_env,
     ignore_relation_candidate,
-    list_candidate_status_map,
+    list_pending_candidates_for_left_key,
     upsert_relation_candidate,
     block_relation_candidate,
 )
+from alphavault.research_backfill_cache import list_stock_backfill_posts
 from alphavault_reflex.services.research_data import (
-    build_sector_pending_candidates,
     build_sector_research_view,
-    build_stock_pending_candidates,
     build_stock_research_view,
 )
 from alphavault_reflex.services.research_models import (
@@ -69,14 +68,26 @@ def load_stock_page_view(stock_slug: str) -> dict[str, object]:
         stock_relations=stock_relations,
     )
     result = asdict(view)
-    result["pending_candidates"] = _filter_pending_candidates(
-        build_stock_pending_candidates(
-            assertions,
-            stock_key=str(result.get("entity_key") or stock_key).strip(),
-            ai_enabled=True,
+    entity_key = str(result.get("entity_key") or stock_key).strip()
+    try:
+        workbench = get_research_workbench_engine_from_env()
+        ensure_research_workbench_schema(workbench)
+        result["pending_candidates"] = list_pending_candidates_for_left_key(
+            workbench,
+            left_key=entity_key,
+            limit=12,
         )
-    )
-    result.setdefault("backfill_posts", [])
+    except Exception:
+        result["pending_candidates"] = []
+    try:
+        engine = get_turso_engine_from_env()
+        result["backfill_posts"] = list_stock_backfill_posts(
+            engine,
+            stock_key=entity_key,
+            limit=12,
+        )
+    except Exception:
+        result["backfill_posts"] = []
     result["load_error"] = ""
     return result
 
@@ -184,13 +195,17 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
         }
     view = build_sector_research_view(posts, assertions, sector_key=sector_key)
     result = asdict(view)
-    result["pending_candidates"] = _filter_pending_candidates(
-        build_sector_pending_candidates(
-            assertions,
-            sector_key=sector_key,
-            ai_enabled=True,
+    left_key = f"cluster:{sector_key}" if sector_key else ""
+    try:
+        engine = get_research_workbench_engine_from_env()
+        ensure_research_workbench_schema(engine)
+        result["pending_candidates"] = list_pending_candidates_for_left_key(
+            engine,
+            left_key=left_key,
+            limit=12,
         )
-    )
+    except Exception:
+        result["pending_candidates"] = []
     result["load_error"] = ""
     return result
 
@@ -538,25 +553,3 @@ def _prepare_stock_links(value: object) -> list[dict[str, str]]:
             }
         )
     return out
-
-
-def _filter_pending_candidates(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    if not rows:
-        return []
-    try:
-        engine = get_research_workbench_engine_from_env()
-        ensure_research_workbench_schema(engine)
-        status_map = list_candidate_status_map(
-            engine,
-            [str(row.get("candidate_id") or "").strip() for row in rows],
-        )
-    except Exception:
-        status_map = {}
-    return [
-        row
-        for row in rows
-        if str(
-            status_map.get(str(row.get("candidate_id") or "").strip(), "") or ""
-        ).strip()
-        not in {"accepted", "ignored", "blocked"}
-    ]
