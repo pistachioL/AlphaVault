@@ -36,12 +36,8 @@ def test_homework_state_keeps_unlinked_stock_alias_as_separate_rows(
     )
 
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
-        lambda lookback_days: (assertions, ""),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
-        lambda: (pd.DataFrame(), ""),
+        "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
+        lambda lookback_days: (assertions, pd.DataFrame(), ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
@@ -97,12 +93,8 @@ def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
     )
 
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
-        lambda lookback_days: (assertions, ""),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
-        lambda: (relations, ""),
+        "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
+        lambda lookback_days: (assertions, relations, ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
@@ -135,12 +127,8 @@ def test_homework_state_refresh_does_not_call_ai_alias_map(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
-        lambda lookback_days: (assertions, ""),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
-        lambda: (pd.DataFrame(), ""),
+        "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
+        lambda lookback_days: (assertions, pd.DataFrame(), ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
@@ -238,12 +226,8 @@ def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
         raising=False,
     )
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
-        lambda lookback_days: (assertions, ""),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
-        lambda: (pd.DataFrame(), ""),
+        "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
+        lambda lookback_days: (assertions, pd.DataFrame(), ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
