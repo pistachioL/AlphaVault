@@ -201,6 +201,53 @@ def test_build_stock_research_view_does_not_scan_backfill_posts_on_page_load() -
     assert view.backfill_posts == []
 
 
+def test_build_stock_research_view_paginates_signals_and_returns_total() -> None:
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": f"p{i}",
+                "author": "alice",
+                "raw_text": f"原文{i}",
+                "display_md": f"原文{i}",
+            }
+            for i in range(12)
+        ]
+    )
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": f"p{i}",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.watch",
+                "action_strength": 1,
+                "summary": f"信号{i}",
+                "created_at": f"2026-03-25 10:{i:02d}:00",
+                "cluster_keys": [],
+            }
+            for i in range(12)
+        ]
+    )
+
+    view = build_stock_research_view(
+        posts,
+        assertions,
+        stock_key="stock:600519.SH",
+        signal_page=2,
+        signal_page_size=5,
+    )
+
+    assert view.signal_total == 12
+    assert view.signal_page == 2
+    assert view.signal_page_size == 5
+    assert [row["summary"] for row in view.signals] == [
+        "信号6",
+        "信号5",
+        "信号4",
+        "信号3",
+        "信号2",
+    ]
+
+
 def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -> None:
     posts = pd.DataFrame(
         [

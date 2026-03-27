@@ -31,6 +31,38 @@ def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
+def _signal_pager() -> rx.Component:
+    return rx.hstack(
+        rx.button(
+            "上一页",
+            on_click=ResearchState.prev_signal_page,
+            variant="soft",
+            disabled=PAGE_LOADING | (ResearchState.signal_page <= 1),
+        ),
+        rx.text(ResearchState.signal_page_caption, class_name="av-research-muted"),
+        rx.button(
+            "下一页",
+            on_click=ResearchState.next_signal_page,
+            variant="soft",
+            disabled=PAGE_LOADING
+            | (ResearchState.signal_page >= ResearchState.signal_total_pages),
+        ),
+        rx.spacer(),
+        rx.text("每页", class_name="av-research-muted"),
+        rx.select(
+            ResearchState.signal_page_size_options,
+            value=ResearchState.signal_page_size_text,
+            on_change=ResearchState.set_signal_page_size,
+            width="120px",
+            disabled=PAGE_LOADING,
+        ),
+        spacing="3",
+        align="center",
+        width="100%",
+        margin_top="10px",
+    )
+
+
 def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.div(
         rx.text(row["summary"], class_name="av-research-signal-title"),
@@ -139,6 +171,15 @@ def stock_research_page() -> rx.Component:
         rx.el.div(
             rx.el.div(
                 rx.heading("最近信号", size="4"),
+                rx.cond(
+                    PAGE_LOADING,
+                    rx.el.div(),
+                    rx.cond(
+                        ResearchState.signal_page_caption != "",
+                        _signal_pager(),
+                        rx.el.div(),
+                    ),
+                ),
                 rx.cond(
                     PAGE_LOADING,
                     _section_loading(),
