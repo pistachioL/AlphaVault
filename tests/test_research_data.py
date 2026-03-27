@@ -159,7 +159,7 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
     assert view.signals[0]["raw_text"] == "原文内容"
 
 
-def test_build_stock_research_view_lists_unstructured_backfill_posts() -> None:
+def test_build_stock_research_view_does_not_scan_backfill_posts_on_page_load() -> None:
     posts = pd.DataFrame(
         [
             {
@@ -198,9 +198,7 @@ def test_build_stock_research_view_lists_unstructured_backfill_posts() -> None:
 
     view = build_stock_research_view(posts, assertions, stock_key="stock:601899.SH")
 
-    assert [row["post_uid"] for row in view.backfill_posts] == ["p2"]
-    assert "紫金矿业" in view.backfill_posts[0]["matched_terms"]
-    assert "先别急" in view.backfill_posts[0]["preview"]
+    assert view.backfill_posts == []
 
 
 def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -> None:

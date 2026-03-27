@@ -28,6 +28,9 @@ from alphavault_reflex.services.thread_tree import build_post_tree
 STOCK_KEY_PREFIX = "stock:"
 MINUTES_PER_HOUR = 60
 MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR
+MAX_BACKFILL_SCAN_ROWS = 2000
+MAX_BACKFILL_TERM_COUNT = 12
+MAX_BACKFILL_ROWS = 12
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,7 @@ def build_stock_research_view(
         stock_key=entity_key,
         stock_relations=stock_relations,
         ai_alias_map=ai_alias_map,
+        stock_index=stock_index,
     )
     stock_view = _merge_post_fields(stock_view.copy(), posts)
     return StockResearchView(
@@ -130,11 +134,7 @@ def build_stock_research_view(
         signals=_build_signal_rows(stock_view, posts=posts, now=now),
         related_sectors=_build_related_sector_rows(stock_view),
         pending_candidates=[],
-        backfill_posts=_build_stock_backfill_rows(
-            posts,
-            stock_view,
-            object_terms=_stock_object_terms(stock_index, entity_key),
-        ),
+        backfill_posts=[],
     )
 
 
@@ -426,6 +426,11 @@ def _build_stock_backfill_rows(
 ) -> list[dict[str, str]]:
     if posts.empty or not object_terms:
         return []
+    cleaned_terms = [str(term or "").strip() for term in object_terms]
+    scan_terms = [term for term in cleaned_terms if term][:MAX_BACKFILL_TERM_COUNT]
+    if not scan_terms:
+        return []
+    scan_terms_lower = [term.lower() for term in scan_terms]
     existing_post_uids = {
         str(uid or "").strip()
         for uid in stock_view.get("post_uid", pd.Series(dtype=str)).tolist()
@@ -441,6 +446,7 @@ def _build_stock_backfill_rows(
     if "created_at" in rows.columns:
         rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
         rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
+    rows = rows.head(MAX_BACKFILL_SCAN_ROWS)
 
     out: list[dict[str, str]] = []
     for _, row in rows.iterrows():
@@ -449,8 +455,11 @@ def _build_stock_backfill_rows(
         haystack = (raw_text or display_md).strip()
         if not haystack:
             continue
+        haystack_lower = haystack.lower()
         matched_terms = [
-            term for term in object_terms if term and term.lower() in haystack.lower()
+            term
+            for term, term_lower in zip(scan_terms, scan_terms_lower)
+            if term_lower and term_lower in haystack_lower
         ]
         if not matched_terms:
             continue
@@ -471,7 +480,7 @@ def _build_stock_backfill_rows(
                 "preview": preview,
             }
         )
-        if len(out) >= 12:
+        if len(out) >= MAX_BACKFILL_ROWS:
             break
     return out
 

@@ -63,11 +63,17 @@ def build_stock_alias_candidates(
     if assertions.empty or not target or "topic_key" not in assertions.columns:
         return []
 
-    stock_view = filter_assertions_for_stock_object(assertions, stock_key=target)
-    if stock_view.empty:
-        return []
     stock_index = build_stock_object_index(assertions)
     entity_key = stock_index.resolve(target)
+    if not entity_key:
+        return []
+    stock_view = filter_assertions_for_stock_object(
+        assertions,
+        stock_key=entity_key,
+        stock_index=stock_index,
+    )
+    if stock_view.empty:
+        return []
     member_keys = stock_index.member_keys_by_object_key.get(entity_key, set())
 
     alias_scores: Counter[str] = Counter()
@@ -110,7 +116,15 @@ def build_stock_sector_candidates(
     if assertions.empty or not target or "topic_key" not in assertions.columns:
         return []
 
-    stock_view = filter_assertions_for_stock_object(assertions, stock_key=target)
+    stock_index = build_stock_object_index(assertions)
+    entity_key = stock_index.resolve(target)
+    if not entity_key:
+        return []
+    stock_view = filter_assertions_for_stock_object(
+        assertions,
+        stock_key=entity_key,
+        stock_index=stock_index,
+    )
     if stock_view.empty:
         return []
 
