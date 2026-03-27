@@ -3,12 +3,13 @@ from __future__ import annotations
 import libsql
 import pytest
 
-from alphavault.db.sql.turso_queue import RECOVER_STUCK_AI_TASKS
+from alphavault.db.sql.turso_queue import RECOVER_STUCK_AI_TASKS, UPSERT_PENDING_POST
 from alphavault.db.turso_db import (
     TursoConnection,
     is_turso_stream_not_found_error,
     turso_savepoint,
 )
+from alphavault.worker.ingest import _build_raw_text
 
 
 def test_is_turso_stream_not_found_error_true() -> None:
@@ -137,3 +138,232 @@ def test_named_params_support_escaped_colon_literal() -> None:
         }
     finally:
         conn.close()
+
+
+def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE posts(
+                post_uid TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                platform_post_id TEXT NOT NULL,
+                author TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                url TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                display_md TEXT,
+                final_status TEXT NOT NULL,
+                invest_score REAL,
+                processed_at TEXT,
+                model TEXT,
+                prompt_version TEXT,
+                archived_at TEXT,
+                ai_status TEXT NOT NULL DEFAULT 'done',
+                ai_retry_count INTEGER NOT NULL DEFAULT 0,
+                ai_next_retry_at INTEGER,
+                ai_running_at INTEGER,
+                ai_last_error TEXT,
+                ai_result_json TEXT,
+                ingested_at INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO posts(
+                post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+                display_md, final_status, invest_score, processed_at, model,
+                prompt_version, archived_at, ai_status, ai_retry_count,
+                ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
+                ingested_at
+            ) VALUES (
+                :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
+                :display_md, :final_status, :invest_score, :processed_at, :model,
+                :prompt_version, :archived_at, :ai_status, :ai_retry_count,
+                :ai_next_retry_at, :ai_running_at, :ai_last_error, :ai_result_json,
+                :ingested_at
+            )
+            """,
+            {
+                "post_uid": "xueqiu:123",
+                "platform": "xueqiu",
+                "platform_post_id": "123",
+                "author": "旧作者",
+                "created_at": "2025-01-01 10:00:00",
+                "url": "https://xueqiu.com/123",
+                "raw_text": "old text",
+                "display_md": "old md",
+                "final_status": "relevant",
+                "invest_score": 0.8,
+                "processed_at": "2025-01-01 10:05:00",
+                "model": "gpt",
+                "prompt_version": "v1",
+                "archived_at": "2025-01-01 10:06:00",
+                "ai_status": "done",
+                "ai_retry_count": 0,
+                "ai_next_retry_at": None,
+                "ai_running_at": None,
+                "ai_last_error": None,
+                "ai_result_json": "{}",
+                "ingested_at": 100,
+            },
+        )
+
+        conn.execute(
+            UPSERT_PENDING_POST,
+            {
+                "post_uid": "xueqiu:123",
+                "platform": "xueqiu",
+                "platform_post_id": "123",
+                "author": "新作者",
+                "created_at": "2025-01-02 10:00:00+08:00",
+                "url": "https://xueqiu.com/123?updated=1",
+                "raw_text": "new text",
+                "display_md": "new md",
+                "final_status": "irrelevant",
+                "archived_at": "2025-01-02 10:06:00+08:00",
+                "ai_status": "pending",
+                "ingested_at": 200,
+            },
+        )
+
+        row = (
+            conn.execute(
+                """
+                SELECT author, created_at, archived_at, raw_text, processed_at, ingested_at
+                FROM posts
+                WHERE post_uid = :post_uid
+                """,
+                {"post_uid": "xueqiu:123"},
+            )
+            .mappings()
+            .fetchone()
+        )
+        assert row == {
+            "author": "新作者",
+            "created_at": "2025-01-02 10:00:00+08:00",
+            "archived_at": "2025-01-02 10:06:00+08:00",
+            "raw_text": "new text",
+            "processed_at": "2025-01-01 10:05:00",
+            "ingested_at": 100,
+        }
+    finally:
+        conn.close()
+
+
+def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE posts(
+                post_uid TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                platform_post_id TEXT NOT NULL,
+                author TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                url TEXT NOT NULL,
+                raw_text TEXT NOT NULL,
+                display_md TEXT,
+                final_status TEXT NOT NULL,
+                invest_score REAL,
+                processed_at TEXT,
+                model TEXT,
+                prompt_version TEXT,
+                archived_at TEXT,
+                ai_status TEXT NOT NULL DEFAULT 'done',
+                ai_retry_count INTEGER NOT NULL DEFAULT 0,
+                ai_next_retry_at INTEGER,
+                ai_running_at INTEGER,
+                ai_last_error TEXT,
+                ai_result_json TEXT,
+                ingested_at INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO posts(
+                post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+                display_md, final_status, invest_score, processed_at, model,
+                prompt_version, archived_at, ai_status, ai_retry_count,
+                ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
+                ingested_at
+            ) VALUES (
+                :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
+                :display_md, :final_status, :invest_score, :processed_at, :model,
+                :prompt_version, :archived_at, :ai_status, :ai_retry_count,
+                :ai_next_retry_at, :ai_running_at, :ai_last_error, :ai_result_json,
+                :ingested_at
+            )
+            """,
+            {
+                "post_uid": "weibo:123",
+                "platform": "weibo",
+                "platform_post_id": "123",
+                "author": "旧作者",
+                "created_at": "2025-01-01 10:00:00",
+                "url": "https://weibo.com/123",
+                "raw_text": "old text",
+                "display_md": "old md",
+                "final_status": "relevant",
+                "invest_score": 0.8,
+                "processed_at": "2025-01-01 10:05:00",
+                "model": "gpt",
+                "prompt_version": "v1",
+                "archived_at": "2025-01-01 10:06:00",
+                "ai_status": "done",
+                "ai_retry_count": 0,
+                "ai_next_retry_at": None,
+                "ai_running_at": None,
+                "ai_last_error": None,
+                "ai_result_json": "{}",
+                "ingested_at": 100,
+            },
+        )
+
+        conn.execute(
+            UPSERT_PENDING_POST,
+            {
+                "post_uid": "weibo:123",
+                "platform": "weibo",
+                "platform_post_id": "123",
+                "author": "新作者",
+                "created_at": "2025-01-02 10:00:00",
+                "url": "https://weibo.com/123?updated=1",
+                "raw_text": "new text",
+                "display_md": "new md",
+                "final_status": "irrelevant",
+                "archived_at": "2025-01-02 10:06:00",
+                "ai_status": "pending",
+                "ingested_at": 200,
+            },
+        )
+
+        row = (
+            conn.execute(
+                """
+                SELECT author, raw_text, processed_at, ingested_at
+                FROM posts
+                WHERE post_uid = :post_uid
+                """,
+                {"post_uid": "weibo:123"},
+            )
+            .mappings()
+            .fetchone()
+        )
+        assert row == {
+            "author": "新作者",
+            "raw_text": "old text",
+            "processed_at": "2025-01-01 10:05:00",
+            "ingested_at": 100,
+        }
+    finally:
+        conn.close()
+
+
+def test_build_raw_text_prefers_content_without_title_prefix() -> None:
+    assert _build_raw_text(title="雪球标题", content_text="正文内容") == "正文内容"
+    assert _build_raw_text(title="仅标题", content_text="") == "仅标题"
