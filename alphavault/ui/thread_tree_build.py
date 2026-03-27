@@ -12,6 +12,7 @@ from typing import Any, Dict, cast
 
 import pandas as pd
 
+from alphavault.rss.utils import split_xueqiu_context_segments
 from alphavault.ui.thread_tree_parse import (
     _clean_id,
     _extract_forward_original_text,
@@ -30,6 +31,18 @@ from alphavault.ui.thread_tree_render import (
     _short_text,
     _to_ts,
 )
+
+
+def _select_xueqiu_display_source(*, raw_text: str, display_md: str) -> str:
+    raw_value = str(raw_text or "")
+    display_value = str(display_md or "")
+    raw_segments = split_xueqiu_context_segments(raw_value)
+    display_segments = split_xueqiu_context_segments(display_value)
+    if len(display_segments) > len(raw_segments):
+        return display_value
+    if raw_segments:
+        return raw_value
+    return display_value or raw_value
 
 
 def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
@@ -54,6 +67,9 @@ def _collect_blogger_authors(
 
 
 def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
+    xueqiu_prefix = "xueqiu:"
+    xueqiu_separator_re = r"\s+---\s+"
+    xueqiu_separator_norm = "\n\n---\n\n"
     base_cols = [
         "post_uid",
         "platform_post_id",
@@ -68,6 +84,30 @@ def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     posts = posts_all[have_cols].copy()
+    if "display_md" in posts.columns and "post_uid" in posts.columns:
+        uid_series = posts["post_uid"].astype(str).str.strip().str.lower()
+        xueqiu_mask = uid_series.str.startswith(xueqiu_prefix)
+        if xueqiu_mask.any():
+            raw_series = (
+                posts.loc[xueqiu_mask, "raw_text"].fillna("").astype(str)
+                if "raw_text" in posts.columns
+                else pd.Series(
+                    [""] * int(xueqiu_mask.sum()), index=posts.index[xueqiu_mask]
+                )
+            )
+            display_series = posts.loc[xueqiu_mask, "display_md"].fillna("").astype(str)
+            resolved_display = raw_series.combine(
+                display_series,
+                lambda raw_text, display_md: _select_xueqiu_display_source(
+                    raw_text=str(raw_text or ""),
+                    display_md=str(display_md or ""),
+                ),
+            )
+            posts.loc[xueqiu_mask, "display_md"] = resolved_display.str.replace(
+                xueqiu_separator_re,
+                xueqiu_separator_norm,
+                regex=True,
+            )
     if "platform_post_id" not in posts.columns and "post_uid" in posts.columns:
         posts["platform_post_id"] = posts["post_uid"].apply(extract_platform_post_id)
     posts["platform_post_id"] = posts["platform_post_id"].apply(_clean_id)

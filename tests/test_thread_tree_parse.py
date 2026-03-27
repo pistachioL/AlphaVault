@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from alphavault.ui.thread_tree_parse import (
     FORWARD_ORIGINAL_MARKER,
+    extract_platform_post_id,
     parse_display_md_segments,
 )
 
@@ -26,3 +27,7 @@ def test_parse_display_md_segments_forward_original_keep_comment() -> None:
 def test_parse_display_md_segments_forward_original_keep_original() -> None:
     display_md = f"{FORWARD_ORIGINAL_MARKER} 原文"
     assert parse_display_md_segments(display_md) == ["原文"]
+
+
+def test_extract_platform_post_id_keeps_full_xueqiu_guid_suffix() -> None:
+    assert extract_platform_post_id("xueqiu:status:381213336") == "status:381213336"

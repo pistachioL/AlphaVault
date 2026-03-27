@@ -23,6 +23,7 @@ from alphavault.text.html import html_to_text
 
 BASE62_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 BASE62_INDEX = {ch: idx for idx, ch in enumerate(BASE62_ALPHABET)}
+XUEQIU_CONTEXT_SPLIT_RE = re.compile(r"\s+---\s+")
 
 
 def env_bool(name: str) -> Optional[bool]:
@@ -241,9 +242,6 @@ def _build_xueqiu_ids(
     guid = entry.get("guid") or entry.get("id") or ""
     guid = str(guid or "").strip()
     if guid:
-        guid_num = _extract_last_numeric(guid)
-        if guid_num:
-            return guid_num, f"xueqiu:{guid_num}", ""
         return guid, f"xueqiu:{guid}", ""
     link_num = _extract_last_numeric(link)
     if link_num:
@@ -264,6 +262,13 @@ def build_ids(
     if str(platform or "").lower() == "xueqiu":
         return _build_xueqiu_ids(entry, link)
     return _build_weibo_ids(entry, link, user_id)
+
+
+def split_xueqiu_context_segments(text: str) -> list[str]:
+    value = html_to_text(str(text or ""))
+    if not value.strip():
+        return []
+    return [seg.strip() for seg in XUEQIU_CONTEXT_SPLIT_RE.split(value) if seg.strip()]
 
 
 def _extract_author_from_title(title: str) -> str:
