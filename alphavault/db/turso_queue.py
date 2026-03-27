@@ -21,10 +21,13 @@ from alphavault.db.sql.turso_queue import (
     MARK_AI_ERROR,
     QUEUE_EXTRA_COLUMNS,
     RECOVER_DONE_WITHOUT_PROCESSED_AT,
+    RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM,
     RECOVER_STUCK_AI_TASKS,
+    RECOVER_STUCK_AI_TASKS_BY_PLATFORM,
     RESET_AI_RESULTS_ALL,
     SELECT_CLOUD_POST,
     SELECT_DUE_POST_UIDS,
+    SELECT_DUE_POST_UIDS_BY_PLATFORM,
     SELECT_RECENT_POSTS_BY_AUTHOR,
     TRY_MARK_AI_RUNNING,
     UPDATE_POST_DONE,
@@ -137,12 +140,22 @@ def upsert_pending_post(
 
 
 def select_due_post_uids(
-    engine: TursoEngine, *, now_epoch: int, limit: int
+    engine: TursoEngine, *, now_epoch: int, limit: int, platform: Optional[str] = None
 ) -> list[str]:
+    resolved_platform = str(platform or "").strip().lower() or None
+    query = (
+        SELECT_DUE_POST_UIDS_BY_PLATFORM if resolved_platform else SELECT_DUE_POST_UIDS
+    )
+    params: dict[str, object] = {
+        "now": int(now_epoch),
+        "limit": max(0, int(limit)),
+    }
+    if resolved_platform:
+        params["platform"] = resolved_platform
     with turso_connect_autocommit(engine) as conn:
         rows = conn.execute(
-            SELECT_DUE_POST_UIDS,
-            {"now": int(now_epoch), "limit": max(0, int(limit))},
+            query,
+            params,
         ).fetchall()
         return [str(r[0]) for r in rows if r and r[0]]
 
@@ -363,30 +376,64 @@ def recover_stuck_ai_tasks(
     *,
     now_epoch: int,
     stuck_seconds: int,
+    platform: Optional[str] = None,
     verbose: bool,
 ) -> int:
     threshold = int(now_epoch) - max(0, int(stuck_seconds))
+    resolved_platform = str(platform or "").strip().lower() or None
+    query = (
+        RECOVER_STUCK_AI_TASKS_BY_PLATFORM
+        if resolved_platform
+        else RECOVER_STUCK_AI_TASKS
+    )
+    params: dict[str, object] = {
+        "threshold": threshold,
+        "next_retry_at": int(now_epoch) + 60,
+    }
+    if resolved_platform:
+        params["platform"] = resolved_platform
     with turso_connect_autocommit(engine) as conn:
         res = conn.execute(
-            RECOVER_STUCK_AI_TASKS,
-            {"threshold": threshold, "next_retry_at": int(now_epoch) + 60},
+            query,
+            params,
         )
         recovered = int(res.rowcount or 0)
         if recovered and verbose:
-            print(f"[ai] recovered_running={recovered}", flush=True)
+            if resolved_platform:
+                print(
+                    f"[ai] recovered_running={recovered} platform={resolved_platform}",
+                    flush=True,
+                )
+            else:
+                print(f"[ai] recovered_running={recovered}", flush=True)
         return recovered
 
 
-def recover_done_without_processed_at(engine: TursoEngine, *, verbose: bool) -> int:
+def recover_done_without_processed_at(
+    engine: TursoEngine, *, platform: Optional[str] = None, verbose: bool
+) -> int:
     """
     Fix inconsistent rows:
     - ai_status='done' but processed_at is NULL/blank
 
     Such rows will never be picked by the AI scheduler, so we reset them to pending.
     """
+    resolved_platform = str(platform or "").strip().lower() or None
+    query = (
+        RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM
+        if resolved_platform
+        else RECOVER_DONE_WITHOUT_PROCESSED_AT
+    )
+    params = {"platform": resolved_platform} if resolved_platform else {}
     with turso_connect_autocommit(engine) as conn:
-        res = conn.execute(RECOVER_DONE_WITHOUT_PROCESSED_AT)
+        res = conn.execute(query, params)
         fixed = int(res.rowcount or 0)
         if fixed and verbose:
-            print(f"[ai] recovered_done_without_processed_at={fixed}", flush=True)
+            if resolved_platform:
+                print(
+                    f"[ai] recovered_done_without_processed_at={fixed} platform={resolved_platform}",
+                    flush=True,
+                )
+            else:
+                print(f"[ai] recovered_done_without_processed_at={fixed}", flush=True)
         return fixed

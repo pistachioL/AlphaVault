@@ -82,6 +82,22 @@ ORDER BY
 LIMIT :limit
 """
 
+SELECT_DUE_POST_UIDS_BY_PLATFORM = """
+SELECT post_uid
+FROM posts
+WHERE platform = :platform
+  AND ai_status IN ('pending', 'error')
+  AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
+ORDER BY
+    CASE
+        WHEN processed_at IS NULL OR TRIM(processed_at) = '' THEN 0
+        ELSE 1
+    END ASC,
+    COALESCE(ai_next_retry_at, 0) ASC,
+    ingested_at DESC
+LIMIT :limit
+"""
+
 TRY_MARK_AI_RUNNING = """
 UPDATE posts
 SET ai_status='running',
@@ -190,6 +206,18 @@ WHERE ai_status='running'
   AND ai_running_at <= :threshold
 """
 
+RECOVER_STUCK_AI_TASKS_BY_PLATFORM = """
+UPDATE posts
+SET ai_status='error',
+    ai_running_at=NULL,
+    ai_last_error='ai::recovered_after_restart',
+    ai_next_retry_at=:next_retry_at
+WHERE platform = :platform
+  AND ai_status='running'
+  AND ai_running_at IS NOT NULL
+  AND ai_running_at <= :threshold
+"""
+
 RECOVER_DONE_WITHOUT_PROCESSED_AT = """
 UPDATE posts
 SET ai_status='pending',
@@ -197,6 +225,17 @@ SET ai_status='pending',
     ai_next_retry_at=NULL,
     ai_last_error='ai:recovered_done_without_processed_at'
 WHERE ai_status='done'
+  AND (processed_at IS NULL OR TRIM(processed_at) = '')
+"""
+
+RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM = """
+UPDATE posts
+SET ai_status='pending',
+    ai_running_at=NULL,
+    ai_next_retry_at=NULL,
+    ai_last_error='ai:recovered_done_without_processed_at'
+WHERE platform = :platform
+  AND ai_status='done'
   AND (processed_at IS NULL OR TRIM(processed_at) = '')
 """
 
