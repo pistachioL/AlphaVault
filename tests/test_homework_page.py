@@ -55,14 +55,11 @@ def test_topic_link_row_does_not_bind_row_click() -> None:
     assert "on_click" not in component.event_triggers
 
 
-def test_stock_topic_link_preloads_clicked_stock_before_navigation() -> None:
+def test_stock_topic_link_does_not_preload_before_navigation() -> None:
     topic_cell = _topic_cell(_sample_row())
     link = _find_component_with_event(topic_cell, "on_click")
 
-    assert link is not None
-    event = link.event_triggers["on_click"].events[0]
-    assert event.handler.fn.__name__ == "load_stock_page"
-    assert event.args[0][1]._var_value == "600519.SH"
+    assert link is None
 
 
 def test_tree_dialog_close_button_updates_state() -> None:

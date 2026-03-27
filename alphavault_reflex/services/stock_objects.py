@@ -235,11 +235,12 @@ def filter_assertions_for_stock_object(
     stock_key: str,
     stock_relations: pd.DataFrame | None = None,
     ai_alias_map: dict[str, str] | None = None,
+    stock_index: StockObjectIndex | None = None,
 ) -> pd.DataFrame:
     enriched = _ensure_stock_columns(assertions)
     if enriched.empty:
         return enriched.head(0).copy()
-    index = build_stock_object_index(
+    index = stock_index or build_stock_object_index(
         enriched,
         stock_relations=stock_relations,
         ai_alias_map=ai_alias_map,

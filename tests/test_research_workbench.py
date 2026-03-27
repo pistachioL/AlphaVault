@@ -11,6 +11,7 @@ from alphavault.research_workbench import (
     ensure_research_workbench_schema,
     ignore_relation_candidate,
     list_pending_candidates,
+    list_pending_candidates_for_left_key,
     record_stock_alias_relation,
     record_stock_sector_relation,
     upsert_relation_candidate,
@@ -158,5 +159,84 @@ def test_accept_ignore_and_block_candidate_status_flow() -> None:
             {"candidate_id": "cand-3", "status": "blocked"},
         ]
         assert list_pending_candidates(conn) == []
+    finally:
+        conn.close()
+
+
+def test_upsert_relation_candidate_does_not_reset_non_pending_status() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+        upsert_relation_candidate(
+            conn,
+            candidate_id="cand-1",
+            relation_type="stock_sector",
+            left_key="stock:600519.SH",
+            right_key="cluster:white_liquor",
+            relation_label="member_of",
+            suggestion_reason="近期高频共现",
+            evidence_summary="近30天共现 12 次",
+            score=0.92,
+            ai_status="ranked",
+        )
+        accept_relation_candidate(conn, candidate_id="cand-1", source="manual")
+
+        upsert_relation_candidate(
+            conn,
+            candidate_id="cand-1",
+            relation_type="stock_sector",
+            left_key="stock:600519.SH",
+            right_key="cluster:white_liquor",
+            relation_label="member_of",
+            suggestion_reason="更新理由",
+            evidence_summary="更新摘要",
+            score=0.11,
+            ai_status="ranked",
+        )
+        status = conn.execute(
+            f"SELECT status FROM {RESEARCH_RELATION_CANDIDATES_TABLE} WHERE candidate_id = :candidate_id",
+            {"candidate_id": "cand-1"},
+        ).scalar()
+        assert status == "accepted"
+    finally:
+        conn.close()
+
+
+def test_list_pending_candidates_for_left_key_includes_candidate_key() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+        upsert_relation_candidate(
+            conn,
+            candidate_id="cand-1",
+            relation_type="stock_sector",
+            left_key="stock:600519.SH",
+            right_key="cluster:white_liquor",
+            relation_label="member_of",
+            suggestion_reason="共现",
+            evidence_summary="共现 12 次",
+            score=0.92,
+            ai_status="ranked",
+        )
+        upsert_relation_candidate(
+            conn,
+            candidate_id="cand-2",
+            relation_type="stock_alias",
+            left_key="stock:600519.SH",
+            right_key="stock:贵州茅台",
+            relation_label="alias_of",
+            suggestion_reason="别名",
+            evidence_summary="同名共现",
+            score=0.88,
+            ai_status="ranked",
+        )
+
+        rows = list_pending_candidates_for_left_key(
+            conn,
+            left_key="stock:600519.SH",
+            limit=10,
+        )
+        assert rows[0]["candidate_key"] == "white_liquor"
+        assert rows[1]["candidate_key"] == "stock:贵州茅台"
     finally:
         conn.close()
