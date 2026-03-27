@@ -242,7 +242,8 @@ def _build_xueqiu_ids(
     guid = entry.get("guid") or entry.get("id") or ""
     guid = str(guid or "").strip()
     if guid:
-        return guid, f"xueqiu:{guid}", ""
+        post_uid = guid if guid.lower().startswith("xueqiu:") else f"xueqiu:{guid}"
+        return guid, post_uid, ""
     link_num = _extract_last_numeric(link)
     if link_num:
         return link_num, f"xueqiu:{link_num}", ""

@@ -71,3 +71,24 @@ def test_build_post_tree_keeps_display_md_for_weibo() -> None:
 
     assert "老：根" in tree_text
     assert "新：叶" in tree_text
+
+
+def test_build_post_tree_supports_xueqiu_guid_as_post_uid() -> None:
+    post_uid = "xueqiu:381213336"
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": post_uid,
+                "platform_post_id": post_uid,
+                "author": "雪球作者",
+                "raw_text": "A：根 --- B：叶",
+                "display_md": "MD_BAD",
+                "created_at": "2026-03-25 10:23:50",
+            }
+        ]
+    )
+
+    _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
+
+    assert "A：根" in tree_text
+    assert "B：叶" in tree_text

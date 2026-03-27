@@ -47,6 +47,11 @@ def _select_xueqiu_display_source(*, raw_text: str, display_md: str) -> str:
 
 def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
     selected_ids: set[str] = set()
+    if "platform_post_id" in view_df.columns:
+        for item in view_df["platform_post_id"].dropna().unique().tolist():
+            pid = _clean_id(item)
+            if pid:
+                selected_ids.add(pid)
     for item in view_df["post_uid"].dropna().unique().tolist():
         pid = _clean_id(extract_platform_post_id(item))
         if pid:
