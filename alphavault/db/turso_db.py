@@ -13,10 +13,9 @@ import libsql
 import sqlparams
 
 from alphavault.constants import (
-    ENV_TURSO_AUTH_TOKEN,
-    ENV_TURSO_DATABASE_URL,
     ENV_TURSO_MAX_CONNECTIONS,
 )
+from alphavault.db.turso_env import require_configured_turso_sources_from_env
 from alphavault.db.sql.common import pragma_table_info
 from alphavault.db.sql.turso_db import (
     CLOUD_SCHEMA_INDEX_STATEMENTS,
@@ -594,7 +593,7 @@ def _max_turso_connections_from_env() -> int:
 def ensure_turso_engine(url: str, token: str) -> TursoEngine:
     normalized_url = _normalize_turso_url(url)
     if not normalized_url:
-        raise RuntimeError("Missing TURSO_DATABASE_URL")
+        raise RuntimeError("Missing Turso database url")
     return TursoEngine(
         remote_url=normalized_url,
         auth_token=str(token or "").strip(),
@@ -603,11 +602,17 @@ def ensure_turso_engine(url: str, token: str) -> TursoEngine:
 
 
 def get_turso_engine_from_env() -> TursoEngine:
-    url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not url:
-        raise RuntimeError("Missing TURSO_DATABASE_URL")
-    return ensure_turso_engine(url, token)
+    """
+    Return the default Turso engine from env.
+
+    This helper prefers WEIBO_... if configured, otherwise XUEQIU_....
+    """
+    from alphavault.env import load_dotenv_if_present
+
+    load_dotenv_if_present()
+    sources = require_configured_turso_sources_from_env()
+    preferred = next((s for s in sources if s.name == "weibo"), sources[0])
+    return ensure_turso_engine(preferred.url, str(preferred.token or "").strip())
 
 
 def init_topic_cluster_schema(engine: TursoEngine) -> None:

@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime
-import os
 from typing import Iterator, TypedDict
 
 from alphavault.constants import (
     DATETIME_FMT,
-    ENV_TURSO_AUTH_TOKEN,
-    ENV_TURSO_DATABASE_URL,
 )
+from alphavault.db.turso_env import require_configured_turso_sources_from_env
 from alphavault.db.sql.research_workbench import (
     create_research_alias_resolve_tasks_index,
     create_research_alias_resolve_tasks_table,
@@ -594,11 +592,9 @@ def list_manual_alias_resolve_tasks(
 
 def get_research_workbench_engine_from_env() -> TursoEngine:
     load_dotenv_if_present()
-    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not db_url:
-        raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
-    return ensure_turso_engine(db_url, auth_token)
+    sources = require_configured_turso_sources_from_env()
+    preferred = next((s for s in sources if s.name == "weibo"), sources[0])
+    return ensure_turso_engine(preferred.url, str(preferred.token or "").strip())
 
 
 __all__ = [

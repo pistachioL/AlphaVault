@@ -8,8 +8,15 @@ from urllib.parse import unquote
 import reflex as rx
 from reflex import constants as rx_constants
 
-from alphavault.db.turso_db import get_turso_engine_from_env
-from alphavault.db.turso_db import turso_connect_autocommit
+from alphavault.db.turso_db import (
+    ensure_turso_engine,
+    get_turso_engine_from_env,
+    turso_connect_autocommit,
+)
+from alphavault.db.turso_env import (
+    infer_platform_from_post_uid,
+    require_turso_source_from_env,
+)
 from alphavault.db.turso_queue import (
     ensure_cloud_queue_schema,
     reset_ai_results_for_post_uids,
@@ -38,6 +45,7 @@ from alphavault_reflex.services.turso_read import (
     load_stock_alias_relations_from_env,
     load_sources_from_env,
 )
+from alphavault.env import load_dotenv_if_present
 from alphavault_reflex.services.stock_backfill import (
     BACKFILL_PROMPT_VERSION,
     merge_post_assertions,
@@ -92,11 +100,20 @@ def load_stock_page_view(stock_slug: str) -> dict[str, object]:
     return result
 
 
+def _get_turso_engine_for_post_uid(post_uid: str):
+    load_dotenv_if_present()
+    platform = infer_platform_from_post_uid(post_uid)
+    if not platform:
+        raise RuntimeError("unknown_post_platform")
+    source = require_turso_source_from_env(platform)
+    return ensure_turso_engine(source.url, source.token)
+
+
 def queue_post_for_ai_backfill(post_uid: str) -> None:
     target = str(post_uid or "").strip()
     if not target:
         return
-    engine = get_turso_engine_from_env()
+    engine = _get_turso_engine_for_post_uid(target)
     ensure_cloud_queue_schema(engine, verbose=False)
     archived_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     reset_ai_results_for_post_uids(
@@ -131,7 +148,7 @@ def run_direct_stock_backfill(post_uid: str, stock_key: str, display_name: str) 
     )
     if not new_assertions:
         return 0
-    engine = get_turso_engine_from_env()
+    engine = _get_turso_engine_for_post_uid(target_post_uid)
     ensure_cloud_queue_schema(engine, verbose=False)
     existing_assertions = _load_assertions_for_post(engine, post_uid=target_post_uid)
     merged = merge_post_assertions(existing_assertions, new_assertions)

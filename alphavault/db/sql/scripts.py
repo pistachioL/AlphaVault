@@ -2,31 +2,12 @@ from __future__ import annotations
 
 
 SELECT_ONE = "SELECT 1"
-SELECT_LAST_INSERT_ROWID = "SELECT last_insert_rowid()"
 SELECT_TOTAL_POSTS = "SELECT COUNT(*) FROM posts"
 SELECT_TOTAL_ASSERTIONS = "SELECT COUNT(*) FROM assertions"
 
 SELECT_POST_PROCESSED_AND_INGESTED = (
     "SELECT processed_at, ingested_at FROM posts WHERE post_uid = :post_uid LIMIT 1"
 )
-
-
-def create_healthcheck_table(table: str) -> str:
-    return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at INTEGER NOT NULL,
-    note TEXT NOT NULL
-)
-"""
-
-
-def insert_healthcheck_row(table: str) -> str:
-    return f"INSERT INTO {table}(created_at, note) VALUES (:ts, :note)"
-
-
-def delete_healthcheck_row(table: str) -> str:
-    return f"DELETE FROM {table} WHERE id = :id"
 
 
 def select_post_uids_in(placeholders: str) -> str:

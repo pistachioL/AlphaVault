@@ -53,7 +53,7 @@ MAX_EXAMPLE_TEXTS = 10
 @st.cache_data(show_spinner=False)
 def load_follow_pages_sources(db_url: str, auth_token: str) -> tuple[pd.DataFrame, str]:
     if not db_url:
-        return pd.DataFrame(), "Missing TURSO_DATABASE_URL"
+        return pd.DataFrame(), "Missing turso url"
     engine = ensure_turso_engine(db_url, auth_token)
     return try_load_follow_pages(engine)
 

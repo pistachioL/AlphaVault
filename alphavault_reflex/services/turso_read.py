@@ -2,21 +2,26 @@ from __future__ import annotations
 
 from functools import lru_cache
 import json
-import os
 
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
-from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
+from alphavault.constants import (
+    ENV_WEIBO_TURSO_DATABASE_URL,
+    ENV_XUEQIU_TURSO_DATABASE_URL,
+)
 from alphavault.db.introspect import table_columns
 from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
+from alphavault.db.turso_env import (
+    infer_platform_from_post_uid,
+    load_configured_turso_sources_from_env,
+)
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.ui.thread_tree import extract_platform_post_id
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-REFLEX_SOURCE_NAME = "archive"
 
 WANTED_TRADE_ASSERTION_COLUMNS = [
     "post_uid",
@@ -188,7 +193,7 @@ def _parse_json_list(value: object) -> list[str]:
 
 @lru_cache(maxsize=2)
 def _load_trade_sources_cached(
-    db_url: str, auth_token: str
+    db_url: str, auth_token: str, source_name: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     engine = ensure_turso_engine(db_url, auth_token)
     with turso_connect_autocommit(engine) as conn:
@@ -223,23 +228,25 @@ WHERE processed_at IS NOT NULL
         posts = turso_read_sql_df(conn, posts_query)
         assertions = turso_read_sql_df(conn, trade_query)
 
-    posts = _standardize_posts(posts, source_name=REFLEX_SOURCE_NAME)
+    posts = _standardize_posts(posts, source_name=source_name)
     posts = _normalize_posts_datetime(posts)
     posts = _ensure_platform_post_id(posts)
-    assertions = _standardize_assertions(
-        assertions, posts, source_name=REFLEX_SOURCE_NAME
-    )
+    assertions = _standardize_assertions(assertions, posts, source_name=source_name)
     assertions = _normalize_assertions_datetime(assertions)
     return posts, assertions
 
 
-def _load_trade_assertions_cached(db_url: str, auth_token: str) -> pd.DataFrame:
-    _, assertions = _load_trade_sources_cached(db_url, auth_token)
+def _load_trade_assertions_cached(
+    db_url: str, auth_token: str, source_name: str
+) -> pd.DataFrame:
+    _, assertions = _load_trade_sources_cached(db_url, auth_token, source_name)
     return assertions
 
 
 @lru_cache(maxsize=2)
-def _load_stock_alias_relations_cached(db_url: str, auth_token: str) -> pd.DataFrame:
+def _load_stock_alias_relations_cached(
+    db_url: str, auth_token: str, source_name: str
+) -> pd.DataFrame:
     engine = ensure_turso_engine(db_url, auth_token)
     sql = """
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
@@ -247,7 +254,12 @@ FROM research_relations
 WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 """
     with turso_connect_autocommit(engine) as conn:
-        return turso_read_sql_df(conn, sql)
+        df = turso_read_sql_df(conn, sql)
+    if df.empty:
+        return df
+    df = df.copy()
+    df["db_source"] = source_name
+    return df
 
 
 def _ensure_platform_post_id(posts: pd.DataFrame) -> pd.DataFrame:
@@ -268,39 +280,67 @@ def _ensure_platform_post_id(posts: pd.DataFrame) -> pd.DataFrame:
     return posts
 
 
-def _load_posts_for_tree_cached(db_url: str, auth_token: str) -> pd.DataFrame:
-    posts, _ = _load_trade_sources_cached(db_url, auth_token)
+def _load_posts_for_tree_cached(
+    db_url: str, auth_token: str, source_name: str
+) -> pd.DataFrame:
+    posts, _ = _load_trade_sources_cached(db_url, auth_token, source_name)
     return posts
 
 
 def load_trade_assertions_from_env() -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
-    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not db_url:
-        return pd.DataFrame(), f"Missing {ENV_TURSO_DATABASE_URL}"
-    try:
-        assertions = _load_trade_assertions_cached(db_url, auth_token)
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        return pd.DataFrame(), f"turso_connect_error:{type(e).__name__}"
-    return assertions, ""
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return (
+            pd.DataFrame(),
+            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
+        )
+
+    frames: list[pd.DataFrame] = []
+    for source in sources:
+        try:
+            frames.append(
+                _load_trade_assertions_cached(source.url, source.token, source.name)
+            )
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            return (
+                pd.DataFrame(),
+                f"turso_connect_error:{source.name}:{type(e).__name__}",
+            )
+
+    if not frames:
+        return pd.DataFrame(), "turso_sources_empty"
+    return pd.concat(frames, ignore_index=True), ""
 
 
 def load_posts_for_tree_from_env() -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
-    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not db_url:
-        return pd.DataFrame(), f"Missing {ENV_TURSO_DATABASE_URL}"
-    try:
-        posts = _load_posts_for_tree_cached(db_url, auth_token)
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        return pd.DataFrame(), f"turso_connect_error:{type(e).__name__}"
-    return posts, ""
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return (
+            pd.DataFrame(),
+            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
+        )
+
+    frames: list[pd.DataFrame] = []
+    for source in sources:
+        try:
+            frames.append(
+                _load_posts_for_tree_cached(source.url, source.token, source.name)
+            )
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            return (
+                pd.DataFrame(),
+                f"turso_connect_error:{source.name}:{type(e).__name__}",
+            )
+
+    if not frames:
+        return pd.DataFrame(), "turso_sources_empty"
+    return pd.concat(frames, ignore_index=True), ""
 
 
 def load_post_urls_from_env(post_uids: list[str]) -> tuple[dict[str, str], str]:
@@ -310,16 +350,41 @@ def load_post_urls_from_env(post_uids: list[str]) -> tuple[dict[str, str], str]:
         return {}, ""
 
     load_dotenv_if_present()
-    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not db_url:
-        return {}, f"Missing {ENV_TURSO_DATABASE_URL}"
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return (
+            {},
+            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
+        )
+
+    sources_by_name = {s.name: s for s in sources}
+    groups: dict[str, list[str]] = {}
+    unknown: list[str] = []
+    for uid in uids:
+        platform = infer_platform_from_post_uid(uid)
+        if platform and platform in sources_by_name:
+            groups.setdefault(platform, []).append(uid)
+        else:
+            unknown.append(uid)
+
+    out: dict[str, str] = {}
     try:
-        return _load_post_urls_cached(db_url, auth_token, uids), ""
+        for platform, group_uids in groups.items():
+            source = sources_by_name[platform]
+            out.update(
+                _load_post_urls_cached(source.url, source.token, tuple(group_uids))
+            )
+        if unknown:
+            for source in sources:
+                out.update(
+                    _load_post_urls_cached(source.url, source.token, tuple(unknown))
+                )
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
         return {}, f"turso_connect_error:{type(e).__name__}"
+
+    return out, ""
 
 
 @lru_cache(maxsize=32)
@@ -346,32 +411,42 @@ def _load_post_urls_cached(
 
 def load_sources_from_env() -> tuple[pd.DataFrame, pd.DataFrame, str]:
     load_dotenv_if_present()
-    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not db_url:
-        return pd.DataFrame(), pd.DataFrame(), f"Missing {ENV_TURSO_DATABASE_URL}"
-    try:
-        posts = _load_posts_for_tree_cached(db_url, auth_token)
-        assertions = _load_trade_assertions_cached(db_url, auth_token)
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        return pd.DataFrame(), pd.DataFrame(), f"turso_connect_error:{type(e).__name__}"
+    posts, posts_err = load_posts_for_tree_from_env()
+    if posts_err:
+        return pd.DataFrame(), pd.DataFrame(), posts_err
+    assertions, assertions_err = load_trade_assertions_from_env()
+    if assertions_err:
+        return pd.DataFrame(), pd.DataFrame(), assertions_err
     return posts, assertions, ""
 
 
 def load_stock_alias_relations_from_env() -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
-    db_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    auth_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not db_url:
-        return pd.DataFrame(), f"Missing {ENV_TURSO_DATABASE_URL}"
-    try:
-        return _load_stock_alias_relations_cached(db_url, auth_token), ""
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        return pd.DataFrame(), f"turso_connect_error:{type(e).__name__}"
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return (
+            pd.DataFrame(),
+            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
+        )
+    frames: list[pd.DataFrame] = []
+    for source in sources:
+        try:
+            frames.append(
+                _load_stock_alias_relations_cached(
+                    source.url, source.token, source.name
+                )
+            )
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            return (
+                pd.DataFrame(),
+                f"turso_connect_error:{source.name}:{type(e).__name__}",
+            )
+
+    if not frames:
+        return pd.DataFrame(), "turso_sources_empty"
+    return pd.concat(frames, ignore_index=True), ""
 
 
 def clear_reflex_source_caches() -> None:

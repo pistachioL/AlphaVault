@@ -10,14 +10,16 @@ This module does:
 from __future__ import annotations
 
 import json
-import os
 from typing import Dict, List, Tuple
 
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 import streamlit as st
 
-from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
+from alphavault.constants import (
+    ENV_WEIBO_TURSO_DATABASE_URL,
+    ENV_XUEQIU_TURSO_DATABASE_URL,
+)
 from alphavault.db.introspect import table_columns
 from alphavault.db.sql.ui import (
     WANTED_ASSERTION_COLUMNS,
@@ -25,10 +27,9 @@ from alphavault.db.sql.ui import (
     build_processed_posts_query,
 )
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
+from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.topic_cluster import try_load_cluster_tables
-
-STREAMLIT_SOURCE_NAME = "archive"
 
 MATCH_KEY_PREFIX_STOCK = "stock"
 MATCH_KEY_PREFIX_INDUSTRY = "industry"
@@ -46,7 +47,7 @@ def load_topic_cluster_sources(
             pd.DataFrame(),
             pd.DataFrame(),
             pd.DataFrame(),
-            f"Missing {ENV_TURSO_DATABASE_URL}",
+            "Missing turso url",
         )
     engine = ensure_turso_engine(db_url, auth_token)
     return try_load_cluster_tables(engine)
@@ -156,7 +157,7 @@ def load_turso_tables(
     db_url: str, auth_token: str
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     if not db_url:
-        raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
+        raise RuntimeError("Missing turso url")
     engine = ensure_turso_engine(db_url, auth_token)
     with turso_connect_autocommit(engine) as conn:
         post_cols = table_columns(conn, "posts")
@@ -177,24 +178,25 @@ def load_sources() -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
     assertions_frames: List[pd.DataFrame] = []
     missing: List[str] = []
 
-    turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not turso_url:
-        missing.append(ENV_TURSO_DATABASE_URL)
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        missing.append(ENV_WEIBO_TURSO_DATABASE_URL)
+        missing.append(ENV_XUEQIU_TURSO_DATABASE_URL)
         return pd.DataFrame(), pd.DataFrame(), missing
 
-    try:
-        posts, assertions = load_turso_tables(turso_url, turso_token)
-    except Exception as e:
-        missing.append(f"turso_connect_error:{type(e).__name__}")
-        return pd.DataFrame(), pd.DataFrame(), missing
+    for source in sources:
+        try:
+            posts, assertions = load_turso_tables(source.url, source.token)
+        except Exception as e:
+            missing.append(f"turso_connect_error:{source.name}:{type(e).__name__}")
+            return pd.DataFrame(), pd.DataFrame(), missing
 
-    posts = standardize_posts(posts, STREAMLIT_SOURCE_NAME)
-    posts = normalize_datetime_columns(posts)
-    assertions = standardize_assertions(assertions, posts, STREAMLIT_SOURCE_NAME)
-    assertions = normalize_assertions_datetime(assertions)
-    posts_frames.append(posts)
-    assertions_frames.append(assertions)
+        posts = standardize_posts(posts, source.name)
+        posts = normalize_datetime_columns(posts)
+        assertions = standardize_assertions(assertions, posts, source.name)
+        assertions = normalize_assertions_datetime(assertions)
+        posts_frames.append(posts)
+        assertions_frames.append(assertions)
 
     if posts_frames:
         posts_all = pd.concat(posts_frames, ignore_index=True)

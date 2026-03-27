@@ -69,18 +69,14 @@ def ingest_rss_many_once(
     seen_urls: set[str] = set()
     normalized_platform = str(platform or "weibo").strip().lower()
 
-    def build_display_md(
-        *, text: str, author_name: str, image_urls: list[str]
-    ) -> str:
+    def build_display_md(*, text: str, author_name: str, image_urls: list[str]) -> str:
         if normalized_platform == "weibo":
             return format_weibo_display_md(
                 text, author=author_name, image_urls=image_urls
             )
         if not text and not image_urls:
             return ""
-        img_lines = [
-            f'<img class="ke_img" src="{url}" />' for url in image_urls
-        ]
+        img_lines = [f'<img class="ke_img" src="{url}" />' for url in image_urls]
         if not img_lines:
             return text
         if not text:
