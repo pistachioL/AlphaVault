@@ -87,6 +87,7 @@ def ingest_rss_many_once(
     user_id: Optional[str],
     limit: Optional[int],
     rss_timeout: float,
+    rss_retries: int,
     verbose: bool,
 ) -> Tuple[int, bool]:
     inserted = 0
@@ -112,7 +113,7 @@ def ingest_rss_many_once(
     for rss_url in rss_urls:
         try:
             feed_user_id = user_id or infer_user_id_from_rss_url(rss_url)
-            feed = fetch_feed(rss_url, timeout=rss_timeout)
+            feed = fetch_feed(rss_url, timeout=rss_timeout, retries=rss_retries)
             entries = feed.entries or []
             if limit:
                 entries = entries[:limit]

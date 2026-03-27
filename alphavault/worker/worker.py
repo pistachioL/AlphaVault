@@ -1584,6 +1584,7 @@ def main() -> None:
                         user_id=source.config.user_id,
                         limit=limit,
                         rss_timeout=float(args.rss_timeout),
+                        rss_retries=int(args.rss_retries),
                         verbose=verbose,
                     )
                     rss_future.add_done_callback(lambda _f: wakeup_event.set())

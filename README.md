@@ -48,6 +48,8 @@ uv run pytest
 ```bash
 # 只跑微博：填 WEIBO_ 这一组
 export WEIBO_RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY,https://rsshub.xxx/weibo/user/123?key=YOUR_KEY"
+export RSS_TIMEOUT_SECONDS="60"
+export RSS_RETRIES="5"
 
 export WEIBO_TURSO_DATABASE_URL="libsql://xxx.turso.io"
 export WEIBO_TURSO_AUTH_TOKEN="YOUR_TOKEN"
@@ -72,6 +74,7 @@ uv run python weibo_rss_turso_worker.py --verbose
 说明：
 - `WEIBO_RSS_URLS` 支持逗号/换行分隔；也可以用 `WEIBO_RSS_URL`（只传 1 个）。
 - 你也可以同时填 `XUEQIU_RSS_URLS` + `XUEQIU_TURSO_DATABASE_URL`，worker 会同时跑两套（weibo + xueqiu）。
+- RSS 抓取网络参数：`RSS_TIMEOUT_SECONDS`（默认 60 秒）和 `RSS_RETRIES`（默认失败后再试 5 次）。
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
 - Worker 会先写本地 `spool` 文件；Turso 写失败时会保留 `spool`，并且（可选）推到 Redis。
 - Reflex / Streamlit 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
@@ -290,6 +293,8 @@ docker run -d --name alphavault \
 	  -e WORKER_CRON="*/10 * * * *" \
 	  -e WEIBO_RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY" \
 	  -e RSS_CRON="*/15 6-22 * * *" \
+	  -e RSS_TIMEOUT_SECONDS="60" \
+	  -e RSS_RETRIES="5" \
 	  -e AI_MODEL="openai/gpt-5.2" \
 	  -e AI_API_MODE="responses" \
 	  -e AI_STREAM="1" \

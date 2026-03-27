@@ -93,16 +93,17 @@ def fetch_feed(
         "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml",
     }
     last_err: Optional[BaseException] = None
-    for attempt in range(max(1, int(retries) + 1)):
+    total_attempts = max(1, int(retries) + 1)
+    for attempt in range(total_attempts):
         try:
             resp = requests.get(url, headers=headers, timeout=timeout)
             resp.raise_for_status()
             return feedparser.parse(resp.content)
         except Exception as e:
             last_err = e
-            if attempt >= int(retries) + 1:
+            if attempt >= total_attempts - 1:
                 break
-            time.sleep(1.0 * attempt)
+            time.sleep(float(attempt + 1))
     if last_err is not None:
         raise last_err
     raise RuntimeError("rss_fetch_failed")

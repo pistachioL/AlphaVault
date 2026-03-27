@@ -18,6 +18,8 @@ from alphavault.ai.analyze import (
     DEFAULT_PROMPT_VERSION,
 )
 from alphavault.constants import (
+    DEFAULT_RSS_RETRIES,
+    DEFAULT_RSS_TIMEOUT_SECONDS,
     ENV_AI_API_MODE,
     ENV_AI_BASE_URL,
     ENV_AI_MAX_INFLIGHT,
@@ -28,6 +30,8 @@ from alphavault.constants import (
     ENV_AI_RPM,
     ENV_AI_TEMPERATURE,
     ENV_AI_TIMEOUT_SEC,
+    ENV_RSS_RETRIES,
+    ENV_RSS_TIMEOUT_SECONDS,
     ENV_WEIBO_AUTHOR,
     ENV_WEIBO_RSS_URL,
     ENV_WEIBO_RSS_URLS,
@@ -122,6 +126,8 @@ def parse_args() -> argparse.Namespace:
     ai_rpm_env = env_float(ENV_AI_RPM)
     ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
     ai_max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
+    rss_timeout_env = env_float(ENV_RSS_TIMEOUT_SECONDS)
+    rss_retries_env = env_int(ENV_RSS_RETRIES)
 
     parser = argparse.ArgumentParser(description="RSS -> Turso queue -> AI -> Turso")
     parser.add_argument(
@@ -133,7 +139,24 @@ def parse_args() -> argparse.Namespace:
         "--limit", type=int, default=0, help="最多处理多少条（0 表示不限）"
     )
     parser.add_argument(
-        "--rss-timeout", type=float, default=15.0, help="RSS HTTP 超时秒数"
+        "--rss-timeout",
+        type=float,
+        default=(
+            float(rss_timeout_env)
+            if rss_timeout_env is not None
+            else float(DEFAULT_RSS_TIMEOUT_SECONDS)
+        ),
+        help="RSS HTTP 超时秒数",
+    )
+    parser.add_argument(
+        "--rss-retries",
+        type=int,
+        default=(
+            int(rss_retries_env)
+            if rss_retries_env is not None
+            else int(DEFAULT_RSS_RETRIES)
+        ),
+        help="RSS 失败后最多重试次数（不含首次）",
     )
     parser.add_argument(
         "--interval-seconds",
@@ -205,7 +228,10 @@ def parse_args() -> argparse.Namespace:
         "--relevant-threshold", type=float, default=0.35, help="相关度阈值"
     )
     parser.add_argument("--verbose", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.rss_timeout = max(1.0, float(args.rss_timeout))
+    args.rss_retries = max(0, int(args.rss_retries))
+    return args
 
 
 def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig]:
