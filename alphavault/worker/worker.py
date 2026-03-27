@@ -1332,6 +1332,7 @@ def main() -> None:
         ThreadPoolExecutor(max_workers=worker_threads) as executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as alias_executor,
         ThreadPoolExecutor(max_workers=1) as research_executor,
+        ThreadPoolExecutor(max_workers=max(1, len(sources))) as rss_executor,
     ):
         wakeup_event = threading.Event()
         inflight_futures: set[Future] = set()
@@ -1348,7 +1349,93 @@ def main() -> None:
             if do_maintenance:
                 maintenance_next_at = now + float(worker_interval)
             next_maintenance_in = max(0.0, maintenance_next_at - time.time())
+
+            tick_sources: list[
+                tuple[
+                    WorkerSourceRuntime,
+                    Optional[Engine],
+                    bool,
+                    str,
+                    Future | None,
+                ]
+            ] = []
             for source in sources:
+                do_ingest_rss = False
+                rss_skip_reason = ""
+                if not source.config.rss_urls:
+                    rss_skip_reason = "no_sources"
+                else:
+                    now_dt = datetime.now(CST)
+                    if rss_active_hours is not None and not in_active_hours(
+                        now_dt, rss_active_hours
+                    ):
+                        rss_skip_reason = "inactive"
+                        source.rss_next_ingest_at = (
+                            now
+                            + _seconds_until_next_active_start(now_dt, rss_active_hours)
+                        )
+                    elif now < source.rss_next_ingest_at:
+                        rss_skip_reason = "interval"
+                    else:
+                        do_ingest_rss = True
+                        source.rss_next_ingest_at = now + float(rss_interval_seconds)
+
+                force_maintenance = False
+                if not source.turso_ready and now >= float(
+                    source.turso_next_ready_check_at
+                ):
+                    source.turso_ready = _ensure_turso_ready(
+                        engine=source.engine,
+                        verbose=verbose,
+                        turso_ready=source.turso_ready,
+                        source_name=source.config.name,
+                    )
+                    if source.turso_ready:
+                        source.turso_next_ready_check_at = 0.0
+                        force_maintenance = True
+                    else:
+                        source.turso_next_ready_check_at = now + float(
+                            TURSO_READY_RETRY_SECONDS
+                        )
+                active_engine: Optional[Engine] = (
+                    source.engine if source.turso_ready else None
+                )
+
+                rss_future: Future | None = None
+                if do_ingest_rss and source.config.rss_urls:
+                    rss_future = rss_executor.submit(
+                        ingest_rss_many_once,
+                        rss_urls=source.config.rss_urls,
+                        engine=active_engine,
+                        spool_dir=source.spool_dir,
+                        redis_client=redis_client,
+                        redis_queue_key=source.redis_queue_key,
+                        platform=source.config.platform,
+                        author=source.config.author,
+                        user_id=source.config.user_id,
+                        limit=limit,
+                        rss_timeout=float(args.rss_timeout),
+                        verbose=verbose,
+                    )
+                    rss_future.add_done_callback(lambda _f: wakeup_event.set())
+
+                tick_sources.append(
+                    (
+                        source,
+                        active_engine,
+                        force_maintenance,
+                        rss_skip_reason,
+                        rss_future,
+                    )
+                )
+
+            for (
+                source,
+                active_engine,
+                force_maintenance,
+                rss_skip_reason,
+                rss_future,
+            ) in tick_sources:
                 alias_resolved = 0
                 alias_inserted = 0
                 alias_sync_finished = False
@@ -1432,64 +1519,11 @@ def main() -> None:
                 if relation_cache_fast_retry:
                     source.relation_cache_next_at = 0.0
 
-                do_ingest_rss = False
-                rss_skip_reason = ""
-                if not source.config.rss_urls:
-                    rss_skip_reason = "no_sources"
-                else:
-                    now_dt = datetime.now(CST)
-                    if rss_active_hours is not None and not in_active_hours(
-                        now_dt, rss_active_hours
-                    ):
-                        rss_skip_reason = "inactive"
-                        source.rss_next_ingest_at = (
-                            now
-                            + _seconds_until_next_active_start(now_dt, rss_active_hours)
-                        )
-                    elif now < source.rss_next_ingest_at:
-                        rss_skip_reason = "interval"
-                    else:
-                        do_ingest_rss = True
-                        source.rss_next_ingest_at = now + float(rss_interval_seconds)
-
-                force_maintenance = False
-                if not source.turso_ready and now >= float(
-                    source.turso_next_ready_check_at
-                ):
-                    source.turso_ready = _ensure_turso_ready(
-                        engine=source.engine,
-                        verbose=verbose,
-                        turso_ready=source.turso_ready,
-                        source_name=source.config.name,
-                    )
-                    if source.turso_ready:
-                        source.turso_next_ready_check_at = 0.0
-                        force_maintenance = True
-                    else:
-                        source.turso_next_ready_check_at = now + float(
-                            TURSO_READY_RETRY_SECONDS
-                        )
-                active_engine: Optional[Engine] = (
-                    source.engine if source.turso_ready else None
-                )
-
                 inserted = 0
                 ingest_turso_error = False
-                if do_ingest_rss and source.config.rss_urls:
+                if rss_future is not None:
                     try:
-                        inserted, ingest_turso_error = ingest_rss_many_once(
-                            rss_urls=source.config.rss_urls,
-                            engine=active_engine,
-                            spool_dir=source.spool_dir,
-                            redis_client=redis_client,
-                            redis_queue_key=source.redis_queue_key,
-                            platform=source.config.platform,
-                            author=source.config.author,
-                            user_id=source.config.user_id,
-                            limit=limit,
-                            rss_timeout=float(args.rss_timeout),
-                            verbose=verbose,
-                        )
+                        inserted, ingest_turso_error = rss_future.result()
                     except BaseException as e:
                         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                             raise
