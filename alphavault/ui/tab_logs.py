@@ -11,11 +11,16 @@ import os
 import pandas as pd
 import streamlit as st
 
-from alphavault.constants import ENV_TURSO_MAX_CONNECTIONS
+from alphavault.constants import (
+    ENV_TURSO_MAX_CONNECTIONS,
+    ENV_WEIBO_TURSO_DATABASE_URL,
+    ENV_XUEQIU_TURSO_DATABASE_URL,
+)
 from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.logs import SELECT_AI_STATUS_COUNTS, select_ai_queue_rows
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
+from alphavault.db.turso_env import load_configured_turso_sources_from_env
 
 
 def _rows_to_df(rows: list[dict[str, object]]) -> pd.DataFrame:
@@ -24,15 +29,28 @@ def _rows_to_df(rows: list[dict[str, object]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def show_logs(*, turso_url: str, turso_token: str) -> None:
+def show_logs() -> None:
     st.markdown("**日志（AI 队列 / 错误）**")
 
-    url = str(turso_url or "").strip()
-    if not url:
-        st.error("TURSO_DATABASE_URL 没填。")
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        st.error("没配 Turso。")
+        st.info(
+            f"需要：{ENV_WEIBO_TURSO_DATABASE_URL} 或 {ENV_XUEQIU_TURSO_DATABASE_URL}"
+        )
         return
 
-    engine = ensure_turso_engine(url, str(turso_token or "").strip())
+    if len(sources) == 1:
+        selected = sources[0]
+    else:
+        name = st.selectbox(
+            "库",
+            options=[s.name for s in sources],
+            index=0,
+        )
+        selected = next((s for s in sources if s.name == name), sources[0])
+
+    engine = ensure_turso_engine(selected.url, str(selected.token or "").strip())
 
     st.caption(
         f"连接数上限：{os.getenv(ENV_TURSO_MAX_CONNECTIONS, '').strip() or '4'}（ENV: {ENV_TURSO_MAX_CONNECTIONS}）"

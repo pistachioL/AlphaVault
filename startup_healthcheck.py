@@ -9,28 +9,23 @@ from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_REDIS_URL,
     ENV_SPOOL_DIR,
-    ENV_TURSO_AUTH_TOKEN,
-    ENV_TURSO_DATABASE_URL,
+    ENV_WEIBO_TURSO_AUTH_TOKEN,
+    ENV_WEIBO_TURSO_DATABASE_URL,
+    ENV_XUEQIU_TURSO_AUTH_TOKEN,
+    ENV_XUEQIU_TURSO_DATABASE_URL,
 )
 from alphavault.db.sql.scripts import (
-    SELECT_LAST_INSERT_ROWID,
     SELECT_ONE,
-    create_healthcheck_table,
-    delete_healthcheck_row,
-    insert_healthcheck_row,
 )
 from alphavault.db.turso_db import (
-    TursoEngine,
     ensure_turso_engine,
     turso_connect_autocommit,
-    turso_savepoint,
 )
 from alphavault.env import load_dotenv_if_present
 
 load_dotenv_if_present()
 
-
-HEALTHCHECK_TABLE = "__alphavault_healthcheck"
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 def _print(msg: str) -> None:
@@ -43,6 +38,10 @@ def _eprint(msg: str) -> None:
 
 def _spool_dir_value() -> str:
     return os.getenv(ENV_SPOOL_DIR, "").strip() or DEFAULT_SPOOL_DIR
+
+
+def _env_text(name: str) -> str:
+    return os.getenv(name, "").strip()
 
 
 def _check_spool_dir() -> None:
@@ -72,49 +71,50 @@ def _check_spool_dir() -> None:
     _print("[healthcheck] spool ok")
 
 
-def _get_turso_engine_from_env() -> TursoEngine:
-    url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-    if not url:
-        raise RuntimeError(f"missing {ENV_TURSO_DATABASE_URL}")
-    return ensure_turso_engine(url, token)
-
-
 def _check_turso() -> None:
-    _print("[healthcheck] turso start")
-    engine = _get_turso_engine_from_env()
+    def resolve_targets() -> list[tuple[str, str, str]]:
+        targets: list[tuple[str, str, str]] = []
+        for name, url_env, token_env in (
+            ("weibo", ENV_WEIBO_TURSO_DATABASE_URL, ENV_WEIBO_TURSO_AUTH_TOKEN),
+            ("xueqiu", ENV_XUEQIU_TURSO_DATABASE_URL, ENV_XUEQIU_TURSO_AUTH_TOKEN),
+        ):
+            url = _env_text(url_env)
+            if not url:
+                continue
+            token = _env_text(token_env)
+            targets.append((name, url, token))
+        return targets
 
-    try:
-        with turso_connect_autocommit(engine) as conn:
-            conn.execute(SELECT_ONE).fetchone()
-    except Exception as e:
-        raise RuntimeError(f"turso connect failed: {type(e).__name__}: {e}") from e
+    targets = resolve_targets()
+    if not targets:
+        raise RuntimeError(
+            f"missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}"
+        )
 
-    try:
-        note = f"pid={os.getpid()} ts={int(time.time())}"
-        with turso_connect_autocommit(engine) as conn:
-            # Keep DDL outside the atomic write block for libsql/Turso.
-            conn.execute(create_healthcheck_table(HEALTHCHECK_TABLE))
-            with turso_savepoint(conn):
-                conn.execute(
-                    insert_healthcheck_row(HEALTHCHECK_TABLE),
-                    {"ts": int(time.time()), "note": note},
-                )
-                inserted_id = conn.execute(SELECT_LAST_INSERT_ROWID).scalar()
-                conn.execute(
-                    delete_healthcheck_row(HEALTHCHECK_TABLE),
-                    {"id": int(inserted_id or 0)},
-                )
-    except Exception as e:
-        raise RuntimeError(f"turso write failed: {type(e).__name__}: {e}") from e
+    for name, url, token in targets:
+        prefix = f"[healthcheck] turso[{name}]"
+        _print(f"{prefix} start")
+        engine = ensure_turso_engine(url, token)
 
-    _print("[healthcheck] turso ok")
+        try:
+            with turso_connect_autocommit(engine) as conn:
+                conn.execute(SELECT_ONE).fetchone()
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            raise RuntimeError(
+                f"turso[{name}] connect failed: {type(e).__name__}: {e}"
+            ) from e
+
+        _print(f"{prefix} ok")
 
 
 def _try_check_redis(redis_url: str) -> None:
     try:
         import redis  # type: ignore
-    except Exception as e:
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
         raise RuntimeError(f"redis import failed: {type(e).__name__}: {e}") from e
 
     try:
@@ -125,7 +125,9 @@ def _try_check_redis(redis_url: str) -> None:
             socket_timeout=2,
         )
         client.ping()
-    except Exception as e:
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
         raise RuntimeError(f"redis connect failed: {type(e).__name__}: {e}") from e
 
     key = f"alphavault:healthcheck:{os.getpid()}:{int(time.time())}"
@@ -134,7 +136,9 @@ def _try_check_redis(redis_url: str) -> None:
         if ok is not True:
             raise RuntimeError("redis set returned false")
         client.delete(key)
-    except Exception as e:
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
         raise RuntimeError(f"redis write failed: {type(e).__name__}: {e}") from e
 
 
@@ -161,7 +165,9 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         run_startup_healthcheck()
-    except Exception as e:
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
         _eprint(f"[healthcheck] failed: {e}")
         return 1
     return 0

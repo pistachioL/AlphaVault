@@ -41,20 +41,21 @@ uv run pytest
 ## Worker（RSS → Turso → AI）
 推荐用环境变量配 AI（Docker/supervisord 也用这一套）：
 ```bash
-export RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY,https://rsshub.xxx/weibo/user/123?key=YOUR_KEY"
+# 只跑微博：填 WEIBO_ 这一组
+export WEIBO_RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY,https://rsshub.xxx/weibo/user/123?key=YOUR_KEY"
 
-	export TURSO_DATABASE_URL="libsql://xxx.turso.io"
-	export TURSO_AUTH_TOKEN="YOUR_TOKEN"
+export WEIBO_TURSO_DATABASE_URL="libsql://xxx.turso.io"
+export WEIBO_TURSO_AUTH_TOKEN="YOUR_TOKEN"
 
-	export AI_MODEL="openai/gpt-5.2"
-  # 注意：AI_MODEL 要是“真实模型名”，不要写成 rss 这类占位词
-	export AI_BASE_URL="http://localhost:3001/proxy/gpt5-2/v1"
-  # 注意：AI_BASE_URL 要指向 OpenAI 兼容接口（一般以 /v1 结尾），不要填网关首页/网页（会返回 HTML）
-	export AI_API_KEY="YOUR_KEY"
-	export AI_API_MODE="responses"
-	export AI_STREAM="1"
-	export AI_TIMEOUT_SEC="1000"
-	export AI_REASONING_EFFORT="xhigh"
+export AI_MODEL="openai/gpt-5.2"
+# 注意：AI_MODEL 要是“真实模型名”，不要写成 rss 这类占位词
+export AI_BASE_URL="http://localhost:3001/proxy/gpt5-2/v1"
+# 注意：AI_BASE_URL 要指向 OpenAI 兼容接口（一般以 /v1 结尾），不要填网关首页/网页（会返回 HTML）
+export AI_API_KEY="YOUR_KEY"
+export AI_API_MODE="responses"
+export AI_STREAM="1"
+export AI_TIMEOUT_SEC="1000"
+export AI_REASONING_EFFORT="xhigh"
 export AI_RPM="12"
 export AI_RETRIES="11"
 export AI_MAX_INFLIGHT="30"
@@ -64,8 +65,9 @@ uv run python weibo_rss_turso_worker.py --verbose
 ```
 
 说明：
-- `RSS_URLS` 支持逗号/换行分隔；也可以用 `RSS_URL`（只传 1 个）。
-- `--author/--user-id` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
+- `WEIBO_RSS_URLS` 支持逗号/换行分隔；也可以用 `WEIBO_RSS_URL`（只传 1 个）。
+- 你也可以同时填 `XUEQIU_RSS_URLS` + `XUEQIU_TURSO_DATABASE_URL`，worker 会同时跑两套（weibo + xueqiu）。
+- `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
 - Worker 会先写本地 `spool` 文件；Turso 写失败时会保留 `spool`，并且（可选）推到 Redis。
 - Reflex / Streamlit 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
 
@@ -74,7 +76,7 @@ uv run python weibo_rss_turso_worker.py --verbose
 uv run reflex run
 ```
 
-需要：`TURSO_DATABASE_URL`（可选 `TURSO_AUTH_TOKEN`）。
+需要：`WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`（token 可选）。
 
 主要页面：
 - `/`：首页 + 全局搜索
@@ -260,7 +262,7 @@ uv run streamlit run streamlit_app.py
 
 启动时会先做一次 startup check（失败就直接退出容器）：
 - 本地缓存：`SPOOL_DIR`（默认 `/tmp/alphavault-spool`）需要可写
-- Turso：必须配置 `TURSO_DATABASE_URL`，并且能连、能写
+- Turso：必须配置 `WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`，并且能连（healthcheck 只读）
 - Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
 
 定时（通过 env 配）：
@@ -276,7 +278,7 @@ docker build -t alphavault .
 docker run -d --name alphavault \
 	  -p 8080:8080 \
 	  -e WORKER_CRON="*/10 * * * *" \
-	  -e RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY" \
+	  -e WEIBO_RSS_URLS="https://rsshub.xxx/weibo/user/3962719063?key=YOUR_KEY" \
 	  -e RSS_CRON="*/15 6-22 * * *" \
 	  -e AI_MODEL="openai/gpt-5.2" \
 	  -e AI_API_MODE="responses" \
@@ -289,8 +291,8 @@ docker run -d --name alphavault \
 	  -e AI_TRACE_OUT="/data/trace.txt" \
 	  -e AI_BASE_URL="http://xxx/v1" \
 	  -e AI_API_KEY="YOUR_KEY" \
-	  -e TURSO_DATABASE_URL="libsql://xxx.turso.io" \
-	  -e TURSO_AUTH_TOKEN="YOUR_TOKEN" \
+	  -e WEIBO_TURSO_DATABASE_URL="libsql://xxx.turso.io" \
+	  -e WEIBO_TURSO_AUTH_TOKEN="YOUR_TOKEN" \
 	  -e REDIS_URL="redis://:pass@host:6379/0" \
 	  -e SPOOL_DIR="/tmp/alphavault-spool" \
 	  alphavault

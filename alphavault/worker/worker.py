@@ -112,30 +112,6 @@ class WorkerSourceRuntime:
     alias_sync_next_at: float = 0.0
 
 
-def _clamp_float(value: object, low: float, high: float, default: float) -> float:
-    try:
-        val = float(value)  # type: ignore[arg-type]
-    except Exception:
-        return default
-    if val < low:
-        return low
-    if val > high:
-        return high
-    return val
-
-
-def _clamp_int(value: object, low: int, high: int, default: int) -> int:
-    try:
-        val = int(value)  # type: ignore[arg-type]
-    except Exception:
-        return default
-    if val < low:
-        return low
-    if val > high:
-        return high
-    return val
-
-
 def _score_from_assertions(rows: list[dict[str, object]]) -> float:
     if not rows:
         return 0.0
@@ -925,7 +901,9 @@ def _build_source_redis_queue_key(
     return f"{base_queue_key}:{source_name}"
 
 
-def _log_source_runtime(*, verbose: bool, source: WorkerSourceRuntime, redis_client) -> None:
+def _log_source_runtime(
+    *, verbose: bool, source: WorkerSourceRuntime, redis_client
+) -> None:
     if not verbose:
         return
     cfg = source.config
@@ -1346,8 +1324,9 @@ def main() -> None:
                         now_dt, rss_active_hours
                     ):
                         rss_skip_reason = "inactive"
-                        source.rss_next_ingest_at = now + _seconds_until_next_active_start(
-                            now_dt, rss_active_hours
+                        source.rss_next_ingest_at = (
+                            now
+                            + _seconds_until_next_active_start(now_dt, rss_active_hours)
                         )
                     elif now < source.rss_next_ingest_at:
                         rss_skip_reason = "interval"
@@ -1356,7 +1335,9 @@ def main() -> None:
                         source.rss_next_ingest_at = now + float(rss_interval_seconds)
 
                 force_maintenance = False
-                if not source.turso_ready and now >= float(source.turso_next_ready_check_at):
+                if not source.turso_ready and now >= float(
+                    source.turso_next_ready_check_at
+                ):
                     source.turso_ready = _ensure_turso_ready(
                         engine=source.engine,
                         verbose=verbose,
@@ -1412,7 +1393,9 @@ def main() -> None:
                 if (do_maintenance or force_maintenance) and active_engine is not None:
                     if force_maintenance:
                         maintenance_next_at = now + float(worker_interval)
-                        next_maintenance_in = max(0.0, maintenance_next_at - time.time())
+                        next_maintenance_in = max(
+                            0.0, maintenance_next_at - time.time()
+                        )
                     recovered, flushed_redis, flushed_spool, maintenance_error = (
                         _run_turso_maintenance(
                             engine=active_engine,

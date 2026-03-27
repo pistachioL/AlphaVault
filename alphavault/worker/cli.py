@@ -28,9 +28,6 @@ from alphavault.constants import (
     ENV_AI_RPM,
     ENV_AI_TEMPERATURE,
     ENV_AI_TIMEOUT_SEC,
-    ENV_RSS_PLATFORM,
-    ENV_TURSO_AUTH_TOKEN,
-    ENV_TURSO_DATABASE_URL,
     ENV_WEIBO_AUTHOR,
     ENV_WEIBO_RSS_URL,
     ENV_WEIBO_RSS_URLS,
@@ -46,7 +43,7 @@ from alphavault.constants import (
     ENV_XUEQIU_TURSO_DATABASE_URL,
     ENV_XUEQIU_USER_ID,
 )
-from alphavault.rss.utils import env_float, env_int, parse_active_hours, parse_rss_urls
+from alphavault.rss.utils import env_float, env_int, parse_active_hours
 
 
 @dataclass(frozen=True)
@@ -84,22 +81,6 @@ def _env_text(name: str) -> str:
     return os.getenv(name, "").strip()
 
 
-def _has_multi_source_env() -> bool:
-    return any(
-        _env_text(name)
-        for name in (
-            ENV_WEIBO_RSS_URLS,
-            ENV_WEIBO_RSS_URL,
-            ENV_WEIBO_TURSO_DATABASE_URL,
-            ENV_WEIBO_TURSO_AUTH_TOKEN,
-            ENV_XUEQIU_RSS_URLS,
-            ENV_XUEQIU_RSS_URL,
-            ENV_XUEQIU_TURSO_DATABASE_URL,
-            ENV_XUEQIU_TURSO_AUTH_TOKEN,
-        )
-    )
-
-
 def _build_platform_source_config(
     *,
     platform: str,
@@ -110,24 +91,20 @@ def _build_platform_source_config(
     auth_token_env: str,
     author_env: str,
     user_id_env: str,
-    fallback_database_url: str,
-    fallback_auth_token: str,
 ) -> Optional[RSSSourceConfig]:
     urls = _dedup_urls(
         _split_rss_urls_value(_env_text(rss_urls_env))
         + _split_rss_urls_value(_env_text(rss_url_env))
     )
-    database_url = _env_text(database_url_env) or fallback_database_url
-    auth_token = _env_text(auth_token_env) or fallback_auth_token
+    database_url = _env_text(database_url_env)
+    auth_token = _env_text(auth_token_env)
     author = _env_text(author_env)
     user_id = _env_text(user_id_env) or None
 
     if not urls and not database_url:
         return None
     if not database_url:
-        raise RuntimeError(
-            f"Missing {database_url_env} or {ENV_TURSO_DATABASE_URL} for {platform}"
-        )
+        raise RuntimeError(f"Missing {database_url_env} for {platform}")
 
     return RSSSourceConfig(
         name=name,
@@ -146,23 +123,7 @@ def parse_args() -> argparse.Namespace:
     ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
     ai_max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
 
-    parser = argparse.ArgumentParser(
-        description="Weibo RSS -> Turso queue -> AI -> Turso"
-    )
-    parser.add_argument(
-        "--rss-url", action="append", default=[], help="RSS 地址（可重复传多次）"
-    )
-    parser.add_argument(
-        "--rss-urls", default="", help="多个 RSS 地址（逗号或换行分隔）"
-    )
-    parser.add_argument(
-        "--platform",
-        default=os.getenv(ENV_RSS_PLATFORM, "weibo"),
-        choices=["weibo", "xueqiu"],
-        help="RSS 平台（weibo/xueqiu）",
-    )
-    parser.add_argument("--author", default="", help="作者名（为空则从 RSS 里取）")
-    parser.add_argument("--user-id", default="", help="微博用户ID（可为空，自动推断）")
+    parser = argparse.ArgumentParser(description="RSS -> Turso queue -> AI -> Turso")
     parser.add_argument(
         "--active-hours",
         default="",
@@ -250,32 +211,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_rss_urls(args: argparse.Namespace) -> list[str]:
-    rss_urls = parse_rss_urls(args)
-    if args.verbose:
-        print(f"[rss] sources={len(rss_urls)}", flush=True)
-    return rss_urls
-
-
 def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig]:
-    fallback_database_url = _env_text(ENV_TURSO_DATABASE_URL)
-    fallback_auth_token = _env_text(ENV_TURSO_AUTH_TOKEN)
-
-    if not _has_multi_source_env():
-        if not fallback_database_url:
-            raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
-        return [
-            RSSSourceConfig(
-                name=str(args.platform or "weibo").strip().lower() or "weibo",
-                platform=str(args.platform or "weibo").strip().lower() or "weibo",
-                rss_urls=_resolve_rss_urls(args),
-                database_url=fallback_database_url,
-                auth_token=fallback_auth_token,
-                author=str(args.author or "").strip(),
-                user_id=(str(args.user_id or "").strip() or None),
-            )
-        ]
-
     configs: list[RSSSourceConfig] = []
     for cfg in (
         _build_platform_source_config(
@@ -287,8 +223,6 @@ def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig
             auth_token_env=ENV_WEIBO_TURSO_AUTH_TOKEN,
             author_env=ENV_WEIBO_AUTHOR,
             user_id_env=ENV_WEIBO_USER_ID,
-            fallback_database_url=fallback_database_url,
-            fallback_auth_token=fallback_auth_token,
         ),
         _build_platform_source_config(
             platform="xueqiu",
@@ -299,8 +233,6 @@ def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig
             auth_token_env=ENV_XUEQIU_TURSO_AUTH_TOKEN,
             author_env=ENV_XUEQIU_AUTHOR,
             user_id_env=ENV_XUEQIU_USER_ID,
-            fallback_database_url=fallback_database_url,
-            fallback_auth_token=fallback_auth_token,
         ),
     ):
         if cfg is not None:
@@ -315,19 +247,9 @@ def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig
                 )
         return configs
 
-    if not fallback_database_url:
-        raise RuntimeError(f"Missing {ENV_TURSO_DATABASE_URL}")
-    return [
-        RSSSourceConfig(
-            name=str(args.platform or "weibo").strip().lower() or "weibo",
-            platform=str(args.platform or "weibo").strip().lower() or "weibo",
-            rss_urls=_resolve_rss_urls(args),
-            database_url=fallback_database_url,
-            auth_token=fallback_auth_token,
-            author=str(args.author or "").strip(),
-            user_id=(str(args.user_id or "").strip() or None),
-        )
-    ]
+    raise RuntimeError(
+        f"missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}"
+    )
 
 
 def _parse_worker_active_hours_from_args(

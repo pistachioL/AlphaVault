@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import os
 import re
@@ -15,7 +14,6 @@ from urllib.parse import urlparse
 import feedparser
 import requests
 
-from alphavault.constants import ENV_RSS_URL, ENV_RSS_URLS
 from alphavault.constants import DATETIME_FMT
 from alphavault.text.html import html_to_text
 
@@ -87,7 +85,9 @@ def now_str() -> str:
     return datetime.now(CST).strftime(DATETIME_FMT)
 
 
-def fetch_feed(url: str, timeout: float, *, retries: int = 2) -> feedparser.FeedParserDict:
+def fetch_feed(
+    url: str, timeout: float, *, retries: int = 2
+) -> feedparser.FeedParserDict:
     headers = {
         "User-Agent": "AlphaVault-RSS-Ingest/1.0",
         "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml",
@@ -316,37 +316,6 @@ def split_commentary_and_quoted(raw_text: str) -> tuple[str, str]:
 def build_analysis_context(raw_text: str) -> Dict[str, str]:
     commentary_text, quoted_text = split_commentary_and_quoted(raw_text)
     return {"commentary_text": commentary_text, "quoted_text": quoted_text}
-
-
-def _split_rss_urls(value: str) -> list[str]:
-    if not value:
-        return []
-    parts: list[str] = []
-    for item in re.split(r"[,\n]+", str(value)):
-        url = item.strip()
-        if url:
-            parts.append(url)
-    return parts
-
-
-def parse_rss_urls(args: argparse.Namespace) -> list[str]:
-    urls: list[str] = []
-    for item in getattr(args, "rss_url", []) or []:
-        urls.extend(_split_rss_urls(item))
-    urls.extend(_split_rss_urls(getattr(args, "rss_urls", "") or ""))
-
-    if not urls:
-        urls.extend(_split_rss_urls(os.getenv(ENV_RSS_URLS, "")))
-        urls.extend(_split_rss_urls(os.getenv(ENV_RSS_URL, "")))
-
-    seen: set[str] = set()
-    out: list[str] = []
-    for url in urls:
-        if url in seen:
-            continue
-        seen.add(url)
-        out.append(url)
-    return out
 
 
 def infer_user_id_from_rss_url(rss_url: str) -> Optional[str]:

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import os
-
 import streamlit as st
 
-from alphavault.constants import ENV_TURSO_AUTH_TOKEN, ENV_TURSO_DATABASE_URL
 from alphavault.env import load_dotenv_if_present
 from alphavault.ui.data import (
     enrich_assertions,
@@ -111,9 +108,6 @@ def main() -> None:
     posts = enrich_posts(posts)
     assertions = enrich_assertions(assertions)
 
-    turso_url = os.getenv(ENV_TURSO_DATABASE_URL, "").strip()
-    turso_token = os.getenv(ENV_TURSO_AUTH_TOKEN, "").strip()
-
     # Note: Left sidebar filters removed on purpose.
     posts_filtered = posts
     assertions_filtered = assertions
@@ -199,7 +193,7 @@ def main() -> None:
         return
 
     if selected_page == "日志":
-        show_logs(turso_url=turso_url, turso_token=turso_token)
+        show_logs()
         return
 
     assertion_counts = (
