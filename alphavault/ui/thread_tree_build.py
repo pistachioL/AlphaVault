@@ -32,6 +32,8 @@ from alphavault.ui.thread_tree_render import (
     _to_ts,
 )
 
+_TIMESTAMP_SORT_FALLBACK = pd.Timestamp("1970-01-01 00:00:00", tz="UTC")
+
 
 def _select_xueqiu_display_source(*, raw_text: str, display_md: str) -> str:
     raw_value = str(raw_text or "")
@@ -119,7 +121,12 @@ def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
     posts = posts[posts["platform_post_id"].astype(str).str.strip().ne("")]
     posts = posts.drop_duplicates(subset=["platform_post_id"], keep="first")
     if "created_at" in posts.columns:
-        posts = posts.sort_values(by="created_at", ascending=True)
+        posts["created_at"] = posts["created_at"].apply(_to_ts)
+        posts = posts.sort_values(
+            by="created_at",
+            ascending=True,
+            na_position="last",
+        )
     return posts
 
 
@@ -211,7 +218,7 @@ def _infer_parent_post_id(
 
     best = max(
         candidates,
-        key=lambda c: _to_ts(c.get("created_at")) or pd.Timestamp.min,
+        key=lambda c: _to_ts(c.get("created_at")) or _TIMESTAMP_SORT_FALLBACK,
     )
     parent_id = _clean_id(best.get("post_id"))
     if not parent_id or parent_id == child_id:
@@ -454,7 +461,7 @@ def _build_children_map(nodes: dict[str, dict]) -> dict[str, list[str]]:
 
     def node_sort_key(nid: str) -> tuple:
         ts = _to_ts((nodes.get(nid) or {}).get("created_at"))
-        ts_val = ts if ts is not None else pd.Timestamp.min
+        ts_val = ts if ts is not None else _TIMESTAMP_SORT_FALLBACK
         return (ts_val, nid)
 
     for parent_id, kids in children.items():
@@ -601,7 +608,8 @@ def build_weibo_thread_forest(
         for root_id in roots
     ]
     threads.sort(
-        key=lambda item: _to_ts(item.get("latest_activity")) or pd.Timestamp.min,
+        key=lambda item: _to_ts(item.get("latest_activity"))
+        or _TIMESTAMP_SORT_FALLBACK,
         reverse=True,
     )
     return threads
