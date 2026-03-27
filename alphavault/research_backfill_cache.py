@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Iterator
 
-from alphavault.constants import DATETIME_FMT
+from alphavault.timeutil import now_cst_str
 from alphavault.db.sql.research_backfill_cache import (
     create_research_stock_backfill_posts_index,
     create_research_stock_backfill_posts_table,
@@ -24,7 +23,7 @@ RESEARCH_STOCK_BACKFILL_POSTS_TABLE = "research_stock_backfill_posts"
 
 
 def _now_str() -> str:
-    return datetime.now().strftime(DATETIME_FMT)
+    return now_cst_str()
 
 
 @contextmanager

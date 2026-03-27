@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Iterator, TypedDict
 
-from alphavault.constants import (
-    DATETIME_FMT,
-)
+from alphavault.timeutil import now_cst_str
 from alphavault.db.turso_env import require_configured_turso_sources_from_env
 from alphavault.db.sql.research_workbench import (
     create_research_alias_resolve_tasks_index,
@@ -63,7 +60,7 @@ _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 def _now_str() -> str:
-    return datetime.now().strftime(DATETIME_FMT)
+    return now_cst_str()
 
 
 class AliasResolveTaskInfo(TypedDict):

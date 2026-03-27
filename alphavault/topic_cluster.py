@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Dict, Iterable, List
 
 import pandas as pd
 
-from alphavault.constants import DATETIME_FMT
+from alphavault.timeutil import now_cst_str
 from alphavault.db.sql.topic_cluster import (
     delete_cluster_key_rows,
     delete_cluster_topic_map,
@@ -32,8 +31,7 @@ UNCATEGORIZED_LABEL = "未归类"
 
 
 def _now_str() -> str:
-    # Keep the same shape as rss_utils.now_str() (YYYY-MM-DD HH:MM:SS).
-    return datetime.now().strftime(DATETIME_FMT)
+    return now_cst_str()
 
 
 def ensure_cluster_schema(engine: TursoEngine) -> None:

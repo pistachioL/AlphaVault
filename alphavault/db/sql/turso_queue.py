@@ -29,16 +29,42 @@ INSERT INTO posts (
     :ingested_at
 )
 ON CONFLICT(post_uid) DO UPDATE SET
-    platform=excluded.platform,
-    platform_post_id=excluded.platform_post_id,
-    author=excluded.author,
-    created_at=excluded.created_at,
-    url=excluded.url,
-    raw_text=excluded.raw_text,
-    display_md=excluded.display_md,
-    archived_at=excluded.archived_at,
-    ingested_at=excluded.ingested_at
-WHERE posts.processed_at IS NULL
+    platform=CASE
+        WHEN posts.processed_at IS NULL THEN excluded.platform
+        ELSE posts.platform
+    END,
+    platform_post_id=CASE
+        WHEN posts.processed_at IS NULL THEN excluded.platform_post_id
+        ELSE posts.platform_post_id
+    END,
+    author=CASE
+        WHEN TRIM(COALESCE(excluded.author, '')) <> '' THEN excluded.author
+        ELSE posts.author
+    END,
+    created_at=CASE
+        WHEN posts.processed_at IS NULL OR LOWER(COALESCE(excluded.platform, posts.platform, '')) = 'xueqiu' THEN excluded.created_at
+        ELSE posts.created_at
+    END,
+    url=CASE
+        WHEN posts.processed_at IS NULL THEN excluded.url
+        ELSE posts.url
+    END,
+    raw_text=CASE
+        WHEN posts.processed_at IS NULL OR LOWER(COALESCE(excluded.platform, posts.platform, '')) = 'xueqiu' THEN excluded.raw_text
+        ELSE posts.raw_text
+    END,
+    display_md=CASE
+        WHEN posts.processed_at IS NULL OR LOWER(COALESCE(excluded.platform, posts.platform, '')) = 'xueqiu' THEN excluded.display_md
+        ELSE posts.display_md
+    END,
+    archived_at=CASE
+        WHEN posts.processed_at IS NULL OR LOWER(COALESCE(excluded.platform, posts.platform, '')) = 'xueqiu' THEN excluded.archived_at
+        ELSE posts.archived_at
+    END,
+    ingested_at=CASE
+        WHEN posts.processed_at IS NULL THEN excluded.ingested_at
+        ELSE posts.ingested_at
+    END
 """
 
 SELECT_DUE_POST_UIDS = """

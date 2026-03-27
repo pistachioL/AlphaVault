@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
 from typing import Iterator
 
-from alphavault.constants import DATETIME_FMT
+from alphavault.timeutil import now_cst_str
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
@@ -66,7 +65,7 @@ WHERE lock_key = :lock_key
 
 
 def _now_str() -> str:
-    return datetime.now().strftime(DATETIME_FMT)
+    return now_cst_str()
 
 
 @contextmanager

@@ -10,12 +10,11 @@ One page = follow one thing:
 
 from __future__ import annotations
 
-from datetime import datetime
 import json
 
 import pandas as pd
 
-from alphavault.constants import DATETIME_FMT
+from alphavault.timeutil import now_cst_str
 from alphavault.db.introspect import table_columns
 from alphavault.db.sql.follow_pages import (
     FOLLOW_KEYS_JSON_COLUMN,
@@ -39,8 +38,7 @@ ALLOWED_FOLLOW_TYPES = {FOLLOW_TYPE_TOPIC, FOLLOW_TYPE_CLUSTER}
 
 
 def _now_str() -> str:
-    # Keep the same datetime shape used in other modules (YYYY-MM-DD HH:MM:SS).
-    return datetime.now().strftime(DATETIME_FMT)
+    return now_cst_str()
 
 
 def normalize_follow_type(value: object) -> str:

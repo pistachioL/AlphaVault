@@ -7,7 +7,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, Optional
 from urllib.parse import urlparse
 
@@ -15,12 +15,11 @@ import feedparser
 import requests
 
 from alphavault.constants import DATETIME_FMT
+from alphavault.timeutil import CST, format_cst_datetime, now_cst_str
 from alphavault.text.html import html_to_text
 
 # NOTE: This module is extracted from the old local-sqlite ingest scripts.
 # It keeps only RSS parsing + small helpers, so the worker can delete the old route.
-
-CST = timezone(timedelta(hours=8))
 
 BASE62_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 BASE62_INDEX = {ch: idx for idx, ch in enumerate(BASE62_ALPHABET)}
@@ -82,7 +81,7 @@ class RateLimiter:
 
 
 def now_str() -> str:
-    return datetime.now(CST).strftime(DATETIME_FMT)
+    return now_cst_str()
 
 
 def fetch_feed(
@@ -136,7 +135,7 @@ def parse_datetime(entry: feedparser.FeedParserDict) -> str:
                 second,
                 tzinfo=timezone.utc,
             ).astimezone(CST)
-            return dt.strftime(DATETIME_FMT)
+            return format_cst_datetime(dt)
     return now_str()
 
 

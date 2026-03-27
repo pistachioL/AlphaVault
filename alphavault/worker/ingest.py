@@ -29,6 +29,13 @@ from alphavault.worker.redis_queue import (
 from alphavault.worker.spool import spool_delete, spool_write
 
 
+def _build_raw_text(*, title: str, content_text: str) -> str:
+    resolved_content = str(content_text or "").strip()
+    if resolved_content:
+        return resolved_content
+    return str(title or "").strip()
+
+
 def _try_push_to_redis(
     redis_client,
     redis_queue_key: str,
@@ -118,11 +125,7 @@ def ingest_rss_many_once(
             content_text = html_to_text(content_html)
             image_urls = extract_image_urls_from_html(content_html)
 
-            if title and content_text and title not in content_text:
-                raw_text = f"{title}\n\n{content_text}"
-            else:
-                raw_text = content_text or title
-            raw_text = (raw_text or "").strip()
+            raw_text = _build_raw_text(title=title, content_text=content_text)
             if not raw_text:
                 continue
 
