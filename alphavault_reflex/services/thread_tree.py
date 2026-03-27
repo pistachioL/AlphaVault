@@ -4,6 +4,7 @@ import re
 
 import pandas as pd
 
+from alphavault.db.turso_env import PLATFORM_XUEQIU
 from alphavault.ui.thread_tree import build_weibo_thread_forest
 from alphavault.ui.thread_tree import extract_platform_post_id
 
@@ -18,6 +19,20 @@ def _clean_post_id(value: object) -> str:
     text = text.replace("\t", "")
     text = _TRAILING_ESCAPED_TAB_RE.sub("", text)
     return text.strip()
+
+
+def normalize_tree_lookup_post_uid(value: object) -> str:
+    if value is None or value is pd.NA:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    raw = "" if value is None else str(value)
+    stripped = raw.strip()
+    if not stripped:
+        return ""
+    if stripped.lower().startswith(f"{PLATFORM_XUEQIU}:"):
+        return raw
+    return stripped
 
 
 def _find_thread_text(threads: list[dict], *, post_id: str) -> tuple[str, str]:
@@ -42,12 +57,12 @@ def slice_posts_for_single_post_tree(
     This intentionally trades completeness (full thread) for speed: we only need
     the root-to-leaf path for the selected post.
     """
-    uid = str(post_uid or "").strip()
+    uid = normalize_tree_lookup_post_uid(post_uid)
     if not uid or posts.empty:
         return posts.head(0).copy()
 
     if "post_uid" in posts.columns:
-        uid_series = posts["post_uid"].astype(str).str.strip()
+        uid_series = posts["post_uid"].apply(normalize_tree_lookup_post_uid)
         uid_mask = uid_series.eq(uid)
         if bool(uid_mask.any()):
             return posts.loc[uid_mask].copy()
@@ -68,11 +83,32 @@ def slice_posts_for_single_post_tree(
 
 
 def build_post_tree(*, post_uid: str, posts: pd.DataFrame) -> tuple[str, str]:
-    uid = str(post_uid or "").strip()
+    uid = normalize_tree_lookup_post_uid(post_uid)
     if not uid or posts.empty:
         return "", ""
     view_df = pd.DataFrame({"post_uid": [uid]})
     threads = build_weibo_thread_forest(view_df, posts_all=posts)
+    if (
+        not threads
+        and uid.lower().startswith(f"{PLATFORM_XUEQIU}:")
+        and "platform_post_id" in posts.columns
+    ):
+        fallback_uids: list[str] = []
+        seen: set[str] = set()
+        for raw in posts["platform_post_id"].tolist():
+            platform_id = _clean_post_id(raw)
+            if not platform_id:
+                continue
+            fallback_uid = f"{PLATFORM_XUEQIU}:{platform_id}"
+            if fallback_uid in seen:
+                continue
+            seen.add(fallback_uid)
+            fallback_uids.append(fallback_uid)
+        if fallback_uids:
+            threads = build_weibo_thread_forest(
+                pd.DataFrame({"post_uid": fallback_uids}),
+                posts_all=posts,
+            )
     if not threads:
         return "", ""
     first = threads[0] or {}

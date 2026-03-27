@@ -71,3 +71,24 @@ def test_build_post_tree_keeps_display_md_for_weibo() -> None:
 
     assert "老：根" in tree_text
     assert "新：叶" in tree_text
+
+
+def test_build_post_tree_supports_xueqiu_comment_uid_with_numeric_platform_id() -> None:
+    post_uid = "xueqiu:comment:400768409"
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": post_uid,
+                "platform_post_id": "400768409",
+                "author": "雪球作者",
+                "raw_text": "雪球作者：评论正文",
+                "display_md": "雪球作者：评论正文",
+                "created_at": "2026-03-27 11:36:44",
+            }
+        ]
+    )
+
+    _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
+
+    assert "雪球作者：评论正文" in tree_text
+    assert "[原帖 ID: 400768409]" in tree_text

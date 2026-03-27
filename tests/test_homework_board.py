@@ -41,3 +41,32 @@ def test_build_board_caption_only_shows_window_line() -> None:
 
     assert "窗口：" in result.caption
     assert "总时间：" not in result.caption
+
+
+def test_build_board_keeps_xueqiu_tree_post_uid_without_strip() -> None:
+    raw_uid = "xueqiu:status:381213336\t"
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": raw_uid,
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "小仓",
+                "author": "alice",
+                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
+            }
+        ]
+    )
+
+    result = build_board(
+        assertions,
+        pd.DataFrame(),
+        group_col="topic_key",
+        group_label="主题",
+        window_days=3,
+        sort_mode="最新",
+        consensus_filter="全部",
+    )
+
+    assert result.rows[0]["tree_post_uid"] == raw_uid

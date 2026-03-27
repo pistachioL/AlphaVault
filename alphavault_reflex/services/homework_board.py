@@ -11,6 +11,7 @@ from alphavault_reflex.services.homework_constants import (
     TRADE_BOARD_MAX_WINDOW_DAYS,
 )
 from alphavault_reflex.services.thread_tree import build_post_tree
+from alphavault_reflex.services.thread_tree import normalize_tree_lookup_post_uid
 
 TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})
@@ -141,8 +142,9 @@ def _build_latest_post_uid_candidates(
     ):
         return {}
     view = board_view[[group_col, "created_at", "post_uid"]].copy()
-    view["post_uid"] = view["post_uid"].apply(lambda v: "" if pd.isna(v) else str(v))
-    view["post_uid"] = view["post_uid"].astype(str).str.strip()
+    view["post_uid"] = view["post_uid"].apply(
+        lambda value: "" if pd.isna(value) else normalize_tree_lookup_post_uid(value)
+    )
     view = view[view["post_uid"].ne("")]
     if view.empty:
         return {}
@@ -341,12 +343,12 @@ def build_board(
         post_uid = (
             ""
             if pd.isna(row.get("post_uid"))
-            else str(row.get("post_uid") or "").strip()
+            else normalize_tree_lookup_post_uid(row.get("post_uid"))
         )
         tree_post_uid = post_uid if post_uid else ""
         if not tree_post_uid:
             for cand in candidates_by_topic.get(topic, []):
-                cand_uid = str(cand or "").strip()
+                cand_uid = normalize_tree_lookup_post_uid(cand)
                 if cand_uid:
                     tree_post_uid = cand_uid
                     break
