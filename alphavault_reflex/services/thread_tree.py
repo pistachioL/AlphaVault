@@ -33,6 +33,40 @@ def _find_thread_text(threads: list[dict], *, post_id: str) -> tuple[str, str]:
     return "", ""
 
 
+def slice_posts_for_single_post_tree(
+    *, post_uid: str, posts: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Keep tree building fast by slicing posts_all down to the one target post.
+
+    This intentionally trades completeness (full thread) for speed: we only need
+    the root-to-leaf path for the selected post.
+    """
+    uid = str(post_uid or "").strip()
+    if not uid or posts.empty:
+        return posts.head(0).copy()
+
+    if "post_uid" in posts.columns:
+        uid_series = posts["post_uid"].astype(str).str.strip()
+        uid_mask = uid_series.eq(uid)
+        if bool(uid_mask.any()):
+            return posts.loc[uid_mask].copy()
+
+    platform_post_id = _clean_post_id(extract_platform_post_id(uid))
+    if not platform_post_id or "platform_post_id" not in posts.columns:
+        return posts.head(0).copy()
+
+    cleaned = posts["platform_post_id"].astype(str)
+    cleaned = cleaned.str.replace("\t", "", regex=False)
+    cleaned = cleaned.str.replace(_TRAILING_ESCAPED_TAB_RE, "", regex=True)
+    cleaned = cleaned.str.strip()
+    id_mask = cleaned.eq(platform_post_id)
+    if bool(id_mask.any()):
+        return posts.loc[id_mask].copy()
+
+    return posts.head(0).copy()
+
+
 def build_post_tree(*, post_uid: str, posts: pd.DataFrame) -> tuple[str, str]:
     uid = str(post_uid or "").strip()
     if not uid or posts.empty:
