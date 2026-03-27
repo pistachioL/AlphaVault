@@ -16,6 +16,9 @@ from alphavault_reflex.services.turso_read import (
     MISSING_TURSO_SOURCES_ERROR,
     load_stock_alias_relations_from_env,
 )
+from alphavault_reflex.services.research_status_text import (
+    BACKGROUND_PROCESSING_TEXT,
+)
 
 _STOCK_SIGNAL_CAP = 500
 _EMPTY_EXTRAS = {"pending_candidates": [], "backfill_posts": [], "updated_at": ""}
@@ -301,7 +304,7 @@ def load_stock_cached_view_from_env(
     )
     warning = ""
     if signal_total <= 0:
-        warning = "缓存准备中，请稍后刷新。"
+        warning = BACKGROUND_PROCESSING_TEXT
     if errors:
         err_line = errors[0]
         warning = f"{warning} | {err_line}" if warning else err_line

@@ -46,6 +46,9 @@ from alphavault_reflex.services.stock_hot_read import (
     clear_stock_hot_read_caches,
     load_stock_cached_view_from_env,
 )
+from alphavault_reflex.services.research_status_text import (
+    STOCK_CACHE_PREPARING_HINTS,
+)
 from alphavault.env import load_dotenv_if_present
 from alphavault_reflex.services.stock_backfill import (
     BACKFILL_PROMPT_VERSION,
@@ -55,7 +58,6 @@ from alphavault_reflex.services.stock_backfill import (
 
 DEFAULT_SIGNAL_PAGE_SIZE = 5
 SIGNAL_PAGE_SIZE_OPTIONS = (5, 10, 20)
-STOCK_CACHE_PREPARING_HINT = "缓存准备中"
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
@@ -205,7 +207,10 @@ ORDER BY idx ASC
 
 
 def _is_stock_cache_preparing_warning(warning: str) -> bool:
-    return STOCK_CACHE_PREPARING_HINT in str(warning or "").strip()
+    text = str(warning or "").strip()
+    if not text:
+        return False
+    return any(hint in text for hint in STOCK_CACHE_PREPARING_HINTS)
 
 
 def load_sector_page_view(sector_slug: str) -> dict[str, object]:

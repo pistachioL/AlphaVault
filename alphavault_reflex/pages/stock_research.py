@@ -5,12 +5,17 @@ import reflex as rx
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import research_page_loading_var
 from alphavault_reflex.research_state import stock_page_title_var
+from alphavault_reflex.services.research_status_text import (
+    BACKGROUND_PROCESSING_TEXT,
+    BACKGROUND_PROCESSING_TOOLTIP,
+)
 
 EMPTY_TEXT = "暂无。"
 LOADING_TEXT = "加载中…"
 NO_SIGNAL_TEXT = "没有信号。"
 PAGE_LOADING = research_page_loading_var()
 PAGE_TITLE = stock_page_title_var()
+HELP_MARK_TEXT = "?"
 
 
 def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
@@ -152,6 +157,35 @@ def _section_loading() -> rx.Component:
     )
 
 
+def _hint_with_help(text: str, help_text: str) -> rx.Component:
+    return rx.el.div(
+        rx.text(text, class_name="av-research-muted"),
+        rx.el.span(
+            HELP_MARK_TEXT,
+            title=help_text,
+            class_name="av-research-muted",
+            style={
+                "display": "inline-flex",
+                "alignItems": "center",
+                "justifyContent": "center",
+                "width": "16px",
+                "height": "16px",
+                "border": "1px solid #9ca3af",
+                "borderRadius": "999px",
+                "cursor": "help",
+                "fontWeight": "600",
+                "fontSize": "12px",
+                "lineHeight": "1",
+            },
+        ),
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "gap": "6px",
+        },
+    )
+
+
 def stock_research_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
@@ -169,26 +203,22 @@ def stock_research_page() -> rx.Component:
             rx.el.div(),
         ),
         rx.cond(
-            ResearchState.stock_load_warning != "",
+            (ResearchState.stock_load_warning != "")
+            & (ResearchState.stock_load_warning != BACKGROUND_PROCESSING_TEXT),
             rx.text(ResearchState.stock_load_warning, class_name="av-research-muted"),
             rx.el.div(),
         ),
         rx.cond(
-            ResearchState.signals_ready,
-            rx.text("最近信号已就绪。", class_name="av-research-muted"),
-            rx.text("最近信号准备中…", class_name="av-research-muted"),
-        ),
-        rx.cond(
-            ResearchState.extras_ready,
+            ResearchState.signals_ready & ResearchState.extras_ready,
             rx.cond(
                 ResearchState.extras_updated_at != "",
                 rx.text(
                     "扩展数据更新时间：" + ResearchState.extras_updated_at,
                     class_name="av-research-muted",
                 ),
-                rx.text("扩展数据已就绪。", class_name="av-research-muted"),
+                rx.text("数据已就绪。", class_name="av-research-muted"),
             ),
-            rx.text("扩展数据准备中…", class_name="av-research-muted"),
+            _hint_with_help(BACKGROUND_PROCESSING_TEXT, BACKGROUND_PROCESSING_TOOLTIP),
         ),
         rx.el.div(
             rx.el.div(
