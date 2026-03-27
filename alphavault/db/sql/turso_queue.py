@@ -223,7 +223,7 @@ UPDATE posts
 SET ai_status='pending',
     ai_running_at=NULL,
     ai_next_retry_at=NULL,
-    ai_last_error='ai:recovered_done_without_processed_at'
+    ai_last_error='ai::recovered_done_without_processed_at'
 WHERE ai_status='done'
   AND (processed_at IS NULL OR TRIM(processed_at) = '')
 """
@@ -233,7 +233,7 @@ UPDATE posts
 SET ai_status='pending',
     ai_running_at=NULL,
     ai_next_retry_at=NULL,
-    ai_last_error='ai:recovered_done_without_processed_at'
+    ai_last_error='ai::recovered_done_without_processed_at'
 WHERE platform = :platform
   AND ai_status='done'
   AND (processed_at IS NULL OR TRIM(processed_at) = '')
