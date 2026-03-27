@@ -1065,12 +1065,42 @@ def _maybe_start_periodic_job(
     return new_future, next_at, True
 
 
+def _prune_inflight_futures(
+    inflight_futures: set[Future],
+    inflight_owner_by_future: dict[Future, str],
+) -> None:
+    done = {f for f in inflight_futures if f.done()}
+    if not done:
+        return
+    inflight_futures.difference_update(done)
+    for fut in done:
+        inflight_owner_by_future.pop(fut, None)
+
+
+def _count_inflight_for_owner(
+    inflight_owner_by_future: dict[Future, str],
+    *,
+    owner: str,
+) -> int:
+    resolved = str(owner or "").strip()
+    if not resolved:
+        return 0
+    return sum(
+        1
+        for fut, fut_owner in inflight_owner_by_future.items()
+        if fut_owner == resolved and not fut.done()
+    )
+
+
 def _schedule_ai(
     executor: ThreadPoolExecutor,
     *,
     engine: Optional[Engine],
+    platform: str,
     worker_threads: int,
     inflight_futures: set[Future],
+    inflight_owner_by_future: dict[Future, str],
+    inflight_owner: str,
     wakeup_event: threading.Event,
     config: LLMConfig,
     limiter: RateLimiter,
@@ -1079,7 +1109,7 @@ def _schedule_ai(
     if engine is None:
         return 0, False
     # Keep inflight bounded: do not queue more than worker_threads tasks.
-    inflight_futures.difference_update({f for f in inflight_futures if f.done()})
+    _prune_inflight_futures(inflight_futures, inflight_owner_by_future)
     available = max(0, int(worker_threads) - len(inflight_futures))
     if available <= 0:
         return 0, False
@@ -1089,6 +1119,7 @@ def _schedule_ai(
             engine,
             now_epoch=now_epoch,
             limit=max(1, int(available) * 2),
+            platform=str(platform or "").strip().lower() or None,
         )
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
@@ -1097,7 +1128,10 @@ def _schedule_ai(
             engine=engine, err=e, verbose=bool(verbose)
         )
         if verbose:
-            print(f"[ai] select_due_error {type(e).__name__}: {e}", flush=True)
+            print(
+                f"[ai] select_due_error owner={inflight_owner} platform={platform} {type(e).__name__}: {e}",
+                flush=True,
+            )
         return 0, True
 
     scheduled = 0
@@ -1113,7 +1147,10 @@ def _schedule_ai(
                 engine=engine, err=e, verbose=bool(verbose)
             )
             if verbose:
-                print(f"[ai] mark_running_error {type(e).__name__}: {e}", flush=True)
+                print(
+                    f"[ai] mark_running_error owner={inflight_owner} platform={platform} {type(e).__name__}: {e}",
+                    flush=True,
+                )
             return scheduled, True
         if not ok:
             continue
@@ -1126,6 +1163,7 @@ def _schedule_ai(
         )
         fut.add_done_callback(lambda _f: wakeup_event.set())
         inflight_futures.add(fut)
+        inflight_owner_by_future[fut] = str(inflight_owner or "").strip()
         scheduled += 1
     return scheduled, False
 
@@ -1133,6 +1171,7 @@ def _schedule_ai(
 def _run_turso_maintenance(
     *,
     engine: Optional[Engine],
+    platform: str,
     spool_dir: Path,
     redis_client,
     redis_queue_key: str,
@@ -1149,9 +1188,14 @@ def _run_turso_maintenance(
             engine,
             now_epoch=int(time.time()),
             stuck_seconds=max(60, int(stuck_seconds)),
+            platform=str(platform or "").strip().lower() or None,
             verbose=bool(verbose),
         )
-        recovered += recover_done_without_processed_at(engine, verbose=bool(verbose))
+        recovered += recover_done_without_processed_at(
+            engine,
+            platform=str(platform or "").strip().lower() or None,
+            verbose=bool(verbose),
+        )
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
@@ -1291,15 +1335,14 @@ def main() -> None:
     ):
         wakeup_event = threading.Event()
         inflight_futures: set[Future] = set()
+        inflight_owner_by_future: dict[Future, str] = {}
         while True:
             verbose = bool(args.verbose)
             if worker_active_hours is not None:
                 sleep_until_active(worker_active_hours, verbose=verbose)
 
             wakeup_event.clear()
-            inflight_futures.difference_update(
-                {f for f in inflight_futures if f.done()}
-            )
+            _prune_inflight_futures(inflight_futures, inflight_owner_by_future)
             now = time.time()
             do_maintenance = bool(now >= maintenance_next_at)
             if do_maintenance:
@@ -1474,6 +1517,7 @@ def main() -> None:
                     recovered, flushed_redis, flushed_spool, maintenance_error = (
                         _run_turso_maintenance(
                             engine=active_engine,
+                            platform=source.config.platform,
                             spool_dir=source.spool_dir,
                             redis_client=redis_client,
                             redis_queue_key=source.redis_queue_key,
@@ -1545,8 +1589,11 @@ def main() -> None:
                     scheduled, schedule_error = _schedule_ai(
                         executor,
                         engine=active_engine,
+                        platform=source.config.platform,
                         worker_threads=worker_threads,
                         inflight_futures=inflight_futures,
+                        inflight_owner_by_future=inflight_owner_by_future,
+                        inflight_owner=source.config.name,
                         wakeup_event=wakeup_event,
                         config=config,
                         limiter=limiter,
@@ -1604,9 +1651,12 @@ def main() -> None:
                         next_turso_in = max(
                             0.0, float(source.turso_next_ready_check_at) - time.time()
                         )
+                    inflight_for_source = _count_inflight_for_owner(
+                        inflight_owner_by_future, owner=source.config.name
+                    )
                     print(
                         f"[tick:{source.config.name}] turso_ready={1 if active_engine is not None else 0} "
-                        f"inflight={len(inflight_futures)} alias_inflight={1 if source.alias_sync_future is not None else 0} "
+                        f"inflight={inflight_for_source} alias_inflight={1 if source.alias_sync_future is not None else 0} "
                         f"backfill_inflight={1 if source.backfill_cache_future is not None else 0} "
                         f"relation_inflight={1 if source.relation_cache_future is not None else 0} "
                         f"ai_scheduled={scheduled} "
