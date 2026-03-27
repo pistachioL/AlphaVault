@@ -16,6 +16,7 @@ from alphavault.db.turso_db import (
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.research_backfill_cache import list_stock_backfill_posts
 from alphavault.research_stock_cache import (
+    RESEARCH_STOCK_HOT_TABLE,
     ensure_research_stock_cache_schema,
     list_stock_dirty_entries,
     list_stock_dirty_keys,
@@ -307,6 +308,53 @@ def _format_signal_created_at_line(value: object) -> str:
     return f"{text} · {age}"
 
 
+def _list_missing_hot_cache_stock_keys(
+    conn: TursoConnection,
+    *,
+    limit: int,
+    after_stock_key: str = "",
+) -> list[str]:
+    cursor = str(after_stock_key or "").strip()
+    cursor_sql = ""
+    params: dict[str, object] = {"limit": max(1, int(limit))}
+    if cursor:
+        cursor_sql = "AND a.topic_key > :after_stock_key"
+        params["after_stock_key"] = cursor
+    sql = f"""
+SELECT DISTINCT a.topic_key
+FROM assertions a
+WHERE a.action LIKE 'trade.%'
+  AND a.topic_key LIKE 'stock:%'
+  {cursor_sql}
+  AND NOT EXISTS (
+    SELECT 1
+    FROM {RESEARCH_STOCK_HOT_TABLE} hot
+    WHERE hot.stock_key = a.topic_key
+  )
+ORDER BY a.topic_key ASC
+LIMIT :limit
+"""
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        str(row[0] or "").strip()
+        for row in rows
+        if row and str(row[0] or "").strip().startswith("stock:")
+    ]
+
+
+def _has_missing_hot_cache_stock_keys(
+    conn: TursoConnection,
+    *,
+    after_stock_key: str = "",
+) -> bool:
+    keys = _list_missing_hot_cache_stock_keys(
+        conn,
+        limit=1,
+        after_stock_key=after_stock_key,
+    )
+    return bool(keys)
+
+
 def _build_related_sectors(rows: pd.DataFrame) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
     for item in rows.get("cluster_keys", pd.Series(dtype=object)).tolist():
@@ -527,11 +575,25 @@ def sync_stock_hot_cache(
             if isinstance(engine_or_conn, TursoEngine)
             else engine_or_conn
         ) as conn:
+            bootstrap_keys: list[str] = []
             dirty_entries = list_stock_dirty_entries(
                 conn,
                 limit=max(1, max(int(max_stocks_per_run), int(dirty_limit))),
             )
             dirty_entries = dirty_entries[: max(1, int(max_stocks_per_run))]
+            if not dirty_entries:
+                bootstrap_keys = _list_missing_hot_cache_stock_keys(
+                    conn,
+                    limit=max(1, int(max_stocks_per_run)),
+                )
+                dirty_entries = [
+                    {
+                        "stock_key": key,
+                        "reason": "bootstrap_missing_hot",
+                        "updated_at": "",
+                    }
+                    for key in bootstrap_keys
+                ]
             if not dirty_entries:
                 return {"processed": 0, "written": 0, "has_more": False}
 
@@ -565,6 +627,11 @@ def sync_stock_hot_cache(
 
             remaining = list_stock_dirty_keys(conn, limit=1)
             has_more = bool(remaining)
+            if (not has_more) and bootstrap_keys:
+                has_more = _has_missing_hot_cache_stock_keys(
+                    conn,
+                    after_stock_key=bootstrap_keys[-1],
+                )
             return {
                 "processed": int(len(processed_keys)),
                 "written": int(written),

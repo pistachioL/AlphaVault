@@ -209,6 +209,27 @@ def stock_research_page() -> rx.Component:
             rx.el.div(),
         ),
         rx.cond(
+            ResearchState.worker_status_text != "",
+            rx.text(ResearchState.worker_status_text, class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
+            ResearchState.worker_next_run_at != "",
+            rx.text(
+                "下一轮时间：" + ResearchState.worker_next_run_at,
+                class_name="av-research-muted",
+            ),
+            rx.el.div(),
+        ),
+        rx.cond(
+            ResearchState.worker_cycle_updated_at != "",
+            rx.text(
+                "状态更新时间：" + ResearchState.worker_cycle_updated_at,
+                class_name="av-research-muted",
+            ),
+            rx.el.div(),
+        ),
+        rx.cond(
             ResearchState.signals_ready & ResearchState.extras_ready,
             rx.cond(
                 ResearchState.extras_updated_at != "",

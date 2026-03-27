@@ -171,3 +171,75 @@ def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> No
             [{"post_uid": "weibo:2"}],
         )
     ]
+
+
+def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
+    monkeypatch,
+) -> None:
+    removed: list[str] = []
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "try_acquire_worker_job_lock",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "release_worker_job_lock",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "ensure_research_stock_cache_schema",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "ensure_research_workbench_schema",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "list_stock_dirty_entries",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "_list_missing_hot_cache_stock_keys",
+        lambda *_args, **_kwargs: ["stock:601899.SH"],
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "refresh_stock_hot_for_key",
+        lambda _conn, **kwargs: str(kwargs.get("stock_key") or ""),
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "refresh_stock_extras_snapshot_for_key",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def _remove_stock_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
+        removed.extend(stock_keys)
+        return len(stock_keys)
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "remove_stock_dirty_keys",
+        _remove_stock_dirty_keys,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "list_stock_dirty_keys",
+        lambda *_args, **_kwargs: [],
+    )
+
+    stats = stock_hot_cache.sync_stock_hot_cache(
+        cast(TursoConnection, _FakeConn()),
+        max_stocks_per_run=4,
+        dirty_limit=16,
+    )
+
+    assert int(stats.get("processed", 0)) == 1
+    assert int(stats.get("written", 0)) == 1
+    assert removed == ["stock:601899.SH"]

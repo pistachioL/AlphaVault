@@ -103,6 +103,37 @@ def test_load_stock_page_sets_signals_not_ready_when_cache_preparing(
     assert state.signals_ready is False
 
 
+def test_load_stock_page_maps_worker_progress_fields(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        lambda stock_slug, **_kwargs: {
+            "entity_key": "stock:000001.SZ",
+            "header_title": "000001.SZ",
+            "signals": [],
+            "related_sectors": [],
+            "pending_candidates": [],
+            "backfill_posts": [],
+            "signal_total": 0,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
+            "load_warning": "",
+            "worker_status_text": "本轮补数中",
+            "worker_next_run_at": "2026-03-28 16:00:00",
+            "worker_cycle_updated_at": "2026-03-28 15:59:58",
+            "worker_running": True,
+        },
+    )
+
+    state = ResearchState()
+    state.load_stock_page("000001.SZ")
+
+    assert state.worker_status_text == "本轮补数中"
+    assert state.worker_next_run_at == "2026-03-28 16:00:00"
+    assert state.worker_cycle_updated_at == "2026-03-28 15:59:58"
+    assert state.worker_running is True
+
+
 def test_load_stock_page_uses_canonical_entity_key_from_view(monkeypatch) -> None:
     monkeypatch.setattr(
         "alphavault_reflex.research_state.load_stock_page_cached_view",

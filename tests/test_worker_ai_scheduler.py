@@ -5,6 +5,7 @@ from alphavault.worker.worker import (
     _build_low_priority_should_continue,
     _compute_low_priority_budget,
     _compute_rss_available_slots,
+    _should_fast_retry_for_periodic_job,
 )
 
 
@@ -68,3 +69,11 @@ def test_low_priority_slot_gate_respects_dynamic_cap() -> None:
     gate.release()
     assert gate.inflight() == 0
     assert gate.try_acquire() is True
+
+
+def test_should_fast_retry_for_periodic_job_true_when_has_more() -> None:
+    assert _should_fast_retry_for_periodic_job(has_more=True) is True
+
+
+def test_should_fast_retry_for_periodic_job_false_when_no_more() -> None:
+    assert _should_fast_retry_for_periodic_job(has_more=False) is False

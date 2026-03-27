@@ -196,8 +196,8 @@ def build_post_tree_map(
 
     out: dict[str, tuple[str, str]] = {}
     for uid in cleaned_uids:
-        post_id = _resolve_platform_post_id(post_uid=uid, posts=posts) or _clean_post_id(
-            extract_platform_post_id(uid)
-        )
+        post_id = _resolve_platform_post_id(
+            post_uid=uid, posts=posts
+        ) or _clean_post_id(extract_platform_post_id(uid))
         out[uid] = _find_thread_text(threads, post_id=post_id)
     return out
