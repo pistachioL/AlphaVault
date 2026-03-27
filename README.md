@@ -26,6 +26,11 @@
 uv sync
 ```
 
+如果你要跑旧版 Streamlit 入口，再额外装可选依赖：
+```bash
+uv sync --group streamlit
+```
+
 ## 开发（pre-commit + tests）
 ```bash
 # 1) 安装 hooks（提交前自动检查）
@@ -241,6 +246,11 @@ uv run reflex run
 ## 旧 Streamlit 入口
 ```bash
 uv run streamlit run streamlit_app.py
+```
+
+注意：`streamlit` 现在是可选依赖组，先执行一次：
+```bash
+uv sync --group streamlit
 ```
 
 保留原因：

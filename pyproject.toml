@@ -8,13 +8,13 @@ dependencies = [
   "feedparser",
   "libsql>=0.1.11",
   "litellm",
+  "pandas",
   "python-dotenv",
   "redis",
   "reflex>=0.8.28.post1",
   "requests",
   "sqlalchemy",
   "sqlparams>=6.2.0",
-  "streamlit",
   "supervisor",
 ]
 
@@ -22,6 +22,9 @@ dependencies = [
 dev = [
   "pre-commit>=3.0.0",
   "pytest>=8.0.0",
+]
+streamlit = [
+  "streamlit",
 ]
 
 [tool.pytest.ini_options]

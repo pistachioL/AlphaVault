@@ -172,13 +172,13 @@ dependencies = [
     { name = "feedparser" },
     { name = "libsql" },
     { name = "litellm" },
+    { name = "pandas" },
     { name = "python-dotenv" },
     { name = "redis" },
     { name = "reflex" },
     { name = "requests" },
     { name = "sqlalchemy" },
     { name = "sqlparams" },
-    { name = "streamlit" },
     { name = "supervisor" },
 ]
 
@@ -187,19 +187,22 @@ dev = [
     { name = "pre-commit" },
     { name = "pytest" },
 ]
+streamlit = [
+    { name = "streamlit" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "feedparser" },
     { name = "libsql", specifier = ">=0.1.11" },
     { name = "litellm" },
+    { name = "pandas" },
     { name = "python-dotenv" },
     { name = "redis" },
     { name = "reflex", specifier = ">=0.8.28.post1" },
     { name = "requests" },
     { name = "sqlalchemy" },
     { name = "sqlparams", specifier = ">=6.2.0" },
-    { name = "streamlit" },
     { name = "supervisor" },
 ]
 
@@ -208,6 +211,7 @@ dev = [
     { name = "pre-commit", specifier = ">=3.0.0" },
     { name = "pytest", specifier = ">=8.0.0" },
 ]
+streamlit = [{ name = "streamlit" }]
 
 [[package]]
 name = "altair"

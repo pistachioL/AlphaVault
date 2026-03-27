@@ -4,6 +4,9 @@
 .venv/
 venv/
 __pycache__/
+.states/
+.web/
+.reflex/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
