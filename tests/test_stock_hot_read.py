@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+
+import pandas as pd
+
+from alphavault_reflex.services import stock_hot_read
+
+
+def _setup_single_source(monkeypatch) -> None:
+    monkeypatch.setattr(stock_hot_read, "load_dotenv_if_present", lambda: None)
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_configured_turso_sources_from_env",
+        lambda: [SimpleNamespace(name="weibo", url="u1", token="t1")],
+    )
+    monkeypatch.setattr(stock_hot_read, "ensure_turso_engine", lambda *_args: object())
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_alias_relations_from_env",
+        lambda: (pd.DataFrame(), ""),
+    )
+    stock_hot_read.clear_stock_hot_read_caches()
+
+
+def test_load_stock_cached_view_without_running_worker_has_no_processing_warning(
+    monkeypatch,
+) -> None:
+    _setup_single_source(monkeypatch)
+    monkeypatch.setattr(
+        stock_hot_read, "load_stock_hot_view", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_extras_snapshot",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "600519.SH",
+        signal_page=1,
+        signal_page_size=5,
+    )
+
+    assert str(payload.get("load_warning") or "").strip() == ""
+    assert bool(payload.get("worker_running", True)) is False
+
+
+def test_load_stock_cached_view_with_running_worker_includes_status(
+    monkeypatch,
+) -> None:
+    _setup_single_source(monkeypatch)
+    monkeypatch.setattr(
+        stock_hot_read, "load_stock_hot_view", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_extras_snapshot",
+        lambda *_args, **_kwargs: {},
+    )
+
+    def _fake_state(_engine, *, state_key: str) -> str:
+        if state_key.endswith(".cycle"):
+            return json.dumps(
+                {
+                    "status": "running",
+                    "next_run_at": "2026-03-28 15:10:00",
+                    "updated_at": "2026-03-28 15:00:00",
+                },
+                ensure_ascii=False,
+            )
+        return ""
+
+    monkeypatch.setattr(stock_hot_read, "load_worker_job_cursor", _fake_state)
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "600519.SH",
+        signal_page=1,
+        signal_page_size=5,
+    )
+
+    assert "后台处理中" in str(payload.get("load_warning") or "")
+    assert bool(payload.get("worker_running", False)) is True
+    assert str(payload.get("worker_next_run_at") or "") == "2026-03-28 15:10:00"
+    assert str(payload.get("worker_cycle_updated_at") or "") == "2026-03-28 15:00:00"

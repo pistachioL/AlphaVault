@@ -277,6 +277,10 @@ class ResearchState(rx.State):
     signals_ready: bool = False
     extras_ready: bool = False
     extras_updated_at: str = ""
+    worker_status_text: str = ""
+    worker_next_run_at: str = ""
+    worker_cycle_updated_at: str = ""
+    worker_running: bool = False
     loaded_once: bool = False
     page_title: str = ""
     entity_key: str = ""
@@ -398,6 +402,10 @@ class ResearchState(rx.State):
         self.signals_ready = False
         self.extras_ready = False
         self.extras_updated_at = ""
+        self.worker_status_text = ""
+        self.worker_next_run_at = ""
+        self.worker_cycle_updated_at = ""
+        self.worker_running = False
         self.pending_candidates = []
         self.backfill_posts = []
 
@@ -410,6 +418,12 @@ class ResearchState(rx.State):
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
         self.backfill_posts = _coerce_rows(view.get("backfill_posts"))
         self.extras_updated_at = str(view.get("extras_updated_at") or "").strip()
+        self.worker_status_text = str(view.get("worker_status_text") or "").strip()
+        self.worker_next_run_at = str(view.get("worker_next_run_at") or "").strip()
+        self.worker_cycle_updated_at = str(
+            view.get("worker_cycle_updated_at") or ""
+        ).strip()
+        self.worker_running = bool(view.get("worker_running"))
         self.loaded_once = True
         self.loading = False
         cache_preparing = _is_stock_cache_preparing_warning(self.stock_load_warning)
@@ -490,6 +504,10 @@ class ResearchState(rx.State):
         self.signals_ready = True
         self.extras_ready = True
         self.extras_updated_at = ""
+        self.worker_status_text = ""
+        self.worker_next_run_at = ""
+        self.worker_cycle_updated_at = ""
+        self.worker_running = False
         self.primary_signals = _coerce_rows(view.get("signals"))
         self.related_items = _prepare_stock_links(view.get("related_stocks"))
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))

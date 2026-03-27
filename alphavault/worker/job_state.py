@@ -13,6 +13,21 @@ from alphavault.db.turso_db import (
 
 WORKER_STATE_TABLE = "research_worker_state"
 WORKER_LOCKS_TABLE = "research_worker_locks"
+WORKER_PROGRESS_STATE_PREFIX = "worker.progress"
+WORKER_PROGRESS_STAGE_CYCLE = "cycle"
+WORKER_PROGRESS_STAGE_AI = "ai"
+WORKER_PROGRESS_STAGE_ALIAS = "alias"
+WORKER_PROGRESS_STAGE_BACKFILL = "backfill"
+WORKER_PROGRESS_STAGE_RELATION = "relation"
+WORKER_PROGRESS_STAGE_STOCK_HOT = "stock_hot"
+WORKER_PROGRESS_STAGES = (
+    WORKER_PROGRESS_STAGE_CYCLE,
+    WORKER_PROGRESS_STAGE_AI,
+    WORKER_PROGRESS_STAGE_ALIAS,
+    WORKER_PROGRESS_STAGE_BACKFILL,
+    WORKER_PROGRESS_STAGE_RELATION,
+    WORKER_PROGRESS_STAGE_STOCK_HOT,
+)
 
 SQL_CREATE_WORKER_STATE_TABLE = f"""
 CREATE TABLE IF NOT EXISTS {WORKER_STATE_TABLE} (
@@ -66,6 +81,14 @@ WHERE lock_key = :lock_key
 
 def _now_str() -> str:
     return now_cst_str()
+
+
+def worker_progress_state_key(*, source_name: str, stage: str) -> str:
+    source = str(source_name or "").strip().lower()
+    stage_value = str(stage or "").strip().lower()
+    if not source or not stage_value:
+        return ""
+    return f"{WORKER_PROGRESS_STATE_PREFIX}.{source}.{stage_value}"
 
 
 @contextmanager
@@ -172,6 +195,15 @@ __all__ = [
     "release_worker_job_lock",
     "save_worker_job_cursor",
     "try_acquire_worker_job_lock",
+    "worker_progress_state_key",
+    "WORKER_PROGRESS_STAGE_AI",
+    "WORKER_PROGRESS_STAGE_ALIAS",
+    "WORKER_PROGRESS_STAGE_BACKFILL",
+    "WORKER_PROGRESS_STAGE_CYCLE",
+    "WORKER_PROGRESS_STAGE_RELATION",
+    "WORKER_PROGRESS_STAGE_STOCK_HOT",
+    "WORKER_PROGRESS_STAGES",
     "WORKER_LOCKS_TABLE",
+    "WORKER_PROGRESS_STATE_PREFIX",
     "WORKER_STATE_TABLE",
 ]

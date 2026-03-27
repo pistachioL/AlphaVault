@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
+import json
 
 import pandas as pd
 
@@ -19,6 +20,11 @@ from alphavault_reflex.services.turso_read import (
 from alphavault_reflex.services.research_status_text import (
     BACKGROUND_PROCESSING_TEXT,
 )
+from alphavault.worker.job_state import (
+    load_worker_job_cursor,
+    worker_progress_state_key,
+    WORKER_PROGRESS_STAGE_CYCLE,
+)
 
 _STOCK_SIGNAL_CAP = 500
 _EMPTY_EXTRAS = {"pending_candidates": [], "backfill_posts": [], "updated_at": ""}
@@ -35,12 +41,32 @@ def _normalize_stock_key(value: str) -> str:
 def _load_stock_hot_payload_cached(
     db_url: str,
     auth_token: str,
+    source_name: str,
     stock_key: str,
-) -> tuple[dict[str, object], dict[str, object]]:
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     engine = ensure_turso_engine(db_url, auth_token)
     hot = load_stock_hot_view(engine, stock_key=stock_key)
     extras = load_stock_extras_snapshot(engine, stock_key=stock_key)
-    return hot, extras
+    progress: dict[str, object] = {}
+    cycle_state_key = worker_progress_state_key(
+        source_name=source_name,
+        stage=WORKER_PROGRESS_STAGE_CYCLE,
+    )
+    if cycle_state_key:
+        raw = load_worker_job_cursor(engine, state_key=cycle_state_key)
+        text = str(raw or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                parsed = {}
+            if isinstance(parsed, dict):
+                progress = {
+                    str(key): value
+                    for key, value in parsed.items()
+                    if str(key or "").strip()
+                }
+    return hot, extras, progress
 
 
 def _resolve_stock_key_candidates(stock_key: str) -> list[str]:
@@ -186,6 +212,35 @@ def _slice_signals(
     return rows[start:end], total, page
 
 
+def _merge_worker_cycle_progress(
+    progress_rows: list[dict[str, object]],
+) -> dict[str, object]:
+    running = False
+    next_run_at = ""
+    updated_at = ""
+    for row in progress_rows:
+        status = str(row.get("status") or "").strip().lower()
+        if status == "running" or bool(row.get("running")):
+            running = True
+        candidate_next = str(row.get("next_run_at") or "").strip()
+        if candidate_next and (not next_run_at or candidate_next < next_run_at):
+            next_run_at = candidate_next
+        candidate_updated = str(row.get("updated_at") or "").strip()
+        if candidate_updated > updated_at:
+            updated_at = candidate_updated
+    status_text = ""
+    if running:
+        status_text = "本轮补数中，正在更新AI和缓存。"
+    elif updated_at:
+        status_text = "后台空闲，等待下一轮。"
+    return {
+        "worker_running": bool(running),
+        "worker_status_text": status_text,
+        "worker_next_run_at": next_run_at,
+        "worker_cycle_updated_at": updated_at,
+    }
+
+
 def load_stock_cached_view_from_env(
     stock_key: str,
     *,
@@ -207,6 +262,10 @@ def load_stock_cached_view_from_env(
             "extras_updated_at": "",
             "load_error": "",
             "load_warning": "",
+            "worker_status_text": "",
+            "worker_next_run_at": "",
+            "worker_cycle_updated_at": "",
+            "worker_running": False,
         }
     load_dotenv_if_present()
     sources = load_configured_turso_sources_from_env()
@@ -224,16 +283,22 @@ def load_stock_cached_view_from_env(
             "extras_updated_at": "",
             "load_error": MISSING_TURSO_SOURCES_ERROR,
             "load_warning": "",
+            "worker_status_text": "",
+            "worker_next_run_at": "",
+            "worker_cycle_updated_at": "",
+            "worker_running": False,
         }
     key_candidates = _resolve_stock_key_candidates(normalized)
     errors: list[str] = []
     selected_hot_rows: list[dict[str, object]] = []
     selected_extras_rows: list[dict[str, object]] = []
+    selected_progress_rows: list[dict[str, object]] = []
     selected_key = normalized
 
     for candidate in key_candidates:
         hot_rows: list[dict[str, object]] = []
         extras_rows: list[dict[str, object]] = []
+        progress_rows: list[dict[str, object]] = []
         max_workers = max(1, min(4, int(len(sources))))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
@@ -241,6 +306,7 @@ def load_stock_cached_view_from_env(
                     _load_stock_hot_payload_cached,
                     source.url,
                     source.token,
+                    source.name,
                     candidate,
                 ): source.name
                 for source in sources
@@ -248,7 +314,7 @@ def load_stock_cached_view_from_env(
             for fut in as_completed(futures):
                 source_name = futures.get(fut, "")
                 try:
-                    hot, extras = fut.result()
+                    hot, extras, progress = fut.result()
                 except BaseException as err:
                     errors.append(
                         f"turso_connect_error:{source_name}:{type(err).__name__}"
@@ -258,17 +324,21 @@ def load_stock_cached_view_from_env(
                     hot_rows.append(hot)
                 if extras:
                     extras_rows.append(extras)
+                if progress:
+                    progress_rows.append(progress)
         merged_signals = _sort_signal_rows(
             [row for payload in hot_rows for row in _dict_rows(payload.get("signals"))]
         )
         if merged_signals:
             selected_hot_rows = hot_rows
             selected_extras_rows = extras_rows
+            selected_progress_rows = progress_rows
             selected_key = candidate
             break
-        if not selected_hot_rows and hot_rows:
+        if not selected_hot_rows and (hot_rows or extras_rows or progress_rows):
             selected_hot_rows = hot_rows
             selected_extras_rows = extras_rows
+            selected_progress_rows = progress_rows
             selected_key = candidate
 
     header_title = ""
@@ -302,8 +372,10 @@ def load_stock_cached_view_from_env(
         if selected_extras_rows
         else dict(_EMPTY_EXTRAS)
     )
+    worker_progress = _merge_worker_cycle_progress(selected_progress_rows)
+    worker_running = bool(worker_progress.get("worker_running"))
     warning = ""
-    if signal_total <= 0:
+    if signal_total <= 0 and worker_running:
         warning = BACKGROUND_PROCESSING_TEXT
     if errors:
         err_line = errors[0]
@@ -321,6 +393,16 @@ def load_stock_cached_view_from_env(
         "extras_updated_at": str(merged_extras.get("updated_at") or "").strip(),
         "load_error": "",
         "load_warning": warning,
+        "worker_status_text": str(
+            worker_progress.get("worker_status_text") or ""
+        ).strip(),
+        "worker_next_run_at": str(
+            worker_progress.get("worker_next_run_at") or ""
+        ).strip(),
+        "worker_cycle_updated_at": str(
+            worker_progress.get("worker_cycle_updated_at") or ""
+        ).strip(),
+        "worker_running": worker_running,
     }
 
 

@@ -80,6 +80,16 @@ from alphavault.worker.research_relation_candidates_cache import (
 )
 from alphavault.worker.research_stock_cache import sync_stock_hot_cache
 from alphavault.worker.stock_alias_sync import sync_stock_alias_relations
+from alphavault.worker.job_state import (
+    save_worker_job_cursor,
+    worker_progress_state_key,
+    WORKER_PROGRESS_STAGE_AI,
+    WORKER_PROGRESS_STAGE_ALIAS,
+    WORKER_PROGRESS_STAGE_BACKFILL,
+    WORKER_PROGRESS_STAGE_CYCLE,
+    WORKER_PROGRESS_STAGE_RELATION,
+    WORKER_PROGRESS_STAGE_STOCK_HOT,
+)
 from alphavault.research_stock_cache import mark_stock_dirty_from_assertions
 from alphavault_reflex.services.stock_objects import AiRuntimeConfig
 
@@ -93,6 +103,8 @@ from alphavault.weibo.topic_prompt_tree import (
 TURSO_READY_RETRY_SECONDS = 5.0
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 LOW_PRIORITY_SCHEDULER_MODE = "rss_priority_fill"
+WORKER_PROGRESS_STATUS_IDLE = "idle"
+WORKER_PROGRESS_STATUS_RUNNING = "running"
 
 
 @dataclass(frozen=True)
@@ -123,6 +135,9 @@ class WorkerSourceRuntime:
     relation_cache_next_at: float = 0.0
     stock_hot_cache_future: Future | None = None
     stock_hot_cache_next_at: float = 0.0
+    cycle_running: bool = False
+    cycle_started_at: float = 0.0
+    cycle_finished_at: float = 0.0
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
@@ -1135,6 +1150,78 @@ def _count_inflight_for_owner(
     )
 
 
+def _format_epoch_to_cst(value: float) -> str:
+    ts = float(value or 0.0)
+    if ts <= 0:
+        return ""
+    try:
+        return datetime.fromtimestamp(ts, tz=CST).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ""
+
+
+def _should_fast_retry_for_periodic_job(*, has_more: bool) -> bool:
+    return bool(has_more)
+
+
+def _save_worker_progress_state(
+    *,
+    source: WorkerSourceRuntime,
+    stage: str,
+    payload: dict[str, object],
+    verbose: bool,
+) -> None:
+    state_key = worker_progress_state_key(source_name=source.config.name, stage=stage)
+    if not state_key:
+        return
+    data = {str(key): value for key, value in payload.items() if str(key or "").strip()}
+    data["source"] = str(source.config.name or "").strip()
+    data["stage"] = str(stage or "").strip()
+    data["updated_at"] = now_str()
+    try:
+        save_worker_job_cursor(
+            source.engine,
+            state_key=state_key,
+            cursor=json.dumps(data, ensure_ascii=False),
+        )
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=source.engine, err=err, verbose=bool(verbose)
+        )
+        if verbose:
+            print(
+                f"[progress:{source.config.name}] write_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+
+
+def _has_due_ai_posts(
+    *,
+    engine: Optional[Engine],
+    platform: str,
+    verbose: bool,
+) -> bool:
+    if engine is None:
+        return False
+    try:
+        due = select_due_post_uids(
+            engine,
+            now_epoch=int(time.time()),
+            limit=1,
+            platform=str(platform or "").strip().lower() or None,
+        )
+        return bool(due)
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=engine, err=err, verbose=bool(verbose)
+        )
+        return False
+
+
 def _compute_low_priority_budget(*, ai_cap: int, rss_inflight_now: int) -> int:
     return max(0, int(ai_cap) - max(0, int(rss_inflight_now)))
 
@@ -1634,8 +1721,8 @@ def main() -> None:
                         f"[alias:{source.config.name}] sync_done resolved={alias_resolved} inserted={alias_inserted}",
                         flush=True,
                     )
-                alias_fast_retry = bool(
-                    alias_has_more and (alias_resolved > 0 or alias_inserted > 0)
+                alias_fast_retry = _should_fast_retry_for_periodic_job(
+                    has_more=alias_has_more
                 )
                 if alias_fast_retry:
                     source.alias_sync_next_at = 0.0
@@ -1658,7 +1745,9 @@ def main() -> None:
                 backfill_processed = int(backfill_stats.get("processed", 0))
                 backfill_written = int(backfill_stats.get("written", 0))
                 backfill_has_more = bool(backfill_stats.get("has_more", False))
-                backfill_fast_retry = bool(backfill_has_more and backfill_processed > 0)
+                backfill_fast_retry = _should_fast_retry_for_periodic_job(
+                    has_more=backfill_has_more
+                )
                 if backfill_fast_retry:
                     source.backfill_cache_next_at = 0.0
 
@@ -1684,8 +1773,8 @@ def main() -> None:
                 relation_cache_has_more = bool(
                     relation_cache_stats.get("has_more", False)
                 )
-                relation_cache_fast_retry = bool(
-                    relation_cache_has_more and relation_cache_processed > 0
+                relation_cache_fast_retry = _should_fast_retry_for_periodic_job(
+                    has_more=relation_cache_has_more
                 )
                 if relation_cache_fast_retry:
                     source.relation_cache_next_at = 0.0
@@ -1708,8 +1797,8 @@ def main() -> None:
                 stock_hot_processed = int(stock_hot_stats.get("processed", 0))
                 stock_hot_written = int(stock_hot_stats.get("written", 0))
                 stock_hot_has_more = bool(stock_hot_stats.get("has_more", False))
-                stock_hot_fast_retry = bool(
-                    stock_hot_has_more and stock_hot_processed > 0
+                stock_hot_fast_retry = _should_fast_retry_for_periodic_job(
+                    has_more=stock_hot_has_more
                 )
                 if stock_hot_fast_retry:
                     source.stock_hot_cache_next_at = 0.0
@@ -1863,9 +1952,29 @@ def main() -> None:
                     ai_cap=int(ai_cap),
                     rss_inflight_now_get=lambda: int(_rss_inflight_now()),
                 )
+                cycle_triggered = bool(do_maintenance or force_maintenance)
+                if cycle_triggered and active_engine is not None:
+                    if not bool(source.cycle_running):
+                        source.cycle_started_at = now
+                    source.cycle_running = True
+                run_to_completion = bool(source.cycle_running)
+                periodic_interval = (
+                    0.0 if run_to_completion else research_cache_interval_seconds
+                )
+                alias_interval = (
+                    0.0 if run_to_completion else alias_sync_interval_seconds
+                )
+                stock_hot_interval = (
+                    0.0 if run_to_completion else stock_hot_cache_interval_seconds
+                )
 
                 alias_trigger = bool(
-                    (do_maintenance or force_maintenance or alias_has_more)
+                    (
+                        do_maintenance
+                        or force_maintenance
+                        or run_to_completion
+                        or alias_has_more
+                    )
                     and int(low_budget) > 0
                 )
                 (
@@ -1879,7 +1988,7 @@ def main() -> None:
                     trigger=alias_trigger,
                     now=now,
                     next_run_at=source.alias_sync_next_at,
-                    interval_seconds=alias_sync_interval_seconds,
+                    interval_seconds=alias_interval,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_alias_sync_job,
                     submit_kwargs={
@@ -1889,7 +1998,10 @@ def main() -> None:
                 )
 
                 backfill_trigger = bool(
-                    do_maintenance or force_maintenance or backfill_has_more
+                    do_maintenance
+                    or force_maintenance
+                    or run_to_completion
+                    or backfill_has_more
                 )
                 (
                     source.backfill_cache_future,
@@ -1902,13 +2014,18 @@ def main() -> None:
                     trigger=backfill_trigger,
                     now=now,
                     next_run_at=source.backfill_cache_next_at,
-                    interval_seconds=research_cache_interval_seconds,
+                    interval_seconds=periodic_interval,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_backfill_cache_job,
                 )
 
                 relation_trigger = bool(
-                    (do_maintenance or force_maintenance or relation_cache_has_more)
+                    (
+                        do_maintenance
+                        or force_maintenance
+                        or run_to_completion
+                        or relation_cache_has_more
+                    )
                     and int(low_budget) > 0
                 )
                 (
@@ -1922,7 +2039,7 @@ def main() -> None:
                     trigger=relation_trigger,
                     now=now,
                     next_run_at=source.relation_cache_next_at,
-                    interval_seconds=research_cache_interval_seconds,
+                    interval_seconds=periodic_interval,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_relation_candidates_cache_job,
                     submit_kwargs={
@@ -1932,7 +2049,10 @@ def main() -> None:
                 )
 
                 stock_hot_trigger = bool(
-                    do_maintenance or force_maintenance or stock_hot_has_more
+                    do_maintenance
+                    or force_maintenance
+                    or run_to_completion
+                    or stock_hot_has_more
                 )
                 (
                     source.stock_hot_cache_future,
@@ -1945,7 +2065,7 @@ def main() -> None:
                     trigger=stock_hot_trigger,
                     now=now,
                     next_run_at=source.stock_hot_cache_next_at,
-                    interval_seconds=stock_hot_cache_interval_seconds,
+                    interval_seconds=stock_hot_interval,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_stock_hot_cache_job,
                 )
@@ -1961,9 +2081,162 @@ def main() -> None:
                 )
                 if turso_error:
                     source.turso_ready = False
+                    source.cycle_running = False
                     source.turso_next_ready_check_at = min(
                         float(source.turso_next_ready_check_at) or float("inf"),
                         time.time() + float(TURSO_READY_RETRY_SECONDS),
+                    )
+                inflight_for_source = _count_inflight_for_owner(
+                    inflight_owner_by_future, owner=source.config.name
+                )
+                due_ai_pending = False
+                if bool(source.cycle_running) and active_engine is not None:
+                    can_try_finish_cycle = bool(
+                        inflight_for_source <= 0
+                        and source.alias_sync_future is None
+                        and source.backfill_cache_future is None
+                        and source.relation_cache_future is None
+                        and source.stock_hot_cache_future is None
+                        and (not alias_has_more)
+                        and (not backfill_has_more)
+                        and (not relation_cache_has_more)
+                        and (not stock_hot_has_more)
+                    )
+                    if can_try_finish_cycle:
+                        due_ai_pending = _has_due_ai_posts(
+                            engine=active_engine,
+                            platform=source.config.platform,
+                            verbose=verbose,
+                        )
+                        if not due_ai_pending:
+                            source.cycle_running = False
+                            source.cycle_finished_at = time.time()
+                if active_engine is not None and source.turso_ready:
+                    cycle_status = (
+                        WORKER_PROGRESS_STATUS_RUNNING
+                        if source.cycle_running
+                        else WORKER_PROGRESS_STATUS_IDLE
+                    )
+                    cycle_started_at = _format_epoch_to_cst(source.cycle_started_at)
+                    cycle_finished_at = _format_epoch_to_cst(source.cycle_finished_at)
+                    _save_worker_progress_state(
+                        source=source,
+                        stage=WORKER_PROGRESS_STAGE_CYCLE,
+                        payload={
+                            "status": cycle_status,
+                            "started_at": cycle_started_at,
+                            "finished_at": cycle_finished_at,
+                            "next_run_at": _format_epoch_to_cst(maintenance_next_at),
+                            "running": bool(source.cycle_running),
+                            "rss_inserted": int(inserted),
+                        },
+                        verbose=verbose,
+                    )
+                    _save_worker_progress_state(
+                        source=source,
+                        stage=WORKER_PROGRESS_STAGE_AI,
+                        payload={
+                            "status": (
+                                WORKER_PROGRESS_STATUS_RUNNING
+                                if (inflight_for_source > 0 or due_ai_pending)
+                                else WORKER_PROGRESS_STATUS_IDLE
+                            ),
+                            "inflight": int(inflight_for_source),
+                            "scheduled": int(scheduled),
+                            "recovered": int(recovered),
+                            "due_pending": bool(due_ai_pending),
+                            "next_run_at": _format_epoch_to_cst(maintenance_next_at),
+                        },
+                        verbose=verbose,
+                    )
+                    _save_worker_progress_state(
+                        source=source,
+                        stage=WORKER_PROGRESS_STAGE_ALIAS,
+                        payload={
+                            "status": (
+                                WORKER_PROGRESS_STATUS_RUNNING
+                                if (
+                                    source.alias_sync_future is not None
+                                    or alias_has_more
+                                )
+                                else WORKER_PROGRESS_STATUS_IDLE
+                            ),
+                            "inflight": bool(source.alias_sync_future is not None),
+                            "resolved": int(alias_resolved),
+                            "inserted": int(alias_inserted),
+                            "has_more": bool(alias_has_more),
+                            "next_run_at": _format_epoch_to_cst(
+                                source.alias_sync_next_at
+                            ),
+                        },
+                        verbose=verbose,
+                    )
+                    _save_worker_progress_state(
+                        source=source,
+                        stage=WORKER_PROGRESS_STAGE_BACKFILL,
+                        payload={
+                            "status": (
+                                WORKER_PROGRESS_STATUS_RUNNING
+                                if (
+                                    source.backfill_cache_future is not None
+                                    or backfill_has_more
+                                )
+                                else WORKER_PROGRESS_STATUS_IDLE
+                            ),
+                            "inflight": bool(source.backfill_cache_future is not None),
+                            "processed": int(backfill_processed),
+                            "written": int(backfill_written),
+                            "has_more": bool(backfill_has_more),
+                            "next_run_at": _format_epoch_to_cst(
+                                source.backfill_cache_next_at
+                            ),
+                        },
+                        verbose=verbose,
+                    )
+                    _save_worker_progress_state(
+                        source=source,
+                        stage=WORKER_PROGRESS_STAGE_RELATION,
+                        payload={
+                            "status": (
+                                WORKER_PROGRESS_STATUS_RUNNING
+                                if (
+                                    source.relation_cache_future is not None
+                                    or relation_cache_has_more
+                                )
+                                else WORKER_PROGRESS_STATUS_IDLE
+                            ),
+                            "inflight": bool(source.relation_cache_future is not None),
+                            "processed": int(relation_cache_processed),
+                            "upserted": int(relation_cache_upserted),
+                            "deleted": int(relation_cache_deleted),
+                            "has_more": bool(relation_cache_has_more),
+                            "next_run_at": _format_epoch_to_cst(
+                                source.relation_cache_next_at
+                            ),
+                        },
+                        verbose=verbose,
+                    )
+                    _save_worker_progress_state(
+                        source=source,
+                        stage=WORKER_PROGRESS_STAGE_STOCK_HOT,
+                        payload={
+                            "status": (
+                                WORKER_PROGRESS_STATUS_RUNNING
+                                if (
+                                    source.stock_hot_cache_future is not None
+                                    or stock_hot_has_more
+                                )
+                                else WORKER_PROGRESS_STATUS_IDLE
+                            ),
+                            "inflight": bool(source.stock_hot_cache_future is not None),
+                            "processed": int(stock_hot_processed),
+                            "written": int(stock_hot_written),
+                            "has_more": bool(stock_hot_has_more),
+                            "next_run_at": _format_epoch_to_cst(
+                                source.stock_hot_cache_next_at
+                            ),
+                        },
+                        verbose=verbose,
                     )
 
                 if verbose and (
@@ -1985,6 +2258,7 @@ def main() -> None:
                     or flushed_redis > 0
                     or flushed_spool > 0
                     or alias_inserted > 0
+                    or source.cycle_running
                 ):
                     next_alias_sync_in = max(
                         0.0, source.alias_sync_next_at - time.time()
@@ -2008,9 +2282,6 @@ def main() -> None:
                         next_turso_in = max(
                             0.0, float(source.turso_next_ready_check_at) - time.time()
                         )
-                    inflight_for_source = _count_inflight_for_owner(
-                        inflight_owner_by_future, owner=source.config.name
-                    )
                     print(
                         f"[tick:{source.config.name}] turso_ready={1 if active_engine is not None else 0} "
                         f"ai_cap={int(ai_cap)} rss_inflight_now={int(rss_inflight_now)} low_budget={int(low_budget)} "
