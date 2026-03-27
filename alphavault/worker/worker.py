@@ -1518,10 +1518,12 @@ def main() -> None:
         ai_max_inflight: int,
         should_continue: Callable[[], bool] | None = None,
     ) -> dict[str, int | bool]:
+        effective_ai_max_inflight = max(1, int(ai_max_inflight))
         return sync_stock_alias_relations(
             sync_engine,
             ai_runtime_config=alias_ai_runtime_config,
-            ai_max_inflight=max(1, int(ai_max_inflight)),
+            max_alias_keys_per_run=int(effective_ai_max_inflight),
+            ai_max_inflight=int(effective_ai_max_inflight),
             should_continue=should_continue,
             acquire_low_priority_slot=(
                 low_priority_ai_gate.try_acquire
@@ -1544,11 +1546,14 @@ def main() -> None:
         ai_max_inflight: int,
         should_continue: Callable[[], bool] | None = None,
     ) -> dict[str, int | bool]:
+        effective_ai_max_inflight = max(1, int(ai_max_inflight))
         return sync_relation_candidates_cache(
             sync_engine,
             limiter=limiter,
             ai_enabled=True,
-            ai_max_inflight=max(1, int(ai_max_inflight)),
+            max_stocks_per_run=int(effective_ai_max_inflight),
+            max_sectors_per_run=int(effective_ai_max_inflight),
+            ai_max_inflight=int(effective_ai_max_inflight),
             should_continue=should_continue,
             acquire_low_priority_slot=(
                 low_priority_ai_gate.try_acquire
