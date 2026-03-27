@@ -241,9 +241,6 @@ def _build_xueqiu_ids(
     guid = entry.get("guid") or entry.get("id") or ""
     guid = str(guid or "").strip()
     if guid:
-        guid_num = _extract_last_numeric(guid)
-        if guid_num:
-            return guid_num, f"xueqiu:{guid_num}", ""
         return guid, f"xueqiu:{guid}", ""
     link_num = _extract_last_numeric(link)
     if link_num:

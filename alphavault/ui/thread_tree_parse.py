@@ -208,8 +208,13 @@ def extract_platform_post_id(post_uid: object) -> str:
     if not value:
         return ""
     prefix, sep, suffix = value.partition(":")
-    del prefix
-    if sep and suffix.startswith(("http://", "https://")):
+    prefix = prefix.strip().lower()
+    suffix = suffix.strip()
+    if not sep:
+        return value
+    if prefix == "xueqiu":
+        return suffix
+    if suffix.startswith(("http://", "https://")):
         return suffix.strip()
     parts = value.split(":")
     if len(parts) >= 2:
