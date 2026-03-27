@@ -54,6 +54,9 @@ def _collect_blogger_authors(
 
 
 def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
+    xueqiu_prefix = "xueqiu:"
+    xueqiu_separator_re = r"\s+---\s+"
+    xueqiu_separator_norm = "\n\n---\n\n"
     base_cols = [
         "post_uid",
         "platform_post_id",
@@ -68,6 +71,22 @@ def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     posts = posts_all[have_cols].copy()
+    if "display_md" in posts.columns and "post_uid" in posts.columns:
+        uid_series = posts["post_uid"].astype(str).str.strip().str.lower()
+        xueqiu_mask = uid_series.str.startswith(xueqiu_prefix)
+        if xueqiu_mask.any():
+            raw_series = (
+                posts.loc[xueqiu_mask, "raw_text"].fillna("").astype(str)
+                if "raw_text" in posts.columns
+                else pd.Series(
+                    [""] * int(xueqiu_mask.sum()), index=posts.index[xueqiu_mask]
+                )
+            )
+            posts.loc[xueqiu_mask, "display_md"] = raw_series.str.replace(
+                xueqiu_separator_re,
+                xueqiu_separator_norm,
+                regex=True,
+            )
     if "platform_post_id" not in posts.columns and "post_uid" in posts.columns:
         posts["platform_post_id"] = posts["post_uid"].apply(extract_platform_post_id)
     posts["platform_post_id"] = posts["platform_post_id"].apply(_clean_id)
