@@ -36,8 +36,8 @@ def test_homework_state_keeps_unlinked_stock_alias_as_separate_rows(
     )
 
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_trade_assertions_from_env",
-        lambda: (assertions, ""),
+        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
+        lambda lookback_days: (assertions, ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
@@ -97,8 +97,8 @@ def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
     )
 
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_trade_assertions_from_env",
-        lambda: (assertions, ""),
+        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
+        lambda lookback_days: (assertions, ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
@@ -135,8 +135,8 @@ def test_homework_state_refresh_does_not_call_ai_alias_map(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_trade_assertions_from_env",
-        lambda: (assertions, ""),
+        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
+        lambda lookback_days: (assertions, ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",

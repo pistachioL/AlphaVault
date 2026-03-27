@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from functools import lru_cache
 import json
 
@@ -20,6 +22,7 @@ from alphavault.db.turso_env import (
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.ui.thread_tree import extract_platform_post_id
+from alphavault_reflex.services.homework_constants import TRADE_BOARD_MAX_WINDOW_DAYS
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
@@ -39,6 +42,17 @@ WANTED_TRADE_ASSERTION_COLUMNS = [
     "indices_json",
     "author",
     "created_at",
+]
+
+TRADE_BOARD_ASSERTION_COLUMNS = [
+    "post_uid",
+    "idx",
+    "topic_key",
+    "action",
+    "action_strength",
+    "summary",
+    "stock_codes_json",
+    "stock_names_json",
 ]
 
 
@@ -241,6 +255,97 @@ def _load_trade_assertions_cached(
 ) -> pd.DataFrame:
     _, assertions = _load_trade_sources_cached(db_url, auth_token, source_name)
     return assertions
+
+
+def _trade_board_cutoff_from_utc_now(*, lookback_days: int) -> str:
+    days = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+    now = datetime.utcnow()
+    cutoff_day = now.date() - timedelta(days=max(0, int(days) - 1))
+    cutoff = datetime.combine(cutoff_day, datetime.min.time())
+    return cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+
+@lru_cache(maxsize=8)
+def _load_trade_board_assertions_cached(
+    db_url: str,
+    auth_token: str,
+    source_name: str,
+    lookback_days: int,
+) -> pd.DataFrame:
+    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+    cutoff = _trade_board_cutoff_from_utc_now(lookback_days=lookback)
+    engine = ensure_turso_engine(db_url, auth_token)
+    with turso_connect_autocommit(engine) as conn:
+        select_expr = ", ".join(
+            [f"a.{col} AS {col}" for col in TRADE_BOARD_ASSERTION_COLUMNS]
+            + [
+                "p.author AS author",
+                "p.created_at AS created_at",
+                "p.url AS url",
+            ]
+        )
+        sql = f"""
+SELECT {select_expr}
+FROM posts p
+JOIN assertions a ON a.post_uid = p.post_uid
+WHERE p.processed_at IS NOT NULL
+  AND p.created_at >= :cutoff
+  AND a.action LIKE 'trade.%'
+"""
+        df = turso_read_sql_df(conn, sql, params={"cutoff": cutoff})
+
+    if df.empty:
+        return df
+    df = df.copy()
+    df["source"] = str(source_name or "").strip()
+    for col in ["post_uid", "topic_key", "action", "summary", "author", "url"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
+    df = _normalize_assertions_datetime(df)
+    return df
+
+
+def load_trade_board_assertions_from_env(
+    lookback_days: int,
+) -> tuple[pd.DataFrame, str]:
+    load_dotenv_if_present()
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return (
+            pd.DataFrame(),
+            f"Missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}",
+        )
+
+    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+
+    frames: list[pd.DataFrame] = []
+    max_workers = max(1, min(4, int(len(sources))))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _load_trade_board_assertions_cached,
+                source.url,
+                source.token,
+                source.name,
+                lookback,
+            ): source.name
+            for source in sources
+        }
+        for fut in as_completed(futures):
+            name = futures.get(fut, "")
+            try:
+                frames.append(fut.result())
+            except BaseException as e:
+                if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                    raise
+                return (
+                    pd.DataFrame(),
+                    f"turso_connect_error:{name}:{type(e).__name__}",
+                )
+
+    if not frames:
+        return pd.DataFrame(), "turso_sources_empty"
+    return pd.concat(frames, ignore_index=True), ""
 
 
 @lru_cache(maxsize=2)
@@ -451,5 +556,6 @@ def load_stock_alias_relations_from_env() -> tuple[pd.DataFrame, str]:
 
 def clear_reflex_source_caches() -> None:
     _load_trade_sources_cached.cache_clear()
+    _load_trade_board_assertions_cached.cache_clear()
     _load_post_urls_cached.cache_clear()
     _load_stock_alias_relations_cached.cache_clear()

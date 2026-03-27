@@ -3,6 +3,10 @@ from __future__ import annotations
 import pandas as pd
 import reflex as rx
 
+from alphavault_reflex.services.homework_constants import (
+    TRADE_BOARD_DEFAULT_WINDOW_DAYS,
+    TRADE_BOARD_MAX_WINDOW_DAYS,
+)
 from alphavault_reflex.services.homework_board import (
     CONSENSUS_FILTER_OPTIONS,
     SORT_MODE_OPTIONS,
@@ -22,7 +26,7 @@ from alphavault_reflex.services.turso_read import (
     load_post_urls_from_env,
     load_posts_for_tree_from_env,
     load_stock_alias_relations_from_env,
-    load_trade_assertions_from_env,
+    load_trade_board_assertions_from_env,
 )
 
 
@@ -32,8 +36,8 @@ class HomeworkState(rx.State):
     load_error: str = ""
     caption: str = ""
 
-    window_max_days: int = 60
-    window_days: int = 7
+    window_max_days: int = TRADE_BOARD_MAX_WINDOW_DAYS
+    window_days: int = TRADE_BOARD_DEFAULT_WINDOW_DAYS
     sort_mode: str = SORT_MODE_OPTIONS[0]
     consensus_filter: str = CONSENSUS_FILTER_OPTIONS[0]
 
@@ -67,7 +71,7 @@ class HomeworkState(rx.State):
         )
 
     def _refresh(self) -> None:
-        assertions, err = load_trade_assertions_from_env()
+        assertions, err = load_trade_board_assertions_from_env(int(self.window_days))
         if err:
             self.load_error = err
             self.caption = ""
@@ -94,17 +98,7 @@ class HomeworkState(rx.State):
             sort_mode=str(self.sort_mode),
             consensus_filter=str(self.consensus_filter),
         )
-        url_map: dict[str, str] = {}
-        if result.rows:
-            post_uids = [row.get("tree_post_uid", "") for row in result.rows]
-            url_map, _ = load_post_urls_from_env(post_uids)
-        if url_map:
-            for row in result.rows:
-                if row.get("url"):
-                    continue
-                uid = str(row.get("tree_post_uid") or "").strip()
-                if uid and uid in url_map:
-                    row["url"] = url_map[uid]
+        _fill_trade_board_urls(result.rows)
         for row in result.rows:
             topic_key = str(row.get("topic") or "").strip()
             stock_slug = (
@@ -126,7 +120,7 @@ class HomeworkState(rx.State):
             row["sector_route"] = build_sector_route(topic_key) if sector_slug else ""
 
         self.caption = result.caption
-        self.window_max_days = int(result.window_max_days or 1)
+        self.window_max_days = TRADE_BOARD_MAX_WINDOW_DAYS
         self.window_days = int(result.used_window_days or 1)
         self.rows = result.rows
         if not self.rows:
@@ -239,3 +233,24 @@ def _prepare_board_assertions(
             board_topic_labels[topic] = _topic_label(topic)
     board_assertions["board_group_key"] = board_group_keys
     return board_assertions, board_topic_labels
+
+
+def _fill_trade_board_urls(rows: list[dict[str, str]]) -> None:
+    if not rows:
+        return
+
+    needs_urls = any(str(row.get("url") or "").strip() == "" for row in rows)
+    if not needs_urls:
+        return
+
+    post_uids = [row.get("tree_post_uid", "") for row in rows]
+    url_map, _ = load_post_urls_from_env(post_uids)
+    if not url_map:
+        return
+
+    for row in rows:
+        if str(row.get("url") or "").strip():
+            continue
+        uid = str(row.get("tree_post_uid") or "").strip()
+        if uid and uid in url_map:
+            row["url"] = url_map[uid]
