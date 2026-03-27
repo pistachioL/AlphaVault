@@ -23,6 +23,7 @@ from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.ui.thread_tree import extract_platform_post_id
 from alphavault_reflex.services.homework_constants import TRADE_BOARD_MAX_WINDOW_DAYS
+from alphavault_reflex.services.thread_tree import normalize_tree_lookup_post_uid
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
@@ -400,7 +401,7 @@ def _load_posts_for_tree_cached(
 def _load_single_post_for_tree_cached(
     db_url: str, auth_token: str, source_name: str, post_uid: str
 ) -> pd.DataFrame:
-    uid = str(post_uid or "").strip()
+    uid = normalize_tree_lookup_post_uid(post_uid)
     if not uid:
         return pd.DataFrame()
 
@@ -426,7 +427,7 @@ WHERE processed_at IS NOT NULL AND post_uid = ?
 
 
 def load_single_post_for_tree_from_env(post_uid: str) -> tuple[pd.DataFrame, str]:
-    uid = str(post_uid or "").strip()
+    uid = normalize_tree_lookup_post_uid(post_uid)
     if not uid:
         return pd.DataFrame(), ""
 

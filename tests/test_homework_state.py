@@ -160,3 +160,97 @@ def test_homework_state_refresh_does_not_call_ai_alias_map(monkeypatch) -> None:
 
     assert len(state.rows) == 1
     assert state.rows[0]["topic"] == "stock:600519.SH"
+
+
+def test_open_tree_dialog_keeps_xueqiu_post_uid_for_loader(monkeypatch) -> None:
+    requested_uid = "xueqiu:status:381213336\t"
+    seen_uids: list[str] = []
+
+    def _fake_load_single_post_for_tree_from_env(post_uid: str):
+        seen_uids.append(post_uid)
+        return (
+            pd.DataFrame(
+                [
+                    {
+                        "post_uid": requested_uid,
+                        "platform_post_id": "status:381213336",
+                        "author": "雪球作者",
+                        "raw_text": "A：叶子",
+                        "display_md": "A：叶子",
+                        "created_at": "2026-03-25 10:23:48",
+                    }
+                ]
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_single_post_for_tree_from_env",
+        _fake_load_single_post_for_tree_from_env,
+    )
+
+    state = HomeworkState()
+    list(state.open_tree_dialog(requested_uid))
+
+    assert seen_uids == [requested_uid]
+    assert state.selected_tree_text != ""
+    assert state.selected_tree_message == ""
+
+
+def test_open_tree_dialog_shows_debug_info_on_missing_tree(monkeypatch) -> None:
+    requested_uid = "xueqiu:status:381213336\t"
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_single_post_for_tree_from_env",
+        lambda post_uid: (pd.DataFrame(), ""),
+    )
+
+    state = HomeworkState()
+    list(state.open_tree_dialog(requested_uid))
+
+    assert state.selected_tree_message == "没有对话流。"
+    assert "请求UID" in state.selected_tree_debug_text
+    assert requested_uid in state.selected_tree_debug_text
+    assert "阶段码: posts_empty" in state.selected_tree_debug_text
+
+
+def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
+    calls: list[str] = []
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "weibo:1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 1,
+                "summary": "小仓",
+                "author": "alice",
+                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
+                "stock_codes_json": '["600519.SH"]',
+                "stock_names_json": '["贵州茅台"]',
+            }
+        ]
+    )
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.clear_reflex_source_caches",
+        lambda: calls.append("cleared"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_trade_board_assertions_from_env",
+        lambda lookback_days: (assertions, ""),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_stock_alias_relations_from_env",
+        lambda: (pd.DataFrame(), ""),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_post_urls_from_env",
+        lambda post_uids: ({}, ""),
+    )
+
+    state = HomeworkState()
+    list(state.load_data())
+
+    assert calls == ["cleared"]

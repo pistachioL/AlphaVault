@@ -249,9 +249,21 @@ def _tree_dialog() -> rx.Component:
                     ),
                     rx.cond(
                         HomeworkState.selected_tree_message != "",
-                        rx.text(
-                            HomeworkState.selected_tree_message,
-                            class_name="av-muted",
+                        rx.vstack(
+                            rx.text(
+                                HomeworkState.selected_tree_message,
+                                class_name="av-muted",
+                            ),
+                            rx.cond(
+                                HomeworkState.selected_tree_debug_text != "",
+                                rx.el.pre(
+                                    HomeworkState.selected_tree_debug_text,
+                                    class_name="av-tree-pre",
+                                ),
+                                rx.el.div(),
+                            ),
+                            spacing="2",
+                            align="start",
                         ),
                         rx.text("没有对话流。", class_name="av-muted"),
                     ),
