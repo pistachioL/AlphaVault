@@ -79,6 +79,22 @@ uv run python weibo_rss_turso_worker.py --verbose
 - Worker 会先写本地 `spool` 文件；Turso 写失败时会保留 `spool`，并且（可选）推到 Redis。
 - Reflex / Streamlit 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
 
+## 手动触发 RSS 抓取 API
+先设置鉴权 key：
+```bash
+export RSS_MANUAL_TRIGGER_KEY="YOUR_TRIGGER_KEY"
+```
+
+接口：
+- `GET /api/rss/trigger?key=YOUR_TRIGGER_KEY`
+- 成功返回：`200`，包含 `inserted_total`、`turso_error`、`sources`
+- key 错误返回：`401`
+
+示例：
+```bash
+curl "http://127.0.0.1:8080/api/rss/trigger?key=YOUR_TRIGGER_KEY"
+```
+
 ## Reflex 前端
 ```bash
 uv run reflex run
