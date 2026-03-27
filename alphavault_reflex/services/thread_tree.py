@@ -20,6 +20,20 @@ def _clean_post_id(value: object) -> str:
     return text.strip()
 
 
+def _resolve_platform_post_id(*, post_uid: str, posts: pd.DataFrame) -> str:
+    uid = _clean_post_id(post_uid)
+    if not uid or posts.empty or "platform_post_id" not in posts.columns:
+        return ""
+
+    cleaned = posts["platform_post_id"].astype(str)
+    cleaned = cleaned.str.replace("\t", "", regex=False)
+    cleaned = cleaned.str.replace(_TRAILING_ESCAPED_TAB_RE, "", regex=True)
+    cleaned = cleaned.str.strip()
+    if bool(cleaned.eq(uid).any()):
+        return uid
+    return ""
+
+
 def _find_thread_text(threads: list[dict], *, post_id: str) -> tuple[str, str]:
     target = str(post_id or "").strip()
     if not target:
@@ -52,6 +66,16 @@ def slice_posts_for_single_post_tree(
         if bool(uid_mask.any()):
             return posts.loc[uid_mask].copy()
 
+    resolved_platform_post_id = _resolve_platform_post_id(post_uid=uid, posts=posts)
+    if resolved_platform_post_id and "platform_post_id" in posts.columns:
+        cleaned = posts["platform_post_id"].astype(str)
+        cleaned = cleaned.str.replace("\t", "", regex=False)
+        cleaned = cleaned.str.replace(_TRAILING_ESCAPED_TAB_RE, "", regex=True)
+        cleaned = cleaned.str.strip()
+        resolved_mask = cleaned.eq(resolved_platform_post_id)
+        if bool(resolved_mask.any()):
+            return posts.loc[resolved_mask].copy()
+
     platform_post_id = _clean_post_id(extract_platform_post_id(uid))
     if not platform_post_id or "platform_post_id" not in posts.columns:
         return posts.head(0).copy()
@@ -71,7 +95,12 @@ def build_post_tree(*, post_uid: str, posts: pd.DataFrame) -> tuple[str, str]:
     uid = str(post_uid or "").strip()
     if not uid or posts.empty:
         return "", ""
-    view_df = pd.DataFrame({"post_uid": [uid]})
+    view_df = pd.DataFrame(
+        {
+            "post_uid": [uid],
+            "platform_post_id": [_resolve_platform_post_id(post_uid=uid, posts=posts)],
+        }
+    )
     threads = build_weibo_thread_forest(view_df, posts_all=posts)
     if not threads:
         return "", ""
@@ -104,8 +133,17 @@ def build_post_tree_map(
     if not cleaned_uids:
         return {}
 
+    view_df = pd.DataFrame(
+        {
+            "post_uid": cleaned_uids,
+            "platform_post_id": [
+                _resolve_platform_post_id(post_uid=uid, posts=posts)
+                for uid in cleaned_uids
+            ],
+        }
+    )
     threads = build_weibo_thread_forest(
-        pd.DataFrame({"post_uid": cleaned_uids}),
+        view_df,
         posts_all=posts,
     )
     if not threads:
