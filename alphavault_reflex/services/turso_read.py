@@ -973,3 +973,11 @@ def clear_reflex_source_caches() -> None:
     _load_single_post_for_tree_cached.cache_clear()
     _load_post_urls_cached.cache_clear()
     _load_stock_alias_relations_cached.cache_clear()
+    try:
+        from alphavault_reflex.services.stock_hot_read import (
+            clear_stock_hot_read_caches,
+        )
+
+        clear_stock_hot_read_caches()
+    except Exception:
+        pass

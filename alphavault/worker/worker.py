@@ -19,6 +19,7 @@ from alphavault.constants import (
     ENV_AI_TRACE_OUT,
     ENV_RSS_ACTIVE_HOURS,
     ENV_RSS_INTERVAL_SECONDS,
+    ENV_WORKER_STOCK_HOT_CACHE_INTERVAL_SECONDS,
     ENV_WORKER_STOCK_ALIAS_SYNC_INTERVAL_SECONDS,
 )
 from alphavault.ai.analyze import (
@@ -78,7 +79,9 @@ from alphavault.worker.research_backfill_cache import sync_stock_backfill_cache
 from alphavault.worker.research_relation_candidates_cache import (
     sync_relation_candidates_cache,
 )
+from alphavault.worker.research_stock_cache import sync_stock_hot_cache
 from alphavault.worker.stock_alias_sync import sync_stock_alias_relations
+from alphavault.research_stock_cache import mark_stock_dirty_from_assertions
 from alphavault_reflex.services.stock_objects import AiRuntimeConfig
 
 from alphavault.weibo.topic_prompt_tree import (
@@ -118,6 +121,8 @@ class WorkerSourceRuntime:
     backfill_cache_next_at: float = 0.0
     relation_cache_future: Future | None = None
     relation_cache_next_at: float = 0.0
+    stock_hot_cache_future: Future | None = None
+    stock_hot_cache_next_at: float = 0.0
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
@@ -707,6 +712,19 @@ def _process_one_post_uid_topic_prompt_v3(
                 ai_result_json=None,
                 assertions=rows,
             )
+            if rows:
+                try:
+                    mark_stock_dirty_from_assertions(
+                        engine,
+                        assertions=rows,
+                        reason="ai_done",
+                    )
+                except BaseException:
+                    if config.verbose:
+                        print(
+                            f"[stock_hot] mark_dirty_failed post_uid={uid}",
+                            flush=True,
+                        )
     except Exception as e:
         if isinstance(e, AiInvalidJsonError):
             raw_tail = _to_one_line_tail(getattr(e, "raw_ai_text", ""), max_chars=240)
@@ -841,6 +859,19 @@ def _process_one_post_uid(
             ai_result_json=None,
             assertions=assertions,
         )
+        if assertions:
+            try:
+                mark_stock_dirty_from_assertions(
+                    engine,
+                    assertions=assertions,
+                    reason="ai_done",
+                )
+            except BaseException:
+                if config.verbose:
+                    print(
+                        f"[stock_hot] mark_dirty_failed post_uid={post_uid}",
+                        flush=True,
+                    )
     except Exception as e:
         base_url_for_log = (config.base_url or "").strip()
         if base_url_for_log:
@@ -996,6 +1027,17 @@ def _resolve_stock_alias_sync_interval_seconds() -> float:
     except Exception:
         return 1800.0
     return max(60.0, seconds)
+
+
+def _resolve_stock_hot_cache_interval_seconds() -> float:
+    raw_value = os.getenv(ENV_WORKER_STOCK_HOT_CACHE_INTERVAL_SECONDS, "").strip()
+    if not raw_value:
+        return 60.0
+    try:
+        seconds = float(raw_value)
+    except Exception:
+        return 60.0
+    return max(15.0, seconds)
 
 
 def _build_alias_ai_runtime_config(config: LLMConfig) -> AiRuntimeConfig:
@@ -1305,6 +1347,7 @@ def main() -> None:
         rss_interval_seconds = 600.0
     rss_interval_seconds = max(1.0, float(rss_interval_seconds))
     alias_sync_interval_seconds = _resolve_stock_alias_sync_interval_seconds()
+    stock_hot_cache_interval_seconds = _resolve_stock_hot_cache_interval_seconds()
     alias_ai_runtime_config = _build_alias_ai_runtime_config(config)
     research_cache_interval_seconds = float(alias_sync_interval_seconds)
 
@@ -1325,6 +1368,9 @@ def main() -> None:
             limiter=limiter,
             ai_enabled=True,
         )
+
+    def _submit_stock_hot_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
+        return sync_stock_hot_cache(sync_engine)
 
     maintenance_next_at = 0.0
 
@@ -1519,6 +1565,30 @@ def main() -> None:
                 if relation_cache_fast_retry:
                     source.relation_cache_next_at = 0.0
 
+                stock_hot_processed = 0
+                stock_hot_written = 0
+                stock_hot_finished = False
+                stock_hot_has_more = False
+                (
+                    source.stock_hot_cache_future,
+                    stock_hot_stats,
+                    stock_hot_finished,
+                    stock_hot_error,
+                ) = _collect_periodic_job_result(
+                    job_name=f"stock_hot_cache:{source.config.name}",
+                    future=source.stock_hot_cache_future,
+                    engine=source.engine,
+                    verbose=verbose,
+                )
+                stock_hot_processed = int(stock_hot_stats.get("processed", 0))
+                stock_hot_written = int(stock_hot_stats.get("written", 0))
+                stock_hot_has_more = bool(stock_hot_stats.get("has_more", False))
+                stock_hot_fast_retry = bool(
+                    stock_hot_has_more and stock_hot_processed > 0
+                )
+                if stock_hot_fast_retry:
+                    source.stock_hot_cache_next_at = 0.0
+
                 inserted = 0
                 ingest_turso_error = False
                 if rss_future is not None:
@@ -1617,6 +1687,25 @@ def main() -> None:
                     submit_fn=_submit_relation_candidates_cache_job,
                 )
 
+                stock_hot_trigger = bool(
+                    do_maintenance or force_maintenance or stock_hot_has_more
+                )
+                (
+                    source.stock_hot_cache_future,
+                    source.stock_hot_cache_next_at,
+                    start_stock_hot_cache,
+                ) = _maybe_start_periodic_job(
+                    executor=research_executor,
+                    future=source.stock_hot_cache_future,
+                    active_engine=active_engine,
+                    trigger=stock_hot_trigger,
+                    now=now,
+                    next_run_at=source.stock_hot_cache_next_at,
+                    interval_seconds=stock_hot_cache_interval_seconds,
+                    wakeup_event=wakeup_event,
+                    submit_fn=_submit_stock_hot_cache_job,
+                )
+
                 scheduled = 0
                 schedule_error = False
                 if active_engine is not None:
@@ -1641,6 +1730,7 @@ def main() -> None:
                     or alias_sync_error
                     or backfill_cache_error
                     or relation_cache_error
+                    or stock_hot_error
                 )
                 if turso_error:
                     source.turso_ready = False
@@ -1660,6 +1750,9 @@ def main() -> None:
                     or start_relation_cache
                     or relation_cache_finished
                     or relation_cache_has_more
+                    or start_stock_hot_cache
+                    or stock_hot_finished
+                    or stock_hot_has_more
                     or inserted > 0
                     or recovered > 0
                     or flushed_redis > 0
@@ -1674,6 +1767,9 @@ def main() -> None:
                     )
                     next_relation_in = max(
                         0.0, source.relation_cache_next_at - time.time()
+                    )
+                    next_stock_hot_in = max(
+                        0.0, source.stock_hot_cache_next_at - time.time()
                     )
                     next_rss_in = (
                         -1.0
@@ -1693,16 +1789,19 @@ def main() -> None:
                         f"inflight={inflight_for_source} alias_inflight={1 if source.alias_sync_future is not None else 0} "
                         f"backfill_inflight={1 if source.backfill_cache_future is not None else 0} "
                         f"relation_inflight={1 if source.relation_cache_future is not None else 0} "
+                        f"stock_hot_inflight={1 if source.stock_hot_cache_future is not None else 0} "
                         f"ai_scheduled={scheduled} "
                         f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
                         f"alias_resolved={alias_resolved} alias_inserted={alias_inserted} "
                         f"backfill_processed={backfill_processed} backfill_written={backfill_written} "
                         f"relation_processed={relation_cache_processed} relation_upserted={relation_cache_upserted} relation_deleted={relation_cache_deleted} "
+                        f"stock_hot_processed={stock_hot_processed} stock_hot_written={stock_hot_written} "
                         f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
                         f"next_maint={int(next_maintenance_in)}s "
                         f"next_alias={int(next_alias_sync_in)}s "
                         f"next_backfill={int(next_backfill_in)}s "
                         f"next_relation={int(next_relation_in)}s "
+                        f"next_stock_hot={int(next_stock_hot_in)}s "
                         f"next_rss={int(next_rss_in) if next_rss_in >= 0 else -1}s "
                         f"next_turso={int(next_turso_in) if next_turso_in >= 0 else -1}s",
                         flush=True,
@@ -1712,6 +1811,7 @@ def main() -> None:
             any_alias_inflight = False
             any_backfill_inflight = False
             any_relation_inflight = False
+            any_stock_hot_inflight = False
             for source in sources:
                 if source.alias_sync_future is not None:
                     any_alias_inflight = True
@@ -1719,12 +1819,16 @@ def main() -> None:
                     any_backfill_inflight = True
                 if source.relation_cache_future is not None:
                     any_relation_inflight = True
+                if source.stock_hot_cache_future is not None:
+                    any_stock_hot_inflight = True
                 if source.alias_sync_next_at > 0:
                     next_deadline = min(next_deadline, source.alias_sync_next_at)
                 if source.backfill_cache_next_at > 0:
                     next_deadline = min(next_deadline, source.backfill_cache_next_at)
                 if source.relation_cache_next_at > 0:
                     next_deadline = min(next_deadline, source.relation_cache_next_at)
+                if source.stock_hot_cache_next_at > 0:
+                    next_deadline = min(next_deadline, source.stock_hot_cache_next_at)
                 if source.rss_next_ingest_at != float("inf"):
                     next_deadline = min(next_deadline, source.rss_next_ingest_at)
                 if not source.turso_ready:
@@ -1737,6 +1841,7 @@ def main() -> None:
                 or any_alias_inflight
                 or any_backfill_inflight
                 or any_relation_inflight
+                or any_stock_hot_inflight
             ):
                 wakeup_event.wait(timeout)
             else:

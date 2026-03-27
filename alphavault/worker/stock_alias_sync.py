@@ -19,6 +19,7 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
 )
 from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.research_stock_cache import mark_stock_dirty
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_BLOCKED,
     ALIAS_TASK_STATUS_MANUAL,
@@ -248,6 +249,18 @@ def sync_stock_alias_relations(
                     alias_key=alias_key,
                     source=source,
                 )
+                if stock_key.startswith("stock:"):
+                    mark_stock_dirty(
+                        conn,
+                        stock_key=stock_key,
+                        reason="alias_relation",
+                    )
+                if alias_key.startswith("stock:"):
+                    mark_stock_dirty(
+                        conn,
+                        stock_key=alias_key,
+                        reason="alias_relation",
+                    )
                 inserted += 1
 
     return {

@@ -86,3 +86,10 @@ def test_stock_route_browser_title_uses_dynamic_stock_slug() -> None:
     page = app_module.app._unevaluated_pages["research/stocks/[stock_slug]"]
 
     assert "stock_slug_rx_state_" in str(page.title)
+
+
+def test_stock_research_page_no_longer_uses_full_refreshing_state() -> None:
+    rendered = stock_research_page().render()
+    cond_states = _collect_cond_states(rendered)
+
+    assert not any("full_refreshing_rx_state_" in value for value in cond_states)

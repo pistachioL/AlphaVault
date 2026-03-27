@@ -174,9 +174,21 @@ def stock_research_page() -> rx.Component:
             rx.el.div(),
         ),
         rx.cond(
-            ResearchState.full_refreshing,
-            rx.text("后台补全中…", class_name="av-research-muted"),
-            rx.el.div(),
+            ResearchState.signals_ready,
+            rx.text("最近信号已就绪。", class_name="av-research-muted"),
+            rx.text("最近信号准备中…", class_name="av-research-muted"),
+        ),
+        rx.cond(
+            ResearchState.extras_ready,
+            rx.cond(
+                ResearchState.extras_updated_at != "",
+                rx.text(
+                    "扩展数据更新时间：" + ResearchState.extras_updated_at,
+                    class_name="av-research-muted",
+                ),
+                rx.text("扩展数据已就绪。", class_name="av-research-muted"),
+            ),
+            rx.text("扩展数据准备中…", class_name="av-research-muted"),
         ),
         rx.el.div(
             rx.el.div(

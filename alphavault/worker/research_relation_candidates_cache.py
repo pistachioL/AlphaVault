@@ -16,6 +16,7 @@ from alphavault.db.turso_db import (
     turso_savepoint,
 )
 from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.research_stock_cache import mark_stock_dirty
 from alphavault.research_workbench import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     ensure_research_workbench_schema,
@@ -302,18 +303,31 @@ def sync_relation_candidates_cache(
                     stock_key=stock_key,
                     ai_enabled=bool(ai_enabled),
                 )
+                left_key_for_stock = stock_key
+                changed_for_stock = False
                 with turso_savepoint(conn):
                     batch_upserted, rel_types, keep_ids, left_key = (
                         _upsert_candidate_batch(conn, candidates=candidates)
                     )
+                    left_key_for_stock = left_key or stock_key
                     if not rel_types:
                         rel_types = ["stock_alias", "stock_sector"]
                     upserted += int(batch_upserted)
-                    deleted += _delete_stale_pending_candidates(
+                    batch_deleted = _delete_stale_pending_candidates(
                         conn,
-                        left_key=left_key or stock_key,
+                        left_key=left_key_for_stock,
                         relation_types=rel_types,
                         keep_candidate_ids=keep_ids,
+                    )
+                    deleted += int(batch_deleted)
+                    changed_for_stock = bool(
+                        int(batch_upserted) > 0 or int(batch_deleted) > 0
+                    )
+                if changed_for_stock and left_key_for_stock.startswith("stock:"):
+                    mark_stock_dirty(
+                        conn,
+                        stock_key=left_key_for_stock,
+                        reason="relation_candidates_cache",
                     )
                 processed += 1
                 save_worker_job_cursor(
