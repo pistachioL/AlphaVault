@@ -3,7 +3,11 @@ from __future__ import annotations
 import libsql
 import pytest
 
-from alphavault.db.sql.turso_queue import RECOVER_STUCK_AI_TASKS, UPSERT_PENDING_POST
+from alphavault.db.sql.turso_queue import (
+    RECOVER_DONE_WITHOUT_PROCESSED_AT,
+    RECOVER_STUCK_AI_TASKS,
+    UPSERT_PENDING_POST,
+)
 from alphavault.db.turso_db import (
     TursoConnection,
     is_turso_stream_not_found_error,
@@ -136,6 +140,54 @@ def test_named_params_support_escaped_colon_literal() -> None:
             "ai_last_error": "ai:recovered_after_restart",
             "ai_next_retry_at": 999,
         }
+    finally:
+        conn.close()
+
+
+def test_named_params_support_escaped_colon_literal_in_recover_done_without_processed_at() -> (
+    None
+):
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        conn.execute(
+            "CREATE TABLE posts(post_uid TEXT PRIMARY KEY, ai_status TEXT, processed_at TEXT, ai_last_error TEXT, ai_running_at INTEGER, ai_next_retry_at INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO posts(post_uid, ai_status, processed_at) VALUES (:post_uid, :ai_status, :processed_at)",
+            {"post_uid": "p1", "ai_status": "done", "processed_at": ""},
+        )
+        conn.execute(
+            "INSERT INTO posts(post_uid, ai_status, processed_at) VALUES (:post_uid, :ai_status, :processed_at)",
+            {"post_uid": "p2", "ai_status": "done", "processed_at": "2025-01-01"},
+        )
+
+        # NOTE: the worker uses an empty dict params object here, which previously
+        # triggered sqlparams interpreting ":recovered_done_without_processed_at"
+        # inside the SQL string literal as a named param.
+        res = conn.execute(RECOVER_DONE_WITHOUT_PROCESSED_AT, {})
+        assert int(res.rowcount or 0) == 1
+
+        row1 = (
+            conn.execute(
+                "SELECT ai_status, ai_last_error FROM posts WHERE post_uid = :post_uid",
+                {"post_uid": "p1"},
+            )
+            .mappings()
+            .fetchone()
+        )
+        row2 = (
+            conn.execute(
+                "SELECT ai_status, ai_last_error FROM posts WHERE post_uid = :post_uid",
+                {"post_uid": "p2"},
+            )
+            .mappings()
+            .fetchone()
+        )
+        assert row1 == {
+            "ai_status": "pending",
+            "ai_last_error": "ai:recovered_done_without_processed_at",
+        }
+        assert row2 == {"ai_status": "done", "ai_last_error": None}
     finally:
         conn.close()
 
