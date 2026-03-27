@@ -21,6 +21,7 @@ from alphavault.ui.thread_tree_parse import (
 VIRTUAL_NODE_LABEL = "回复"
 FOCUS_PREFIX_SYMBOL = "📌"
 REPLY_PLACEHOLDER_CONTENT = "回复"
+NAIVE_DATETIME_TIMEZONE = "Asia/Shanghai"
 
 
 def _maybe_prefix_focus_symbol(text: str, *, blogger_authors: set[str] | None) -> str:
@@ -58,6 +59,8 @@ def _to_ts(value: object) -> pd.Timestamp | None:
     ts = pd.to_datetime(value, errors="coerce")
     if pd.isna(ts):
         return None
+    if getattr(ts, "tzinfo", None) is None:
+        return ts.tz_localize(NAIVE_DATETIME_TIMEZONE)
     return ts
 
 

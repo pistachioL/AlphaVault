@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from alphavault_reflex.services.thread_tree import build_post_tree
+from alphavault_reflex.services.thread_tree import build_post_tree_map
 
 
 def test_build_post_tree_expands_compact_weibo_reply_chain() -> None:
@@ -65,3 +66,30 @@ def test_build_post_tree_shows_plain_repost_as_author_forward() -> None:
 
     assert "原作者：原文内容" in tree_text
     assert "转发的人：转发 [转发 ID: https://weibo.com/1000/abc]" in tree_text
+
+
+def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": "weibo:1",
+                "platform_post_id": "1",
+                "author": "a",
+                "raw_text": "第一条",
+                "display_md": "第一条",
+                "created_at": pd.Timestamp("2026-03-25 10:23:48"),
+            },
+            {
+                "post_uid": "weibo:2",
+                "platform_post_id": "2",
+                "author": "b",
+                "raw_text": "第二条",
+                "display_md": "第二条",
+                "created_at": pd.Timestamp("2026-03-25 11:23:48", tz="UTC"),
+            },
+        ]
+    )
+
+    tree_map = build_post_tree_map(post_uids=["weibo:1", "weibo:2"], posts=posts)
+
+    assert set(tree_map.keys()) == {"weibo:1", "weibo:2"}
