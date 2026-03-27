@@ -168,6 +168,16 @@ def stock_research_page() -> rx.Component:
             ),
             rx.el.div(),
         ),
+        rx.cond(
+            ResearchState.stock_load_warning != "",
+            rx.text(ResearchState.stock_load_warning, class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
+            ResearchState.full_refreshing,
+            rx.text("后台补全中…", class_name="av-research-muted"),
+            rx.el.div(),
+        ),
         rx.el.div(
             rx.el.div(
                 rx.heading("最近信号", size="4"),
@@ -198,7 +208,7 @@ def stock_research_page() -> rx.Component:
                 ),
                 rx.heading("待回补文章", size="4", margin_top="24px"),
                 rx.cond(
-                    ResearchState.show_loading,
+                    ResearchState.show_extras_loading,
                     _section_loading(),
                     rx.cond(
                         ResearchState.has_backfill_posts,
@@ -235,7 +245,7 @@ def stock_research_page() -> rx.Component:
                 ),
                 rx.heading("待确认关系", size="4", margin_top="18px"),
                 rx.cond(
-                    PAGE_LOADING,
+                    ResearchState.show_extras_loading,
                     _section_loading(),
                     rx.cond(
                         ResearchState.has_pending_candidates,

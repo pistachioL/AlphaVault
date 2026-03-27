@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta
 from functools import lru_cache
 import json
@@ -24,6 +24,10 @@ from alphavault.db.turso_env import (
 )
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
+from alphavault.ui.follow_pages_key_match import (
+    is_stock_code_value,
+    normalize_stock_code,
+)
 from alphavault.ui.thread_tree import extract_platform_post_id
 from alphavault_reflex.services.homework_constants import TRADE_BOARD_MAX_WINDOW_DAYS
 from alphavault_reflex.services.thread_tree import normalize_tree_lookup_post_uid
@@ -74,6 +78,8 @@ WANTED_POST_COLUMNS_FOR_TREE = [
     "url",
     "raw_text",
 ]
+FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE = 240
+FAST_STOCK_TOTAL_TIMEOUT_SECONDS = 8.0
 
 STOCK_ALIAS_RELATIONS_SQL = """
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
@@ -633,6 +639,182 @@ def load_single_post_for_tree_from_env(post_uid: str) -> tuple[pd.DataFrame, str
     return pd.DataFrame(), ""
 
 
+def _normalize_stock_key_for_fast_query(stock_key: str) -> str:
+    raw = str(stock_key or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("stock:"):
+        return raw
+    return f"stock:{raw}"
+
+
+def _stock_code_from_stock_key(stock_key: str) -> str:
+    normalized = _normalize_stock_key_for_fast_query(stock_key)
+    if not normalized.startswith("stock:"):
+        return ""
+    value = normalized[len("stock:") :].strip()
+    code = normalize_stock_code(value)
+    if not is_stock_code_value(code):
+        return ""
+    return code
+
+
+@lru_cache(maxsize=64)
+def _load_stock_trade_sources_fast_cached(
+    db_url: str,
+    auth_token: str,
+    source_name: str,
+    stock_key: str,
+    stock_code: str,
+    per_source_limit: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    normalized_key = _normalize_stock_key_for_fast_query(stock_key)
+    if not normalized_key:
+        return pd.DataFrame(), pd.DataFrame()
+    limit = max(1, int(per_source_limit or FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE))
+
+    engine = ensure_turso_engine(db_url, auth_token)
+    with turso_connect_autocommit(engine) as conn:
+        assertion_cols = table_columns(conn, "assertions")
+        selected_assertion_cols = [
+            col for col in WANTED_TRADE_ASSERTION_COLUMNS if col in assertion_cols
+        ]
+        if not selected_assertion_cols:
+            return pd.DataFrame(), pd.DataFrame()
+        base_query = build_assertions_query(selected_assertion_cols)
+        code_clause = ""
+        params: dict[str, object] = {"stock_key": normalized_key, "limit": limit}
+        if stock_code and "stock_codes_json" in assertion_cols:
+            code_clause = " OR stock_codes_json LIKE :stock_code_like"
+            params["stock_code_like"] = f"%{stock_code}%"
+        order_clause = (
+            " ORDER BY created_at DESC" if "created_at" in assertion_cols else ""
+        )
+        assertions_query = (
+            f"{base_query}\n"
+            "WHERE action LIKE 'trade.%'\n"
+            f"  AND (topic_key = :stock_key{code_clause})"
+            f"{order_clause}\n"
+            "LIMIT :limit"
+        )
+        assertions = turso_read_sql_df(conn, assertions_query, params=params)
+
+        posts = pd.DataFrame()
+        if not assertions.empty:
+            post_uids = tuple(
+                sorted(
+                    {
+                        str(uid or "").strip()
+                        for uid in assertions.get(
+                            "post_uid",
+                            pd.Series(dtype=str),
+                        ).tolist()
+                        if str(uid or "").strip()
+                    }
+                )
+            )
+            if post_uids:
+                post_cols = table_columns(conn, "posts")
+                display_expr = (
+                    "display_md" if "display_md" in post_cols else "'' AS display_md"
+                )
+                selected_post_cols = [
+                    col for col in WANTED_POST_COLUMNS_FOR_TREE if col in post_cols
+                ]
+                post_select_expr = ", ".join(selected_post_cols + [display_expr])
+                placeholders = ", ".join(["?"] * len(post_uids))
+                posts_query = f"""
+SELECT {post_select_expr}
+FROM posts
+WHERE processed_at IS NOT NULL
+  AND post_uid IN ({placeholders})
+"""
+                posts = turso_read_sql_df(conn, posts_query, params=list(post_uids))
+
+    posts = _standardize_posts(posts, source_name=source_name)
+    posts = _normalize_posts_datetime(posts)
+    posts = _ensure_platform_post_id(posts)
+    assertions = _standardize_assertions(assertions, posts, source_name=source_name)
+    assertions = _normalize_assertions_datetime(assertions)
+    return posts, assertions
+
+
+def load_stock_sources_fast_from_env(
+    stock_key: str,
+    *,
+    per_source_limit: int = FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE,
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+    normalized_key = _normalize_stock_key_for_fast_query(stock_key)
+    if not normalized_key:
+        return pd.DataFrame(), pd.DataFrame(), ""
+
+    load_dotenv_if_present()
+    sources = load_configured_turso_sources_from_env()
+    if not sources:
+        return pd.DataFrame(), pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+
+    stock_code = _stock_code_from_stock_key(normalized_key)
+    limit = max(1, int(per_source_limit or FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE))
+
+    posts_frames: list[pd.DataFrame] = []
+    assertions_frames: list[pd.DataFrame] = []
+    errors: list[str] = []
+    max_workers = max(1, min(4, int(len(sources))))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _load_stock_trade_sources_fast_cached,
+                source.url,
+                source.token,
+                source.name,
+                normalized_key,
+                stock_code,
+                limit,
+            ): source.name
+            for source in sources
+        }
+        done, not_done = wait(
+            futures.keys(),
+            timeout=float(FAST_STOCK_TOTAL_TIMEOUT_SECONDS),
+        )
+        for fut in not_done:
+            source_name = futures.get(fut, "")
+            fut.cancel()
+            errors.append(f"turso_timeout:{source_name}")
+        for fut in as_completed(done):
+            source_name = futures.get(fut, "")
+            try:
+                posts, assertions = fut.result()
+            except BaseException as e:
+                if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                    raise
+                errors.append(f"turso_connect_error:{source_name}:{type(e).__name__}")
+                continue
+            posts_frames.append(posts)
+            assertions_frames.append(assertions)
+
+    if not posts_frames and not assertions_frames:
+        if errors:
+            return pd.DataFrame(), pd.DataFrame(), errors[0]
+        return pd.DataFrame(), pd.DataFrame(), "turso_sources_empty"
+
+    non_empty_posts = [frame for frame in posts_frames if not frame.empty]
+    non_empty_assertions = [frame for frame in assertions_frames if not frame.empty]
+    posts = (
+        pd.concat(non_empty_posts, ignore_index=True)
+        if non_empty_posts
+        else pd.DataFrame()
+    )
+    assertions = (
+        pd.concat(non_empty_assertions, ignore_index=True)
+        if non_empty_assertions
+        else pd.DataFrame()
+    )
+    if errors:
+        return posts, assertions, f"partial_source_error:{errors[0]}"
+    return posts, assertions, ""
+
+
 def load_trade_assertions_from_env() -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
     sources = load_configured_turso_sources_from_env()
@@ -786,6 +968,7 @@ def load_stock_alias_relations_from_env() -> tuple[pd.DataFrame, str]:
 def clear_reflex_source_caches() -> None:
     _load_trade_sources_cached.cache_clear()
     _load_trade_board_assertions_cached.cache_clear()
+    _load_stock_trade_sources_fast_cached.cache_clear()
     _load_homework_board_payload_cached.cache_clear()
     _load_single_post_for_tree_cached.cache_clear()
     _load_post_urls_cached.cache_clear()

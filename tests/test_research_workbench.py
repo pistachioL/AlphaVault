@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import libsql
 
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.turso_db import TursoConnection, TursoEngine
 from alphavault.research_workbench import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_RELATIONS_TABLE,
@@ -240,3 +240,21 @@ def test_list_pending_candidates_for_left_key_includes_candidate_key() -> None:
         assert rows[1]["candidate_key"] == "stock:贵州茅台"
     finally:
         conn.close()
+
+
+def test_ensure_research_workbench_schema_runs_once_per_engine(monkeypatch) -> None:
+    from alphavault import research_workbench as module
+
+    calls: list[str] = []
+    monkeypatch.setattr(module, "_SCHEMA_READY_KEYS", set())
+    monkeypatch.setattr(
+        module,
+        "_run_schema_ddl",
+        lambda engine_or_conn: calls.append(str(engine_or_conn.remote_url)),
+    )
+
+    engine = TursoEngine(remote_url="libsql://unit.test", auth_token="token")
+    module.ensure_research_workbench_schema(engine)
+    module.ensure_research_workbench_schema(engine)
+
+    assert calls == ["libsql://unit.test"]
