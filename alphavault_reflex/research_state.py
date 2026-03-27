@@ -52,8 +52,16 @@ from alphavault_reflex.services.stock_backfill import (
     run_targeted_stock_backfill,
 )
 
+DEFAULT_SIGNAL_PAGE_SIZE = 5
+SIGNAL_PAGE_SIZE_OPTIONS = (5, 10, 20)
 
-def load_stock_page_view(stock_slug: str) -> dict[str, object]:
+
+def load_stock_page_view(
+    stock_slug: str,
+    *,
+    signal_page: int,
+    signal_page_size: int,
+) -> dict[str, object]:
     stock_key = _normalize_stock_key(stock_slug)
     posts, assertions, err = load_sources_from_env()
     if err:
@@ -61,6 +69,9 @@ def load_stock_page_view(stock_slug: str) -> dict[str, object]:
             "entity_key": stock_key,
             "header_title": stock_key.removeprefix("stock:"),
             "signals": [],
+            "signal_total": 0,
+            "signal_page": 1,
+            "signal_page_size": _normalize_signal_page_size(signal_page_size),
             "related_sectors": [],
             "pending_candidates": [],
             "backfill_posts": [],
@@ -74,6 +85,8 @@ def load_stock_page_view(stock_slug: str) -> dict[str, object]:
         assertions,
         stock_key=stock_key,
         stock_relations=stock_relations,
+        signal_page=_normalize_signal_page(signal_page),
+        signal_page_size=_normalize_signal_page_size(signal_page_size),
     )
     result = asdict(view)
     entity_key = str(result.get("entity_key") or stock_key).strip()
@@ -266,6 +279,9 @@ class ResearchState(rx.State):
     pending_candidates: list[dict[str, str]] = []
     backfill_posts: list[dict[str, str]] = []
     backfill_notice: str = ""
+    signal_page: int = 1
+    signal_page_size: int = DEFAULT_SIGNAL_PAGE_SIZE
+    signal_total: int = 0
 
     @rx.var
     def has_signals(self) -> bool:
@@ -323,24 +339,85 @@ class ResearchState(rx.State):
     def has_backfill_posts(self) -> bool:
         return bool(self.backfill_posts)
 
+    @rx.var
+    def signal_page_size_options(self) -> list[str]:
+        return [str(size) for size in SIGNAL_PAGE_SIZE_OPTIONS]
+
+    @rx.var
+    def signal_page_size_text(self) -> str:
+        return str(_normalize_signal_page_size(self.signal_page_size))
+
+    @rx.var
+    def signal_total_pages(self) -> int:
+        total = max(int(self.signal_total or 0), 0)
+        size = max(int(self.signal_page_size or DEFAULT_SIGNAL_PAGE_SIZE), 1)
+        if total <= 0:
+            return 1
+        return max(1, (total + size - 1) // size)
+
+    @rx.var
+    def signal_page_caption(self) -> str:
+        total = max(int(self.signal_total or 0), 0)
+        if total <= 0:
+            return ""
+        page = max(int(self.signal_page or 1), 1)
+        pages = max(int(self.signal_total_pages or 1), 1)
+        return f"第{page}页 / 共{pages}页（{total}条）"
+
     @rx.event
     def load_stock_page(self, stock_slug: str | None = None) -> None:
         self.loading = True
         slug = _resolve_route_slug(
             self, explicit_slug=stock_slug, route_key="stock_slug"
         )
+        if self.entity_type != "stock" or _normalize_stock_key(slug) != self.entity_key:
+            self.signal_page = 1
         stock_key = _normalize_stock_key(slug)
-        view = load_stock_page_view(slug)
+        view = load_stock_page_view(
+            slug,
+            signal_page=_normalize_signal_page(self.signal_page),
+            signal_page_size=_normalize_signal_page_size(self.signal_page_size),
+        )
         self.page_title = str(view.get("header_title") or "").strip()
         self.entity_key = str(view.get("entity_key") or stock_key).strip()
         self.entity_type = "stock"
         self.load_error = str(view.get("load_error") or "").strip()
         self.primary_signals = _coerce_rows(view.get("signals"))
+        self.signal_total = _normalize_signal_total(
+            view.get("signal_total"),
+            fallback=len(self.primary_signals),
+        )
+        self.signal_page = _normalize_signal_page(view.get("signal_page") or 1)
+        self.signal_page_size = _normalize_signal_page_size(
+            view.get("signal_page_size") or self.signal_page_size
+        )
         self.related_items = _prepare_sector_links(view.get("related_sectors"))
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
         self.backfill_posts = _coerce_rows(view.get("backfill_posts"))
         self.loaded_once = True
         self.loading = False
+
+    @rx.event
+    def prev_signal_page(self) -> None:
+        if int(self.signal_page or 1) <= 1:
+            return
+        self.signal_page = max(int(self.signal_page) - 1, 1)
+        self.load_stock_page(self.entity_key.removeprefix("stock:"))
+
+    @rx.event
+    def next_signal_page(self) -> None:
+        page = max(int(self.signal_page or 1), 1)
+        total_pages = max(int(self.signal_total_pages or 1), 1)
+        if page >= total_pages:
+            return
+        self.signal_page = page + 1
+        self.load_stock_page(self.entity_key.removeprefix("stock:"))
+
+    @rx.event
+    def set_signal_page_size(self, value: str) -> None:
+        self.signal_page_size = _normalize_signal_page_size(value)
+        self.signal_page = 1
+        self.load_stock_page(self.entity_key.removeprefix("stock:"))
 
     @rx.event
     def load_sector_page(self, sector_slug: str | None = None) -> None:
@@ -519,6 +596,34 @@ def _normalize_stock_key(stock_slug: str) -> str:
     if slug.startswith("stock:"):
         return slug
     return f"stock:{slug}"
+
+
+def _normalize_signal_page(value: object) -> int:
+    try:
+        parsed = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return 1
+    if parsed <= 0:
+        return 1
+    return int(parsed)
+
+
+def _normalize_signal_page_size(value: object) -> int:
+    try:
+        parsed = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return DEFAULT_SIGNAL_PAGE_SIZE
+    if parsed in SIGNAL_PAGE_SIZE_OPTIONS:
+        return int(parsed)
+    return DEFAULT_SIGNAL_PAGE_SIZE
+
+
+def _normalize_signal_total(value: object, *, fallback: int) -> int:
+    try:
+        parsed = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return max(int(fallback), 0)
+    return max(parsed, 0)
 
 
 def _coerce_rows(value: object) -> list[dict[str, str]]:
