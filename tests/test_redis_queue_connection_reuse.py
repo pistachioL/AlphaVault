@@ -1,93 +1,111 @@
 from __future__ import annotations
 
-import json
-from typing import cast
+from pathlib import Path
 
-from alphavault.db.turso_db import TursoEngine
 from alphavault.worker import redis_queue
 
 
-def test_flush_redis_to_turso_reuses_single_connection(monkeypatch, tmp_path) -> None:
-    engine_marker = cast(TursoEngine, object())
-    conn_marker = object()
-    connect_calls: list[object] = []
-    seen_conn_ids: list[int] = []
-    messages = [
-        json.dumps(
-            {
-                "post_uid": "weibo:1",
-                "platform": "weibo",
-                "platform_post_id": "1",
-                "author": "作者A",
-                "created_at": "2026-03-28 10:00:00",
-                "url": "https://example.com/post/1",
-                "raw_text": "文本1",
-                "display_md": "",
-                "ingested_at": 100,
-            },
-            ensure_ascii=False,
-        )
-    ]
+def test_default_redis_dedup_ttl_is_30_days() -> None:
+    assert redis_queue.DEFAULT_REDIS_DEDUP_TTL_SECONDS == 30 * 24 * 3600
 
-    class _ConnContext:
-        def __enter__(self):
-            return conn_marker
 
-        def __exit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
+def test_redis_ai_due_count_sums_ready_and_due_delayed() -> None:
+    class _FakeClient:
+        def llen(self, key: str) -> int:
+            assert key.endswith(":ai:ready")
+            return 3
 
-    def _fake_connect(engine):
-        connect_calls.append(engine)
-        return _ConnContext()
+        def zcount(self, key: str, min_score: str, max_score: int) -> int:
+            del min_score, max_score
+            assert key.endswith(":ai:delayed")
+            return 2
 
-    def _fake_pop_to_processing(client, queue_key):
-        del client, queue_key
-        if not messages:
-            return None
-        return messages.pop(0)
-
-    def _fake_cloud_post_is_processed_or_newer(conn, post_uid, payload_ingested_at):
-        del post_uid, payload_ingested_at
-        assert conn is conn_marker
-        seen_conn_ids.append(id(conn))
-        return False
-
-    def _fake_upsert(conn, **kwargs) -> None:
-        del kwargs
-        assert conn is conn_marker
-        seen_conn_ids.append(id(conn))
-
-    monkeypatch.setattr(redis_queue, "turso_connect_autocommit", _fake_connect)
-    monkeypatch.setattr(
-        redis_queue,
-        "_redis_requeue_processing",
-        lambda client, queue_key, max_items, verbose: 0,
+    count = redis_queue.redis_ai_due_count(
+        _FakeClient(),
+        "test:q",
+        now_epoch=123,
     )
-    monkeypatch.setattr(
-        redis_queue, "_redis_pop_to_processing", _fake_pop_to_processing
-    )
-    monkeypatch.setattr(
-        redis_queue,
-        "_ack_and_cleanup",
-        lambda client, queue_key, msg, post_uid, spool_dir, verbose: True,
-    )
-    monkeypatch.setattr(
-        redis_queue,
-        "_cloud_post_is_processed_or_newer",
-        _fake_cloud_post_is_processed_or_newer,
-    )
-    monkeypatch.setattr(redis_queue, "upsert_pending_post", _fake_upsert)
+    assert count == 5
 
-    processed, turso_error = redis_queue.flush_redis_to_turso(
-        client=object(),
-        queue_key="test:q",
-        spool_dir=tmp_path,
-        engine=engine_marker,
-        max_items=5,
+
+def test_redis_ai_move_due_delayed_to_ready_moves_messages() -> None:
+    class _FakePipeline:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, str | int]] = []
+
+        def zrem(self, key: str, msg: str) -> "_FakePipeline":
+            self.calls.append(("zrem", key, msg))
+            return self
+
+        def lpush(self, key: str, msg: str) -> "_FakePipeline":
+            self.calls.append(("lpush", key, msg))
+            return self
+
+        def execute(self) -> list[int]:
+            return [1] * len(self.calls)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.pipeline_instance = _FakePipeline()
+
+        def zrangebyscore(
+            self,
+            key: str,
+            *,
+            min: str,
+            max: int,
+            start: int,
+            num: int,
+        ) -> list[str]:
+            del min, max, start, num
+            assert key.endswith(":ai:delayed")
+            return ["m1", "m2"]
+
+        def pipeline(self) -> _FakePipeline:
+            return self.pipeline_instance
+
+    client = _FakeClient()
+    moved = redis_queue.redis_ai_move_due_delayed_to_ready(
+        client,
+        "test:q",
+        now_epoch=123,
+        max_items=10,
         verbose=False,
     )
+    assert moved == 2
+    assert client.pipeline_instance.calls == [
+        ("zrem", "test:q:ai:delayed", "m1"),
+        ("lpush", "test:q:ai:ready", "m1"),
+        ("zrem", "test:q:ai:delayed", "m2"),
+        ("lpush", "test:q:ai:ready", "m2"),
+    ]
 
-    assert processed == 1
-    assert turso_error is False
-    assert connect_calls == [engine_marker]
-    assert len(seen_conn_ids) == 2
+
+def test_redis_ai_ack_and_cleanup_calls_ack_and_spool_delete(
+    monkeypatch, tmp_path: Path
+) -> None:
+    ack_calls: list[tuple[str, str]] = []
+    deleted: list[str] = []
+
+    monkeypatch.setattr(
+        redis_queue,
+        "redis_ai_ack_processing",
+        lambda _client, _queue_key, msg: ack_calls.append(("ack", str(msg))),
+    )
+    monkeypatch.setattr(
+        redis_queue,
+        "spool_delete",
+        lambda _spool_dir, post_uid: deleted.append(str(post_uid)),
+    )
+
+    ok = redis_queue.redis_ai_ack_and_cleanup(
+        object(),
+        "test:q",
+        msg="msg-1",
+        post_uid="weibo:1",
+        spool_dir=tmp_path,
+        verbose=False,
+    )
+    assert ok is True
+    assert ack_calls == [("ack", "msg-1")]
+    assert deleted == ["weibo:1"]

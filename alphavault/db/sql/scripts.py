@@ -5,10 +5,6 @@ SELECT_ONE = "SELECT 1"
 SELECT_TOTAL_POSTS = "SELECT COUNT(*) FROM posts"
 SELECT_TOTAL_ASSERTIONS = "SELECT COUNT(*) FROM assertions"
 
-SELECT_POST_PROCESSED_AND_INGESTED = (
-    "SELECT processed_at, ingested_at FROM posts WHERE post_uid = :post_uid LIMIT 1"
-)
-
 
 def select_post_uids_in(placeholders: str) -> str:
     return f"SELECT post_uid FROM posts WHERE post_uid IN ({placeholders})"

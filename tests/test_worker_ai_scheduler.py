@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 from concurrent.futures import Future
 from pathlib import Path
@@ -350,6 +351,104 @@ def test_schedule_ai_dedups_due_queue(monkeypatch) -> None:
     assert has_error is False
     assert scheduled == 2
     assert scheduled_post_uids == ["weibo:1", "weibo:2"]
+
+
+def test_schedule_ai_prefers_redis_queue_when_available(monkeypatch, tmp_path) -> None:
+    scheduled_payloads: list[dict[str, object]] = []
+    redis_messages = [
+        json.dumps(
+            {
+                "post_uid": "weibo:1",
+                "platform": "weibo",
+                "platform_post_id": "1",
+                "author": "作者A",
+                "created_at": "2026-03-28 10:00:00",
+                "url": "https://example.com/post/1",
+                "raw_text": "文本1",
+                "display_md": "",
+                "ingested_at": 100,
+                "retry_count": 0,
+            },
+            ensure_ascii=False,
+        )
+    ]
+
+    class _FakeExecutor:
+        def submit(self, fn, **kwargs):  # type: ignore[no-untyped-def]
+            del fn
+            payload = kwargs.get("payload")
+            if isinstance(payload, dict):
+                scheduled_payloads.append(payload)
+            fut: Future = Future()
+            fut.set_result(None)
+            return fut
+
+    monkeypatch.setattr(
+        worker_module,
+        "select_due_post_uids",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("redis mode should not call select_due_post_uids")
+        ),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_move_due_delayed_to_ready",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_requeue_processing",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_pop_to_processing",
+        lambda *_args, **_kwargs: redis_messages.pop(0) if redis_messages else None,
+    )
+    monkeypatch.setattr(
+        worker_module, "upsert_pending_post", lambda *_args, **_kwargs: None
+    )
+
+    config = LLMConfig(
+        api_key="k",
+        model="m",
+        prompt_version="p",
+        relevant_threshold=0.3,
+        base_url="",
+        api_mode="responses",
+        ai_stream=True,
+        ai_retries=0,
+        ai_temperature=0.1,
+        ai_reasoning_effort="low",
+        ai_rpm=12.0,
+        ai_timeout_seconds=30.0,
+        trace_out=None,
+        verbose=False,
+    )
+    inflight_futures: set[Future] = set()
+    inflight_owner_by_future: dict[Future, str] = {}
+    scheduled, has_error = _schedule_ai(
+        _FakeExecutor(),  # type: ignore[arg-type]
+        engine=object(),  # type: ignore[arg-type]
+        platform="weibo",
+        ai_cap=4,
+        low_inflight_now_get=lambda: 0,
+        inflight_futures=inflight_futures,
+        inflight_owner_by_future=inflight_owner_by_future,
+        inflight_owner="weibo",
+        wakeup_event=threading.Event(),
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+        redis_client=object(),
+        redis_queue_key="queue",
+        spool_dir=tmp_path,
+    )
+
+    assert has_error is False
+    assert scheduled == 1
+    assert len(scheduled_payloads) == 1
+    assert str(scheduled_payloads[0].get("post_uid") or "") == "weibo:1"
 
 
 def _build_source_runtime() -> WorkerSourceRuntime:

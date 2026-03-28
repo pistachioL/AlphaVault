@@ -104,6 +104,79 @@ def test_ingest_rss_many_once_passes_timeout_and_retries(monkeypatch, tmp_path) 
     assert enqueue_error is False
 
 
+def test_ingest_rss_many_once_redis_primary_skips_turso_write(
+    monkeypatch, tmp_path
+) -> None:
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del url, timeout, retries
+        return SimpleNamespace(
+            entries=[{"link": "https://example.com/post/1", "title": "标题"}]
+        )
+
+    class _ConnContext:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    upsert_calls: list[str] = []
+
+    def _fake_push_to_redis_status(
+        redis_client, redis_queue_key, *, post_uid: str, payload, verbose: bool
+    ) -> str:
+        del redis_client, redis_queue_key, payload, verbose
+        if str(post_uid or "").strip() == "weibo:1":
+            return ingest.REDIS_PUSH_STATUS_PUSHED
+        return ingest.REDIS_PUSH_STATUS_ERROR
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: ("mid1", "weibo:1", ""),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest, "turso_connect_autocommit", lambda _engine: _ConnContext()
+    )
+    monkeypatch.setattr(
+        ingest,
+        "upsert_pending_post",
+        lambda *_args, **_kwargs: upsert_calls.append("called"),
+    )
+    monkeypatch.setattr(ingest, "_try_push_to_redis_status", _fake_push_to_redis_status)
+
+    accepted, enqueue_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss"],
+        engine=object(),  # type: ignore[arg-type]
+        spool_dir=tmp_path,
+        redis_client=object(),
+        redis_queue_key="k",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        verbose=False,
+    )
+
+    assert accepted == 1
+    assert enqueue_error is False
+    assert upsert_calls == []
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
 def test_build_rss_accepted_log_line_contains_id_author_and_progress() -> None:
     line = ingest._build_rss_accepted_log_line(
         platform="weibo",
@@ -408,14 +481,14 @@ def test_ingest_rss_many_once_spool_write_fallback_to_redis(
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk_full")),
     )
 
-    def _fake_redis_try_push_dedup(_client, _key, *, post_uid: str, **_kwargs) -> bool:
+    def _fake_redis_try_push_status(_client, _key, *, post_uid: str, **_kwargs) -> str:
         redis_push_calls.append(str(post_uid))
-        return True
+        return ingest.REDIS_PUSH_STATUS_PUSHED
 
     monkeypatch.setattr(
         ingest,
-        "redis_try_push_dedup",
-        _fake_redis_try_push_dedup,
+        "redis_try_push_ai_dedup_status",
+        _fake_redis_try_push_status,
     )
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
@@ -471,8 +544,8 @@ def test_ingest_rss_many_once_spool_write_and_redis_both_fail(
     )
     monkeypatch.setattr(
         ingest,
-        "redis_try_push_dedup",
-        lambda *_args, **_kwargs: False,
+        "redis_try_push_ai_dedup_status",
+        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_ERROR,
     )
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
@@ -534,8 +607,8 @@ def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
     monkeypatch.setattr(ingest, "spool_write", _fake_spool_write)
     monkeypatch.setattr(
         ingest,
-        "redis_try_push_dedup",
-        lambda *_args, **_kwargs: False,
+        "redis_try_push_ai_dedup_status",
+        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_ERROR,
     )
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
@@ -683,7 +756,6 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
     second_conn = object()
     connect_calls: list[object] = []
     upsert_calls: list[object] = []
-    redis_push_post_uids: list[str] = []
 
     class _ConnContext:
         def __init__(self, conn_marker: object):
@@ -718,13 +790,6 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
         if len(upsert_calls) == 1:
             raise RuntimeError("first write failed")
 
-    def _fake_push_to_redis(
-        redis_client, redis_queue_key, *, post_uid: str, payload, verbose: bool
-    ) -> bool:
-        del redis_client, redis_queue_key, payload, verbose
-        redis_push_post_uids.append(post_uid)
-        return True
-
     monkeypatch.setattr(
         ingest, "turso_connect_autocommit", _fake_connect, raising=False
     )
@@ -747,14 +812,13 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
     monkeypatch.setattr(ingest, "upsert_pending_post", _fake_upsert)
-    monkeypatch.setattr(ingest, "_try_push_to_redis", _fake_push_to_redis)
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
         engine=engine_marker,
         spool_dir=tmp_path,
-        redis_client=object(),
-        redis_queue_key="test:q",
+        redis_client=None,
+        redis_queue_key="",
         platform="weibo",
         author="",
         user_id=None,
@@ -768,7 +832,6 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
     assert enqueue_error is True
     assert connect_calls == [engine_marker, engine_marker]
     assert upsert_calls == [first_conn, second_conn]
-    assert redis_push_post_uids == ["weibo:1"]
 
 
 def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
@@ -777,7 +840,6 @@ def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
     engine_marker = object()
     connect_calls: list[object] = []
     upsert_calls: list[object] = []
-    redis_push_post_uids: list[str] = []
 
     class _FakeConn:
         def __init__(self, name: str):
@@ -811,13 +873,6 @@ def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
         if len(upsert_calls) <= 2:
             raise RuntimeError("write failed")
 
-    def _fake_push_to_redis(
-        redis_client, redis_queue_key, *, post_uid: str, payload, verbose: bool
-    ) -> bool:
-        del redis_client, redis_queue_key, payload, verbose
-        redis_push_post_uids.append(post_uid)
-        return True
-
     monkeypatch.setattr(
         ingest, "turso_connect_autocommit", _fake_connect, raising=False
     )
@@ -840,14 +895,13 @@ def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
     monkeypatch.setattr(ingest, "upsert_pending_post", _fake_upsert)
-    monkeypatch.setattr(ingest, "_try_push_to_redis", _fake_push_to_redis)
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
         engine=engine_marker,
         spool_dir=tmp_path,
-        redis_client=object(),
-        redis_queue_key="test:q",
+        redis_client=None,
+        redis_queue_key="",
         platform="weibo",
         author="",
         user_id=None,
@@ -861,7 +915,6 @@ def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
     assert enqueue_error is True
     assert connect_calls == [engine_marker, engine_marker, engine_marker]
     assert upsert_calls == [connections[0], connections[1], connections[2]]
-    assert redis_push_post_uids == ["weibo:1", "weibo:2"]
     assert connections[0].close_calls == [False]
     assert connections[1].close_calls == [False]
     assert connections[2].close_calls == [False]
