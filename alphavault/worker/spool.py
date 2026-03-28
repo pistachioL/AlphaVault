@@ -20,6 +20,13 @@ from alphavault.rss.utils import now_str
 from alphavault.weibo.display import format_weibo_display_md
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+SPOOL_JSON_SUFFIX = ".json"
+SPOOL_PROCESSING_SUFFIX = ".processing"
+SPOOL_RETRY_MARKER = ".retry."
+SPOOL_FILE_GLOB = f"*{SPOOL_JSON_SUFFIX}"
+SPOOL_PROCESSING_GLOB = f"*{SPOOL_JSON_SUFFIX}{SPOOL_PROCESSING_SUFFIX}"
+SPOOL_PROCESSING_STALE_SECONDS = 300
+SPOOL_RETRY_LINK_ATTEMPTS = 16
 
 
 def sha1_short(value: str) -> str:
@@ -37,7 +44,7 @@ def ensure_spool_dir() -> Path:
 
 
 def _spool_path(spool_dir: Path, post_uid: str) -> Path:
-    return spool_dir / f"{sha1_short(post_uid)}.json"
+    return spool_dir / f"{sha1_short(post_uid)}{SPOOL_JSON_SUFFIX}"
 
 
 def spool_write(spool_dir: Path, post_uid: str, payload: Dict[str, Any]) -> Path:
@@ -54,6 +61,122 @@ def spool_delete(spool_dir: Path, post_uid: str) -> None:
         path.unlink(missing_ok=True)
     except Exception:
         return
+
+
+def _spool_processing_path(path: Path) -> Path:
+    return Path(f"{path}{SPOOL_PROCESSING_SUFFIX}")
+
+
+def _spool_path_from_processing(path: Path) -> Optional[Path]:
+    name = path.name
+    expected_suffix = f"{SPOOL_JSON_SUFFIX}{SPOOL_PROCESSING_SUFFIX}"
+    if not name.endswith(expected_suffix):
+        return None
+    return path.with_name(name[: -len(SPOOL_PROCESSING_SUFFIX)])
+
+
+def _cleanup_spool_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        return
+
+
+def _build_retry_spool_path(*, target_path: Path, seed: str, attempt: int) -> Path:
+    name = target_path.name
+    if name.endswith(SPOOL_JSON_SUFFIX):
+        stem = name[: -len(SPOOL_JSON_SUFFIX)]
+    else:
+        stem = name
+    retry_name = f"{stem}{SPOOL_RETRY_MARKER}{seed}.{attempt}{SPOOL_JSON_SUFFIX}"
+    return target_path.with_name(retry_name)
+
+
+def _claim_spool_file(path: Path) -> Optional[Path]:
+    claimed_path = _spool_processing_path(path)
+    try:
+        path.rename(claimed_path)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    try:
+        os.utime(claimed_path, None)
+    except Exception:
+        pass
+    return claimed_path
+
+
+def _restore_claimed_file_to_retry_slot(
+    *, claimed_path: Path, target_path: Path
+) -> None:
+    seed = f"{os.getpid()}.{time.time_ns()}"
+    for attempt in range(int(SPOOL_RETRY_LINK_ATTEMPTS)):
+        retry_path = _build_retry_spool_path(
+            target_path=target_path,
+            seed=seed,
+            attempt=attempt,
+        )
+        try:
+            os.link(claimed_path, retry_path)
+        except FileExistsError:
+            continue
+        except FileNotFoundError:
+            return
+        except Exception:
+            return
+        _cleanup_spool_file(claimed_path)
+        return
+
+
+def _restore_claimed_file_for_retry(*, claimed_path: Path, target_path: Path) -> None:
+    try:
+        os.link(claimed_path, target_path)
+    except FileExistsError:
+        _restore_claimed_file_to_retry_slot(
+            claimed_path=claimed_path,
+            target_path=target_path,
+        )
+    except FileNotFoundError:
+        return
+    except Exception:
+        if target_path.exists():
+            _restore_claimed_file_to_retry_slot(
+                claimed_path=claimed_path,
+                target_path=target_path,
+            )
+        return
+    _cleanup_spool_file(claimed_path)
+
+
+def _recover_stale_processing_files(*, spool_dir: Path, verbose: bool) -> int:
+    now_epoch = int(time.time())
+    stale_before = now_epoch - max(1, int(SPOOL_PROCESSING_STALE_SECONDS))
+    recovered = 0
+    for processing_path in sorted(spool_dir.glob(SPOOL_PROCESSING_GLOB)):
+        target_path = _spool_path_from_processing(processing_path)
+        if target_path is None:
+            continue
+        try:
+            st = processing_path.stat()
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+        if int(st.st_mtime) > stale_before:
+            continue
+        if target_path.exists():
+            continue
+        try:
+            processing_path.rename(target_path)
+            recovered += 1
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+    if recovered > 0 and verbose:
+        print(f"[spool] recover_stale_processing recovered={recovered}", flush=True)
+    return recovered
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
@@ -79,27 +202,36 @@ def flush_spool_to_turso(
 ) -> Tuple[int, bool]:
     if engine is None:
         return 0, False
-    paths = sorted(spool_dir.glob("*.json"))
+    max_batch = max(0, int(max_items))
+    if max_batch <= 0:
+        return 0, False
+    _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
+    paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
     if not paths:
         return 0, False
     processed = 0
     try:
         with turso_connect_autocommit(engine) as conn:
-            for path in paths[: max(0, int(max_items))]:
+            for path in paths[:max_batch]:
+                claimed_path = _claim_spool_file(path)
+                if claimed_path is None:
+                    continue
                 try:
-                    payload = json.loads(path.read_text(encoding="utf-8"))
+                    payload = json.loads(claimed_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    continue
                 except Exception as e:
                     if verbose:
                         print(
                             f"[spool] bad_file {path.name} {type(e).__name__}: {e}",
                             flush=True,
                         )
-                    path.unlink(missing_ok=True)
+                    _cleanup_spool_file(claimed_path)
                     continue
 
                 post_uid = str(payload.get("post_uid") or "")
                 if not post_uid:
-                    path.unlink(missing_ok=True)
+                    _cleanup_spool_file(claimed_path)
                     continue
 
                 try:
@@ -145,10 +277,12 @@ def flush_spool_to_turso(
                             pushed = False
                     if pushed:
                         if delete_spool_on_redis_push:
-                            try:
-                                path.unlink(missing_ok=True)
-                            except Exception:
-                                pass
+                            _cleanup_spool_file(claimed_path)
+                        else:
+                            _restore_claimed_file_for_retry(
+                                claimed_path=claimed_path,
+                                target_path=path,
+                            )
                         processed += 1
                         if verbose:
                             print(
@@ -161,12 +295,13 @@ def flush_spool_to_turso(
                             f"[spool] turso_write_error {path.name} {type(e).__name__}: {e}",
                             flush=True,
                         )
+                    _restore_claimed_file_for_retry(
+                        claimed_path=claimed_path,
+                        target_path=path,
+                    )
                     return processed, True
 
-                try:
-                    path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                _cleanup_spool_file(claimed_path)
                 processed += 1
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
