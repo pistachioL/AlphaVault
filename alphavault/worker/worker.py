@@ -1535,10 +1535,11 @@ def main() -> None:
                 if low_priority_ai_gate is not None
                 else None
             ),
+            verbose=bool(config.verbose),
         )
 
     def _submit_backfill_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
-        return sync_stock_backfill_cache(sync_engine)
+        return sync_stock_backfill_cache(sync_engine, verbose=bool(config.verbose))
 
     def _submit_relation_candidates_cache_job(
         sync_engine: Engine,
@@ -1565,10 +1566,11 @@ def main() -> None:
                 if low_priority_ai_gate is not None
                 else None
             ),
+            verbose=bool(config.verbose),
         )
 
     def _submit_stock_hot_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
-        return sync_stock_hot_cache(sync_engine)
+        return sync_stock_hot_cache(sync_engine, verbose=bool(config.verbose))
 
     maintenance_next_at = 0.0
 
@@ -1717,13 +1719,14 @@ def main() -> None:
                 alias_resolved = int(alias_stats.get("resolved", 0))
                 alias_inserted = int(alias_stats.get("inserted", 0))
                 alias_has_more = bool(alias_stats.get("has_more", False))
-                if (
-                    alias_sync_finished
-                    and verbose
-                    and (alias_resolved > 0 or alias_inserted > 0)
-                ):
+                if alias_sync_finished and verbose:
                     print(
-                        f"[alias:{source.config.name}] sync_done resolved={alias_resolved} inserted={alias_inserted}",
+                        f"[alias:{source.config.name}] sync_done resolved={alias_resolved} inserted={alias_inserted} "
+                        f"attempted={int(alias_stats.get('attempted', 0))} "
+                        f"queued={int(alias_stats.get('queued', 0))} "
+                        f"remaining={int(alias_stats.get('remaining_aliases', 0))} "
+                        f"has_more={1 if alias_has_more else 0} "
+                        f"locked={1 if bool(alias_stats.get('locked', False)) else 0}",
                         flush=True,
                     )
                 alias_fast_retry = _should_fast_retry_for_periodic_job(
@@ -1750,6 +1753,13 @@ def main() -> None:
                 backfill_processed = int(backfill_stats.get("processed", 0))
                 backfill_written = int(backfill_stats.get("written", 0))
                 backfill_has_more = bool(backfill_stats.get("has_more", False))
+                if backfill_finished and verbose:
+                    print(
+                        f"[backfill_cache:{source.config.name}] sync_done processed={backfill_processed} "
+                        f"written={backfill_written} has_more={1 if backfill_has_more else 0} "
+                        f"locked={1 if bool(backfill_stats.get('locked', False)) else 0}",
+                        flush=True,
+                    )
                 backfill_fast_retry = _should_fast_retry_for_periodic_job(
                     has_more=backfill_has_more
                 )
@@ -1778,6 +1788,14 @@ def main() -> None:
                 relation_cache_has_more = bool(
                     relation_cache_stats.get("has_more", False)
                 )
+                if relation_cache_finished and verbose:
+                    print(
+                        f"[relation_cache:{source.config.name}] sync_done processed={relation_cache_processed} "
+                        f"upserted={relation_cache_upserted} deleted={relation_cache_deleted} "
+                        f"has_more={1 if relation_cache_has_more else 0} "
+                        f"locked={1 if bool(relation_cache_stats.get('locked', False)) else 0}",
+                        flush=True,
+                    )
                 relation_cache_fast_retry = _should_fast_retry_for_periodic_job(
                     has_more=relation_cache_has_more
                 )
@@ -1802,6 +1820,14 @@ def main() -> None:
                 stock_hot_processed = int(stock_hot_stats.get("processed", 0))
                 stock_hot_written = int(stock_hot_stats.get("written", 0))
                 stock_hot_has_more = bool(stock_hot_stats.get("has_more", False))
+                if stock_hot_finished and verbose:
+                    print(
+                        f"[stock_hot_cache:{source.config.name}] sync_done processed={stock_hot_processed} "
+                        f"written={stock_hot_written} extras_written={int(stock_hot_stats.get('extras_written', 0))} "
+                        f"has_more={1 if stock_hot_has_more else 0} "
+                        f"locked={1 if bool(stock_hot_stats.get('locked', False)) else 0}",
+                        flush=True,
+                    )
                 stock_hot_fast_retry = _should_fast_retry_for_periodic_job(
                     has_more=stock_hot_has_more
                 )
@@ -2001,6 +2027,12 @@ def main() -> None:
                         "should_continue": should_continue_low_priority,
                     },
                 )
+                if start_alias_sync and verbose:
+                    print(
+                        f"[alias:{source.config.name}] sync_start trigger={1 if alias_trigger else 0} "
+                        f"low_budget={int(low_budget)} interval={int(alias_interval)}s",
+                        flush=True,
+                    )
 
                 backfill_trigger = bool(
                     do_maintenance
@@ -2023,6 +2055,12 @@ def main() -> None:
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_backfill_cache_job,
                 )
+                if start_backfill_cache and verbose:
+                    print(
+                        f"[backfill_cache:{source.config.name}] sync_start trigger={1 if backfill_trigger else 0} "
+                        f"interval={int(periodic_interval)}s",
+                        flush=True,
+                    )
 
                 relation_trigger = bool(
                     (
@@ -2052,6 +2090,12 @@ def main() -> None:
                         "should_continue": should_continue_low_priority,
                     },
                 )
+                if start_relation_cache and verbose:
+                    print(
+                        f"[relation_cache:{source.config.name}] sync_start trigger={1 if relation_trigger else 0} "
+                        f"low_budget={int(low_budget)} interval={int(periodic_interval)}s",
+                        flush=True,
+                    )
 
                 stock_hot_trigger = bool(
                     do_maintenance
@@ -2074,6 +2118,12 @@ def main() -> None:
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_stock_hot_cache_job,
                 )
+                if start_stock_hot_cache and verbose:
+                    print(
+                        f"[stock_hot_cache:{source.config.name}] sync_start trigger={1 if stock_hot_trigger else 0} "
+                        f"interval={int(stock_hot_interval)}s",
+                        flush=True,
+                    )
 
                 turso_error = bool(
                     ingest_turso_error

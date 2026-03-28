@@ -58,6 +58,12 @@ WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 """
 
 
+def _log_alias_sync(*, verbose: bool, message: str) -> None:
+    if not verbose:
+        return
+    print(f"[alias_sync] {message}", flush=True)
+
+
 def _resolve_alias_max_retries() -> int:
     raw = os.getenv(ENV_WORKER_STOCK_ALIAS_MAX_RETRIES, "").strip()
     if not raw:
@@ -167,11 +173,27 @@ def sync_stock_alias_relations(
     should_continue: Callable[[], bool] | None = None,
     acquire_low_priority_slot: Callable[[], bool] | None = None,
     release_low_priority_slot: Callable[[], None] | None = None,
+    verbose: bool = False,
 ) -> dict[str, int | bool]:
+    _log_alias_sync(
+        verbose=verbose,
+        message=(
+            "start "
+            f"max_alias_keys_per_run={max(0, int(max_alias_keys_per_run))} "
+            f"ai_max_inflight={max(1, int(ai_max_inflight))}"
+        ),
+    )
     ensure_research_workbench_schema(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
         assertions = _load_alias_assertions(conn)
         stock_relations = _load_stock_alias_relations(conn)
+    _log_alias_sync(
+        verbose=verbose,
+        message=(
+            f"loaded assertions={int(len(assertions))} "
+            f"stock_relations={int(len(stock_relations))}"
+        ),
+    )
 
     alias_stats: dict[str, int] = {}
     unresolved_aliases = pick_unresolved_stock_alias_keys(
@@ -202,9 +224,22 @@ def sync_stock_alias_relations(
         eligible_aliases.append(alias_key)
 
     aliases_to_process = eligible_aliases[: max(0, int(max_alias_keys_per_run))]
+    _log_alias_sync(
+        verbose=verbose,
+        message=(
+            f"selected unresolved={int(len(unresolved_aliases))} "
+            f"eligible={int(len(eligible_aliases))} "
+            f"queued={int(len(aliases_to_process))} "
+            f"max_retries={int(max_retries)}"
+        ),
+    )
     attempted_aliases: list[str] = []
     ai_alias_map: dict[str, str] = {}
     if aliases_to_process:
+        _log_alias_sync(
+            verbose=verbose,
+            message=f"ai_map_start alias_keys={int(len(aliases_to_process))}",
+        )
         ai_alias_map = build_ai_stock_alias_map(
             assertions,
             stock_relations=stock_relations,
@@ -218,6 +253,15 @@ def sync_stock_alias_relations(
             release_low_priority_slot=release_low_priority_slot,
             attempted_aliases_out=attempted_aliases,
         )
+        _log_alias_sync(
+            verbose=verbose,
+            message=(
+                f"ai_map_done attempted={int(len(attempted_aliases))} "
+                f"resolved={int(len(ai_alias_map))}"
+            ),
+        )
+    else:
+        _log_alias_sync(verbose=verbose, message="ai_map_skip reason=no_eligible_alias")
 
     attempt_counts: dict[str, int] = {}
     if attempted_aliases:
@@ -246,6 +290,13 @@ def sync_stock_alias_relations(
     candidate_pairs = _candidate_alias_pairs(ai_alias_map)
     existing_pairs = _existing_alias_pairs(stock_relations)
     new_pairs = [pair for pair in candidate_pairs if pair not in existing_pairs]
+    _log_alias_sync(
+        verbose=verbose,
+        message=(
+            f"pairs candidates={int(len(candidate_pairs))} "
+            f"new={int(len(new_pairs))} existing={int(len(existing_pairs))}"
+        ),
+    )
 
     inserted = 0
     if new_pairs:
@@ -271,16 +322,31 @@ def sync_stock_alias_relations(
                         reason="alias_relation",
                     )
                 inserted += 1
+    else:
+        _log_alias_sync(verbose=verbose, message="write_skip reason=no_new_pairs")
+
+    attempted_count = int(len(attempted_aliases))
+    remaining_aliases = max(0, int(len(eligible_aliases) - attempted_count))
+    has_more = bool(len(eligible_aliases) > attempted_count)
+    _log_alias_sync(
+        verbose=verbose,
+        message=(
+            f"done inserted={int(inserted)} resolved={int(len(ai_alias_map))} "
+            f"attempted={attempted_count} remaining={remaining_aliases} "
+            f"has_more={1 if has_more else 0}"
+        ),
+    )
 
     return {
         "assertions": int(len(assertions)),
         "resolved": int(len(ai_alias_map)),
         "candidates": int(len(candidate_pairs)),
         "inserted": int(inserted),
-        "has_more": bool(len(eligible_aliases) > len(attempted_aliases)),
-        "remaining_aliases": max(
-            0, int(len(eligible_aliases) - len(attempted_aliases))
-        ),
+        "attempted": attempted_count,
+        "eligible": int(len(eligible_aliases)),
+        "queued": int(len(aliases_to_process)),
+        "has_more": has_more,
+        "remaining_aliases": remaining_aliases,
     }
 
 

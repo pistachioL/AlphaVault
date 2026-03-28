@@ -89,6 +89,12 @@ WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
+def _log_stock_hot_cache(*, verbose: bool, message: str) -> None:
+    if not verbose:
+        return
+    print(f"[stock_hot_cache] {message}", flush=True)
+
+
 def _window_cutoff_str(days: int) -> str:
     window_days = max(1, int(days))
     cutoff = datetime.now(tz=UTC) - timedelta(days=window_days)
@@ -558,7 +564,18 @@ def sync_stock_hot_cache(
     signal_cap: int = STOCK_HOT_CACHE_SIGNAL_CAP,
     extras_refresh_min_seconds: int = STOCK_EXTRAS_REFRESH_MIN_SECONDS,
     lock_lease_seconds: int = STOCK_HOT_CACHE_LOCK_LEASE_SECONDS,
+    verbose: bool = False,
 ) -> dict[str, int | bool]:
+    _log_stock_hot_cache(
+        verbose=verbose,
+        message=(
+            "start "
+            f"max_stocks_per_run={max(1, int(max_stocks_per_run))} "
+            f"dirty_limit={max(1, int(dirty_limit))} "
+            f"signal_window_days={max(1, int(signal_window_days))} "
+            f"signal_cap={max(1, int(signal_cap))}"
+        ),
+    )
     now_epoch = int(datetime.now(tz=UTC).timestamp())
     if not try_acquire_worker_job_lock(
         engine_or_conn,
@@ -566,6 +583,7 @@ def sync_stock_hot_cache(
         now_epoch=now_epoch,
         lease_seconds=int(lock_lease_seconds),
     ):
+        _log_stock_hot_cache(verbose=verbose, message="lock_busy skip=1")
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
@@ -594,7 +612,15 @@ def sync_stock_hot_cache(
                     }
                     for key in bootstrap_keys
                 ]
+            _log_stock_hot_cache(
+                verbose=verbose,
+                message=(
+                    f"queue_loaded dirty={int(len(dirty_entries))} "
+                    f"bootstrap={int(len(bootstrap_keys))}"
+                ),
+            )
             if not dirty_entries:
+                _log_stock_hot_cache(verbose=verbose, message="queue_empty skip=1")
                 return {"processed": 0, "written": 0, "has_more": False}
 
             written = 0
@@ -624,6 +650,15 @@ def sync_stock_hot_cache(
                     remove_stock_dirty_keys(conn, stock_keys=[entity_key])
                 processed_keys.append(stock_key)
                 written += 1
+                _log_stock_hot_cache(
+                    verbose=verbose,
+                    message=(
+                        f"stock_done stock_key={stock_key} "
+                        f"entity_key={entity_key} "
+                        f"reason={reason or '-'} "
+                        f"extras_refreshed={1 if did_refresh_extras else 0}"
+                    ),
+                )
 
             remaining = list_stock_dirty_keys(conn, limit=1)
             has_more = bool(remaining)
@@ -632,6 +667,15 @@ def sync_stock_hot_cache(
                     conn,
                     after_stock_key=bootstrap_keys[-1],
                 )
+            _log_stock_hot_cache(
+                verbose=verbose,
+                message=(
+                    f"done processed={int(len(processed_keys))} "
+                    f"written={int(written)} "
+                    f"extras_written={int(extras_written)} "
+                    f"has_more={1 if has_more else 0}"
+                ),
+            )
             return {
                 "processed": int(len(processed_keys)),
                 "written": int(written),

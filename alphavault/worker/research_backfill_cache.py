@@ -35,6 +35,12 @@ _WS_RE = re.compile(r"\s+")
 _STOCK_KEY_PREFIX = "stock:"
 
 
+def _log_backfill_sync(*, verbose: bool, message: str) -> None:
+    if not verbose:
+        return
+    print(f"[backfill_cache] {message}", flush=True)
+
+
 def _select_stock_keys_batch(
     conn: TursoConnection,
     *,
@@ -241,7 +247,17 @@ def sync_stock_backfill_cache(
     max_rows_per_stock: int = BACKFILL_CACHE_MAX_ROWS_PER_STOCK,
     post_batch_size: int = BACKFILL_CACHE_POST_BATCH_SIZE,
     lock_lease_seconds: int = BACKFILL_CACHE_LOCK_LEASE_SECONDS,
+    verbose: bool = False,
 ) -> dict[str, int | bool]:
+    _log_backfill_sync(
+        verbose=verbose,
+        message=(
+            "start "
+            f"max_stocks_per_run={max(1, int(max_stocks_per_run))} "
+            f"max_rows_per_stock={max(1, int(max_rows_per_stock))} "
+            f"post_batch_size={max(1, int(post_batch_size))}"
+        ),
+    )
     now_epoch = int(time.time())
     if not try_acquire_worker_job_lock(
         engine_or_conn,
@@ -249,10 +265,15 @@ def sync_stock_backfill_cache(
         now_epoch=now_epoch,
         lease_seconds=int(lock_lease_seconds),
     ):
+        _log_backfill_sync(verbose=verbose, message="lock_busy skip=1")
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
     try:
         cursor = load_worker_job_cursor(
             engine_or_conn, state_key=BACKFILL_CACHE_CURSOR_KEY
+        )
+        _log_backfill_sync(
+            verbose=verbose,
+            message=f"cursor_loaded value={cursor or '(empty)'}",
         )
         with (
             turso_connect_autocommit(engine_or_conn)
@@ -271,6 +292,15 @@ def sync_stock_backfill_cache(
                         state_key=BACKFILL_CACHE_CURSOR_KEY,
                         cursor="",
                     )
+                    _log_backfill_sync(
+                        verbose=verbose,
+                        message="stock_keys_empty cursor_reset=1",
+                    )
+                else:
+                    _log_backfill_sync(
+                        verbose=verbose,
+                        message="stock_keys_empty cursor_reset=0",
+                    )
                 return {"processed": 0, "written": 0, "has_more": False}
 
             total_written = 0
@@ -286,11 +316,12 @@ def sync_stock_backfill_cache(
                     max_rows=int(max_rows_per_stock),
                     post_batch_size=int(post_batch_size),
                 )
-                total_written += replace_stock_backfill_posts(
+                replaced_rows = replace_stock_backfill_posts(
                     conn,
                     stock_key=stock_key,
                     posts=rows,
                 )
+                total_written += int(replaced_rows)
                 if _backfill_rows_signature(before_rows) != _backfill_rows_signature(
                     rows
                 ):
@@ -299,6 +330,15 @@ def sync_stock_backfill_cache(
                         stock_key=stock_key,
                         reason="backfill_cache",
                     )
+                _log_backfill_sync(
+                    verbose=verbose,
+                    message=(
+                        f"stock_done stock_key={stock_key} "
+                        f"before={int(len(before_rows))} "
+                        f"candidates={int(len(rows))} "
+                        f"written={int(replaced_rows)}"
+                    ),
+                )
 
             new_cursor = stock_keys[-1]
             save_worker_job_cursor(
@@ -307,6 +347,15 @@ def sync_stock_backfill_cache(
                 cursor=new_cursor,
             )
             has_more = _has_more_stock_keys(conn, after_stock_key=new_cursor)
+            _log_backfill_sync(
+                verbose=verbose,
+                message=(
+                    f"done processed={int(len(stock_keys))} "
+                    f"written={int(total_written)} "
+                    f"has_more={1 if has_more else 0} "
+                    f"cursor_out={new_cursor}"
+                ),
+            )
             return {
                 "processed": int(len(stock_keys)),
                 "written": int(total_written),

@@ -65,6 +65,12 @@ WANTED_ASSERTION_COLUMNS = [
 ]
 
 
+def _log_relation_cache(*, verbose: bool, message: str) -> None:
+    if not verbose:
+        return
+    print(f"[relation_cache] {message}", flush=True)
+
+
 def _load_trade_assertions(conn: TursoConnection) -> pd.DataFrame:
     assertion_cols = table_columns(conn, "assertions")
     selected = [col for col in WANTED_ASSERTION_COLUMNS if col in set(assertion_cols)]
@@ -338,7 +344,18 @@ def sync_relation_candidates_cache(
     should_continue: Callable[[], bool] | None = None,
     acquire_low_priority_slot: Callable[[], bool] | None = None,
     release_low_priority_slot: Callable[[], None] | None = None,
+    verbose: bool = False,
 ) -> dict[str, int | bool]:
+    _log_relation_cache(
+        verbose=verbose,
+        message=(
+            "start "
+            f"ai_enabled={1 if ai_enabled else 0} "
+            f"ai_max_inflight={max(1, int(ai_max_inflight))} "
+            f"max_stocks_per_run={max(0, int(max_stocks_per_run))} "
+            f"max_sectors_per_run={max(0, int(max_sectors_per_run))}"
+        ),
+    )
     now_epoch = int(time.time())
     if not try_acquire_worker_job_lock(
         engine_or_conn,
@@ -346,6 +363,7 @@ def sync_relation_candidates_cache(
         now_epoch=now_epoch,
         lease_seconds=int(lock_lease_seconds),
     ):
+        _log_relation_cache(verbose=verbose, message="lock_busy skip=1")
         return {
             "processed": 0,
             "upserted": 0,
@@ -368,6 +386,7 @@ def sync_relation_candidates_cache(
         ) as conn:
             assertions = _load_trade_assertions(conn)
             if assertions.empty:
+                _log_relation_cache(verbose=verbose, message="assertions_empty skip=1")
                 return {"processed": 0, "upserted": 0, "deleted": 0, "has_more": False}
 
             stock_keys = _unique_stock_keys(assertions)
@@ -382,6 +401,13 @@ def sync_relation_candidates_cache(
                 sector_keys,
                 cursor=sector_cursor,
                 limit=max(0, int(max_sectors_per_run)),
+            )
+            _log_relation_cache(
+                verbose=verbose,
+                message=(
+                    f"keys_total stocks={int(len(stock_keys))} sectors={int(len(sector_keys))} "
+                    f"picked_stocks={int(len(stocks_to_process))} picked_sectors={int(len(sectors_to_process))}"
+                ),
             )
 
             processed = 0
@@ -406,6 +432,8 @@ def sync_relation_candidates_cache(
             for stock_key, candidates in stock_results:
                 left_key_for_stock = stock_key
                 changed_for_stock = False
+                batch_upserted = 0
+                batch_deleted = 0
                 with turso_savepoint(conn):
                     batch_upserted, rel_types, keep_ids, left_key = (
                         _upsert_candidate_batch(conn, candidates=candidates)
@@ -431,6 +459,15 @@ def sync_relation_candidates_cache(
                         reason="relation_candidates_cache",
                     )
                 processed += 1
+                _log_relation_cache(
+                    verbose=verbose,
+                    message=(
+                        f"stock_done left_key={left_key_for_stock} "
+                        f"candidates={int(len(candidates))} "
+                        f"upserted={int(batch_upserted)} "
+                        f"deleted={int(batch_deleted)}"
+                    ),
+                )
                 save_worker_job_cursor(
                     engine_or_conn,
                     state_key=RELATION_CANDIDATES_STOCK_CURSOR_KEY,
@@ -438,6 +475,10 @@ def sync_relation_candidates_cache(
                 )
             if stocks_stopped_early:
                 stocks_has_more = True
+                _log_relation_cache(
+                    verbose=verbose,
+                    message="stocks_stopped_early=1",
+                )
 
             sector_results, sectors_stopped_early = _collect_candidates_parallel(
                 keys=sectors_to_process,
@@ -456,18 +497,30 @@ def sync_relation_candidates_cache(
             )
             for sector_key, candidates in sector_results:
                 left_key = f"cluster:{sector_key}" if sector_key else ""
+                batch_upserted = 0
+                batch_deleted = 0
                 with turso_savepoint(conn):
                     batch_upserted, rel_types, keep_ids, left_from_rows = (
                         _upsert_candidate_batch(conn, candidates=candidates)
                     )
                     upserted += int(batch_upserted)
-                    deleted += _delete_stale_pending_candidates(
+                    batch_deleted = _delete_stale_pending_candidates(
                         conn,
                         left_key=left_from_rows or left_key,
                         relation_types=rel_types or ["sector_sector"],
                         keep_candidate_ids=keep_ids,
                     )
+                    deleted += int(batch_deleted)
                 processed += 1
+                _log_relation_cache(
+                    verbose=verbose,
+                    message=(
+                        f"sector_done left_key={left_from_rows or left_key} "
+                        f"candidates={int(len(candidates))} "
+                        f"upserted={int(batch_upserted)} "
+                        f"deleted={int(batch_deleted)}"
+                    ),
+                )
                 save_worker_job_cursor(
                     engine_or_conn,
                     state_key=RELATION_CANDIDATES_SECTOR_CURSOR_KEY,
@@ -475,8 +528,21 @@ def sync_relation_candidates_cache(
                 )
             if sectors_stopped_early:
                 sectors_has_more = True
+                _log_relation_cache(
+                    verbose=verbose,
+                    message="sectors_stopped_early=1",
+                )
 
             has_more = bool(stocks_has_more or sectors_has_more)
+            _log_relation_cache(
+                verbose=verbose,
+                message=(
+                    f"done processed={int(processed)} "
+                    f"upserted={int(upserted)} "
+                    f"deleted={int(deleted)} "
+                    f"has_more={1 if has_more else 0}"
+                ),
+            )
             return {
                 "processed": int(processed),
                 "upserted": int(upserted),
