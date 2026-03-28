@@ -2,19 +2,17 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from sqlalchemy.engine import Engine
 
 from alphavault.ai.analyze import clean_text
-from alphavault.db.turso_queue import upsert_pending_post
 from alphavault.rss.utils import (
     build_ids,
     choose_author,
     fetch_feed,
     get_entry_content,
     infer_user_id_from_rss_url,
-    now_str,
     parse_datetime,
     split_xueqiu_context_segments,
 )
@@ -27,10 +25,14 @@ from alphavault.worker.redis_queue import (
     DEFAULT_REDIS_DEDUP_TTL_SECONDS,
     redis_try_push_dedup,
 )
-from alphavault.worker.spool import spool_delete, spool_write
+from alphavault.worker.spool import spool_write
 
 RSS_LOG_PREFIX = "[rss]"
-RSS_LOG_EVENT_INSERTED = "inserted"
+RSS_LOG_EVENT_ACCEPTED = "accepted"
+RSS_LOG_EVENT_FEED_START = "feed_start"
+RSS_LOG_EVENT_FEED_DONE = "feed_done"
+RSS_LOG_EVENT_FEED_SLEEP = "feed_sleep"
+RSS_LOG_EVENT_CYCLE_DONE = "cycle_done"
 LOG_EMPTY_VALUE = "(empty)"
 
 
@@ -90,7 +92,7 @@ def _format_progress(*, current: int, total: int) -> str:
     return f"{safe_current}/{safe_total}"
 
 
-def _build_inserted_user_counter_key(
+def _build_accepted_user_counter_key(
     *, feed_user_id: Optional[str], rss_url: str
 ) -> str:
     resolved_user_id = str(feed_user_id or "").strip()
@@ -102,7 +104,7 @@ def _build_inserted_user_counter_key(
     return LOG_EMPTY_VALUE
 
 
-def _build_rss_inserted_log_line(
+def _build_rss_accepted_log_line(
     *,
     platform: str,
     post_uid: str,
@@ -111,19 +113,99 @@ def _build_rss_inserted_log_line(
     entry_total: int,
     feed_index: int,
     feed_total: int,
-    inserted_total: int,
+    accepted_total: int,
 ) -> str:
     return " ".join(
         [
-            f"{RSS_LOG_PREFIX} {RSS_LOG_EVENT_INSERTED}",
+            f"{RSS_LOG_PREFIX} {RSS_LOG_EVENT_ACCEPTED}",
             f"platform={_clean_log_value(platform)}",
             f"post_uid={_clean_log_value(post_uid)}",
             f"author={_clean_log_value(author)}",
             f"progress={_format_progress(current=entry_index, total=entry_total)}",
             f"feed_progress={_format_progress(current=feed_index, total=feed_total)}",
-            f"inserted_total={max(0, int(inserted_total))}",
+            f"accepted_total={max(0, int(accepted_total))}",
         ]
     )
+
+
+def _build_rss_feed_start_log_line(
+    *,
+    platform: str,
+    feed_index: int,
+    feed_total: int,
+    rss_url: str,
+) -> str:
+    return " ".join(
+        [
+            f"{RSS_LOG_PREFIX} {RSS_LOG_EVENT_FEED_START}",
+            f"platform={_clean_log_value(platform)}",
+            f"feed_progress={_format_progress(current=feed_index, total=feed_total)}",
+            f"url={_clean_log_value(rss_url)}",
+        ]
+    )
+
+
+def _build_rss_feed_done_log_line(
+    *,
+    platform: str,
+    feed_index: int,
+    feed_total: int,
+    entry_total: int,
+    accepted_in_feed: int,
+    source_error: bool,
+) -> str:
+    return " ".join(
+        [
+            f"{RSS_LOG_PREFIX} {RSS_LOG_EVENT_FEED_DONE}",
+            f"platform={_clean_log_value(platform)}",
+            f"feed_progress={_format_progress(current=feed_index, total=feed_total)}",
+            f"entries={max(0, int(entry_total))}",
+            f"accepted={max(0, int(accepted_in_feed))}",
+            f"source_error={1 if source_error else 0}",
+        ]
+    )
+
+
+def _build_rss_feed_sleep_log_line(
+    *,
+    platform: str,
+    feed_index: int,
+    feed_total: int,
+    sleep_seconds: float,
+) -> str:
+    return " ".join(
+        [
+            f"{RSS_LOG_PREFIX} {RSS_LOG_EVENT_FEED_SLEEP}",
+            f"platform={_clean_log_value(platform)}",
+            f"feed_progress={_format_progress(current=feed_index, total=feed_total)}",
+            f"sleep={float(sleep_seconds):.1f}s",
+        ]
+    )
+
+
+def _build_rss_cycle_done_log_line(
+    *,
+    platform: str,
+    feed_total: int,
+    accepted_total: int,
+    enqueue_error: bool,
+) -> str:
+    return " ".join(
+        [
+            f"{RSS_LOG_PREFIX} {RSS_LOG_EVENT_CYCLE_DONE}",
+            f"platform={_clean_log_value(platform)}",
+            f"feeds={max(0, int(feed_total))}",
+            f"accepted_total={max(0, int(accepted_total))}",
+            f"enqueue_error={1 if enqueue_error else 0}",
+        ]
+    )
+
+
+def _coerce_nonnegative_float(value: object, *, default: float) -> float:
+    try:
+        return max(0.0, float(str(value).strip()))
+    except Exception:
+        return max(0.0, float(default))
 
 
 def ingest_rss_many_once(
@@ -140,13 +222,16 @@ def ingest_rss_many_once(
     rss_timeout: float,
     rss_retries: int,
     verbose: bool,
+    rss_feed_sleep_seconds: float = 0.0,
+    on_item_ingested: Optional[Callable[[], None]] = None,
 ) -> Tuple[int, bool]:
-    inserted = 0
-    inserted_per_user: dict[str, int] = {}
-    turso_error = False
+    accepted = 0
+    accepted_per_user: dict[str, int] = {}
+    enqueue_error = False
     seen_post_uids: set[str] = set()
     seen_urls: set[str] = set()
     normalized_platform = str(platform or "weibo").strip().lower()
+    feed_sleep_seconds = _coerce_nonnegative_float(rss_feed_sleep_seconds, default=0.0)
 
     def build_display_md(*, text: str, author_name: str, image_urls: list[str]) -> str:
         if normalized_platform == "weibo":
@@ -164,9 +249,30 @@ def ingest_rss_many_once(
 
     feed_total = len(rss_urls)
     for feed_index, rss_url in enumerate(rss_urls, start=1):
+        if verbose:
+            print(
+                _build_rss_feed_start_log_line(
+                    platform=normalized_platform,
+                    feed_index=feed_index,
+                    feed_total=feed_total,
+                    rss_url=rss_url,
+                ),
+                flush=True,
+            )
+
+        feed_user_id = user_id
+        feed_counter_key = _build_accepted_user_counter_key(
+            feed_user_id=feed_user_id,
+            rss_url=rss_url,
+        )
+        feed_error = False
+        feed_accepted_before = accepted
+        entries: list[dict[str, Any]] = []
+
         try:
-            feed_user_id = user_id or infer_user_id_from_rss_url(rss_url)
-            feed_counter_key = _build_inserted_user_counter_key(
+            if not feed_user_id:
+                feed_user_id = infer_user_id_from_rss_url(rss_url)
+            feed_counter_key = _build_accepted_user_counter_key(
                 feed_user_id=feed_user_id,
                 rss_url=rss_url,
             )
@@ -175,12 +281,12 @@ def ingest_rss_many_once(
             if limit:
                 entries = entries[:limit]
         except Exception as e:
+            feed_error = True
             if verbose:
                 print(
                     f"[rss] source_error url={rss_url} {type(e).__name__}: {e}",
                     flush=True,
                 )
-            continue
 
         entry_total = len(entries)
         for entry_index, entry in enumerate(entries, start=1):
@@ -233,46 +339,22 @@ def ingest_rss_many_once(
                 "ingested_at": int(time.time()),
             }
 
+            enqueued = False
             try:
                 spool_write(spool_dir, post_uid, payload)
-            except Exception as e:
-                print(
-                    f"[spool] write_error {post_uid} {type(e).__name__}: {e}",
-                    flush=True,
+                enqueued = True
+                accepted += 1
+                accepted_per_user[feed_counter_key] = (
+                    accepted_per_user.get(feed_counter_key, 0) + 1
                 )
-
-            if engine is None:
-                _try_push_to_redis(
-                    redis_client,
-                    redis_queue_key,
-                    post_uid=post_uid,
-                    payload=payload,
-                    verbose=bool(verbose),
-                )
-                continue
-
-            try:
-                upsert_pending_post(
-                    engine,
-                    post_uid=post_uid,
-                    platform=normalized_platform,
-                    platform_post_id=platform_post_id,
-                    author=resolved_author,
-                    created_at=created_at,
-                    url=link,
-                    raw_text=raw_text,
-                    display_md=display_md,
-                    archived_at=now_str(),
-                    ingested_at=int(payload["ingested_at"]),
-                )
-                spool_delete(spool_dir, post_uid)
-                inserted += 1
-                inserted_per_user[feed_counter_key] = (
-                    inserted_per_user.get(feed_counter_key, 0) + 1
-                )
+                if on_item_ingested is not None:
+                    try:
+                        on_item_ingested()
+                    except Exception:
+                        pass
                 if verbose:
                     print(
-                        _build_rss_inserted_log_line(
+                        _build_rss_accepted_log_line(
                             platform=normalized_platform,
                             post_uid=post_uid,
                             author=resolved_author,
@@ -280,26 +362,76 @@ def ingest_rss_many_once(
                             entry_total=entry_total,
                             feed_index=feed_index,
                             feed_total=feed_total,
-                            inserted_total=inserted_per_user[feed_counter_key],
+                            accepted_total=accepted_per_user[feed_counter_key],
                         ),
                         flush=True,
                     )
-            except Exception as e:
-                turso_error = True
-                _try_push_to_redis(
+            except Exception as err:
+                enqueue_error = True
+                pushed = _try_push_to_redis(
                     redis_client,
                     redis_queue_key,
                     post_uid=post_uid,
                     payload=payload,
                     verbose=bool(verbose),
                 )
+                if pushed:
+                    enqueued = True
+                    accepted += 1
+                    accepted_per_user[feed_counter_key] = (
+                        accepted_per_user.get(feed_counter_key, 0) + 1
+                    )
+                    if on_item_ingested is not None:
+                        try:
+                            on_item_ingested()
+                        except Exception:
+                            pass
                 if verbose:
                     print(
-                        f"[rss] turso_write_error {post_uid} {type(e).__name__}: {e}",
+                        f"[spool] enqueue_error post_uid={post_uid} "
+                        f"spool={type(err).__name__}: {err} redis_fallback={1 if pushed else 0}",
                         flush=True,
                     )
 
-            seen_post_uids.add(post_uid)
-            seen_urls.add(link)
+            if enqueued:
+                seen_post_uids.add(post_uid)
+                seen_urls.add(link)
 
-    return inserted, turso_error
+        if verbose:
+            print(
+                _build_rss_feed_done_log_line(
+                    platform=normalized_platform,
+                    feed_index=feed_index,
+                    feed_total=feed_total,
+                    entry_total=entry_total,
+                    accepted_in_feed=(accepted - feed_accepted_before),
+                    source_error=feed_error,
+                ),
+                flush=True,
+            )
+
+        if feed_index < feed_total and feed_sleep_seconds > 0:
+            if verbose:
+                print(
+                    _build_rss_feed_sleep_log_line(
+                        platform=normalized_platform,
+                        feed_index=feed_index,
+                        feed_total=feed_total,
+                        sleep_seconds=feed_sleep_seconds,
+                    ),
+                    flush=True,
+                )
+            time.sleep(feed_sleep_seconds)
+
+    if verbose:
+        print(
+            _build_rss_cycle_done_log_line(
+                platform=normalized_platform,
+                feed_total=feed_total,
+                accepted_total=accepted,
+                enqueue_error=enqueue_error,
+            ),
+            flush=True,
+        )
+
+    return accepted, enqueue_error

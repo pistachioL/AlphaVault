@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import libsql
 import pytest
 
+from alphavault.db import turso_queue
 from alphavault.db.sql.turso_queue import (
     RECOVER_DONE_WITHOUT_PROCESSED_AT,
     RECOVER_STUCK_AI_TASKS,
@@ -419,3 +422,128 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
 def test_build_raw_text_prefers_content_without_title_prefix() -> None:
     assert _build_raw_text(title="雪球标题", content_text="正文内容") == "正文内容"
     assert _build_raw_text(title="仅标题", content_text="") == "仅标题"
+
+
+def test_turso_connection_execute_disposes_engine_on_stream_not_found() -> None:
+    class _Raw:
+        def execute(self, _query, _params):  # type: ignore[no-untyped-def]
+            raise ValueError("stream not found: abc")
+
+    class _FakeEngine:
+        def __init__(self) -> None:
+            self.dispose_calls = 0
+
+        def dispose(self) -> None:
+            self.dispose_calls += 1
+
+    engine = _FakeEngine()
+    conn = TursoConnection(_Raw(), _engine=cast(Any, engine), _generation=1)
+    with pytest.raises(ValueError):
+        conn.execute("INSERT INTO t(id) VALUES (?)", (1,))
+    assert engine.dispose_calls == 1
+
+
+def test_turso_connection_execute_disposes_engine_on_libsql_panic() -> None:
+    PanicException = type(
+        "PanicException", (BaseException,), {"__module__": "pyo3_runtime"}
+    )
+
+    class _Raw:
+        def execute(self, _query, _params):  # type: ignore[no-untyped-def]
+            raise PanicException("Option::unwrap(None)")
+
+    class _FakeEngine:
+        def __init__(self) -> None:
+            self.dispose_calls = 0
+
+        def dispose(self) -> None:
+            self.dispose_calls += 1
+
+    engine = _FakeEngine()
+    conn = TursoConnection(_Raw(), _engine=cast(Any, engine), _generation=1)
+    with pytest.raises(PanicException):
+        conn.execute("INSERT INTO t(id) VALUES (?)", (1,))
+    assert engine.dispose_calls == 1
+
+
+def test_upsert_pending_post_wraps_nonfatal_base_exception(monkeypatch) -> None:
+    PanicException = type(
+        "PanicException", (BaseException,), {"__module__": "pyo3_runtime"}
+    )
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, _query, _params):  # type: ignore[no-untyped-def]
+            raise PanicException("Option::unwrap(None)")
+
+    class _FakeEngine:
+        def __init__(self) -> None:
+            self.dispose_calls = 0
+
+        def dispose(self) -> None:
+            self.dispose_calls += 1
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    engine = _FakeEngine()
+    with pytest.raises(turso_queue.TursoWriteError) as err:
+        turso_queue.upsert_pending_post(
+            engine,  # type: ignore[arg-type]
+            post_uid="weibo:1",
+            platform="weibo",
+            platform_post_id="1",
+            author="a",
+            created_at="2026-03-28 10:00:00",
+            url="https://example.com/1",
+            raw_text="text",
+            display_md="text",
+            archived_at="2026-03-28 10:01:00",
+            ingested_at=1,
+        )
+    assert isinstance(err.value.__cause__, PanicException)
+    assert engine.dispose_calls == 1
+
+
+def test_upsert_pending_post_reraises_fatal_base_exception(monkeypatch) -> None:
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, _query, _params):  # type: ignore[no-untyped-def]
+            raise KeyboardInterrupt()
+
+    class _FakeEngine:
+        def __init__(self) -> None:
+            self.dispose_calls = 0
+
+        def dispose(self) -> None:
+            self.dispose_calls += 1
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    engine = _FakeEngine()
+    with pytest.raises(KeyboardInterrupt):
+        turso_queue.upsert_pending_post(
+            engine,  # type: ignore[arg-type]
+            post_uid="weibo:1",
+            platform="weibo",
+            platform_post_id="1",
+            author="a",
+            created_at="2026-03-28 10:00:00",
+            url="https://example.com/1",
+            raw_text="text",
+            display_md="text",
+            archived_at="2026-03-28 10:01:00",
+            ingested_at=1,
+        )
+    assert engine.dispose_calls == 0

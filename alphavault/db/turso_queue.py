@@ -38,12 +38,19 @@ from alphavault.db.sql.turso_queue import (
 from alphavault.db.turso_db import (
     TursoEngine,
     init_cloud_schema,
+    is_fatal_base_exception,
+    maybe_dispose_turso_engine_on_transient_error,
     turso_connect_autocommit,
     turso_savepoint,
 )
 
 
 AI_STATUS_PENDING = "pending"
+
+
+class TursoWriteError(RuntimeError):
+    """Raised when Turso write fails with a non-fatal BaseException."""
+
 
 BASE_POSTS_EXTRA_COLUMNS: list[tuple[str, str]] = [
     (
@@ -119,24 +126,30 @@ def upsert_pending_post(
     NOTE: Cloud posts.final_status is required by existing schema, so we set a placeholder
     final_status='irrelevant' and keep processed_at=NULL until AI is done.
     """
-    with turso_connect_autocommit(engine) as conn:
-        conn.execute(
-            UPSERT_PENDING_POST,
-            {
-                "post_uid": post_uid,
-                "platform": platform,
-                "platform_post_id": platform_post_id,
-                "author": author,
-                "created_at": created_at,
-                "url": url,
-                "raw_text": raw_text,
-                "display_md": display_md,
-                "final_status": "irrelevant",
-                "archived_at": archived_at,
-                "ai_status": AI_STATUS_PENDING,
-                "ingested_at": int(ingested_at),
-            },
-        )
+    try:
+        with turso_connect_autocommit(engine) as conn:
+            conn.execute(
+                UPSERT_PENDING_POST,
+                {
+                    "post_uid": post_uid,
+                    "platform": platform,
+                    "platform_post_id": platform_post_id,
+                    "author": author,
+                    "created_at": created_at,
+                    "url": url,
+                    "raw_text": raw_text,
+                    "display_md": display_md,
+                    "final_status": "irrelevant",
+                    "archived_at": archived_at,
+                    "ai_status": AI_STATUS_PENDING,
+                    "ingested_at": int(ingested_at),
+                },
+            )
+    except BaseException as err:
+        if is_fatal_base_exception(err):
+            raise
+        maybe_dispose_turso_engine_on_transient_error(engine, err)
+        raise TursoWriteError("upsert_pending_post_failed") from err
 
 
 def select_due_post_uids(

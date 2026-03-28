@@ -1,19 +1,33 @@
 from __future__ import annotations
 
+import threading
 from concurrent.futures import Future
+from pathlib import Path
 
 import pytest
 
+from alphavault.rss.utils import RateLimiter
+from alphavault.worker import worker as worker_module
 from alphavault.worker.worker import (
+    LLMConfig,
     _LowPriorityAISlotGate,
     _build_topic_prompt_v3_llm_log_line,
     _build_low_priority_should_continue,
+    _mark_spool_flush_retry,
+    _mark_spool_flush_started,
+    _mark_spool_item_ingested,
+    _request_spool_flush,
+    _build_source_turso_error,
     _compute_backfill_max_stocks_per_run,
     _collect_rss_ingest_result,
     _compute_low_priority_budget,
     _compute_rss_available_slots,
+    _schedule_ai,
+    _should_start_spool_flush,
     _should_fast_retry_for_periodic_job,
     _should_wait_with_event,
+    WorkerSourceConfig,
+    WorkerSourceRuntime,
 )
 
 
@@ -105,6 +119,36 @@ def test_should_fast_retry_for_periodic_job_false_when_no_more() -> None:
     assert _should_fast_retry_for_periodic_job(has_more=False) is False
 
 
+def test_build_source_turso_error_excludes_ingest_enqueue_error() -> None:
+    assert (
+        _build_source_turso_error(
+            maintenance_error=False,
+            spool_flush_error=False,
+            schedule_error=False,
+            alias_sync_error=False,
+            backfill_cache_error=False,
+            relation_cache_error=False,
+            stock_hot_error=False,
+        )
+        is False
+    )
+
+
+def test_build_source_turso_error_includes_spool_flush_error() -> None:
+    assert (
+        _build_source_turso_error(
+            maintenance_error=False,
+            spool_flush_error=True,
+            schedule_error=False,
+            alias_sync_error=False,
+            backfill_cache_error=False,
+            relation_cache_error=False,
+            stock_hot_error=False,
+        )
+        is True
+    )
+
+
 def test_collect_rss_ingest_result_skips_pending_future() -> None:
     class _PendingFuture:
         def done(self) -> bool:
@@ -180,6 +224,22 @@ def test_should_wait_with_event_true_when_only_rss_is_inflight() -> None:
             any_relation_inflight=False,
             any_stock_hot_inflight=False,
             any_rss_inflight=True,
+            any_spool_flush_inflight=False,
+        )
+        is True
+    )
+
+
+def test_should_wait_with_event_true_when_only_spool_flush_is_inflight() -> None:
+    assert (
+        _should_wait_with_event(
+            ai_inflight=False,
+            any_alias_inflight=False,
+            any_backfill_inflight=False,
+            any_relation_inflight=False,
+            any_stock_hot_inflight=False,
+            any_rss_inflight=False,
+            any_spool_flush_inflight=True,
         )
         is True
     )
@@ -194,6 +254,7 @@ def test_should_wait_with_event_false_when_all_queues_idle() -> None:
             any_relation_inflight=False,
             any_stock_hot_inflight=False,
             any_rss_inflight=False,
+            any_spool_flush_inflight=False,
         )
         is False
     )
@@ -230,3 +291,110 @@ def test_build_topic_prompt_v3_llm_log_line_done_contains_cost() -> None:
     assert "author=博主A" in line
     assert "locked=3" in line
     assert "cost=12.3s" in line
+
+
+def test_schedule_ai_dedups_due_queue(monkeypatch) -> None:
+    scheduled_post_uids: list[str] = []
+
+    class _FakeExecutor:
+        def submit(self, fn, **kwargs):  # type: ignore[no-untyped-def]
+            scheduled_post_uids.append(str(kwargs.get("post_uid") or ""))
+            fut: Future = Future()
+            fut.set_result(None)
+            return fut
+
+    monkeypatch.setattr(
+        worker_module,
+        "select_due_post_uids",
+        lambda *_args, **_kwargs: ["weibo:1", "weibo:1", "weibo:2"],
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "try_mark_ai_running",
+        lambda *_args, **_kwargs: True,
+    )
+
+    config = LLMConfig(
+        api_key="k",
+        model="m",
+        prompt_version="p",
+        relevant_threshold=0.3,
+        base_url="",
+        api_mode="responses",
+        ai_stream=True,
+        ai_retries=0,
+        ai_temperature=0.1,
+        ai_reasoning_effort="low",
+        ai_rpm=12.0,
+        ai_timeout_seconds=30.0,
+        trace_out=None,
+        verbose=False,
+    )
+    inflight_futures: set[Future] = set()
+    inflight_owner_by_future: dict[Future, str] = {}
+    scheduled, has_error = _schedule_ai(
+        _FakeExecutor(),  # type: ignore[arg-type]
+        engine=object(),  # type: ignore[arg-type]
+        platform="weibo",
+        ai_cap=4,
+        low_inflight_now_get=lambda: 0,
+        inflight_futures=inflight_futures,
+        inflight_owner_by_future=inflight_owner_by_future,
+        inflight_owner="weibo",
+        wakeup_event=threading.Event(),
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+    )
+
+    assert has_error is False
+    assert scheduled == 2
+    assert scheduled_post_uids == ["weibo:1", "weibo:2"]
+
+
+def _build_source_runtime() -> WorkerSourceRuntime:
+    return WorkerSourceRuntime(
+        config=WorkerSourceConfig(
+            name="weibo",
+            platform="weibo",
+            rss_urls=["https://example.com/rss"],
+            author="",
+            user_id=None,
+            database_url="libsql://example.turso.io",
+            auth_token="token",
+        ),
+        engine=object(),  # type: ignore[arg-type]
+        spool_dir=Path("/tmp"),
+        redis_queue_key="queue",
+        rss_next_ingest_at=0.0,
+    )
+
+
+def test_spool_flush_trigger_tracks_new_items_without_losing_signal() -> None:
+    source = _build_source_runtime()
+    wakeup_event = threading.Event()
+
+    assert _should_start_spool_flush(source=source) is False
+
+    _mark_spool_item_ingested(source=source, wakeup_event=wakeup_event)
+    assert wakeup_event.is_set() is True
+    assert _should_start_spool_flush(source=source) is True
+
+    _mark_spool_flush_started(source=source)
+    assert _should_start_spool_flush(source=source) is False
+
+    _mark_spool_item_ingested(source=source, wakeup_event=wakeup_event)
+    assert _should_start_spool_flush(source=source) is True
+
+
+def test_spool_flush_retry_retriggers_without_new_items() -> None:
+    source = _build_source_runtime()
+
+    _request_spool_flush(source=source)
+    assert _should_start_spool_flush(source=source) is True
+
+    _mark_spool_flush_started(source=source)
+    assert _should_start_spool_flush(source=source) is False
+
+    _mark_spool_flush_retry(source=source, has_more=False, has_error=True)
+    assert _should_start_spool_flush(source=source) is True
