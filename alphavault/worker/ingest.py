@@ -90,6 +90,18 @@ def _format_progress(*, current: int, total: int) -> str:
     return f"{safe_current}/{safe_total}"
 
 
+def _build_inserted_user_counter_key(
+    *, feed_user_id: Optional[str], rss_url: str
+) -> str:
+    resolved_user_id = str(feed_user_id or "").strip()
+    if resolved_user_id:
+        return resolved_user_id
+    resolved_rss_url = str(rss_url or "").strip()
+    if resolved_rss_url:
+        return resolved_rss_url
+    return LOG_EMPTY_VALUE
+
+
 def _build_rss_inserted_log_line(
     *,
     platform: str,
@@ -130,6 +142,7 @@ def ingest_rss_many_once(
     verbose: bool,
 ) -> Tuple[int, bool]:
     inserted = 0
+    inserted_per_user: dict[str, int] = {}
     turso_error = False
     seen_post_uids: set[str] = set()
     seen_urls: set[str] = set()
@@ -153,6 +166,10 @@ def ingest_rss_many_once(
     for feed_index, rss_url in enumerate(rss_urls, start=1):
         try:
             feed_user_id = user_id or infer_user_id_from_rss_url(rss_url)
+            feed_counter_key = _build_inserted_user_counter_key(
+                feed_user_id=feed_user_id,
+                rss_url=rss_url,
+            )
             feed = fetch_feed(rss_url, timeout=rss_timeout, retries=rss_retries)
             entries = feed.entries or []
             if limit:
@@ -250,6 +267,9 @@ def ingest_rss_many_once(
                 )
                 spool_delete(spool_dir, post_uid)
                 inserted += 1
+                inserted_per_user[feed_counter_key] = (
+                    inserted_per_user.get(feed_counter_key, 0) + 1
+                )
                 if verbose:
                     print(
                         _build_rss_inserted_log_line(
@@ -260,7 +280,7 @@ def ingest_rss_many_once(
                             entry_total=entry_total,
                             feed_index=feed_index,
                             feed_total=feed_total,
-                            inserted_total=inserted,
+                            inserted_total=inserted_per_user[feed_counter_key],
                         ),
                         flush=True,
                     )
