@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from alphavault.worker.worker import (
     _LowPriorityAISlotGate,
+    _build_topic_prompt_v3_llm_log_line,
     _build_low_priority_should_continue,
     _compute_low_priority_budget,
     _compute_rss_available_slots,
@@ -77,3 +78,36 @@ def test_should_fast_retry_for_periodic_job_true_when_has_more() -> None:
 
 def test_should_fast_retry_for_periodic_job_false_when_no_more() -> None:
     assert _should_fast_retry_for_periodic_job(has_more=False) is False
+
+
+def test_build_topic_prompt_v3_llm_log_line_call_contains_id_and_author() -> None:
+    line = _build_topic_prompt_v3_llm_log_line(
+        event="call_api",
+        root_key="src:abc",
+        post_uid="weibo:1",
+        author="博主A",
+        locked_count=2,
+    )
+
+    assert "[llm] call_api topic_prompt_v3" in line
+    assert "root_key=src:abc" in line
+    assert "post_uid=weibo:1" in line
+    assert "author=博主A" in line
+    assert "locked=2" in line
+
+
+def test_build_topic_prompt_v3_llm_log_line_done_contains_cost() -> None:
+    line = _build_topic_prompt_v3_llm_log_line(
+        event="done",
+        root_key="src:abc",
+        post_uid="weibo:1",
+        author="博主A",
+        locked_count=3,
+        cost_seconds=12.34,
+    )
+
+    assert "[llm] done topic_prompt_v3" in line
+    assert "post_uid=weibo:1" in line
+    assert "author=博主A" in line
+    assert "locked=3" in line
+    assert "cost=12.3s" in line
