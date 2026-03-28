@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import Any, cast
 
 import libsql
@@ -7,6 +8,7 @@ import pytest
 
 from alphavault.db import turso_queue
 from alphavault.db.sql.turso_queue import (
+    INSERT_ASSERTION_OUTBOX,
     RECOVER_DONE_WITHOUT_PROCESSED_AT,
     RECOVER_STUCK_AI_TASKS,
     UPSERT_PENDING_POST,
@@ -547,3 +549,97 @@ def test_upsert_pending_post_reraises_fatal_base_exception(monkeypatch) -> None:
             ingested_at=1,
         )
     assert engine.dispose_calls == 0
+
+
+def test_write_assertions_and_mark_done_writes_outbox_event(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            calls.append((str(query), params))
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+
+    turso_queue.write_assertions_and_mark_done(
+        cast(Any, object()),
+        post_uid="weibo:1",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="p",
+        archived_at="2026-03-28 12:00:01",
+        ai_result_json=None,
+        assertions=[],
+        outbox_source="weibo",
+        outbox_author="作者A",
+        outbox_event_json='{"event_type":"ai_done","post_uid":"weibo:1"}',
+    )
+
+    outbox_calls = [
+        item for item in calls if item[0].strip() == INSERT_ASSERTION_OUTBOX.strip()
+    ]
+    assert len(outbox_calls) == 1
+    outbox_params = cast(dict[str, object], outbox_calls[0][1])
+    assert outbox_params["source"] == "weibo"
+    assert outbox_params["post_uid"] == "weibo:1"
+    assert outbox_params["author"] == "作者A"
+
+
+def test_load_assertion_outbox_events_maps_rows(monkeypatch) -> None:
+    class _Rows:
+        def __init__(self, rows):  # type: ignore[no-untyped-def]
+            self._rows = rows
+
+        def mappings(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def fetchall(self):  # type: ignore[no-untyped-def]
+            return list(self._rows)
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, _query, _params=None):  # type: ignore[no-untyped-def]
+            return _Rows(
+                [
+                    {
+                        "id": 7,
+                        "source": "weibo",
+                        "post_uid": "weibo:7",
+                        "author": "作者A",
+                        "event_json": '{"event_type":"ai_done"}',
+                        "created_at": "2026-03-28 12:00:00",
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    events = turso_queue.load_assertion_outbox_events(
+        cast(Any, object()),
+        after_id=0,
+        limit=10,
+    )
+    assert len(events) == 1
+    assert events[0].id == 7
+    assert events[0].post_uid == "weibo:7"

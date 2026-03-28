@@ -45,7 +45,9 @@ from alphavault.db.turso_db import (
     is_turso_stream_not_found_error,
 )
 from alphavault.db.turso_queue import (
+    CloudPost,
     ensure_cloud_queue_schema,
+    load_assertion_outbox_events,
     load_cloud_post,
     load_recent_posts_by_author,
     mark_ai_error,
@@ -53,6 +55,7 @@ from alphavault.db.turso_queue import (
     recover_stuck_ai_tasks,
     select_due_post_uids,
     try_mark_ai_running,
+    upsert_pending_post,
     write_assertions_and_mark_done,
 )
 from alphavault.rss.utils import (
@@ -74,7 +77,24 @@ from alphavault.worker.cli import (
     resolve_rss_source_configs,
 )
 from alphavault.worker.ingest import ingest_rss_many_once
-from alphavault.worker.redis_queue import flush_redis_to_turso, try_get_redis
+from alphavault.worker.redis_queue import (
+    redis_ai_ack_processing,
+    redis_ai_ack_and_cleanup,
+    redis_assertion_clear_events,
+    redis_assertion_event_count,
+    redis_assertion_get_cursor,
+    redis_assertion_push_event,
+    redis_assertion_set_cursor,
+    redis_ai_due_count,
+    redis_ai_move_due_delayed_to_ready,
+    redis_ai_pop_to_processing,
+    redis_ai_push_delayed,
+    redis_ai_requeue_processing,
+    redis_author_recent_load,
+    redis_author_recent_push,
+    redis_author_recent_push_many,
+    try_get_redis,
+)
 from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
 from alphavault.worker.research_backfill_cache import sync_stock_backfill_cache
 from alphavault.worker.research_relation_candidates_cache import (
@@ -95,6 +115,7 @@ from alphavault.worker.job_state import (
 from alphavault.research_stock_cache import mark_stock_dirty_from_assertions
 from alphavault_reflex.services.stock_objects import AiRuntimeConfig
 
+from alphavault.weibo.display import format_weibo_display_md
 from alphavault.weibo.topic_prompt_tree import (
     MAX_THREAD_POSTS,
     MAX_TOPIC_PROMPT_CHARS,
@@ -113,6 +134,7 @@ LOG_EMPTY_VALUE = "(empty)"
 BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
 SPOOL_FLUSH_MAX_ITEMS_PER_RUN = 200
 SPOOL_FLUSH_RETRY_INTERVAL_SECONDS = 1.0
+ASSERTION_OUTBOX_PUMP_BATCH_SIZE = 200
 
 
 @dataclass(frozen=True)
@@ -169,6 +191,22 @@ def _clamp_int(value: object, low: int, high: int, default: int) -> int:
     except Exception:
         return int(default)
     return int(max(low, min(high, v)))
+
+
+def _parse_int_or_default(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return int(default)
+    try:
+        return int(text)
+    except Exception:
+        return int(default)
 
 
 def _score_from_assertions(rows: list[dict[str, object]]) -> float:
@@ -465,6 +503,79 @@ def _as_str_list(value: object) -> list[str]:
     return []
 
 
+def _json_to_str_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item).strip() for item in parsed if str(item).strip()]
+
+
+def _build_assertion_outbox_event_json(
+    *,
+    post: CloudPost,
+    final_status: str,
+    rows: list[dict[str, object]],
+) -> str:
+    items: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        items.append(
+            {
+                "topic_key": str(row.get("topic_key") or "").strip(),
+                "action": str(row.get("action") or "").strip(),
+                "action_strength": _clamp_int(row.get("action_strength"), 0, 3, 0),
+                "confidence": _clamp_float(row.get("confidence"), 0.0, 1.0, 0.0),
+                "stock_codes": _json_to_str_list(row.get("stock_codes_json")),
+                "stock_names": _json_to_str_list(row.get("stock_names_json")),
+                "industries": _json_to_str_list(row.get("industries_json")),
+                "indices": _json_to_str_list(row.get("indices_json")),
+            }
+        )
+    payload: dict[str, object] = {
+        "event_type": "ai_done",
+        "post_uid": str(post.post_uid or "").strip(),
+        "platform": str(post.platform or "").strip(),
+        "platform_post_id": str(post.platform_post_id or "").strip(),
+        "author": str(post.author or "").strip(),
+        "created_at": str(post.created_at or "").strip(),
+        "final_status": str(final_status or "").strip(),
+        "assertions": items,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _ensure_prefetched_post_persisted(
+    *, engine: Engine, post: CloudPost, archived_at: str, ingested_at: int
+) -> None:
+    raw_text = str(post.raw_text or "")
+    author = str(post.author or "")
+    display_md = str(post.display_md or "")
+    if not display_md.strip():
+        display_md = format_weibo_display_md(raw_text, author=author)
+    upsert_pending_post(
+        engine,
+        post_uid=str(post.post_uid or "").strip(),
+        platform=str(post.platform or "weibo").strip() or "weibo",
+        platform_post_id=str(post.platform_post_id or "").strip(),
+        author=author,
+        created_at=str(post.created_at or now_str()),
+        url=str(post.url or "").strip(),
+        raw_text=raw_text,
+        display_md=display_md,
+        archived_at=str(archived_at or now_str()),
+        ingested_at=max(0, int(ingested_at)),
+    )
+
+
 def _map_topic_prompt_items_to_assertions(
     *,
     ai_result: dict[str, object],
@@ -568,8 +679,15 @@ def _process_one_post_uid_topic_prompt_v3(
     post_uid: str,
     config: LLMConfig,
     limiter: RateLimiter,
-) -> None:
-    post = load_cloud_post(engine, post_uid)
+    prefetched_post: CloudPost | None = None,
+    prefetched_recent: list[dict[str, object]] | None = None,
+    outbox_source: str = "",
+) -> bool:
+    post = (
+        prefetched_post
+        if prefetched_post is not None
+        else load_cloud_post(engine, post_uid)
+    )
     focus = str(post.author or "").strip()
     root_key, root_segment, root_content_key = thread_root_info_for_post(
         raw_text=post.raw_text or "",
@@ -578,7 +696,11 @@ def _process_one_post_uid_topic_prompt_v3(
     )
 
     # Scan recent posts from the same author, then keep only the same "root_key" thread.
-    recent = load_recent_posts_by_author(engine, author=focus, limit=200)
+    recent = (
+        list(prefetched_recent or [])
+        if prefetched_recent is not None
+        else load_recent_posts_by_author(engine, author=focus, limit=200)
+    )
     current_row = {
         "post_uid": post.post_uid,
         "platform_post_id": post.platform_post_id,
@@ -772,17 +894,37 @@ def _process_one_post_uid_topic_prompt_v3(
             is_relevant = bool(rows)
             final_status = "relevant" if is_relevant else "irrelevant"
             invest_score = _score_from_assertions(rows)
+            processed_at = now_str()
+            archived_at = now_str()
+            if prefetched_post is not None and uid == str(post.post_uid or "").strip():
+                _ensure_prefetched_post_persisted(
+                    engine=engine,
+                    post=prefetched_post,
+                    archived_at=archived_at,
+                    ingested_at=int(time.time()),
+                )
             write_assertions_and_mark_done(
                 engine,
                 post_uid=uid,
                 final_status=final_status,
                 invest_score=invest_score,
-                processed_at=now_str(),
+                processed_at=processed_at,
                 model=config.model,
                 prompt_version=config.prompt_version,
-                archived_at=now_str(),
+                archived_at=archived_at,
                 ai_result_json=None,
                 assertions=rows,
+                outbox_source=str(outbox_source or "").strip(),
+                outbox_author=str(post.author or "").strip(),
+                outbox_event_json=(
+                    _build_assertion_outbox_event_json(
+                        post=post,
+                        final_status=final_status,
+                        rows=rows,
+                    )
+                    if uid == str(post.post_uid or "").strip()
+                    else None
+                ),
             )
             if rows:
                 try:
@@ -797,6 +939,7 @@ def _process_one_post_uid_topic_prompt_v3(
                             f"[stock_hot] mark_dirty_failed post_uid={uid}",
                             flush=True,
                         )
+        return True
     except Exception as e:
         if isinstance(e, AiInvalidJsonError):
             raw_tail = _to_one_line_tail(getattr(e, "raw_ai_text", ""), max_chars=240)
@@ -852,7 +995,7 @@ def _process_one_post_uid_topic_prompt_v3(
             ),
             flush=True,
         )
-        return
+        return False
 
 
 def _process_one_post_uid(
@@ -861,18 +1004,26 @@ def _process_one_post_uid(
     post_uid: str,
     config: LLMConfig,
     limiter: RateLimiter,
-) -> None:
+    prefetched_post: CloudPost | None = None,
+    prefetched_recent: list[dict[str, object]] | None = None,
+    outbox_source: str = "",
+) -> bool:
     try:
         if str(config.prompt_version or "").strip() == TOPIC_PROMPT_VERSION:
-            _process_one_post_uid_topic_prompt_v3(
+            return _process_one_post_uid_topic_prompt_v3(
                 engine=engine,
                 post_uid=post_uid,
                 config=config,
                 limiter=limiter,
+                prefetched_post=prefetched_post,
+                prefetched_recent=prefetched_recent,
+                outbox_source=outbox_source,
             )
-            return
-
-        post = load_cloud_post(engine, post_uid)
+        post = (
+            prefetched_post
+            if prefetched_post is not None
+            else load_cloud_post(engine, post_uid)
+        )
         analysis_context = build_analysis_context(post.raw_text or "")
         row_meta = build_row_meta(
             mid_or_bid=str(post.platform_post_id or ""),
@@ -925,18 +1076,34 @@ def _process_one_post_uid(
         assertions = (
             final_result.assertions if final_result.status == "relevant" else []
         )
+        processed_at = now_str()
+        archived_at = now_str()
+        if prefetched_post is not None:
+            _ensure_prefetched_post_persisted(
+                engine=engine,
+                post=prefetched_post,
+                archived_at=archived_at,
+                ingested_at=int(time.time()),
+            )
 
         write_assertions_and_mark_done(
             engine,
             post_uid=post_uid,
             final_status=final_result.status,
             invest_score=float(final_result.invest_score),
-            processed_at=now_str(),
+            processed_at=processed_at,
             model=config.model,
             prompt_version=config.prompt_version,
-            archived_at=now_str(),
+            archived_at=archived_at,
             ai_result_json=None,
             assertions=assertions,
+            outbox_source=str(outbox_source or "").strip(),
+            outbox_author=str(post.author or "").strip(),
+            outbox_event_json=_build_assertion_outbox_event_json(
+                post=post,
+                final_status=final_result.status,
+                rows=assertions,
+            ),
         )
         if assertions:
             try:
@@ -951,6 +1118,7 @@ def _process_one_post_uid(
                         f"[stock_hot] mark_dirty_failed post_uid={post_uid}",
                         flush=True,
                     )
+        return True
     except Exception as e:
         base_url_for_log = (config.base_url or "").strip()
         if base_url_for_log:
@@ -964,12 +1132,7 @@ def _process_one_post_uid(
         )
         msg = f"ai:{format_llm_error_one_line(e, limit=700)}{ctx}"
         now_epoch = int(time.time())
-        retry_count = 1
-        try:
-            loaded = load_cloud_post(engine, post_uid)
-            retry_count = int(getattr(loaded, "ai_retry_count", 1) or 1)
-        except Exception:
-            retry_count = 1
+        retry_count = int(getattr(prefetched_post, "ai_retry_count", 1) or 1)
         next_retry = now_epoch + _backoff_seconds(retry_count)
         try:
             mark_ai_error(
@@ -986,6 +1149,7 @@ def _process_one_post_uid(
                     flush=True,
                 )
         print(f"[llm] error {post_uid} {msg}", flush=True)
+        return False
 
 
 def _log_spool_and_redis(
@@ -1421,7 +1585,27 @@ def _has_due_ai_posts(
     engine: Optional[Engine],
     platform: str,
     verbose: bool,
+    redis_client=None,
+    redis_queue_key: str = "",
 ) -> bool:
+    if redis_client and str(redis_queue_key or "").strip():
+        try:
+            return bool(
+                redis_ai_due_count(
+                    redis_client,
+                    str(redis_queue_key),
+                    now_epoch=int(time.time()),
+                )
+            )
+        except BaseException as err:
+            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+                raise
+            if verbose:
+                print(
+                    f"[ai] redis_due_check_error platform={platform} {type(err).__name__}: {err}",
+                    flush=True,
+                )
+            return False
     if engine is None:
         return False
     try:
@@ -1438,6 +1622,27 @@ def _has_due_ai_posts(
         _maybe_dispose_turso_engine_on_transient_error(
             engine=engine, err=err, verbose=bool(verbose)
         )
+        return False
+
+
+def _has_pending_assertion_events(
+    *,
+    redis_client,
+    redis_queue_key: str,
+    verbose: bool,
+) -> bool:
+    if not redis_client or not str(redis_queue_key or "").strip():
+        return False
+    try:
+        return bool(redis_assertion_event_count(redis_client, redis_queue_key))
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        if verbose:
+            print(
+                f"[assertion_evt] count_error {type(err).__name__}: {err}",
+                flush=True,
+            )
         return False
 
 
@@ -1537,6 +1742,281 @@ class _LowPriorityAISlotGate:
             return int(self._inflight)
 
 
+def _payload_retry_count(payload: dict[str, object]) -> int:
+    raw_retry_count = payload.get("retry_count")
+    return max(0, _parse_int_or_default(raw_retry_count, 0))
+
+
+def _payload_to_cloud_post(payload: dict[str, object]) -> CloudPost | None:
+    post_uid = str(payload.get("post_uid") or "").strip()
+    if not post_uid:
+        return None
+    return CloudPost(
+        post_uid=post_uid,
+        platform=str(payload.get("platform") or "weibo").strip() or "weibo",
+        platform_post_id=str(payload.get("platform_post_id") or "").strip(),
+        author=str(payload.get("author") or "").strip(),
+        created_at=str(payload.get("created_at") or "").strip() or now_str(),
+        url=str(payload.get("url") or "").strip(),
+        raw_text=str(payload.get("raw_text") or ""),
+        display_md=str(payload.get("display_md") or ""),
+        ai_retry_count=max(1, int(_payload_retry_count(payload) or 1)),
+    )
+
+
+def _build_author_recent_payload(
+    *, post: CloudPost, ai_status: str, ai_retry_count: int
+) -> dict[str, object]:
+    return {
+        "post_uid": str(post.post_uid or "").strip(),
+        "platform_post_id": str(post.platform_post_id or "").strip(),
+        "author": str(post.author or "").strip(),
+        "created_at": str(post.created_at or "").strip(),
+        "url": str(post.url or "").strip(),
+        "raw_text": str(post.raw_text or ""),
+        "display_md": str(post.display_md or ""),
+        "processed_at": "",
+        "ai_status": str(ai_status or "").strip(),
+        "ai_retry_count": max(0, int(ai_retry_count)),
+    }
+
+
+def _process_one_redis_payload(
+    *,
+    engine: Engine,
+    payload: dict[str, object],
+    processing_msg: str,
+    redis_client,
+    redis_queue_key: str,
+    spool_dir: Path,
+    config: LLMConfig,
+    limiter: RateLimiter,
+    verbose: bool,
+) -> None:
+    cloud_post = _payload_to_cloud_post(payload)
+    if cloud_post is None:
+        try:
+            redis_ai_ack_processing(redis_client, redis_queue_key, processing_msg)
+        except Exception:
+            return
+        return
+
+    redis_author_recent_push(
+        redis_client,
+        redis_queue_key,
+        payload=_build_author_recent_payload(
+            post=cloud_post,
+            ai_status="pending",
+            ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
+        ),
+    )
+    prefetched_recent = redis_author_recent_load(
+        redis_client,
+        redis_queue_key,
+        author=str(cloud_post.author or "").strip(),
+        limit=200,
+    )
+    if not prefetched_recent:
+        try:
+            prefetched_recent = load_recent_posts_by_author(
+                engine,
+                author=str(cloud_post.author or "").strip(),
+                limit=200,
+            )
+            if prefetched_recent:
+                redis_author_recent_push_many(
+                    redis_client,
+                    redis_queue_key,
+                    author=str(cloud_post.author or "").strip(),
+                    rows=list(prefetched_recent),
+                )
+        except BaseException as err:
+            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+                raise
+            prefetched_recent = []
+
+    success = _process_one_post_uid(
+        engine=engine,
+        post_uid=cloud_post.post_uid,
+        config=config,
+        limiter=limiter,
+        prefetched_post=cloud_post,
+        prefetched_recent=prefetched_recent,
+        outbox_source=str(redis_queue_key or "").strip(),
+    )
+    if success:
+        redis_author_recent_push(
+            redis_client,
+            redis_queue_key,
+            payload=_build_author_recent_payload(
+                post=cloud_post,
+                ai_status="done",
+                ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
+            ),
+        )
+        redis_ai_ack_and_cleanup(
+            redis_client,
+            redis_queue_key,
+            msg=processing_msg,
+            post_uid=cloud_post.post_uid,
+            spool_dir=spool_dir,
+            verbose=bool(verbose),
+        )
+        return
+
+    retry_count = max(1, int(_payload_retry_count(payload)) + 1)
+    next_retry_at = int(time.time()) + _backoff_seconds(retry_count)
+    retry_payload = dict(payload)
+    retry_payload["retry_count"] = int(retry_count)
+    retry_payload["next_retry_at"] = int(next_retry_at)
+    redis_author_recent_push(
+        redis_client,
+        redis_queue_key,
+        payload=_build_author_recent_payload(
+            post=cloud_post,
+            ai_status="error",
+            ai_retry_count=int(retry_count),
+        ),
+    )
+    try:
+        redis_ai_push_delayed(
+            redis_client,
+            redis_queue_key,
+            payload=retry_payload,
+            next_retry_at=int(next_retry_at),
+        )
+    except Exception as err:
+        if verbose:
+            print(
+                f"[ai] redis_delay_push_error post_uid={cloud_post.post_uid} {type(err).__name__}: {err}",
+                flush=True,
+            )
+        return
+    try:
+        redis_ai_ack_processing(redis_client, redis_queue_key, processing_msg)
+    except Exception as err:
+        if verbose:
+            print(
+                f"[ai] redis_ack_error post_uid={cloud_post.post_uid} {type(err).__name__}: {err}",
+                flush=True,
+            )
+
+
+def _schedule_ai_from_redis(
+    executor: ThreadPoolExecutor,
+    *,
+    engine: Engine,
+    ai_cap: int,
+    low_inflight_now_get: Callable[[], int],
+    inflight_futures: set[Future],
+    inflight_owner_by_future: dict[Future, str],
+    inflight_owner: str,
+    wakeup_event: threading.Event,
+    config: LLMConfig,
+    limiter: RateLimiter,
+    verbose: bool,
+    redis_client,
+    redis_queue_key: str,
+    spool_dir: Path,
+) -> Tuple[int, bool]:
+    _prune_inflight_futures(inflight_futures, inflight_owner_by_future)
+    rss_inflight_now = int(len(inflight_futures))
+    try:
+        low_inflight_now = max(0, int(low_inflight_now_get()))
+    except Exception:
+        low_inflight_now = 0
+    available = _compute_rss_available_slots(
+        ai_cap=int(ai_cap),
+        rss_inflight_now=int(rss_inflight_now),
+        low_inflight_now=int(low_inflight_now),
+    )
+    if available <= 0:
+        return 0, False
+
+    try:
+        redis_ai_move_due_delayed_to_ready(
+            redis_client,
+            redis_queue_key,
+            now_epoch=int(time.time()),
+            max_items=max(1, int(available) * 2),
+            verbose=bool(verbose),
+        )
+        redis_ai_requeue_processing(
+            redis_client,
+            redis_queue_key,
+            max_items=max(1, int(available)),
+            verbose=bool(verbose),
+        )
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        if verbose:
+            print(
+                f"[ai] redis_maintenance_error owner={inflight_owner} {type(e).__name__}: {e}",
+                flush=True,
+            )
+        return 0, True
+
+    scheduled = 0
+    for _ in range(max(1, int(available))):
+        if scheduled >= available:
+            break
+        try:
+            msg = redis_ai_pop_to_processing(redis_client, redis_queue_key)
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            if verbose:
+                print(
+                    f"[ai] redis_pop_error owner={inflight_owner} {type(e).__name__}: {e}",
+                    flush=True,
+                )
+            return scheduled, True
+        if not msg:
+            break
+        try:
+            payload = json.loads(msg)
+        except Exception as e:
+            if verbose:
+                print(f"[ai] redis_bad_payload {type(e).__name__}: {e}", flush=True)
+            try:
+                redis_ai_ack_processing(redis_client, redis_queue_key, str(msg))
+            except Exception:
+                pass
+            continue
+        if not isinstance(payload, dict):
+            try:
+                redis_ai_ack_processing(redis_client, redis_queue_key, str(msg))
+            except Exception:
+                pass
+            continue
+        if not str(payload.get("post_uid") or "").strip():
+            try:
+                redis_ai_ack_processing(redis_client, redis_queue_key, str(msg))
+            except Exception:
+                pass
+            continue
+
+        fut = executor.submit(
+            _process_one_redis_payload,
+            engine=engine,
+            payload=payload,
+            processing_msg=str(msg),
+            redis_client=redis_client,
+            redis_queue_key=redis_queue_key,
+            spool_dir=spool_dir,
+            config=config,
+            limiter=limiter,
+            verbose=bool(verbose),
+        )
+        fut.add_done_callback(lambda _f: wakeup_event.set())
+        inflight_futures.add(fut)
+        inflight_owner_by_future[fut] = str(inflight_owner or "").strip()
+        scheduled += 1
+
+    return scheduled, False
+
+
 def _schedule_ai(
     executor: ThreadPoolExecutor,
     *,
@@ -1551,9 +2031,29 @@ def _schedule_ai(
     config: LLMConfig,
     limiter: RateLimiter,
     verbose: bool,
+    redis_client=None,
+    redis_queue_key: str = "",
+    spool_dir: Path | None = None,
 ) -> Tuple[int, bool]:
     if engine is None:
         return 0, False
+    if redis_client and str(redis_queue_key or "").strip() and spool_dir is not None:
+        return _schedule_ai_from_redis(
+            executor,
+            engine=engine,
+            ai_cap=ai_cap,
+            low_inflight_now_get=low_inflight_now_get,
+            inflight_futures=inflight_futures,
+            inflight_owner_by_future=inflight_owner_by_future,
+            inflight_owner=inflight_owner,
+            wakeup_event=wakeup_event,
+            config=config,
+            limiter=limiter,
+            verbose=bool(verbose),
+            redis_client=redis_client,
+            redis_queue_key=str(redis_queue_key),
+            spool_dir=spool_dir,
+        )
     # Keep inflight bounded: RSS + low-priority inflight must not exceed ai_cap.
     _prune_inflight_futures(inflight_futures, inflight_owner_by_future)
     rss_inflight_now = int(len(inflight_futures))
@@ -1644,6 +2144,92 @@ def _dedup_post_uids(post_uids: Sequence[object]) -> list[str]:
     return deduped
 
 
+def _pump_assertion_outbox_to_redis(
+    *,
+    engine: Engine,
+    redis_client,
+    redis_queue_key: str,
+    verbose: bool,
+) -> tuple[int, bool]:
+    if not redis_client or not str(redis_queue_key or "").strip():
+        return 0, False
+    cursor = 0
+    try:
+        cursor = redis_assertion_get_cursor(redis_client, redis_queue_key)
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        if verbose:
+            print(
+                f"[outbox] redis_cursor_get_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+        cursor = 0
+    try:
+        events = load_assertion_outbox_events(
+            engine,
+            after_id=max(0, int(cursor)),
+            limit=int(ASSERTION_OUTBOX_PUMP_BATCH_SIZE),
+        )
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=engine, err=err, verbose=bool(verbose)
+        )
+        if verbose:
+            print(
+                f"[outbox] turso_load_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+        return 0, True
+    if not events:
+        return 0, False
+    pushed = 0
+    last_id = max(0, int(cursor))
+    for event in events:
+        payload: dict[str, object] = {}
+        text = str(event.event_json or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = {}
+            if isinstance(parsed, dict):
+                payload = {
+                    str(key): value
+                    for key, value in parsed.items()
+                    if str(key or "").strip()
+                }
+        if not payload:
+            payload = {
+                "event_type": "ai_done",
+                "post_uid": str(event.post_uid or "").strip(),
+                "author": str(event.author or "").strip(),
+            }
+        ok = redis_assertion_push_event(
+            redis_client,
+            redis_queue_key,
+            payload=payload,
+        )
+        if not ok:
+            if verbose:
+                print(
+                    f"[outbox] redis_push_error post_uid={event.post_uid}",
+                    flush=True,
+                )
+            return pushed, True
+        pushed += 1
+        last_id = max(last_id, int(event.id))
+    redis_assertion_set_cursor(redis_client, redis_queue_key, cursor=int(last_id))
+    if verbose and pushed > 0:
+        print(
+            f"[outbox] pumped events={pushed} cursor={last_id}",
+            flush=True,
+        )
+    return pushed, False
+
+
 def _run_turso_maintenance(
     *,
     engine: Optional[Engine],
@@ -1684,24 +2270,36 @@ def _run_turso_maintenance(
 
     flushed_redis = 0
     flush_redis_error = False
-    try:
-        flushed_redis, flush_redis_error = flush_redis_to_turso(
-            client=redis_client,
-            queue_key=redis_queue_key,
-            spool_dir=spool_dir,
-            engine=engine,
-            max_items=200,
-            verbose=bool(verbose),
-        )
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        _maybe_dispose_turso_engine_on_transient_error(
-            engine=engine, err=e, verbose=bool(verbose)
-        )
-        flush_redis_error = True
-        if verbose:
-            print(f"[redis] flush_error {type(e).__name__}: {e}", flush=True)
+    del spool_dir
+    if redis_client and str(redis_queue_key or "").strip():
+        try:
+            moved_due = redis_ai_move_due_delayed_to_ready(
+                redis_client,
+                redis_queue_key,
+                now_epoch=int(time.time()),
+                max_items=200,
+                verbose=bool(verbose),
+            )
+            requeued = redis_ai_requeue_processing(
+                redis_client,
+                redis_queue_key,
+                max_items=200,
+                verbose=bool(verbose),
+            )
+            pumped, pump_error = _pump_assertion_outbox_to_redis(
+                engine=engine,
+                redis_client=redis_client,
+                redis_queue_key=redis_queue_key,
+                verbose=bool(verbose),
+            )
+            flushed_redis = int(moved_due) + int(requeued) + int(pumped)
+            flush_redis_error = bool(pump_error)
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            flush_redis_error = True
+            if verbose:
+                print(f"[redis] flush_error {type(e).__name__}: {e}", flush=True)
 
     turso_error = bool(turso_error or flush_redis_error)
     return recovered, flushed_redis, turso_error
@@ -2255,6 +2853,9 @@ def main() -> None:
                         config=config,
                         limiter=limiter,
                         verbose=verbose,
+                        redis_client=redis_client,
+                        redis_queue_key=source.redis_queue_key,
+                        spool_dir=source.spool_dir,
                     )
                 tick["scheduled"] = int(scheduled)
                 tick["schedule_error"] = bool(schedule_error)
@@ -2328,6 +2929,8 @@ def main() -> None:
                             engine=engine_for_due,
                             platform=platform_for_due,
                             verbose=False,
+                            redis_client=redis_client,
+                            redis_queue_key=source.redis_queue_key,
                         )
 
                     has_due_ai_pending_getter = _has_due_ai_pending
@@ -2338,7 +2941,14 @@ def main() -> None:
                     low_inflight_now_get=low_inflight_now_getter,
                     has_due_ai_pending_get=has_due_ai_pending_getter,
                 )
-                cycle_triggered = bool(do_maintenance or force_maintenance)
+                has_assertion_events = _has_pending_assertion_events(
+                    redis_client=redis_client,
+                    redis_queue_key=source.redis_queue_key,
+                    verbose=False,
+                )
+                cycle_triggered = bool(
+                    do_maintenance or force_maintenance or has_assertion_events
+                )
                 if cycle_triggered and active_engine is not None:
                     if not bool(source.cycle_running):
                         source.cycle_started_at = now
@@ -2389,6 +2999,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or alias_has_more
                     )
                     and int(low_budget) > 0
@@ -2424,6 +3035,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or backfill_has_more
                     )
                     and int(low_budget) > 0
@@ -2459,6 +3071,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or relation_cache_has_more
                     )
                     and int(low_budget) > 0
@@ -2494,6 +3107,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or stock_hot_has_more
                     )
                     and int(low_budget) > 0
@@ -2558,8 +3172,22 @@ def main() -> None:
                             engine=active_engine,
                             platform=source.config.platform,
                             verbose=verbose,
+                            redis_client=redis_client,
+                            redis_queue_key=source.redis_queue_key,
                         )
                         if not due_ai_pending:
+                            if (
+                                redis_client
+                                and str(source.redis_queue_key or "").strip()
+                            ):
+                                try:
+                                    redis_assertion_clear_events(
+                                        redis_client,
+                                        source.redis_queue_key,
+                                    )
+                                except BaseException as clear_err:
+                                    if isinstance(clear_err, _FATAL_BASE_EXCEPTIONS):
+                                        raise
                             source.cycle_running = False
                             source.cycle_finished_at = time.time()
                 if active_engine is not None and source.turso_ready:

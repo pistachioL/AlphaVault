@@ -29,8 +29,12 @@ from alphavault.weibo.display import (
     format_weibo_display_md,
 )
 from alphavault.worker.redis_queue import (
-    DEFAULT_REDIS_DEDUP_TTL_SECONDS,
-    redis_try_push_dedup,
+    REDIS_PUSH_STATUS_DUPLICATE,
+    REDIS_PUSH_STATUS_ERROR,
+    REDIS_PUSH_STATUS_PUSHED,
+    redis_author_recent_push,
+    resolve_redis_dedup_ttl_seconds,
+    redis_try_push_ai_dedup_status,
 )
 from alphavault.worker.spool import spool_delete, spool_write
 
@@ -69,22 +73,22 @@ def _build_post_texts(
     return segments[-1], display_text
 
 
-def _try_push_to_redis(
+def _try_push_to_redis_status(
     redis_client,
     redis_queue_key: str,
     *,
     post_uid: str,
     payload: Dict[str, Any],
     verbose: bool,
-) -> bool:
+) -> str:
     if not redis_client or not redis_queue_key or not post_uid:
-        return False
-    return redis_try_push_dedup(
+        return REDIS_PUSH_STATUS_ERROR
+    return redis_try_push_ai_dedup_status(
         redis_client,
         redis_queue_key,
         post_uid=post_uid,
         payload=payload,
-        ttl_seconds=DEFAULT_REDIS_DEDUP_TTL_SECONDS,
+        ttl_seconds=resolve_redis_dedup_ttl_seconds(),
         verbose=bool(verbose),
     )
 
@@ -443,6 +447,7 @@ def ingest_rss_many_once(
                 }
 
                 enqueued = False
+                redis_status = REDIS_PUSH_STATUS_ERROR
                 try:
                     spool_write(spool_dir, post_uid, payload)
                     enqueued = True
@@ -457,14 +462,24 @@ def ingest_rss_many_once(
                     )
                 except Exception as err:
                     enqueue_error = True
-                    pushed = _try_push_to_redis(
+                    redis_status = _try_push_to_redis_status(
                         redis_client,
                         redis_queue_key,
                         post_uid=post_uid,
                         payload=payload,
                         verbose=bool(verbose),
                     )
-                    if pushed:
+                    pushed_or_duplicate = redis_status in {
+                        REDIS_PUSH_STATUS_PUSHED,
+                        REDIS_PUSH_STATUS_DUPLICATE,
+                    }
+                    if pushed_or_duplicate:
+                        if redis_status == REDIS_PUSH_STATUS_PUSHED:
+                            redis_author_recent_push(
+                                redis_client,
+                                redis_queue_key,
+                                payload=payload,
+                            )
                         enqueued = True
                         _mark_item_accepted(
                             post_uid=post_uid,
@@ -478,13 +493,41 @@ def ingest_rss_many_once(
                     if verbose:
                         print(
                             f"[spool] enqueue_error post_uid={post_uid} "
-                            f"spool={type(err).__name__}: {err} redis_fallback={1 if pushed else 0}",
+                            f"spool={type(err).__name__}: {err} "
+                            f"redis_fallback={1 if pushed_or_duplicate else 0}",
                             flush=True,
                         )
                     if enqueued:
                         seen_post_uids.add(post_uid)
                         seen_urls.add(link)
                     continue
+
+                redis_status = _try_push_to_redis_status(
+                    redis_client,
+                    redis_queue_key,
+                    post_uid=post_uid,
+                    payload=payload,
+                    verbose=bool(verbose),
+                )
+                if redis_status == REDIS_PUSH_STATUS_PUSHED:
+                    redis_author_recent_push(
+                        redis_client,
+                        redis_queue_key,
+                        payload=payload,
+                    )
+                    seen_post_uids.add(post_uid)
+                    seen_urls.add(link)
+                    continue
+                if redis_status == REDIS_PUSH_STATUS_DUPLICATE:
+                    try:
+                        spool_delete(spool_dir, post_uid)
+                    except Exception:
+                        pass
+                    seen_post_uids.add(post_uid)
+                    seen_urls.add(link)
+                    continue
+                if redis_client and redis_queue_key:
+                    enqueue_error = True
 
                 if engine is None:
                     if enqueued:
@@ -494,18 +537,34 @@ def ingest_rss_many_once(
 
                 write_conn_instance = _try_open_write_conn()
                 if write_conn_instance is None:
-                    pushed = _try_push_to_redis(
+                    redis_status = _try_push_to_redis_status(
                         redis_client,
                         redis_queue_key,
                         post_uid=post_uid,
                         payload=payload,
                         verbose=bool(verbose),
                     )
-                    if not pushed:
+                    pushed_or_duplicate = redis_status in {
+                        REDIS_PUSH_STATUS_PUSHED,
+                        REDIS_PUSH_STATUS_DUPLICATE,
+                    }
+                    if redis_status == REDIS_PUSH_STATUS_PUSHED:
+                        redis_author_recent_push(
+                            redis_client,
+                            redis_queue_key,
+                            payload=payload,
+                        )
+                    if redis_status == REDIS_PUSH_STATUS_DUPLICATE:
+                        try:
+                            spool_delete(spool_dir, post_uid)
+                        except Exception:
+                            pass
+                    if not pushed_or_duplicate:
                         enqueue_error = True
                     if verbose:
                         print(
-                            f"[rss] turso_unavailable post_uid={post_uid} redis_fallback={1 if pushed else 0}",
+                            f"[rss] turso_unavailable post_uid={post_uid} "
+                            f"redis_fallback={1 if pushed_or_duplicate else 0}",
                             flush=True,
                         )
                     if enqueued:
@@ -538,17 +597,32 @@ def ingest_rss_many_once(
                     )
                     _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
                     _close_write_conn(broken=is_broken_conn)
-                    pushed = _try_push_to_redis(
+                    redis_status = _try_push_to_redis_status(
                         redis_client,
                         redis_queue_key,
                         post_uid=post_uid,
                         payload=payload,
                         verbose=bool(verbose),
                     )
+                    pushed_or_duplicate = redis_status in {
+                        REDIS_PUSH_STATUS_PUSHED,
+                        REDIS_PUSH_STATUS_DUPLICATE,
+                    }
+                    if redis_status == REDIS_PUSH_STATUS_PUSHED:
+                        redis_author_recent_push(
+                            redis_client,
+                            redis_queue_key,
+                            payload=payload,
+                        )
+                    if redis_status == REDIS_PUSH_STATUS_DUPLICATE:
+                        try:
+                            spool_delete(spool_dir, post_uid)
+                        except Exception:
+                            pass
                     if verbose:
                         print(
                             f"[rss] turso_write_error {post_uid} {type(e).__name__}: {e} "
-                            f"redis_fallback={1 if pushed else 0}",
+                            f"redis_fallback={1 if pushed_or_duplicate else 0}",
                             flush=True,
                         )
 
