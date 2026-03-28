@@ -39,12 +39,19 @@ from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
     init_cloud_schema,
+    is_fatal_base_exception,
+    maybe_dispose_turso_engine_on_transient_error,
     turso_connect_autocommit,
     turso_savepoint,
 )
 
 
 AI_STATUS_PENDING = "pending"
+
+
+class TursoWriteError(RuntimeError):
+    """Raised when Turso write fails with a non-fatal BaseException."""
+
 
 BASE_POSTS_EXTRA_COLUMNS: list[tuple[str, str]] = [
     (
@@ -100,7 +107,7 @@ def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
         conn.execute(CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT)
 
 
-def upsert_pending_post(
+def _execute_upsert_pending_post(
     conn: TursoConnection,
     *,
     post_uid: str,
@@ -137,6 +144,66 @@ def upsert_pending_post(
             "ingested_at": int(ingested_at),
         },
     )
+
+
+def upsert_pending_post(
+    conn_or_engine: TursoConnection | TursoEngine,
+    *,
+    post_uid: str,
+    platform: str,
+    platform_post_id: str,
+    author: str,
+    created_at: str,
+    url: str,
+    raw_text: str,
+    display_md: str,
+    archived_at: str,
+    ingested_at: int,
+) -> None:
+    """
+    Insert a new RSS item as a pending AI task.
+
+    Supports both call styles:
+    - upsert_pending_post(conn, ...)
+    - upsert_pending_post(engine, ...)
+    """
+    if isinstance(conn_or_engine, TursoConnection):
+        _execute_upsert_pending_post(
+            conn_or_engine,
+            post_uid=post_uid,
+            platform=platform,
+            platform_post_id=platform_post_id,
+            author=author,
+            created_at=created_at,
+            url=url,
+            raw_text=raw_text,
+            display_md=display_md,
+            archived_at=archived_at,
+            ingested_at=ingested_at,
+        )
+        return
+
+    engine = conn_or_engine
+    try:
+        with turso_connect_autocommit(engine) as conn:
+            _execute_upsert_pending_post(
+                conn,
+                post_uid=post_uid,
+                platform=platform,
+                platform_post_id=platform_post_id,
+                author=author,
+                created_at=created_at,
+                url=url,
+                raw_text=raw_text,
+                display_md=display_md,
+                archived_at=archived_at,
+                ingested_at=ingested_at,
+            )
+    except BaseException as err:
+        if is_fatal_base_exception(err):
+            raise
+        maybe_dispose_turso_engine_on_transient_error(engine, err)
+        raise TursoWriteError("upsert_pending_post_failed") from err
 
 
 def select_due_post_uids(

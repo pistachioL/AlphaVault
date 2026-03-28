@@ -6,18 +6,20 @@ import os
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Sequence, Tuple
 
 from sqlalchemy.engine import Engine
 
 from alphavault.constants import (
+    DEFAULT_RSS_FEED_SLEEP_SECONDS,
     ENV_AI_API_KEY,
     ENV_AI_STREAM,
     ENV_AI_TRACE_OUT,
     ENV_RSS_ACTIVE_HOURS,
+    ENV_RSS_FEED_SLEEP_SECONDS,
     ENV_RSS_INTERVAL_SECONDS,
     ENV_WORKER_STOCK_HOT_CACHE_INTERVAL_SECONDS,
     ENV_WORKER_STOCK_ALIAS_SYNC_INTERVAL_SECONDS,
@@ -109,6 +111,8 @@ LLM_LOG_PREFIX = "[llm]"
 TOPIC_PROMPT_V3_LABEL = "topic_prompt_v3"
 LOG_EMPTY_VALUE = "(empty)"
 BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
+SPOOL_FLUSH_MAX_ITEMS_PER_RUN = 200
+SPOOL_FLUSH_RETRY_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -130,6 +134,12 @@ class WorkerSourceRuntime:
     redis_queue_key: str
     rss_next_ingest_at: float
     rss_ingest_future: Future | None = None
+    spool_flush_future: Future | None = None
+    spool_flush_next_at: float = 0.0
+    spool_seq_written: int = 0
+    spool_seq_scheduled: int = 0
+    spool_need_retry: bool = False
+    spool_state_lock: threading.Lock = field(default_factory=threading.Lock)
     turso_ready: bool = False
     turso_next_ready_check_at: float = 0.0
     alias_sync_future: Future | None = None
@@ -1010,13 +1020,21 @@ def _build_source_redis_queue_key(
 
 
 def _log_source_runtime(
-    *, verbose: bool, source: WorkerSourceRuntime, redis_client
+    *,
+    verbose: bool,
+    source: WorkerSourceRuntime,
+    redis_client,
+    rss_interval_seconds: float,
+    rss_feed_sleep_seconds: float,
 ) -> None:
     if not verbose:
         return
     cfg = source.config
     print(
-        f"[source] name={cfg.name} platform={cfg.platform} rss={len(cfg.rss_urls)} db={cfg.database_url}",
+        f"[source] name={cfg.name} platform={cfg.platform} rss={len(cfg.rss_urls)} "
+        f"rss_interval={int(max(1.0, float(rss_interval_seconds)))}s "
+        f"rss_feed_sleep={float(max(0.0, float(rss_feed_sleep_seconds))):.1f}s "
+        f"db={cfg.database_url}",
         flush=True,
     )
     _log_spool_and_redis(
@@ -1109,6 +1127,13 @@ def _resolve_stock_hot_cache_interval_seconds() -> float:
     return max(15.0, seconds)
 
 
+def _resolve_rss_feed_sleep_seconds() -> float:
+    raw_value = env_float(ENV_RSS_FEED_SLEEP_SECONDS)
+    if raw_value is None:
+        return float(DEFAULT_RSS_FEED_SLEEP_SECONDS)
+    return max(0.0, float(raw_value))
+
+
 def _build_alias_ai_runtime_config(config: LLMConfig) -> AiRuntimeConfig:
     return AiRuntimeConfig(
         api_key=str(config.api_key or "").strip(),
@@ -1171,15 +1196,78 @@ def _collect_rss_ingest_result(
             )
         return None, 0, True, True
 
-    inserted = 0
-    ingest_turso_error = False
+    accepted = 0
+    ingest_enqueue_error = False
     if isinstance(raw, tuple) and len(raw) >= 2:
         try:
-            inserted = max(0, int(raw[0]))
+            accepted = max(0, int(raw[0]))
         except Exception:
-            inserted = 0
-        ingest_turso_error = bool(raw[1])
-    return None, inserted, True, ingest_turso_error
+            accepted = 0
+        ingest_enqueue_error = bool(raw[1])
+    return None, accepted, True, ingest_enqueue_error
+
+
+def _submit_spool_flush_job(
+    sync_engine: Engine,
+    *,
+    spool_dir: Path,
+    redis_client,
+    redis_queue_key: str,
+    verbose: bool,
+) -> dict[str, int | bool]:
+    flushed, has_error = flush_spool_to_turso(
+        spool_dir=spool_dir,
+        engine=sync_engine,
+        max_items=int(SPOOL_FLUSH_MAX_ITEMS_PER_RUN),
+        verbose=bool(verbose),
+        redis_client=redis_client,
+        redis_queue_key=redis_queue_key,
+        delete_spool_on_redis_push=True,
+    )
+    has_more = bool(
+        (not has_error) and int(flushed) >= int(SPOOL_FLUSH_MAX_ITEMS_PER_RUN)
+    )
+    return {
+        "flushed": int(flushed),
+        "has_error": bool(has_error),
+        "has_more": bool(has_more),
+    }
+
+
+def _mark_spool_item_ingested(
+    *, source: WorkerSourceRuntime, wakeup_event: threading.Event
+) -> None:
+    with source.spool_state_lock:
+        source.spool_seq_written += 1
+    wakeup_event.set()
+
+
+def _should_start_spool_flush(*, source: WorkerSourceRuntime) -> bool:
+    with source.spool_state_lock:
+        return bool(
+            source.spool_need_retry
+            or int(source.spool_seq_written) > int(source.spool_seq_scheduled)
+        )
+
+
+def _mark_spool_flush_started(*, source: WorkerSourceRuntime) -> None:
+    with source.spool_state_lock:
+        source.spool_seq_scheduled = int(source.spool_seq_written)
+        source.spool_need_retry = False
+
+
+def _mark_spool_flush_retry(
+    *, source: WorkerSourceRuntime, has_more: bool, has_error: bool
+) -> None:
+    if not (bool(has_more) or bool(has_error)):
+        return
+    with source.spool_state_lock:
+        source.spool_need_retry = True
+
+
+def _request_spool_flush(*, source: WorkerSourceRuntime) -> None:
+    with source.spool_state_lock:
+        source.spool_need_retry = True
 
 
 def _maybe_start_periodic_job(
@@ -1253,6 +1341,27 @@ def _should_fast_retry_for_periodic_job(*, has_more: bool) -> bool:
     return bool(has_more)
 
 
+def _build_source_turso_error(
+    *,
+    maintenance_error: bool,
+    spool_flush_error: bool,
+    schedule_error: bool,
+    alias_sync_error: bool,
+    backfill_cache_error: bool,
+    relation_cache_error: bool,
+    stock_hot_error: bool,
+) -> bool:
+    return bool(
+        maintenance_error
+        or spool_flush_error
+        or schedule_error
+        or alias_sync_error
+        or backfill_cache_error
+        or relation_cache_error
+        or stock_hot_error
+    )
+
+
 def _should_wait_with_event(
     *,
     ai_inflight: bool,
@@ -1261,6 +1370,7 @@ def _should_wait_with_event(
     any_relation_inflight: bool,
     any_stock_hot_inflight: bool,
     any_rss_inflight: bool,
+    any_spool_flush_inflight: bool,
 ) -> bool:
     return bool(
         ai_inflight
@@ -1269,6 +1379,7 @@ def _should_wait_with_event(
         or any_relation_inflight
         or any_stock_hot_inflight
         or any_rss_inflight
+        or any_spool_flush_inflight
     )
 
 
@@ -1478,6 +1589,15 @@ def _schedule_ai(
             )
         return 0, True
 
+    raw_due = list(due or [])
+    due = _dedup_post_uids(raw_due)
+    if verbose and len(due) < len(raw_due):
+        print(
+            f"[ai] due_dedup owner={inflight_owner} platform={platform} "
+            f"before={len(raw_due)} after={len(due)}",
+            flush=True,
+        )
+
     scheduled = 0
     for post_uid in due:
         if scheduled >= available:
@@ -1512,6 +1632,18 @@ def _schedule_ai(
     return scheduled, False
 
 
+def _dedup_post_uids(post_uids: Sequence[object]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in post_uids:
+        post_uid = str(value or "").strip()
+        if not post_uid or post_uid in seen:
+            continue
+        seen.add(post_uid)
+        deduped.append(post_uid)
+    return deduped
+
+
 def _run_turso_maintenance(
     *,
     engine: Optional[Engine],
@@ -1521,9 +1653,9 @@ def _run_turso_maintenance(
     redis_queue_key: str,
     stuck_seconds: int,
     verbose: bool,
-) -> Tuple[int, int, int, bool]:
+) -> Tuple[int, int, bool]:
     if engine is None:
-        return 0, 0, 0, False
+        return 0, 0, False
 
     turso_error = False
     recovered = 0
@@ -1571,27 +1703,8 @@ def _run_turso_maintenance(
         if verbose:
             print(f"[redis] flush_error {type(e).__name__}: {e}", flush=True)
 
-    flushed_spool = 0
-    flush_spool_error = False
-    try:
-        flushed_spool, flush_spool_error = flush_spool_to_turso(
-            spool_dir=spool_dir,
-            engine=engine,
-            max_items=200,
-            verbose=bool(verbose),
-        )
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        _maybe_dispose_turso_engine_on_transient_error(
-            engine=engine, err=e, verbose=bool(verbose)
-        )
-        flush_spool_error = True
-        if verbose:
-            print(f"[spool] flush_error {type(e).__name__}: {e}", flush=True)
-
-    turso_error = bool(turso_error or flush_redis_error or flush_spool_error)
-    return recovered, flushed_redis, flushed_spool, turso_error
+    turso_error = bool(turso_error or flush_redis_error)
+    return recovered, flushed_redis, turso_error
 
 
 def main() -> None:
@@ -1613,6 +1726,18 @@ def main() -> None:
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
     ai_cap = max(1, int(args.ai_max_inflight or 1))
+
+    rss_active_hours: Optional[tuple[int, int]] = None
+    rss_active_hours_value = os.getenv(ENV_RSS_ACTIVE_HOURS, "").strip()
+    if rss_active_hours_value:
+        rss_active_hours = parse_active_hours(rss_active_hours_value)
+
+    rss_interval_seconds = env_float(ENV_RSS_INTERVAL_SECONDS)
+    if rss_interval_seconds is None or rss_interval_seconds <= 0:
+        rss_interval_seconds = 600.0
+    rss_interval_seconds = max(1.0, float(rss_interval_seconds))
+    rss_feed_sleep_seconds = _resolve_rss_feed_sleep_seconds()
+
     multi_source = len(source_configs) > 1
     base_spool_dir = ensure_spool_dir()
     redis_client, base_redis_queue_key = try_get_redis()
@@ -1635,19 +1760,13 @@ def main() -> None:
         )
         sources.append(source)
         _log_source_runtime(
-            verbose=bool(args.verbose), source=source, redis_client=redis_client
+            verbose=bool(args.verbose),
+            source=source,
+            redis_client=redis_client,
+            rss_interval_seconds=float(rss_interval_seconds),
+            rss_feed_sleep_seconds=float(rss_feed_sleep_seconds),
         )
     limit = args.limit if args.limit and args.limit > 0 else None
-
-    rss_active_hours: Optional[tuple[int, int]] = None
-    rss_active_hours_value = os.getenv(ENV_RSS_ACTIVE_HOURS, "").strip()
-    if rss_active_hours_value:
-        rss_active_hours = parse_active_hours(rss_active_hours_value)
-
-    rss_interval_seconds = env_float(ENV_RSS_INTERVAL_SECONDS)
-    if rss_interval_seconds is None or rss_interval_seconds <= 0:
-        rss_interval_seconds = 600.0
-    rss_interval_seconds = max(1.0, float(rss_interval_seconds))
     alias_sync_interval_seconds = _resolve_stock_alias_sync_interval_seconds()
     stock_hot_cache_interval_seconds = _resolve_stock_hot_cache_interval_seconds()
     alias_ai_runtime_config = _build_alias_ai_runtime_config(config)
@@ -1739,6 +1858,7 @@ def main() -> None:
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as alias_executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as research_executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as backfill_executor,
+        ThreadPoolExecutor(max_workers=max(1, len(sources))) as spool_executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as rss_executor,
     ):
         wakeup_event = threading.Event()
@@ -1827,6 +1947,13 @@ def main() -> None:
                 )
 
                 if do_ingest_rss and source.config.rss_urls:
+
+                    def _on_item_ingested(src: WorkerSourceRuntime = source) -> None:
+                        _mark_spool_item_ingested(
+                            source=src,
+                            wakeup_event=wakeup_event,
+                        )
+
                     source.rss_ingest_future = rss_executor.submit(
                         ingest_rss_many_once,
                         rss_urls=source.config.rss_urls,
@@ -1840,6 +1967,8 @@ def main() -> None:
                         limit=limit,
                         rss_timeout=float(args.rss_timeout),
                         rss_retries=int(args.rss_retries),
+                        rss_feed_sleep_seconds=float(rss_feed_sleep_seconds),
+                        on_item_ingested=_on_item_ingested,
                         verbose=verbose,
                     )
                     source.rss_ingest_future.add_done_callback(
@@ -1862,19 +1991,53 @@ def main() -> None:
                 force_maintenance,
                 rss_skip_reason,
             ) in tick_sources:
-                inserted = 0
-                ingest_turso_error = False
+                accepted = 0
+                ingest_enqueue_error = False
                 (
                     source.rss_ingest_future,
-                    inserted,
+                    accepted,
                     _,
-                    ingest_turso_error,
+                    ingest_enqueue_error,
                 ) = _collect_rss_ingest_result(
                     source_name=source.config.name,
                     future=source.rss_ingest_future,
                     engine=source.engine,
                     verbose=verbose,
                 )
+
+                spool_flushed = 0
+                spool_has_more = False
+                (
+                    source.spool_flush_future,
+                    spool_stats,
+                    spool_flush_finished,
+                    spool_flush_error,
+                ) = _collect_periodic_job_result(
+                    job_name=f"spool:{source.config.name}",
+                    future=source.spool_flush_future,
+                    engine=source.engine,
+                    verbose=verbose,
+                )
+                spool_flushed = int(spool_stats.get("flushed", 0))
+                spool_has_more = bool(spool_stats.get("has_more", False))
+                spool_flush_error = bool(
+                    spool_flush_error or bool(spool_stats.get("has_error", False))
+                )
+                _mark_spool_flush_retry(
+                    source=source,
+                    has_more=spool_has_more,
+                    has_error=spool_flush_error,
+                )
+                if (
+                    spool_flush_finished
+                    and verbose
+                    and (spool_flushed > 0 or spool_flush_error)
+                ):
+                    print(
+                        f"[spool:{source.config.name}] flush_done flushed={spool_flushed} "
+                        f"has_more={1 if spool_has_more else 0} error={1 if spool_flush_error else 0}",
+                        flush=True,
+                    )
 
                 alias_resolved = 0
                 alias_inserted = 0
@@ -2011,7 +2174,6 @@ def main() -> None:
 
                 recovered = 0
                 flushed_redis = 0
-                flushed_spool = 0
                 maintenance_error = False
                 if (do_maintenance or force_maintenance) and active_engine is not None:
                     if force_maintenance:
@@ -2019,7 +2181,8 @@ def main() -> None:
                         next_maintenance_in = max(
                             0.0, maintenance_next_at - time.time()
                         )
-                    recovered, flushed_redis, flushed_spool, maintenance_error = (
+                    _request_spool_flush(source=source)
+                    recovered, flushed_redis, maintenance_error = (
                         _run_turso_maintenance(
                             engine=active_engine,
                             platform=source.config.platform,
@@ -2058,11 +2221,13 @@ def main() -> None:
                         "stock_hot_has_more": bool(stock_hot_has_more),
                         "stock_hot_finished": bool(stock_hot_finished),
                         "stock_hot_error": bool(stock_hot_error),
-                        "inserted": int(inserted),
-                        "ingest_turso_error": bool(ingest_turso_error),
+                        "accepted": int(accepted),
+                        "ingest_enqueue_error": bool(ingest_enqueue_error),
+                        "spool_flushed": int(spool_flushed),
+                        "spool_has_more": bool(spool_has_more),
+                        "spool_flush_error": bool(spool_flush_error),
                         "recovered": int(recovered),
                         "flushed_redis": int(flushed_redis),
-                        "flushed_spool": int(flushed_spool),
                         "maintenance_error": bool(maintenance_error),
                     }
                 )
@@ -2120,11 +2285,13 @@ def main() -> None:
                 stock_hot_has_more = bool(tick["stock_hot_has_more"])
                 stock_hot_finished = bool(tick["stock_hot_finished"])
                 stock_hot_error = bool(tick["stock_hot_error"])
-                inserted = int(tick["inserted"])
-                ingest_turso_error = bool(tick["ingest_turso_error"])
+                accepted = int(tick["accepted"])
+                ingest_enqueue_error = bool(tick["ingest_enqueue_error"])
+                spool_flushed = int(tick["spool_flushed"])
+                spool_has_more = bool(tick["spool_has_more"])
+                spool_flush_error = bool(tick["spool_flush_error"])
                 recovered = int(tick["recovered"])
                 flushed_redis = int(tick["flushed_redis"])
-                flushed_spool = int(tick["flushed_spool"])
                 maintenance_error = bool(tick["maintenance_error"])
                 scheduled = int(tick["scheduled"])
                 schedule_error = bool(tick["schedule_error"])
@@ -2186,6 +2353,36 @@ def main() -> None:
                 stock_hot_interval = (
                     0.0 if run_to_completion else stock_hot_cache_interval_seconds
                 )
+
+                spool_trigger = _should_start_spool_flush(source=source)
+                (
+                    source.spool_flush_future,
+                    source.spool_flush_next_at,
+                    start_spool_flush,
+                ) = _maybe_start_periodic_job(
+                    executor=spool_executor,
+                    future=source.spool_flush_future,
+                    active_engine=active_engine,
+                    trigger=spool_trigger,
+                    now=now,
+                    next_run_at=source.spool_flush_next_at,
+                    interval_seconds=float(SPOOL_FLUSH_RETRY_INTERVAL_SECONDS),
+                    wakeup_event=wakeup_event,
+                    submit_fn=_submit_spool_flush_job,
+                    submit_kwargs={
+                        "spool_dir": source.spool_dir,
+                        "redis_client": redis_client,
+                        "redis_queue_key": source.redis_queue_key,
+                        "verbose": bool(verbose),
+                    },
+                )
+                if start_spool_flush:
+                    _mark_spool_flush_started(source=source)
+                    if verbose:
+                        print(
+                            f"[spool:{source.config.name}] flush_start trigger=1",
+                            flush=True,
+                        )
 
                 alias_trigger = bool(
                     (
@@ -2324,14 +2521,14 @@ def main() -> None:
                         flush=True,
                     )
 
-                turso_error = bool(
-                    ingest_turso_error
-                    or maintenance_error
-                    or schedule_error
-                    or alias_sync_error
-                    or backfill_cache_error
-                    or relation_cache_error
-                    or stock_hot_error
+                turso_error = _build_source_turso_error(
+                    maintenance_error=bool(maintenance_error),
+                    spool_flush_error=bool(spool_flush_error),
+                    schedule_error=bool(schedule_error),
+                    alias_sync_error=bool(alias_sync_error),
+                    backfill_cache_error=bool(backfill_cache_error),
+                    relation_cache_error=bool(relation_cache_error),
+                    stock_hot_error=bool(stock_hot_error),
                 )
                 if turso_error:
                     source.turso_ready = False
@@ -2382,7 +2579,7 @@ def main() -> None:
                             "finished_at": cycle_finished_at,
                             "next_run_at": _format_epoch_to_cst(maintenance_next_at),
                             "running": bool(source.cycle_running),
-                            "rss_inserted": int(inserted),
+                            "rss_accepted": int(accepted),
                         },
                         verbose=verbose,
                     )
@@ -2495,6 +2692,7 @@ def main() -> None:
 
                 if verbose and (
                     do_maintenance
+                    or start_spool_flush
                     or start_alias_sync
                     or alias_sync_finished
                     or alias_has_more
@@ -2507,10 +2705,11 @@ def main() -> None:
                     or start_stock_hot_cache
                     or stock_hot_finished
                     or stock_hot_has_more
-                    or inserted > 0
+                    or accepted > 0
+                    or ingest_enqueue_error
                     or recovered > 0
                     or flushed_redis > 0
-                    or flushed_spool > 0
+                    or spool_flushed > 0
                     or alias_inserted > 0
                     or source.cycle_running
                 ):
@@ -2547,13 +2746,15 @@ def main() -> None:
                         f"backfill_inflight={1 if source.backfill_cache_future is not None else 0} "
                         f"relation_inflight={1 if source.relation_cache_future is not None else 0} "
                         f"stock_hot_inflight={1 if source.stock_hot_cache_future is not None else 0} "
+                        f"spool_inflight={1 if source.spool_flush_future is not None else 0} "
                         f"ai_scheduled={scheduled} "
-                        f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={flushed_spool} "
+                        f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={spool_flushed} "
+                        f"enqueue_error={1 if ingest_enqueue_error else 0} "
                         f"alias_resolved={alias_resolved} alias_inserted={alias_inserted} "
                         f"backfill_processed={backfill_processed} backfill_written={backfill_written} "
                         f"relation_processed={relation_cache_processed} relation_upserted={relation_cache_upserted} relation_deleted={relation_cache_deleted} "
                         f"stock_hot_processed={stock_hot_processed} stock_hot_written={stock_hot_written} "
-                        f"rss_inserted={inserted} rss_skip={rss_skip_reason or '-'} "
+                        f"rss_accepted={accepted} rss_skip={rss_skip_reason or '-'} "
                         f"next_maint={int(next_maintenance_in)}s "
                         f"next_alias={int(next_alias_sync_in)}s "
                         f"next_backfill={int(next_backfill_in)}s "
@@ -2570,6 +2771,7 @@ def main() -> None:
             any_relation_inflight = False
             any_stock_hot_inflight = False
             any_rss_inflight = False
+            any_spool_flush_inflight = False
             for source in sources:
                 if source.alias_sync_future is not None:
                     any_alias_inflight = True
@@ -2581,6 +2783,8 @@ def main() -> None:
                     any_stock_hot_inflight = True
                 if source.rss_ingest_future is not None:
                     any_rss_inflight = True
+                if source.spool_flush_future is not None:
+                    any_spool_flush_inflight = True
                 if source.alias_sync_next_at > 0:
                     next_deadline = min(next_deadline, source.alias_sync_next_at)
                 if source.backfill_cache_next_at > 0:
@@ -2589,6 +2793,8 @@ def main() -> None:
                     next_deadline = min(next_deadline, source.relation_cache_next_at)
                 if source.stock_hot_cache_next_at > 0:
                     next_deadline = min(next_deadline, source.stock_hot_cache_next_at)
+                if source.spool_flush_next_at > 0:
+                    next_deadline = min(next_deadline, source.spool_flush_next_at)
                 if source.rss_next_ingest_at != float("inf"):
                     next_deadline = min(next_deadline, source.rss_next_ingest_at)
                 if not source.turso_ready:
@@ -2603,6 +2809,7 @@ def main() -> None:
                 any_relation_inflight=bool(any_relation_inflight),
                 any_stock_hot_inflight=bool(any_stock_hot_inflight),
                 any_rss_inflight=bool(any_rss_inflight),
+                any_spool_flush_inflight=bool(any_spool_flush_inflight),
             ):
                 wakeup_event.wait(timeout)
             else:

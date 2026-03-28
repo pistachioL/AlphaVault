@@ -73,6 +73,9 @@ def flush_spool_to_turso(
     engine: Optional[Engine],
     max_items: int,
     verbose: bool,
+    redis_client=None,
+    redis_queue_key: str = "",
+    delete_spool_on_redis_push: bool = True,
 ) -> Tuple[int, bool]:
     if engine is None:
         return 0, False
@@ -122,6 +125,37 @@ def flush_spool_to_turso(
                     if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                         raise
                     _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+                    pushed = False
+                    if redis_client and redis_queue_key:
+                        try:
+                            from alphavault.worker.redis_queue import (
+                                DEFAULT_REDIS_DEDUP_TTL_SECONDS,
+                                redis_try_push_dedup,
+                            )
+
+                            pushed = redis_try_push_dedup(
+                                redis_client,
+                                redis_queue_key,
+                                post_uid=post_uid,
+                                payload=payload,
+                                ttl_seconds=DEFAULT_REDIS_DEDUP_TTL_SECONDS,
+                                verbose=bool(verbose),
+                            )
+                        except Exception:
+                            pushed = False
+                    if pushed:
+                        if delete_spool_on_redis_push:
+                            try:
+                                path.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                        processed += 1
+                        if verbose:
+                            print(
+                                f"[spool] moved_to_redis {path.name}",
+                                flush=True,
+                            )
+                        continue
                     if verbose:
                         print(
                             f"[spool] turso_write_error {path.name} {type(e).__name__}: {e}",

@@ -32,15 +32,15 @@ def test_manual_rss_trigger_returns_result_when_key_valid(monkeypatch) -> None:
 
     def _fake_run_manual_rss_ingest_once() -> dict[str, object]:
         return {
-            "inserted_total": 2,
-            "turso_error": False,
+            "accepted_total": 2,
+            "enqueue_error": False,
             "sources": [
                 {
                     "source": "weibo",
                     "platform": "weibo",
                     "rss_url_count": 1,
-                    "inserted": 2,
-                    "turso_error": False,
+                    "accepted": 2,
+                    "enqueue_error": False,
                     "error": "",
                 }
             ],
@@ -57,8 +57,8 @@ def test_manual_rss_trigger_returns_result_when_key_valid(monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload.get("ok") is True
-    assert payload.get("inserted_total") == 2
-    assert payload.get("turso_error") is False
+    assert payload.get("accepted_total") == 2
+    assert payload.get("enqueue_error") is False
 
 
 def test_manual_rss_trigger_returns_500_when_runner_raises(monkeypatch) -> None:

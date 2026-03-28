@@ -53,6 +53,10 @@ _RETRY_BASE_SLEEP_SECONDS = 0.2
 TOPIC_CLUSTER_TOPICS_V2_TABLE = f"{TOPIC_CLUSTER_TOPICS_TABLE}_v2"
 
 
+def is_fatal_base_exception(err: BaseException) -> bool:
+    return isinstance(err, _FATAL_BASE_EXCEPTIONS)
+
+
 def is_turso_stream_not_found_error(err: BaseException) -> bool:
     """
     Detect the transient Hrana error: "stream not found" (HTTP 404).
@@ -137,6 +141,21 @@ def is_turso_retryable_error(err: BaseException) -> bool:
     if "connection refused" in msg_lower:
         return True
     return False
+
+
+def maybe_dispose_turso_engine_on_transient_error(
+    engine: "TursoEngine | None", err: BaseException
+) -> bool:
+    if engine is None:
+        return False
+    if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
+        return False
+    try:
+        engine.dispose()
+    except BaseException as dispose_err:
+        if is_fatal_base_exception(dispose_err):
+            raise
+    return True
 
 
 def _is_read_only_sql(query: str) -> bool:
@@ -337,8 +356,9 @@ class TursoConnection:
                     cursor = self._raw.execute(prepared_query, prepared_params)
                 return TursoCursorResult(cursor)
             except BaseException as e:
-                if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                if is_fatal_base_exception(e):
                     raise
+                maybe_dispose_turso_engine_on_transient_error(self._engine, e)
                 if (
                     attempt >= int(retries)
                     or not is_turso_retryable_error(e)
