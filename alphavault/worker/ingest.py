@@ -7,12 +7,19 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from sqlalchemy.engine import Engine
 
 from alphavault.ai.analyze import clean_text
+from alphavault.db.turso_db import (
+    is_turso_libsql_panic_error,
+    is_turso_stream_not_found_error,
+    turso_connect_autocommit,
+)
+from alphavault.db.turso_queue import upsert_pending_post
 from alphavault.rss.utils import (
     build_ids,
     choose_author,
     fetch_feed,
     get_entry_content,
     infer_user_id_from_rss_url,
+    now_str,
     parse_datetime,
     split_xueqiu_context_segments,
 )
@@ -25,7 +32,7 @@ from alphavault.worker.redis_queue import (
     DEFAULT_REDIS_DEDUP_TTL_SECONDS,
     redis_try_push_dedup,
 )
-from alphavault.worker.spool import spool_write
+from alphavault.worker.spool import spool_delete, spool_write
 
 RSS_LOG_PREFIX = "[rss]"
 RSS_LOG_EVENT_ACCEPTED = "accepted"
@@ -34,6 +41,7 @@ RSS_LOG_EVENT_FEED_DONE = "feed_done"
 RSS_LOG_EVENT_FEED_SLEEP = "feed_sleep"
 RSS_LOG_EVENT_CYCLE_DONE = "cycle_done"
 LOG_EMPTY_VALUE = "(empty)"
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 def _build_raw_text(*, title: str, content_text: str) -> str:
@@ -208,6 +216,17 @@ def _coerce_nonnegative_float(value: object, *, default: float) -> float:
         return max(0.0, float(default))
 
 
+def _maybe_dispose_turso_engine_on_transient_error(
+    *, engine: Engine, err: BaseException
+) -> None:
+    if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
+        return
+    try:
+        engine.dispose()
+    except Exception:
+        return
+
+
 def ingest_rss_many_once(
     *,
     rss_urls: list[str],
@@ -232,6 +251,10 @@ def ingest_rss_many_once(
     seen_urls: set[str] = set()
     normalized_platform = str(platform or "weibo").strip().lower()
     feed_sleep_seconds = _coerce_nonnegative_float(rss_feed_sleep_seconds, default=0.0)
+    feed_total = len(rss_urls)
+
+    write_conn: Optional[Any] = None
+    write_conn_context: Any = None
 
     def build_display_md(*, text: str, author_name: str, image_urls: list[str]) -> str:
         if normalized_platform == "weibo":
@@ -247,181 +270,319 @@ def ingest_rss_many_once(
             return "\n".join(img_lines)
         return text.rstrip() + "\n" + "\n".join(img_lines)
 
-    feed_total = len(rss_urls)
-    for feed_index, rss_url in enumerate(rss_urls, start=1):
+    def _mark_item_accepted(
+        *,
+        post_uid: str,
+        resolved_author: str,
+        entry_index: int,
+        entry_total: int,
+        feed_index: int,
+        feed_total: int,
+        feed_counter_key: str,
+    ) -> None:
+        nonlocal accepted
+        accepted += 1
+        accepted_per_user[feed_counter_key] = (
+            accepted_per_user.get(feed_counter_key, 0) + 1
+        )
+        if on_item_ingested is not None:
+            try:
+                on_item_ingested()
+            except Exception:
+                pass
         if verbose:
             print(
-                _build_rss_feed_start_log_line(
+                _build_rss_accepted_log_line(
                     platform=normalized_platform,
+                    post_uid=post_uid,
+                    author=resolved_author,
+                    entry_index=entry_index,
+                    entry_total=entry_total,
                     feed_index=feed_index,
                     feed_total=feed_total,
-                    rss_url=rss_url,
+                    accepted_total=accepted_per_user[feed_counter_key],
                 ),
                 flush=True,
             )
 
-        feed_user_id = user_id
-        feed_counter_key = _build_accepted_user_counter_key(
-            feed_user_id=feed_user_id,
-            rss_url=rss_url,
-        )
-        feed_error = False
-        feed_accepted_before = accepted
-        entries: list[dict[str, Any]] = []
-
+    def _close_write_conn(*, broken: bool = False) -> None:
+        nonlocal write_conn, write_conn_context
+        if write_conn is None:
+            return
         try:
-            if not feed_user_id:
-                feed_user_id = infer_user_id_from_rss_url(rss_url)
+            close_fn = getattr(write_conn, "close", None)
+            if callable(close_fn):
+                close_fn(broken=bool(broken))
+            elif write_conn_context is not None:
+                write_conn_context.__exit__(None, None, None)
+        except Exception:
+            pass
+        write_conn = None
+        write_conn_context = None
+
+    def _try_open_write_conn() -> Optional[Any]:
+        nonlocal enqueue_error, write_conn, write_conn_context
+        if engine is None:
+            return None
+        if write_conn is not None:
+            return write_conn
+        try:
+            resolved_context = turso_connect_autocommit(engine)
+            if hasattr(resolved_context, "__enter__") and hasattr(
+                resolved_context, "__exit__"
+            ):
+                resolved_conn = resolved_context.__enter__()
+                write_conn_context = resolved_context
+            else:
+                resolved_conn = resolved_context
+                write_conn_context = None
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            enqueue_error = True
+            _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+            if verbose:
+                print(
+                    f"[rss] turso_connect_error {type(e).__name__}: {e}",
+                    flush=True,
+                )
+            return None
+        write_conn = resolved_conn
+        return write_conn
+
+    try:
+        for feed_index, rss_url in enumerate(rss_urls, start=1):
+            if verbose:
+                print(
+                    _build_rss_feed_start_log_line(
+                        platform=normalized_platform,
+                        feed_index=feed_index,
+                        feed_total=feed_total,
+                        rss_url=rss_url,
+                    ),
+                    flush=True,
+                )
+
+            feed_user_id = user_id
             feed_counter_key = _build_accepted_user_counter_key(
                 feed_user_id=feed_user_id,
                 rss_url=rss_url,
             )
-            feed = fetch_feed(rss_url, timeout=rss_timeout, retries=rss_retries)
-            entries = feed.entries or []
-            if limit:
-                entries = entries[:limit]
-        except Exception as e:
-            feed_error = True
-            if verbose:
-                print(
-                    f"[rss] source_error url={rss_url} {type(e).__name__}: {e}",
-                    flush=True,
-                )
+            feed_error = False
+            feed_accepted_before = accepted
+            entries: list[dict[str, Any]] = []
 
-        entry_total = len(entries)
-        for entry_index, entry in enumerate(entries, start=1):
-            link = (entry.get("link") or entry.get("id") or "").strip()
-            if not link:
-                continue
-            platform_post_id, post_uid, _bid = build_ids(
-                entry, link, feed_user_id, platform=normalized_platform
-            )
-            if not post_uid or not platform_post_id:
-                continue
-            if post_uid in seen_post_uids:
-                continue
-            if link in seen_urls and normalized_platform == "weibo":
-                continue
-
-            raw_title = clean_text(entry.get("title") or "")
-            title = (html_to_text(raw_title) or raw_title).strip()
-            content_html = get_entry_content(entry)
-            content_text = html_to_text(content_html)
-            image_urls = extract_image_urls_from_html(content_html)
-
-            raw_text, display_text = _build_post_texts(
-                title=title,
-                content_text=content_text,
-                platform=normalized_platform,
-            )
-            if not raw_text:
-                continue
-
-            created_at = parse_datetime(entry)
-            resolved_author = choose_author(
-                entry, feed, author, platform=normalized_platform
-            )
-            display_md = build_display_md(
-                text=display_text,
-                author_name=resolved_author,
-                image_urls=list(image_urls or []),
-            )
-
-            payload: Dict[str, Any] = {
-                "post_uid": post_uid,
-                "platform": normalized_platform,
-                "platform_post_id": platform_post_id,
-                "author": resolved_author,
-                "created_at": created_at,
-                "url": link,
-                "raw_text": raw_text,
-                "display_md": display_md,
-                "ingested_at": int(time.time()),
-            }
-
-            enqueued = False
             try:
-                spool_write(spool_dir, post_uid, payload)
-                enqueued = True
-                accepted += 1
-                accepted_per_user[feed_counter_key] = (
-                    accepted_per_user.get(feed_counter_key, 0) + 1
+                if not feed_user_id:
+                    feed_user_id = infer_user_id_from_rss_url(rss_url)
+                feed_counter_key = _build_accepted_user_counter_key(
+                    feed_user_id=feed_user_id,
+                    rss_url=rss_url,
                 )
-                if on_item_ingested is not None:
-                    try:
-                        on_item_ingested()
-                    except Exception:
-                        pass
+                feed = fetch_feed(rss_url, timeout=rss_timeout, retries=rss_retries)
+                entries = feed.entries or []
+                if limit:
+                    entries = entries[:limit]
+            except Exception as e:
+                feed_error = True
                 if verbose:
                     print(
-                        _build_rss_accepted_log_line(
-                            platform=normalized_platform,
+                        f"[rss] source_error url={rss_url} {type(e).__name__}: {e}",
+                        flush=True,
+                    )
+
+            entry_total = len(entries)
+            for entry_index, entry in enumerate(entries, start=1):
+                link = (entry.get("link") or entry.get("id") or "").strip()
+                if not link:
+                    continue
+                platform_post_id, post_uid, _bid = build_ids(
+                    entry, link, feed_user_id, platform=normalized_platform
+                )
+                if not post_uid or not platform_post_id:
+                    continue
+                if post_uid in seen_post_uids:
+                    continue
+                if link in seen_urls and normalized_platform == "weibo":
+                    continue
+
+                raw_title = clean_text(entry.get("title") or "")
+                title = (html_to_text(raw_title) or raw_title).strip()
+                content_html = get_entry_content(entry)
+                content_text = html_to_text(content_html)
+                image_urls = extract_image_urls_from_html(content_html)
+
+                raw_text, display_text = _build_post_texts(
+                    title=title,
+                    content_text=content_text,
+                    platform=normalized_platform,
+                )
+                if not raw_text:
+                    continue
+
+                created_at = parse_datetime(entry)
+                resolved_author = choose_author(
+                    entry, feed, author, platform=normalized_platform
+                )
+                display_md = build_display_md(
+                    text=display_text,
+                    author_name=resolved_author,
+                    image_urls=list(image_urls or []),
+                )
+
+                payload: Dict[str, Any] = {
+                    "post_uid": post_uid,
+                    "platform": normalized_platform,
+                    "platform_post_id": platform_post_id,
+                    "author": resolved_author,
+                    "created_at": created_at,
+                    "url": link,
+                    "raw_text": raw_text,
+                    "display_md": display_md,
+                    "ingested_at": int(time.time()),
+                }
+
+                enqueued = False
+                try:
+                    spool_write(spool_dir, post_uid, payload)
+                    enqueued = True
+                    _mark_item_accepted(
+                        post_uid=post_uid,
+                        resolved_author=resolved_author,
+                        entry_index=entry_index,
+                        entry_total=entry_total,
+                        feed_index=feed_index,
+                        feed_total=feed_total,
+                        feed_counter_key=feed_counter_key,
+                    )
+                except Exception as err:
+                    enqueue_error = True
+                    pushed = _try_push_to_redis(
+                        redis_client,
+                        redis_queue_key,
+                        post_uid=post_uid,
+                        payload=payload,
+                        verbose=bool(verbose),
+                    )
+                    if pushed:
+                        enqueued = True
+                        _mark_item_accepted(
                             post_uid=post_uid,
-                            author=resolved_author,
+                            resolved_author=resolved_author,
                             entry_index=entry_index,
                             entry_total=entry_total,
                             feed_index=feed_index,
                             feed_total=feed_total,
-                            accepted_total=accepted_per_user[feed_counter_key],
-                        ),
-                        flush=True,
-                    )
-            except Exception as err:
-                enqueue_error = True
-                pushed = _try_push_to_redis(
-                    redis_client,
-                    redis_queue_key,
-                    post_uid=post_uid,
-                    payload=payload,
-                    verbose=bool(verbose),
-                )
-                if pushed:
-                    enqueued = True
-                    accepted += 1
-                    accepted_per_user[feed_counter_key] = (
-                        accepted_per_user.get(feed_counter_key, 0) + 1
-                    )
-                    if on_item_ingested is not None:
-                        try:
-                            on_item_ingested()
-                        except Exception:
-                            pass
-                if verbose:
-                    print(
-                        f"[spool] enqueue_error post_uid={post_uid} "
-                        f"spool={type(err).__name__}: {err} redis_fallback={1 if pushed else 0}",
-                        flush=True,
-                    )
+                            feed_counter_key=feed_counter_key,
+                        )
+                    if verbose:
+                        print(
+                            f"[spool] enqueue_error post_uid={post_uid} "
+                            f"spool={type(err).__name__}: {err} redis_fallback={1 if pushed else 0}",
+                            flush=True,
+                        )
+                    if enqueued:
+                        seen_post_uids.add(post_uid)
+                        seen_urls.add(link)
+                    continue
 
-            if enqueued:
-                seen_post_uids.add(post_uid)
-                seen_urls.add(link)
+                if engine is None:
+                    if enqueued:
+                        seen_post_uids.add(post_uid)
+                        seen_urls.add(link)
+                    continue
 
-        if verbose:
-            print(
-                _build_rss_feed_done_log_line(
-                    platform=normalized_platform,
-                    feed_index=feed_index,
-                    feed_total=feed_total,
-                    entry_total=entry_total,
-                    accepted_in_feed=(accepted - feed_accepted_before),
-                    source_error=feed_error,
-                ),
-                flush=True,
-            )
+                write_conn_instance = _try_open_write_conn()
+                if write_conn_instance is None:
+                    pushed = _try_push_to_redis(
+                        redis_client,
+                        redis_queue_key,
+                        post_uid=post_uid,
+                        payload=payload,
+                        verbose=bool(verbose),
+                    )
+                    if not pushed:
+                        enqueue_error = True
+                    if verbose:
+                        print(
+                            f"[rss] turso_unavailable post_uid={post_uid} redis_fallback={1 if pushed else 0}",
+                            flush=True,
+                        )
+                    if enqueued:
+                        seen_post_uids.add(post_uid)
+                        seen_urls.add(link)
+                    continue
 
-        if feed_index < feed_total and feed_sleep_seconds > 0:
+                try:
+                    upsert_pending_post(
+                        write_conn_instance,
+                        post_uid=post_uid,
+                        platform=normalized_platform,
+                        platform_post_id=platform_post_id,
+                        author=resolved_author,
+                        created_at=created_at,
+                        url=link,
+                        raw_text=raw_text,
+                        display_md=display_md,
+                        archived_at=now_str(),
+                        ingested_at=int(payload["ingested_at"]),
+                    )
+                    spool_delete(spool_dir, post_uid)
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    enqueue_error = True
+                    is_broken_conn = bool(
+                        is_turso_stream_not_found_error(e)
+                        or is_turso_libsql_panic_error(e)
+                    )
+                    _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+                    _close_write_conn(broken=is_broken_conn)
+                    pushed = _try_push_to_redis(
+                        redis_client,
+                        redis_queue_key,
+                        post_uid=post_uid,
+                        payload=payload,
+                        verbose=bool(verbose),
+                    )
+                    if verbose:
+                        print(
+                            f"[rss] turso_write_error {post_uid} {type(e).__name__}: {e} "
+                            f"redis_fallback={1 if pushed else 0}",
+                            flush=True,
+                        )
+
+                if enqueued:
+                    seen_post_uids.add(post_uid)
+                    seen_urls.add(link)
+
             if verbose:
                 print(
-                    _build_rss_feed_sleep_log_line(
+                    _build_rss_feed_done_log_line(
                         platform=normalized_platform,
                         feed_index=feed_index,
                         feed_total=feed_total,
-                        sleep_seconds=feed_sleep_seconds,
+                        entry_total=entry_total,
+                        accepted_in_feed=(accepted - feed_accepted_before),
+                        source_error=feed_error,
                     ),
                     flush=True,
                 )
-            time.sleep(feed_sleep_seconds)
+
+            if feed_index < feed_total and feed_sleep_seconds > 0:
+                if verbose:
+                    print(
+                        _build_rss_feed_sleep_log_line(
+                            platform=normalized_platform,
+                            feed_index=feed_index,
+                            feed_total=feed_total,
+                            sleep_seconds=feed_sleep_seconds,
+                        ),
+                        flush=True,
+                    )
+                time.sleep(feed_sleep_seconds)
+    finally:
+        _close_write_conn()
 
     if verbose:
         print(

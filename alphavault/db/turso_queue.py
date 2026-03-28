@@ -36,6 +36,7 @@ from alphavault.db.sql.turso_queue import (
     build_reset_ai_results_for_post_uids,
 )
 from alphavault.db.turso_db import (
+    TursoConnection,
     TursoEngine,
     init_cloud_schema,
     is_fatal_base_exception,
@@ -106,8 +107,8 @@ def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
         conn.execute(CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT)
 
 
-def upsert_pending_post(
-    engine: TursoEngine,
+def _execute_upsert_pending_post(
+    conn: TursoConnection,
     *,
     post_uid: str,
     platform: str,
@@ -126,24 +127,77 @@ def upsert_pending_post(
     NOTE: Cloud posts.final_status is required by existing schema, so we set a placeholder
     final_status='irrelevant' and keep processed_at=NULL until AI is done.
     """
+    conn.execute(
+        UPSERT_PENDING_POST,
+        {
+            "post_uid": post_uid,
+            "platform": platform,
+            "platform_post_id": platform_post_id,
+            "author": author,
+            "created_at": created_at,
+            "url": url,
+            "raw_text": raw_text,
+            "display_md": display_md,
+            "final_status": "irrelevant",
+            "archived_at": archived_at,
+            "ai_status": AI_STATUS_PENDING,
+            "ingested_at": int(ingested_at),
+        },
+    )
+
+
+def upsert_pending_post(
+    conn_or_engine: TursoConnection | TursoEngine,
+    *,
+    post_uid: str,
+    platform: str,
+    platform_post_id: str,
+    author: str,
+    created_at: str,
+    url: str,
+    raw_text: str,
+    display_md: str,
+    archived_at: str,
+    ingested_at: int,
+) -> None:
+    """
+    Insert a new RSS item as a pending AI task.
+
+    Supports both call styles:
+    - upsert_pending_post(conn, ...)
+    - upsert_pending_post(engine, ...)
+    """
+    if isinstance(conn_or_engine, TursoConnection):
+        _execute_upsert_pending_post(
+            conn_or_engine,
+            post_uid=post_uid,
+            platform=platform,
+            platform_post_id=platform_post_id,
+            author=author,
+            created_at=created_at,
+            url=url,
+            raw_text=raw_text,
+            display_md=display_md,
+            archived_at=archived_at,
+            ingested_at=ingested_at,
+        )
+        return
+
+    engine = conn_or_engine
     try:
         with turso_connect_autocommit(engine) as conn:
-            conn.execute(
-                UPSERT_PENDING_POST,
-                {
-                    "post_uid": post_uid,
-                    "platform": platform,
-                    "platform_post_id": platform_post_id,
-                    "author": author,
-                    "created_at": created_at,
-                    "url": url,
-                    "raw_text": raw_text,
-                    "display_md": display_md,
-                    "final_status": "irrelevant",
-                    "archived_at": archived_at,
-                    "ai_status": AI_STATUS_PENDING,
-                    "ingested_at": int(ingested_at),
-                },
+            _execute_upsert_pending_post(
+                conn,
+                post_uid=post_uid,
+                platform=platform,
+                platform_post_id=platform_post_id,
+                author=author,
+                created_at=created_at,
+                url=url,
+                raw_text=raw_text,
+                display_md=display_md,
+                archived_at=archived_at,
+                ingested_at=ingested_at,
             )
     except BaseException as err:
         if is_fatal_base_exception(err):
