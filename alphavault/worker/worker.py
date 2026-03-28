@@ -128,6 +128,7 @@ class WorkerSourceRuntime:
     spool_dir: Path
     redis_queue_key: str
     rss_next_ingest_at: float
+    rss_ingest_future: Future | None = None
     turso_ready: bool = False
     turso_next_ready_check_at: float = 0.0
     alias_sync_future: Future | None = None
@@ -1145,6 +1146,41 @@ def _collect_periodic_job_result(
     return None, stats, True, False
 
 
+def _collect_rss_ingest_result(
+    *,
+    source_name: str,
+    future: Future | None,
+    engine: Engine,
+    verbose: bool,
+) -> tuple[Future | None, int, bool, bool]:
+    if future is None or not future.done():
+        return future, 0, False, False
+    try:
+        raw = future.result()
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=engine, err=e, verbose=bool(verbose)
+        )
+        if verbose:
+            print(
+                f"[rss:{source_name}] ingest_error {type(e).__name__}: {e}",
+                flush=True,
+            )
+        return None, 0, True, True
+
+    inserted = 0
+    ingest_turso_error = False
+    if isinstance(raw, tuple) and len(raw) >= 2:
+        try:
+            inserted = max(0, int(raw[0]))
+        except Exception:
+            inserted = 0
+        ingest_turso_error = bool(raw[1])
+    return None, inserted, True, ingest_turso_error
+
+
 def _maybe_start_periodic_job(
     *,
     executor: ThreadPoolExecutor,
@@ -1214,6 +1250,25 @@ def _format_epoch_to_cst(value: float) -> str:
 
 def _should_fast_retry_for_periodic_job(*, has_more: bool) -> bool:
     return bool(has_more)
+
+
+def _should_wait_with_event(
+    *,
+    ai_inflight: bool,
+    any_alias_inflight: bool,
+    any_backfill_inflight: bool,
+    any_relation_inflight: bool,
+    any_stock_hot_inflight: bool,
+    any_rss_inflight: bool,
+) -> bool:
+    return bool(
+        ai_inflight
+        or any_alias_inflight
+        or any_backfill_inflight
+        or any_relation_inflight
+        or any_stock_hot_inflight
+        or any_rss_inflight
+    )
 
 
 def _save_worker_progress_state(
@@ -1671,7 +1726,6 @@ def main() -> None:
                     Optional[Engine],
                     bool,
                     str,
-                    Future | None,
                 ]
             ] = []
             for source in sources:
@@ -1679,6 +1733,8 @@ def main() -> None:
                 rss_skip_reason = ""
                 if not source.config.rss_urls:
                     rss_skip_reason = "no_sources"
+                elif source.rss_ingest_future is not None:
+                    rss_skip_reason = "inflight"
                 else:
                     now_dt = datetime.now(CST)
                     if rss_active_hours is not None and not in_active_hours(
@@ -1716,9 +1772,8 @@ def main() -> None:
                     source.engine if source.turso_ready else None
                 )
 
-                rss_future: Future | None = None
                 if do_ingest_rss and source.config.rss_urls:
-                    rss_future = rss_executor.submit(
+                    source.rss_ingest_future = rss_executor.submit(
                         ingest_rss_many_once,
                         rss_urls=source.config.rss_urls,
                         engine=active_engine,
@@ -1733,7 +1788,9 @@ def main() -> None:
                         rss_retries=int(args.rss_retries),
                         verbose=verbose,
                     )
-                    rss_future.add_done_callback(lambda _f: wakeup_event.set())
+                    source.rss_ingest_future.add_done_callback(
+                        lambda _f: wakeup_event.set()
+                    )
 
                 tick_sources.append(
                     (
@@ -1741,7 +1798,6 @@ def main() -> None:
                         active_engine,
                         force_maintenance,
                         rss_skip_reason,
-                        rss_future,
                     )
                 )
 
@@ -1751,8 +1807,21 @@ def main() -> None:
                 active_engine,
                 force_maintenance,
                 rss_skip_reason,
-                rss_future,
             ) in tick_sources:
+                inserted = 0
+                ingest_turso_error = False
+                (
+                    source.rss_ingest_future,
+                    inserted,
+                    _,
+                    ingest_turso_error,
+                ) = _collect_rss_ingest_result(
+                    source_name=source.config.name,
+                    future=source.rss_ingest_future,
+                    engine=source.engine,
+                    verbose=verbose,
+                )
+
                 alias_resolved = 0
                 alias_inserted = 0
                 alias_sync_finished = False
@@ -1885,25 +1954,6 @@ def main() -> None:
                 )
                 if stock_hot_fast_retry:
                     source.stock_hot_cache_next_at = 0.0
-
-                inserted = 0
-                ingest_turso_error = False
-                if rss_future is not None:
-                    try:
-                        inserted, ingest_turso_error = rss_future.result()
-                    except BaseException as e:
-                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-                            raise
-                        _maybe_dispose_turso_engine_on_transient_error(
-                            engine=source.engine, err=e, verbose=bool(verbose)
-                        )
-                        ingest_turso_error = True
-                        inserted = 0
-                        if verbose:
-                            print(
-                                f"[rss:{source.config.name}] ingest_error {type(e).__name__}: {e}",
-                                flush=True,
-                            )
 
                 recovered = 0
                 flushed_redis = 0
@@ -2420,6 +2470,7 @@ def main() -> None:
             any_backfill_inflight = False
             any_relation_inflight = False
             any_stock_hot_inflight = False
+            any_rss_inflight = False
             for source in sources:
                 if source.alias_sync_future is not None:
                     any_alias_inflight = True
@@ -2429,6 +2480,8 @@ def main() -> None:
                     any_relation_inflight = True
                 if source.stock_hot_cache_future is not None:
                     any_stock_hot_inflight = True
+                if source.rss_ingest_future is not None:
+                    any_rss_inflight = True
                 if source.alias_sync_next_at > 0:
                     next_deadline = min(next_deadline, source.alias_sync_next_at)
                 if source.backfill_cache_next_at > 0:
@@ -2444,12 +2497,13 @@ def main() -> None:
                         next_deadline, float(source.turso_next_ready_check_at)
                     )
             timeout = max(0.0, next_deadline - time.time())
-            if (
-                inflight_futures
-                or any_alias_inflight
-                or any_backfill_inflight
-                or any_relation_inflight
-                or any_stock_hot_inflight
+            if _should_wait_with_event(
+                ai_inflight=bool(inflight_futures),
+                any_alias_inflight=bool(any_alias_inflight),
+                any_backfill_inflight=bool(any_backfill_inflight),
+                any_relation_inflight=bool(any_relation_inflight),
+                any_stock_hot_inflight=bool(any_stock_hot_inflight),
+                any_rss_inflight=bool(any_rss_inflight),
             ):
                 wakeup_event.wait(timeout)
             else:

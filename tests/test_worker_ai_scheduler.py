@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
+
+import pytest
+
 from alphavault.worker.worker import (
     _LowPriorityAISlotGate,
     _build_topic_prompt_v3_llm_log_line,
     _build_low_priority_should_continue,
+    _collect_rss_ingest_result,
     _compute_low_priority_budget,
     _compute_rss_available_slots,
     _should_fast_retry_for_periodic_job,
+    _should_wait_with_event,
 )
 
 
@@ -78,6 +84,100 @@ def test_should_fast_retry_for_periodic_job_true_when_has_more() -> None:
 
 def test_should_fast_retry_for_periodic_job_false_when_no_more() -> None:
     assert _should_fast_retry_for_periodic_job(has_more=False) is False
+
+
+def test_collect_rss_ingest_result_skips_pending_future() -> None:
+    class _PendingFuture:
+        def done(self) -> bool:
+            return False
+
+        def result(self) -> tuple[int, bool]:
+            raise AssertionError("result should not be called for pending future")
+
+    pending = _PendingFuture()
+    next_future, inserted, finished, error = _collect_rss_ingest_result(
+        source_name="weibo",
+        future=pending,  # type: ignore[arg-type]
+        engine=object(),  # type: ignore[arg-type]
+        verbose=False,
+    )
+
+    assert next_future is pending
+    assert inserted == 0
+    assert finished is False
+    assert error is False
+
+
+def test_collect_rss_ingest_result_reads_finished_tuple() -> None:
+    done_future: Future = Future()
+    done_future.set_result((7, True))
+    next_future, inserted, finished, error = _collect_rss_ingest_result(
+        source_name="weibo",
+        future=done_future,
+        engine=object(),  # type: ignore[arg-type]
+        verbose=False,
+    )
+
+    assert next_future is None
+    assert inserted == 7
+    assert finished is True
+    assert error is True
+
+
+def test_collect_rss_ingest_result_marks_nonfatal_exception_as_error() -> None:
+    failed_future: Future = Future()
+    failed_future.set_exception(RuntimeError("boom"))
+    next_future, inserted, finished, error = _collect_rss_ingest_result(
+        source_name="weibo",
+        future=failed_future,
+        engine=object(),  # type: ignore[arg-type]
+        verbose=False,
+    )
+
+    assert next_future is None
+    assert inserted == 0
+    assert finished is True
+    assert error is True
+
+
+def test_collect_rss_ingest_result_reraises_fatal_exception() -> None:
+    failed_future: Future = Future()
+    failed_future.set_exception(KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        _collect_rss_ingest_result(
+            source_name="weibo",
+            future=failed_future,
+            engine=object(),  # type: ignore[arg-type]
+            verbose=False,
+        )
+
+
+def test_should_wait_with_event_true_when_only_rss_is_inflight() -> None:
+    assert (
+        _should_wait_with_event(
+            ai_inflight=False,
+            any_alias_inflight=False,
+            any_backfill_inflight=False,
+            any_relation_inflight=False,
+            any_stock_hot_inflight=False,
+            any_rss_inflight=True,
+        )
+        is True
+    )
+
+
+def test_should_wait_with_event_false_when_all_queues_idle() -> None:
+    assert (
+        _should_wait_with_event(
+            ai_inflight=False,
+            any_alias_inflight=False,
+            any_backfill_inflight=False,
+            any_relation_inflight=False,
+            any_stock_hot_inflight=False,
+            any_rss_inflight=False,
+        )
+        is False
+    )
 
 
 def test_build_topic_prompt_v3_llm_log_line_call_contains_id_and_author() -> None:
