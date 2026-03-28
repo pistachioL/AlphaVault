@@ -8,8 +8,13 @@ from typing import Any, Dict, Optional, Tuple
 
 from alphavault.constants import ENV_REDIS_QUEUE_KEY, ENV_REDIS_URL
 from alphavault.db.sql.scripts import SELECT_POST_PROCESSED_AND_INGESTED
-from alphavault.db.turso_db import TursoEngine
-from alphavault.db.turso_db import turso_connect_autocommit
+from alphavault.db.turso_db import (
+    TursoConnection,
+    TursoEngine,
+    is_turso_libsql_panic_error,
+    is_turso_stream_not_found_error,
+    turso_connect_autocommit,
+)
 from alphavault.db.turso_queue import upsert_pending_post
 from alphavault.rss.utils import now_str
 from alphavault.weibo.display import format_weibo_display_md
@@ -18,6 +23,7 @@ from alphavault.worker.spool import sha1_short, spool_delete
 
 DEFAULT_REDIS_QUEUE_KEY = "alphavault:rss_spool"
 DEFAULT_REDIS_DEDUP_TTL_SECONDS = 24 * 3600
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 def try_get_redis():
@@ -82,24 +88,34 @@ def redis_try_push_dedup(
         return False
 
 
+def _maybe_dispose_turso_engine_on_transient_error(
+    *, engine: TursoEngine, err: BaseException
+) -> None:
+    if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
+        return
+    try:
+        engine.dispose()
+    except Exception:
+        return
+
+
 def _cloud_post_is_processed_or_newer(
-    engine: TursoEngine, post_uid: str, payload_ingested_at: int
+    conn: TursoConnection, post_uid: str, payload_ingested_at: int
 ) -> bool:
-    with turso_connect_autocommit(engine) as conn:
-        row = conn.execute(
-            SELECT_POST_PROCESSED_AND_INGESTED,
-            {"post_uid": post_uid},
-        ).fetchone()
-        if not row:
-            return False
-        processed_at = row[0]
-        if processed_at is not None and str(processed_at).strip() != "":
-            return True
-        try:
-            existing_ingested_at = int(row[1] or 0)
-        except Exception:
-            existing_ingested_at = 0
-        return int(existing_ingested_at) >= int(payload_ingested_at)
+    row = conn.execute(
+        SELECT_POST_PROCESSED_AND_INGESTED,
+        {"post_uid": post_uid},
+    ).fetchone()
+    if not row:
+        return False
+    processed_at = row[0]
+    if processed_at is not None and str(processed_at).strip() != "":
+        return True
+    try:
+        existing_ingested_at = int(row[1] or 0)
+    except Exception:
+        existing_ingested_at = 0
+    return int(existing_ingested_at) >= int(payload_ingested_at)
 
 
 def _redis_requeue_processing(
@@ -193,95 +209,119 @@ def flush_redis_to_turso(
         return 0, False
 
     processed = 0
-    for _ in range(max_items):
-        try:
-            msg = _redis_pop_to_processing(client, queue_key)
-        except Exception as e:
-            if verbose:
-                print(f"[redis] pop_error {type(e).__name__}: {e}", flush=True)
-            break
-        if not msg:
-            break
-        try:
-            payload = json.loads(msg)
-        except Exception as e:
-            if verbose:
-                print(f"[redis] bad_message {type(e).__name__}: {e}", flush=True)
-            try:
-                _redis_ack_processing(client, queue_key, msg)
-            except Exception:
-                pass
-            continue
+    try:
+        with turso_connect_autocommit(engine) as conn:
+            for _ in range(max_items):
+                try:
+                    msg = _redis_pop_to_processing(client, queue_key)
+                except Exception as e:
+                    if verbose:
+                        print(f"[redis] pop_error {type(e).__name__}: {e}", flush=True)
+                    break
+                if not msg:
+                    break
+                try:
+                    payload = json.loads(msg)
+                except Exception as e:
+                    if verbose:
+                        print(
+                            f"[redis] bad_message {type(e).__name__}: {e}", flush=True
+                        )
+                    try:
+                        _redis_ack_processing(client, queue_key, msg)
+                    except Exception:
+                        pass
+                    continue
 
-        post_uid = str(payload.get("post_uid") or "")
-        if not post_uid:
-            try:
-                _redis_ack_processing(client, queue_key, msg)
-            except Exception:
-                pass
-            continue
+                post_uid = str(payload.get("post_uid") or "")
+                if not post_uid:
+                    try:
+                        _redis_ack_processing(client, queue_key, msg)
+                    except Exception:
+                        pass
+                    continue
 
-        payload_ingested_at = 0
-        try:
-            payload_ingested_at = int(payload.get("ingested_at") or 0)
-        except Exception:
-            payload_ingested_at = 0
+                payload_ingested_at = 0
+                try:
+                    payload_ingested_at = int(payload.get("ingested_at") or 0)
+                except Exception:
+                    payload_ingested_at = 0
 
-        try:
-            skip_upsert = _cloud_post_is_processed_or_newer(
-                engine, post_uid, payload_ingested_at
-            )
-        except Exception as e:
-            if verbose:
-                print(f"[redis] turso_check_error {type(e).__name__}: {e}", flush=True)
-            return processed, True
-        if skip_upsert:
-            if verbose:
-                print(f"[redis] skip_upsert {post_uid}", flush=True)
-            if not _ack_and_cleanup(
-                client,
-                queue_key,
-                msg=msg,
-                post_uid=post_uid,
-                spool_dir=spool_dir,
-                verbose=verbose,
-            ):
-                return processed, False
-            processed += 1
-            continue
+                try:
+                    skip_upsert = _cloud_post_is_processed_or_newer(
+                        conn, post_uid, payload_ingested_at
+                    )
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+                    if verbose:
+                        print(
+                            f"[redis] turso_check_error {type(e).__name__}: {e}",
+                            flush=True,
+                        )
+                    return processed, True
+                if skip_upsert:
+                    if verbose:
+                        print(f"[redis] skip_upsert {post_uid}", flush=True)
+                    if not _ack_and_cleanup(
+                        client,
+                        queue_key,
+                        msg=msg,
+                        post_uid=post_uid,
+                        spool_dir=spool_dir,
+                        verbose=verbose,
+                    ):
+                        return processed, False
+                    processed += 1
+                    continue
 
-        try:
-            raw_text = str(payload.get("raw_text") or "")
-            author = str(payload.get("author") or "")
-            display_md = str(payload.get("display_md") or "")
-            if not display_md.strip():
-                display_md = format_weibo_display_md(raw_text, author=author)
-            upsert_pending_post(
-                engine,
-                post_uid=post_uid,
-                platform=str(payload.get("platform") or "weibo"),
-                platform_post_id=str(payload.get("platform_post_id") or ""),
-                author=str(payload.get("author") or ""),
-                created_at=str(payload.get("created_at") or now_str()),
-                url=str(payload.get("url") or ""),
-                raw_text=raw_text,
-                display_md=display_md,
-                archived_at=now_str(),
-                ingested_at=int(payload.get("ingested_at") or int(time.time())),
-            )
-        except Exception as e:
-            if verbose:
-                print(f"[redis] turso_write_error {type(e).__name__}: {e}", flush=True)
-            # Leave message in processing; next tick will requeue.
-            return processed, True
-        if not _ack_and_cleanup(
-            client,
-            queue_key,
-            msg=msg,
-            post_uid=post_uid,
-            spool_dir=spool_dir,
-            verbose=verbose,
-        ):
-            return processed, False
-        processed += 1
+                try:
+                    raw_text = str(payload.get("raw_text") or "")
+                    author = str(payload.get("author") or "")
+                    display_md = str(payload.get("display_md") or "")
+                    if not display_md.strip():
+                        display_md = format_weibo_display_md(raw_text, author=author)
+                    upsert_pending_post(
+                        conn,
+                        post_uid=post_uid,
+                        platform=str(payload.get("platform") or "weibo"),
+                        platform_post_id=str(payload.get("platform_post_id") or ""),
+                        author=str(payload.get("author") or ""),
+                        created_at=str(payload.get("created_at") or now_str()),
+                        url=str(payload.get("url") or ""),
+                        raw_text=raw_text,
+                        display_md=display_md,
+                        archived_at=now_str(),
+                        ingested_at=int(payload.get("ingested_at") or int(time.time())),
+                    )
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+                    if verbose:
+                        print(
+                            f"[redis] turso_write_error {type(e).__name__}: {e}",
+                            flush=True,
+                        )
+                    # Leave message in processing; next tick will requeue.
+                    return processed, True
+                if not _ack_and_cleanup(
+                    client,
+                    queue_key,
+                    msg=msg,
+                    post_uid=post_uid,
+                    spool_dir=spool_dir,
+                    verbose=verbose,
+                ):
+                    return processed, False
+                processed += 1
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+        if verbose:
+            print(f"[redis] turso_connect_error {type(e).__name__}: {e}", flush=True)
+        return processed, True
+
     return processed, False
