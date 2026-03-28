@@ -108,6 +108,7 @@ WORKER_PROGRESS_STATUS_RUNNING = "running"
 LLM_LOG_PREFIX = "[llm]"
 TOPIC_PROMPT_V3_LABEL = "topic_prompt_v3"
 LOG_EMPTY_VALUE = "(empty)"
+BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
 
 
 @dataclass(frozen=True)
@@ -1333,6 +1334,16 @@ def _compute_low_priority_budget(*, ai_cap: int, rss_inflight_now: int) -> int:
     return max(0, int(ai_cap) - max(0, int(rss_inflight_now)))
 
 
+def _compute_backfill_max_stocks_per_run(*, low_budget: int) -> int:
+    return max(
+        1,
+        min(
+            int(BACKFILL_MAX_STOCKS_PER_RUN_CAP),
+            max(1, int(low_budget)),
+        ),
+    )
+
+
 def _compute_rss_available_slots(
     *,
     ai_cap: int,
@@ -1349,15 +1360,39 @@ def _build_low_priority_should_continue(
     *,
     ai_cap: int,
     rss_inflight_now_get: Callable[[], int],
+    low_inflight_now_get: Callable[[], int] | None = None,
+    has_due_ai_pending_get: Callable[[], bool] | None = None,
 ) -> Callable[[], bool]:
+    resolve_low_inflight_now = low_inflight_now_get or (lambda: 0)
+    resolve_due_ai_pending = has_due_ai_pending_get or (lambda: False)
+
     def _should_continue() -> bool:
-        return (
-            _compute_low_priority_budget(
-                ai_cap=int(ai_cap),
-                rss_inflight_now=int(rss_inflight_now_get()),
-            )
-            > 0
+        try:
+            rss_inflight_now = max(0, int(rss_inflight_now_get()))
+        except Exception:
+            rss_inflight_now = 0
+        low_budget = _compute_low_priority_budget(
+            ai_cap=int(ai_cap),
+            rss_inflight_now=int(rss_inflight_now),
         )
+        if low_budget <= 0:
+            return False
+        try:
+            low_inflight_now = max(0, int(resolve_low_inflight_now()))
+        except Exception:
+            low_inflight_now = 0
+        rss_available_slots = _compute_rss_available_slots(
+            ai_cap=int(ai_cap),
+            rss_inflight_now=int(rss_inflight_now),
+            low_inflight_now=int(low_inflight_now),
+        )
+        if rss_available_slots > 0:
+            return True
+        try:
+            has_due_ai_pending = bool(resolve_due_ai_pending())
+        except Exception:
+            return False
+        return not bool(has_due_ai_pending)
 
     return _should_continue
 
@@ -1645,8 +1680,18 @@ def main() -> None:
             verbose=bool(config.verbose),
         )
 
-    def _submit_backfill_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
-        return sync_stock_backfill_cache(sync_engine, verbose=bool(config.verbose))
+    def _submit_backfill_cache_job(
+        sync_engine: Engine,
+        *,
+        max_stocks_per_run: int,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> dict[str, int | bool]:
+        return sync_stock_backfill_cache(
+            sync_engine,
+            max_stocks_per_run=max(1, int(max_stocks_per_run)),
+            should_continue=should_continue,
+            verbose=bool(config.verbose),
+        )
 
     def _submit_relation_candidates_cache_job(
         sync_engine: Engine,
@@ -1676,15 +1721,24 @@ def main() -> None:
             verbose=bool(config.verbose),
         )
 
-    def _submit_stock_hot_cache_job(sync_engine: Engine) -> dict[str, int | bool]:
-        return sync_stock_hot_cache(sync_engine, verbose=bool(config.verbose))
+    def _submit_stock_hot_cache_job(
+        sync_engine: Engine,
+        *,
+        should_continue: Callable[[], bool] | None = None,
+    ) -> dict[str, int | bool]:
+        return sync_stock_hot_cache(
+            sync_engine,
+            should_continue=should_continue,
+            verbose=bool(config.verbose),
+        )
 
     maintenance_next_at = 0.0
 
     with (
         ThreadPoolExecutor(max_workers=ai_cap) as executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as alias_executor,
-        ThreadPoolExecutor(max_workers=1) as research_executor,
+        ThreadPoolExecutor(max_workers=max(1, len(sources))) as research_executor,
+        ThreadPoolExecutor(max_workers=max(1, len(sources))) as backfill_executor,
         ThreadPoolExecutor(max_workers=max(1, len(sources))) as rss_executor,
     ):
         wakeup_event = threading.Event()
@@ -2081,9 +2135,41 @@ def main() -> None:
                     ai_cap=int(ai_cap),
                     rss_inflight_now=int(rss_inflight_now),
                 )
+                backfill_run_cap = _compute_backfill_max_stocks_per_run(
+                    low_budget=int(low_budget)
+                )
+
+                def _zero_low_inflight() -> int:
+                    return 0
+
+                low_inflight_now_getter: Callable[[], int] = (
+                    low_priority_ai_gate.inflight
+                    if low_priority_ai_gate is not None
+                    else _zero_low_inflight
+                )
+
+                def _no_due_ai_pending() -> bool:
+                    return False
+
+                has_due_ai_pending_getter: Callable[[], bool] = _no_due_ai_pending
+                if active_engine is not None:
+                    engine_for_due = active_engine
+                    platform_for_due = source.config.platform
+
+                    def _has_due_ai_pending() -> bool:
+                        return _has_due_ai_posts(
+                            engine=engine_for_due,
+                            platform=platform_for_due,
+                            verbose=False,
+                        )
+
+                    has_due_ai_pending_getter = _has_due_ai_pending
+
                 should_continue_low_priority = _build_low_priority_should_continue(
                     ai_cap=int(ai_cap),
                     rss_inflight_now_get=lambda: int(_rss_inflight_now()),
+                    low_inflight_now_get=low_inflight_now_getter,
+                    has_due_ai_pending_get=has_due_ai_pending_getter,
                 )
                 cycle_triggered = bool(do_maintenance or force_maintenance)
                 if cycle_triggered and active_engine is not None:
@@ -2137,17 +2223,20 @@ def main() -> None:
                     )
 
                 backfill_trigger = bool(
-                    do_maintenance
-                    or force_maintenance
-                    or run_to_completion
-                    or backfill_has_more
+                    (
+                        do_maintenance
+                        or force_maintenance
+                        or run_to_completion
+                        or backfill_has_more
+                    )
+                    and int(low_budget) > 0
                 )
                 (
                     source.backfill_cache_future,
                     source.backfill_cache_next_at,
                     start_backfill_cache,
                 ) = _maybe_start_periodic_job(
-                    executor=research_executor,
+                    executor=backfill_executor,
                     future=source.backfill_cache_future,
                     active_engine=active_engine,
                     trigger=backfill_trigger,
@@ -2156,11 +2245,15 @@ def main() -> None:
                     interval_seconds=periodic_interval,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_backfill_cache_job,
+                    submit_kwargs={
+                        "max_stocks_per_run": int(backfill_run_cap),
+                        "should_continue": should_continue_low_priority,
+                    },
                 )
                 if start_backfill_cache and verbose:
                     print(
                         f"[backfill_cache:{source.config.name}] sync_start trigger={1 if backfill_trigger else 0} "
-                        f"interval={int(periodic_interval)}s",
+                        f"backfill_run_cap={int(backfill_run_cap)} interval={int(periodic_interval)}s",
                         flush=True,
                     )
 
@@ -2200,10 +2293,13 @@ def main() -> None:
                     )
 
                 stock_hot_trigger = bool(
-                    do_maintenance
-                    or force_maintenance
-                    or run_to_completion
-                    or stock_hot_has_more
+                    (
+                        do_maintenance
+                        or force_maintenance
+                        or run_to_completion
+                        or stock_hot_has_more
+                    )
+                    and int(low_budget) > 0
                 )
                 (
                     source.stock_hot_cache_future,
@@ -2219,11 +2315,12 @@ def main() -> None:
                     interval_seconds=stock_hot_interval,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_stock_hot_cache_job,
+                    submit_kwargs={"should_continue": should_continue_low_priority},
                 )
                 if start_stock_hot_cache and verbose:
                     print(
                         f"[stock_hot_cache:{source.config.name}] sync_start trigger={1 if stock_hot_trigger else 0} "
-                        f"interval={int(stock_hot_interval)}s",
+                        f"low_budget={int(low_budget)} interval={int(stock_hot_interval)}s",
                         flush=True,
                     )
 
@@ -2442,6 +2539,8 @@ def main() -> None:
                     print(
                         f"[tick:{source.config.name}] turso_ready={1 if active_engine is not None else 0} "
                         f"ai_cap={int(ai_cap)} rss_inflight_now={int(rss_inflight_now)} low_budget={int(low_budget)} "
+                        f"backfill_budget={int(low_budget)} "
+                        f"backfill_run_cap={int(backfill_run_cap)} yield_to_rss={1 if int(low_budget) <= 0 else 0} "
                         f"low_mode={LOW_PRIORITY_SCHEDULER_MODE} "
                         f"low_ai_inflight={low_priority_ai_gate.inflight() if low_priority_ai_gate is not None else 0} "
                         f"inflight={inflight_for_source} alias_inflight={1 if source.alias_sync_future is not None else 0} "

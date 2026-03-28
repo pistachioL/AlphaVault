@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 from alphavault.db.introspect import table_columns
 from alphavault.db.turso_db import (
@@ -247,6 +247,7 @@ def sync_stock_backfill_cache(
     max_rows_per_stock: int = BACKFILL_CACHE_MAX_ROWS_PER_STOCK,
     post_batch_size: int = BACKFILL_CACHE_POST_BATCH_SIZE,
     lock_lease_seconds: int = BACKFILL_CACHE_LOCK_LEASE_SECONDS,
+    should_continue: Callable[[], bool] | None = None,
     verbose: bool = False,
 ) -> dict[str, int | bool]:
     _log_backfill_sync(
@@ -303,7 +304,9 @@ def sync_stock_backfill_cache(
                     )
                 return {"processed": 0, "written": 0, "has_more": False}
 
+            can_continue = should_continue or (lambda: True)
             total_written = 0
+            processed_count = 0
             for stock_key in stock_keys:
                 before_rows = list_stock_backfill_posts(
                     conn,
@@ -339,6 +342,35 @@ def sync_stock_backfill_cache(
                         f"written={int(replaced_rows)}"
                     ),
                 )
+                processed_count += 1
+                try:
+                    continue_now = bool(can_continue())
+                except Exception:
+                    continue_now = False
+                if not continue_now:
+                    save_worker_job_cursor(
+                        engine_or_conn,
+                        state_key=BACKFILL_CACHE_CURSOR_KEY,
+                        cursor=stock_key,
+                    )
+                    remaining_in_batch = bool(processed_count < len(stock_keys))
+                    has_more = remaining_in_batch or _has_more_stock_keys(
+                        conn, after_stock_key=stock_key
+                    )
+                    _log_backfill_sync(
+                        verbose=verbose,
+                        message=(
+                            f"yield_to_rss processed={int(processed_count)} "
+                            f"written={int(total_written)} "
+                            f"has_more={1 if has_more else 0} "
+                            f"cursor_out={stock_key}"
+                        ),
+                    )
+                    return {
+                        "processed": int(processed_count),
+                        "written": int(total_written),
+                        "has_more": bool(has_more),
+                    }
 
             new_cursor = stock_keys[-1]
             save_worker_job_cursor(
@@ -350,14 +382,14 @@ def sync_stock_backfill_cache(
             _log_backfill_sync(
                 verbose=verbose,
                 message=(
-                    f"done processed={int(len(stock_keys))} "
+                    f"done processed={int(processed_count)} "
                     f"written={int(total_written)} "
                     f"has_more={1 if has_more else 0} "
                     f"cursor_out={new_cursor}"
                 ),
             )
             return {
-                "processed": int(len(stock_keys)),
+                "processed": int(processed_count),
                 "written": int(total_written),
                 "has_more": bool(has_more),
             }
