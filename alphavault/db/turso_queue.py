@@ -36,6 +36,7 @@ from alphavault.db.sql.turso_queue import (
     build_reset_ai_results_for_post_uids,
 )
 from alphavault.db.turso_db import (
+    TursoConnection,
     TursoEngine,
     init_cloud_schema,
     turso_connect_autocommit,
@@ -100,7 +101,7 @@ def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
 
 
 def upsert_pending_post(
-    engine: TursoEngine,
+    conn: TursoConnection,
     *,
     post_uid: str,
     platform: str,
@@ -119,24 +120,23 @@ def upsert_pending_post(
     NOTE: Cloud posts.final_status is required by existing schema, so we set a placeholder
     final_status='irrelevant' and keep processed_at=NULL until AI is done.
     """
-    with turso_connect_autocommit(engine) as conn:
-        conn.execute(
-            UPSERT_PENDING_POST,
-            {
-                "post_uid": post_uid,
-                "platform": platform,
-                "platform_post_id": platform_post_id,
-                "author": author,
-                "created_at": created_at,
-                "url": url,
-                "raw_text": raw_text,
-                "display_md": display_md,
-                "final_status": "irrelevant",
-                "archived_at": archived_at,
-                "ai_status": AI_STATUS_PENDING,
-                "ingested_at": int(ingested_at),
-            },
-        )
+    conn.execute(
+        UPSERT_PENDING_POST,
+        {
+            "post_uid": post_uid,
+            "platform": platform,
+            "platform_post_id": platform_post_id,
+            "author": author,
+            "created_at": created_at,
+            "url": url,
+            "raw_text": raw_text,
+            "display_md": display_md,
+            "final_status": "irrelevant",
+            "archived_at": archived_at,
+            "ai_status": AI_STATUS_PENDING,
+            "ingested_at": int(ingested_at),
+        },
+    )
 
 
 def select_due_post_uids(
