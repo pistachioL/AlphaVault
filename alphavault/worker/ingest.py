@@ -29,6 +29,10 @@ from alphavault.worker.redis_queue import (
 )
 from alphavault.worker.spool import spool_delete, spool_write
 
+RSS_LOG_PREFIX = "[rss]"
+RSS_LOG_EVENT_INSERTED = "inserted"
+LOG_EMPTY_VALUE = "(empty)"
+
 
 def _build_raw_text(*, title: str, content_text: str) -> str:
     resolved_content = str(content_text or "").strip()
@@ -75,6 +79,41 @@ def _try_push_to_redis(
     )
 
 
+def _clean_log_value(value: object) -> str:
+    text = " ".join(str(value or "").split())
+    return text if text else LOG_EMPTY_VALUE
+
+
+def _format_progress(*, current: int, total: int) -> str:
+    safe_current = max(0, int(current))
+    safe_total = max(0, int(total))
+    return f"{safe_current}/{safe_total}"
+
+
+def _build_rss_inserted_log_line(
+    *,
+    platform: str,
+    post_uid: str,
+    author: str,
+    entry_index: int,
+    entry_total: int,
+    feed_index: int,
+    feed_total: int,
+    inserted_total: int,
+) -> str:
+    return " ".join(
+        [
+            f"{RSS_LOG_PREFIX} {RSS_LOG_EVENT_INSERTED}",
+            f"platform={_clean_log_value(platform)}",
+            f"post_uid={_clean_log_value(post_uid)}",
+            f"author={_clean_log_value(author)}",
+            f"progress={_format_progress(current=entry_index, total=entry_total)}",
+            f"feed_progress={_format_progress(current=feed_index, total=feed_total)}",
+            f"inserted_total={max(0, int(inserted_total))}",
+        ]
+    )
+
+
 def ingest_rss_many_once(
     *,
     rss_urls: list[str],
@@ -110,7 +149,8 @@ def ingest_rss_many_once(
             return "\n".join(img_lines)
         return text.rstrip() + "\n" + "\n".join(img_lines)
 
-    for rss_url in rss_urls:
+    feed_total = len(rss_urls)
+    for feed_index, rss_url in enumerate(rss_urls, start=1):
         try:
             feed_user_id = user_id or infer_user_id_from_rss_url(rss_url)
             feed = fetch_feed(rss_url, timeout=rss_timeout, retries=rss_retries)
@@ -125,7 +165,8 @@ def ingest_rss_many_once(
                 )
             continue
 
-        for entry in entries:
+        entry_total = len(entries)
+        for entry_index, entry in enumerate(entries, start=1):
             link = (entry.get("link") or entry.get("id") or "").strip()
             if not link:
                 continue
@@ -210,7 +251,19 @@ def ingest_rss_many_once(
                 spool_delete(spool_dir, post_uid)
                 inserted += 1
                 if verbose:
-                    print(f"[rss] inserted {post_uid}", flush=True)
+                    print(
+                        _build_rss_inserted_log_line(
+                            platform=normalized_platform,
+                            post_uid=post_uid,
+                            author=resolved_author,
+                            entry_index=entry_index,
+                            entry_total=entry_total,
+                            feed_index=feed_index,
+                            feed_total=feed_total,
+                            inserted_total=inserted,
+                        ),
+                        flush=True,
+                    )
             except Exception as e:
                 turso_error = True
                 _try_push_to_redis(

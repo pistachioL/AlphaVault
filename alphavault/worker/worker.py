@@ -105,6 +105,9 @@ _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 LOW_PRIORITY_SCHEDULER_MODE = "rss_priority_fill"
 WORKER_PROGRESS_STATUS_IDLE = "idle"
 WORKER_PROGRESS_STATUS_RUNNING = "running"
+LLM_LOG_PREFIX = "[llm]"
+TOPIC_PROMPT_V3_LABEL = "topic_prompt_v3"
+LOG_EMPTY_VALUE = "(empty)"
 
 
 @dataclass(frozen=True)
@@ -248,6 +251,35 @@ def _to_one_line_tail(value: str, *, max_chars: int) -> str:
     if max_chars <= 0 or len(s) <= max_chars:
         return s
     return s[-max_chars:]
+
+
+def _clean_log_value(value: object) -> str:
+    text = " ".join(str(value or "").split())
+    return text if text else LOG_EMPTY_VALUE
+
+
+def _build_topic_prompt_v3_llm_log_line(
+    *,
+    event: str,
+    root_key: str,
+    post_uid: str,
+    author: str,
+    locked_count: int,
+    cost_seconds: Optional[float] = None,
+    message: str = "",
+) -> str:
+    parts = [
+        f"{LLM_LOG_PREFIX} {event} {TOPIC_PROMPT_V3_LABEL}",
+        f"root_key={_clean_log_value(root_key)}",
+        f"post_uid={_clean_log_value(post_uid)}",
+        f"author={_clean_log_value(author)}",
+        f"locked={max(0, int(locked_count))}",
+    ]
+    if cost_seconds is not None:
+        parts.append(f"cost={float(cost_seconds):.1f}s")
+    if message:
+        parts.append(str(message))
+    return " ".join(parts)
 
 
 def _max_message_tree_text_len(node: object) -> int:
@@ -645,7 +677,13 @@ def _process_one_post_uid_topic_prompt_v3(
 
     if config.verbose:
         print(
-            f"[llm] call_api topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)}",
+            _build_topic_prompt_v3_llm_log_line(
+                event="call_api",
+                root_key=root_key,
+                post_uid=str(post.post_uid or ""),
+                author=focus,
+                locked_count=len(locked_post_uids),
+            ),
             flush=True,
         )
 
@@ -684,7 +722,14 @@ def _process_one_post_uid_topic_prompt_v3(
         if config.verbose:
             cost = time.time() - start_ts
             print(
-                f"[llm] done topic_prompt_v3 root_key={root_key} cost={cost:.1f}s",
+                _build_topic_prompt_v3_llm_log_line(
+                    event="done",
+                    root_key=root_key,
+                    post_uid=str(post.post_uid or ""),
+                    author=focus,
+                    locked_count=len(locked_post_uids),
+                    cost_seconds=cost,
+                ),
                 flush=True,
             )
 
@@ -785,7 +830,14 @@ def _process_one_post_uid_topic_prompt_v3(
             except Exception:
                 continue
         print(
-            f"[llm] error topic_prompt_v3 root_key={root_key} locked={len(locked_post_uids)} {msg}",
+            _build_topic_prompt_v3_llm_log_line(
+                event="error",
+                root_key=root_key,
+                post_uid=str(post.post_uid or ""),
+                author=focus,
+                locked_count=len(locked_post_uids),
+                message=msg,
+            ),
             flush=True,
         )
         return
