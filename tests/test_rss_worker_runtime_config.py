@@ -173,3 +173,88 @@ def test_ingest_rss_many_once_prints_inserted_log_with_progress(
     assert "post_uid=weibo:1" in out
     assert "author=测试博主" in out
     assert "progress=1/1" in out
+
+
+def test_ingest_rss_many_once_inserted_total_is_per_user(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    feed_entries = {
+        "https://example.com/rss/user_a": [
+            {"id": "1", "link": "https://example.com/user_a/post/1", "title": "A1"},
+            {"id": "2", "link": "https://example.com/user_a/post/2", "title": "A2"},
+        ],
+        "https://example.com/rss/user_b": [
+            {"id": "1", "link": "https://example.com/user_b/post/1", "title": "B1"},
+            {"id": "2", "link": "https://example.com/user_b/post/2", "title": "B2"},
+        ],
+    }
+    rss_user_by_url = {
+        "https://example.com/rss/user_a": "user_a",
+        "https://example.com/rss/user_b": "user_b",
+    }
+
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del timeout, retries
+        return SimpleNamespace(entries=feed_entries[url])
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "infer_user_id_from_rss_url",
+        lambda url: rss_user_by_url[url],
+    )
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: (
+            f"mid-{feed_user_id}-{entry['id']}",
+            f"weibo:{feed_user_id}:{entry['id']}",
+            "",
+        ),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(ingest, "upsert_pending_post", lambda *args, **kwargs: None)
+
+    inserted, turso_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss/user_a", "https://example.com/rss/user_b"],
+        engine=object(),
+        spool_dir=tmp_path,
+        redis_client=None,
+        redis_queue_key="",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        verbose=True,
+    )
+
+    out_lines = capsys.readouterr().out.splitlines()
+    assert inserted == 4
+    assert turso_error is False
+    assert any(
+        "post_uid=weibo:user_a:1" in line and "inserted_total=1" in line
+        for line in out_lines
+    )
+    assert any(
+        "post_uid=weibo:user_a:2" in line and "inserted_total=2" in line
+        for line in out_lines
+    )
+    assert any(
+        "post_uid=weibo:user_b:1" in line and "inserted_total=1" in line
+        for line in out_lines
+    )
+    assert any(
+        "post_uid=weibo:user_b:2" in line and "inserted_total=2" in line
+        for line in out_lines
+    )
