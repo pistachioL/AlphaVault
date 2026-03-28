@@ -8,6 +8,7 @@ from alphavault.worker.worker import (
     _LowPriorityAISlotGate,
     _build_topic_prompt_v3_llm_log_line,
     _build_low_priority_should_continue,
+    _compute_backfill_max_stocks_per_run,
     _collect_rss_ingest_result,
     _compute_low_priority_budget,
     _compute_rss_available_slots,
@@ -23,6 +24,12 @@ def test_compute_low_priority_budget_zero_when_rss_is_full() -> None:
 
 def test_compute_low_priority_budget_uses_remaining_slots() -> None:
     assert _compute_low_priority_budget(ai_cap=6, rss_inflight_now=2) == 4
+
+
+def test_compute_backfill_max_stocks_per_run_follows_low_budget() -> None:
+    assert _compute_backfill_max_stocks_per_run(low_budget=0) == 1
+    assert _compute_backfill_max_stocks_per_run(low_budget=3) == 3
+    assert _compute_backfill_max_stocks_per_run(low_budget=100) == 32
 
 
 def test_compute_rss_available_slots_subtracts_low_inflight() -> None:
@@ -56,6 +63,18 @@ def test_should_continue_turns_false_when_rss_becomes_busy() -> None:
 
     assert should_continue() is True
     state["rss_inflight_now"] = 4
+    assert should_continue() is False
+
+
+def test_should_continue_turns_false_when_rss_due_and_no_available_slots() -> None:
+    state = {"rss_inflight_now": 0, "low_inflight_now": 4, "rss_due_now": True}
+    should_continue = _build_low_priority_should_continue(
+        ai_cap=4,
+        rss_inflight_now_get=lambda: int(state["rss_inflight_now"]),
+        low_inflight_now_get=lambda: int(state["low_inflight_now"]),
+        has_due_ai_pending_get=lambda: bool(state["rss_due_now"]),
+    )
+
     assert should_continue() is False
 
 

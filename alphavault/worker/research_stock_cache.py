@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -564,6 +564,7 @@ def sync_stock_hot_cache(
     signal_cap: int = STOCK_HOT_CACHE_SIGNAL_CAP,
     extras_refresh_min_seconds: int = STOCK_EXTRAS_REFRESH_MIN_SECONDS,
     lock_lease_seconds: int = STOCK_HOT_CACHE_LOCK_LEASE_SECONDS,
+    should_continue: Callable[[], bool] | None = None,
     verbose: bool = False,
 ) -> dict[str, int | bool]:
     _log_stock_hot_cache(
@@ -659,6 +660,19 @@ def sync_stock_hot_cache(
                         f"extras_refreshed={1 if did_refresh_extras else 0}"
                     ),
                 )
+                try:
+                    continue_now = bool(should_continue()) if should_continue else True
+                except Exception:
+                    continue_now = False
+                if not continue_now:
+                    _log_stock_hot_cache(
+                        verbose=verbose,
+                        message=(
+                            f"yield_to_rss processed={int(len(processed_keys))} "
+                            f"written={int(written)}"
+                        ),
+                    )
+                    break
 
             remaining = list_stock_dirty_keys(conn, limit=1)
             has_more = bool(remaining)
