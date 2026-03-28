@@ -47,6 +47,7 @@ from alphavault.db.turso_db import (
 from alphavault.db.turso_queue import (
     CloudPost,
     ensure_cloud_queue_schema,
+    load_assertion_outbox_events,
     load_cloud_post,
     load_recent_posts_by_author,
     mark_ai_error,
@@ -79,11 +80,19 @@ from alphavault.worker.ingest import ingest_rss_many_once
 from alphavault.worker.redis_queue import (
     redis_ai_ack_processing,
     redis_ai_ack_and_cleanup,
+    redis_assertion_clear_events,
+    redis_assertion_event_count,
+    redis_assertion_get_cursor,
+    redis_assertion_push_event,
+    redis_assertion_set_cursor,
     redis_ai_due_count,
     redis_ai_move_due_delayed_to_ready,
     redis_ai_pop_to_processing,
     redis_ai_push_delayed,
     redis_ai_requeue_processing,
+    redis_author_recent_load,
+    redis_author_recent_push,
+    redis_author_recent_push_many,
     try_get_redis,
 )
 from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
@@ -125,6 +134,7 @@ LOG_EMPTY_VALUE = "(empty)"
 BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
 SPOOL_FLUSH_MAX_ITEMS_PER_RUN = 200
 SPOOL_FLUSH_RETRY_INTERVAL_SECONDS = 1.0
+ASSERTION_OUTBOX_PUMP_BATCH_SIZE = 200
 
 
 @dataclass(frozen=True)
@@ -493,6 +503,79 @@ def _as_str_list(value: object) -> list[str]:
     return []
 
 
+def _json_to_str_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item).strip() for item in parsed if str(item).strip()]
+
+
+def _build_assertion_outbox_event_json(
+    *,
+    post: CloudPost,
+    final_status: str,
+    rows: list[dict[str, object]],
+) -> str:
+    items: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        items.append(
+            {
+                "topic_key": str(row.get("topic_key") or "").strip(),
+                "action": str(row.get("action") or "").strip(),
+                "action_strength": _clamp_int(row.get("action_strength"), 0, 3, 0),
+                "confidence": _clamp_float(row.get("confidence"), 0.0, 1.0, 0.0),
+                "stock_codes": _json_to_str_list(row.get("stock_codes_json")),
+                "stock_names": _json_to_str_list(row.get("stock_names_json")),
+                "industries": _json_to_str_list(row.get("industries_json")),
+                "indices": _json_to_str_list(row.get("indices_json")),
+            }
+        )
+    payload: dict[str, object] = {
+        "event_type": "ai_done",
+        "post_uid": str(post.post_uid or "").strip(),
+        "platform": str(post.platform or "").strip(),
+        "platform_post_id": str(post.platform_post_id or "").strip(),
+        "author": str(post.author or "").strip(),
+        "created_at": str(post.created_at or "").strip(),
+        "final_status": str(final_status or "").strip(),
+        "assertions": items,
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _ensure_prefetched_post_persisted(
+    *, engine: Engine, post: CloudPost, archived_at: str, ingested_at: int
+) -> None:
+    raw_text = str(post.raw_text or "")
+    author = str(post.author or "")
+    display_md = str(post.display_md or "")
+    if not display_md.strip():
+        display_md = format_weibo_display_md(raw_text, author=author)
+    upsert_pending_post(
+        engine,
+        post_uid=str(post.post_uid or "").strip(),
+        platform=str(post.platform or "weibo").strip() or "weibo",
+        platform_post_id=str(post.platform_post_id or "").strip(),
+        author=author,
+        created_at=str(post.created_at or now_str()),
+        url=str(post.url or "").strip(),
+        raw_text=raw_text,
+        display_md=display_md,
+        archived_at=str(archived_at or now_str()),
+        ingested_at=max(0, int(ingested_at)),
+    )
+
+
 def _map_topic_prompt_items_to_assertions(
     *,
     ai_result: dict[str, object],
@@ -597,6 +680,8 @@ def _process_one_post_uid_topic_prompt_v3(
     config: LLMConfig,
     limiter: RateLimiter,
     prefetched_post: CloudPost | None = None,
+    prefetched_recent: list[dict[str, object]] | None = None,
+    outbox_source: str = "",
 ) -> bool:
     post = (
         prefetched_post
@@ -611,7 +696,11 @@ def _process_one_post_uid_topic_prompt_v3(
     )
 
     # Scan recent posts from the same author, then keep only the same "root_key" thread.
-    recent = load_recent_posts_by_author(engine, author=focus, limit=200)
+    recent = (
+        list(prefetched_recent or [])
+        if prefetched_recent is not None
+        else load_recent_posts_by_author(engine, author=focus, limit=200)
+    )
     current_row = {
         "post_uid": post.post_uid,
         "platform_post_id": post.platform_post_id,
@@ -805,17 +894,37 @@ def _process_one_post_uid_topic_prompt_v3(
             is_relevant = bool(rows)
             final_status = "relevant" if is_relevant else "irrelevant"
             invest_score = _score_from_assertions(rows)
+            processed_at = now_str()
+            archived_at = now_str()
+            if prefetched_post is not None and uid == str(post.post_uid or "").strip():
+                _ensure_prefetched_post_persisted(
+                    engine=engine,
+                    post=prefetched_post,
+                    archived_at=archived_at,
+                    ingested_at=int(time.time()),
+                )
             write_assertions_and_mark_done(
                 engine,
                 post_uid=uid,
                 final_status=final_status,
                 invest_score=invest_score,
-                processed_at=now_str(),
+                processed_at=processed_at,
                 model=config.model,
                 prompt_version=config.prompt_version,
-                archived_at=now_str(),
+                archived_at=archived_at,
                 ai_result_json=None,
                 assertions=rows,
+                outbox_source=str(outbox_source or "").strip(),
+                outbox_author=str(post.author or "").strip(),
+                outbox_event_json=(
+                    _build_assertion_outbox_event_json(
+                        post=post,
+                        final_status=final_status,
+                        rows=rows,
+                    )
+                    if uid == str(post.post_uid or "").strip()
+                    else None
+                ),
             )
             if rows:
                 try:
@@ -896,6 +1005,8 @@ def _process_one_post_uid(
     config: LLMConfig,
     limiter: RateLimiter,
     prefetched_post: CloudPost | None = None,
+    prefetched_recent: list[dict[str, object]] | None = None,
+    outbox_source: str = "",
 ) -> bool:
     try:
         if str(config.prompt_version or "").strip() == TOPIC_PROMPT_VERSION:
@@ -905,6 +1016,8 @@ def _process_one_post_uid(
                 config=config,
                 limiter=limiter,
                 prefetched_post=prefetched_post,
+                prefetched_recent=prefetched_recent,
+                outbox_source=outbox_source,
             )
         post = (
             prefetched_post
@@ -963,18 +1076,34 @@ def _process_one_post_uid(
         assertions = (
             final_result.assertions if final_result.status == "relevant" else []
         )
+        processed_at = now_str()
+        archived_at = now_str()
+        if prefetched_post is not None:
+            _ensure_prefetched_post_persisted(
+                engine=engine,
+                post=prefetched_post,
+                archived_at=archived_at,
+                ingested_at=int(time.time()),
+            )
 
         write_assertions_and_mark_done(
             engine,
             post_uid=post_uid,
             final_status=final_result.status,
             invest_score=float(final_result.invest_score),
-            processed_at=now_str(),
+            processed_at=processed_at,
             model=config.model,
             prompt_version=config.prompt_version,
-            archived_at=now_str(),
+            archived_at=archived_at,
             ai_result_json=None,
             assertions=assertions,
+            outbox_source=str(outbox_source or "").strip(),
+            outbox_author=str(post.author or "").strip(),
+            outbox_event_json=_build_assertion_outbox_event_json(
+                post=post,
+                final_status=final_result.status,
+                rows=assertions,
+            ),
         )
         if assertions:
             try:
@@ -1496,6 +1625,27 @@ def _has_due_ai_posts(
         return False
 
 
+def _has_pending_assertion_events(
+    *,
+    redis_client,
+    redis_queue_key: str,
+    verbose: bool,
+) -> bool:
+    if not redis_client or not str(redis_queue_key or "").strip():
+        return False
+    try:
+        return bool(redis_assertion_event_count(redis_client, redis_queue_key))
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        if verbose:
+            print(
+                f"[assertion_evt] count_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+        return False
+
+
 def _compute_low_priority_budget(*, ai_cap: int, rss_inflight_now: int) -> int:
     return max(0, int(ai_cap) - max(0, int(rss_inflight_now)))
 
@@ -1614,29 +1764,21 @@ def _payload_to_cloud_post(payload: dict[str, object]) -> CloudPost | None:
     )
 
 
-def _upsert_pending_post_from_payload(
-    *, engine: Engine, payload: dict[str, object]
-) -> None:
-    raw_text = str(payload.get("raw_text") or "")
-    author = str(payload.get("author") or "")
-    display_md = str(payload.get("display_md") or "")
-    if not display_md.strip():
-        display_md = format_weibo_display_md(raw_text, author=author)
-    raw_ingested_at = payload.get("ingested_at")
-    ingested_at = _parse_int_or_default(raw_ingested_at, int(time.time()))
-    upsert_pending_post(
-        engine,
-        post_uid=str(payload.get("post_uid") or ""),
-        platform=str(payload.get("platform") or "weibo"),
-        platform_post_id=str(payload.get("platform_post_id") or ""),
-        author=author,
-        created_at=str(payload.get("created_at") or now_str()),
-        url=str(payload.get("url") or ""),
-        raw_text=raw_text,
-        display_md=display_md,
-        archived_at=now_str(),
-        ingested_at=int(ingested_at),
-    )
+def _build_author_recent_payload(
+    *, post: CloudPost, ai_status: str, ai_retry_count: int
+) -> dict[str, object]:
+    return {
+        "post_uid": str(post.post_uid or "").strip(),
+        "platform_post_id": str(post.platform_post_id or "").strip(),
+        "author": str(post.author or "").strip(),
+        "created_at": str(post.created_at or "").strip(),
+        "url": str(post.url or "").strip(),
+        "raw_text": str(post.raw_text or ""),
+        "display_md": str(post.display_md or ""),
+        "processed_at": "",
+        "ai_status": str(ai_status or "").strip(),
+        "ai_retry_count": max(0, int(ai_retry_count)),
+    }
 
 
 def _process_one_redis_payload(
@@ -1659,14 +1801,59 @@ def _process_one_redis_payload(
             return
         return
 
+    redis_author_recent_push(
+        redis_client,
+        redis_queue_key,
+        payload=_build_author_recent_payload(
+            post=cloud_post,
+            ai_status="pending",
+            ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
+        ),
+    )
+    prefetched_recent = redis_author_recent_load(
+        redis_client,
+        redis_queue_key,
+        author=str(cloud_post.author or "").strip(),
+        limit=200,
+    )
+    if not prefetched_recent:
+        try:
+            prefetched_recent = load_recent_posts_by_author(
+                engine,
+                author=str(cloud_post.author or "").strip(),
+                limit=200,
+            )
+            if prefetched_recent:
+                redis_author_recent_push_many(
+                    redis_client,
+                    redis_queue_key,
+                    author=str(cloud_post.author or "").strip(),
+                    rows=list(prefetched_recent),
+                )
+        except BaseException as err:
+            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+                raise
+            prefetched_recent = []
+
     success = _process_one_post_uid(
         engine=engine,
         post_uid=cloud_post.post_uid,
         config=config,
         limiter=limiter,
         prefetched_post=cloud_post,
+        prefetched_recent=prefetched_recent,
+        outbox_source=str(redis_queue_key or "").strip(),
     )
     if success:
+        redis_author_recent_push(
+            redis_client,
+            redis_queue_key,
+            payload=_build_author_recent_payload(
+                post=cloud_post,
+                ai_status="done",
+                ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
+            ),
+        )
         redis_ai_ack_and_cleanup(
             redis_client,
             redis_queue_key,
@@ -1682,6 +1869,15 @@ def _process_one_redis_payload(
     retry_payload = dict(payload)
     retry_payload["retry_count"] = int(retry_count)
     retry_payload["next_retry_at"] = int(next_retry_at)
+    redis_author_recent_push(
+        redis_client,
+        redis_queue_key,
+        payload=_build_author_recent_payload(
+            post=cloud_post,
+            ai_status="error",
+            ai_retry_count=int(retry_count),
+        ),
+    )
     try:
         redis_ai_push_delayed(
             redis_client,
@@ -1800,20 +1996,6 @@ def _schedule_ai_from_redis(
             except Exception:
                 pass
             continue
-        try:
-            _upsert_pending_post_from_payload(engine=engine, payload=payload)
-        except BaseException as e:
-            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-                raise
-            _maybe_dispose_turso_engine_on_transient_error(
-                engine=engine, err=e, verbose=bool(verbose)
-            )
-            if verbose:
-                print(
-                    f"[ai] redis_upsert_error owner={inflight_owner} {type(e).__name__}: {e}",
-                    flush=True,
-                )
-            return scheduled, True
 
         fut = executor.submit(
             _process_one_redis_payload,
@@ -1962,6 +2144,92 @@ def _dedup_post_uids(post_uids: Sequence[object]) -> list[str]:
     return deduped
 
 
+def _pump_assertion_outbox_to_redis(
+    *,
+    engine: Engine,
+    redis_client,
+    redis_queue_key: str,
+    verbose: bool,
+) -> tuple[int, bool]:
+    if not redis_client or not str(redis_queue_key or "").strip():
+        return 0, False
+    cursor = 0
+    try:
+        cursor = redis_assertion_get_cursor(redis_client, redis_queue_key)
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        if verbose:
+            print(
+                f"[outbox] redis_cursor_get_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+        cursor = 0
+    try:
+        events = load_assertion_outbox_events(
+            engine,
+            after_id=max(0, int(cursor)),
+            limit=int(ASSERTION_OUTBOX_PUMP_BATCH_SIZE),
+        )
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(
+            engine=engine, err=err, verbose=bool(verbose)
+        )
+        if verbose:
+            print(
+                f"[outbox] turso_load_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+        return 0, True
+    if not events:
+        return 0, False
+    pushed = 0
+    last_id = max(0, int(cursor))
+    for event in events:
+        payload: dict[str, object] = {}
+        text = str(event.event_json or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = {}
+            if isinstance(parsed, dict):
+                payload = {
+                    str(key): value
+                    for key, value in parsed.items()
+                    if str(key or "").strip()
+                }
+        if not payload:
+            payload = {
+                "event_type": "ai_done",
+                "post_uid": str(event.post_uid or "").strip(),
+                "author": str(event.author or "").strip(),
+            }
+        ok = redis_assertion_push_event(
+            redis_client,
+            redis_queue_key,
+            payload=payload,
+        )
+        if not ok:
+            if verbose:
+                print(
+                    f"[outbox] redis_push_error post_uid={event.post_uid}",
+                    flush=True,
+                )
+            return pushed, True
+        pushed += 1
+        last_id = max(last_id, int(event.id))
+    redis_assertion_set_cursor(redis_client, redis_queue_key, cursor=int(last_id))
+    if verbose and pushed > 0:
+        print(
+            f"[outbox] pumped events={pushed} cursor={last_id}",
+            flush=True,
+        )
+    return pushed, False
+
+
 def _run_turso_maintenance(
     *,
     engine: Optional[Engine],
@@ -2018,7 +2286,14 @@ def _run_turso_maintenance(
                 max_items=200,
                 verbose=bool(verbose),
             )
-            flushed_redis = int(moved_due) + int(requeued)
+            pumped, pump_error = _pump_assertion_outbox_to_redis(
+                engine=engine,
+                redis_client=redis_client,
+                redis_queue_key=redis_queue_key,
+                verbose=bool(verbose),
+            )
+            flushed_redis = int(moved_due) + int(requeued) + int(pumped)
+            flush_redis_error = bool(pump_error)
         except BaseException as e:
             if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                 raise
@@ -2666,7 +2941,14 @@ def main() -> None:
                     low_inflight_now_get=low_inflight_now_getter,
                     has_due_ai_pending_get=has_due_ai_pending_getter,
                 )
-                cycle_triggered = bool(do_maintenance or force_maintenance)
+                has_assertion_events = _has_pending_assertion_events(
+                    redis_client=redis_client,
+                    redis_queue_key=source.redis_queue_key,
+                    verbose=False,
+                )
+                cycle_triggered = bool(
+                    do_maintenance or force_maintenance or has_assertion_events
+                )
                 if cycle_triggered and active_engine is not None:
                     if not bool(source.cycle_running):
                         source.cycle_started_at = now
@@ -2717,6 +2999,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or alias_has_more
                     )
                     and int(low_budget) > 0
@@ -2752,6 +3035,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or backfill_has_more
                     )
                     and int(low_budget) > 0
@@ -2787,6 +3071,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or relation_cache_has_more
                     )
                     and int(low_budget) > 0
@@ -2822,6 +3107,7 @@ def main() -> None:
                         do_maintenance
                         or force_maintenance
                         or run_to_completion
+                        or has_assertion_events
                         or stock_hot_has_more
                     )
                     and int(low_budget) > 0
@@ -2890,6 +3176,18 @@ def main() -> None:
                             redis_queue_key=source.redis_queue_key,
                         )
                         if not due_ai_pending:
+                            if (
+                                redis_client
+                                and str(source.redis_queue_key or "").strip()
+                            ):
+                                try:
+                                    redis_assertion_clear_events(
+                                        redis_client,
+                                        source.redis_queue_key,
+                                    )
+                                except BaseException as clear_err:
+                                    if isinstance(clear_err, _FATAL_BASE_EXCEPTIONS):
+                                        raise
                             source.cycle_running = False
                             source.cycle_finished_at = time.time()
                 if active_engine is not None and source.turso_ready:

@@ -5,12 +5,24 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from alphavault.constants import ENV_REDIS_QUEUE_KEY, ENV_REDIS_URL
+from alphavault.constants import (
+    DEFAULT_REDIS_AI_QUEUE_MAXLEN,
+    DEFAULT_REDIS_ASSERTION_QUEUE_MAXLEN,
+    DEFAULT_REDIS_AUTHOR_CACHE_MAX_POSTS,
+    DEFAULT_REDIS_AUTHOR_CACHE_TTL_SECONDS,
+    DEFAULT_REDIS_DEDUP_TTL_SECONDS,
+    ENV_REDIS_AI_QUEUE_MAXLEN,
+    ENV_REDIS_ASSERTION_QUEUE_MAXLEN,
+    ENV_REDIS_AUTHOR_CACHE_MAX_POSTS,
+    ENV_REDIS_AUTHOR_CACHE_TTL_SECONDS,
+    ENV_REDIS_DEDUP_TTL_SECONDS,
+    ENV_REDIS_QUEUE_KEY,
+    ENV_REDIS_URL,
+)
 from alphavault.worker.spool import sha1_short, spool_delete
 
 
 DEFAULT_REDIS_QUEUE_KEY = "alphavault:rss_spool"
-DEFAULT_REDIS_DEDUP_TTL_SECONDS = 30 * 24 * 3600
 REDIS_PUSH_STATUS_PUSHED = "pushed"
 REDIS_PUSH_STATUS_DUPLICATE = "duplicate"
 REDIS_PUSH_STATUS_ERROR = "error"
@@ -39,6 +51,10 @@ def _redis_dedup_key(queue_key: str, post_uid: str) -> str:
     return f"{queue_key}:dedup:{sha1_short(post_uid)}"
 
 
+def _author_hash(author: str) -> str:
+    return sha1_short(str(author or "").strip().lower())
+
+
 def redis_ai_ready_key(queue_key: str) -> str:
     return f"{queue_key}:ai:ready"
 
@@ -51,6 +67,69 @@ def redis_ai_delayed_key(queue_key: str) -> str:
     return f"{queue_key}:ai:delayed"
 
 
+def redis_assertion_ready_key(queue_key: str) -> str:
+    return f"{queue_key}:assertion_evt:ready"
+
+
+def redis_assertion_cursor_key(queue_key: str) -> str:
+    return f"{queue_key}:assertion_evt:cursor"
+
+
+def redis_author_recent_key(queue_key: str, author: str) -> str:
+    return f"{queue_key}:author:recent:{_author_hash(author)}"
+
+
+def _env_int_or_default(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return max(minimum, int(default))
+    try:
+        value = int(raw)
+    except Exception:
+        return max(minimum, int(default))
+    return max(minimum, int(value))
+
+
+def resolve_redis_dedup_ttl_seconds() -> int:
+    return _env_int_or_default(
+        ENV_REDIS_DEDUP_TTL_SECONDS,
+        int(DEFAULT_REDIS_DEDUP_TTL_SECONDS),
+        minimum=1,
+    )
+
+
+def resolve_redis_ai_queue_maxlen() -> int:
+    return _env_int_or_default(
+        ENV_REDIS_AI_QUEUE_MAXLEN,
+        int(DEFAULT_REDIS_AI_QUEUE_MAXLEN),
+        minimum=100,
+    )
+
+
+def resolve_redis_assertion_queue_maxlen() -> int:
+    return _env_int_or_default(
+        ENV_REDIS_ASSERTION_QUEUE_MAXLEN,
+        int(DEFAULT_REDIS_ASSERTION_QUEUE_MAXLEN),
+        minimum=100,
+    )
+
+
+def resolve_redis_author_cache_ttl_seconds() -> int:
+    return _env_int_or_default(
+        ENV_REDIS_AUTHOR_CACHE_TTL_SECONDS,
+        int(DEFAULT_REDIS_AUTHOR_CACHE_TTL_SECONDS),
+        minimum=60,
+    )
+
+
+def resolve_redis_author_cache_max_posts() -> int:
+    return _env_int_or_default(
+        ENV_REDIS_AUTHOR_CACHE_MAX_POSTS,
+        int(DEFAULT_REDIS_AUTHOR_CACHE_MAX_POSTS),
+        minimum=20,
+    )
+
+
 def _redis_try_push_dedup_status(
     client,
     *,
@@ -59,6 +138,7 @@ def _redis_try_push_dedup_status(
     post_uid: str,
     payload: Dict[str, Any],
     ttl_seconds: int,
+    queue_maxlen: int | None,
     verbose: bool,
 ) -> str:
     if not client or not dedup_queue_key or not push_queue_key or not post_uid:
@@ -75,7 +155,7 @@ def _redis_try_push_dedup_status(
         return REDIS_PUSH_STATUS_DUPLICATE
 
     try:
-        _redis_push(client, push_queue_key, payload)
+        _redis_push(client, push_queue_key, payload, maxlen=queue_maxlen)
         return REDIS_PUSH_STATUS_PUSHED
     except Exception as e:
         try:
@@ -103,6 +183,7 @@ def redis_try_push_dedup_status(
         post_uid=post_uid,
         payload=payload,
         ttl_seconds=ttl_seconds,
+        queue_maxlen=resolve_redis_ai_queue_maxlen(),
         verbose=verbose,
     )
 
@@ -145,12 +226,199 @@ def redis_try_push_ai_dedup_status(
         post_uid=post_uid,
         payload=payload,
         ttl_seconds=ttl_seconds,
+        queue_maxlen=resolve_redis_ai_queue_maxlen(),
         verbose=verbose,
     )
 
 
-def _redis_push(client, queue_key: str, payload: Dict[str, Any]) -> None:
-    client.lpush(queue_key, json.dumps(payload, ensure_ascii=False))
+def _redis_push(
+    client,
+    queue_key: str,
+    payload: Dict[str, Any],
+    *,
+    maxlen: int | None = None,
+) -> None:
+    msg = json.dumps(payload, ensure_ascii=False)
+    if maxlen is not None and int(maxlen) > 0:
+        capped = max(1, int(maxlen))
+        pipe = client.pipeline()
+        pipe.lpush(queue_key, msg)
+        pipe.ltrim(queue_key, 0, capped - 1)
+        pipe.execute()
+        return
+    client.lpush(queue_key, msg)
+
+
+def redis_author_recent_push(
+    client,
+    queue_key: str,
+    *,
+    payload: Dict[str, Any],
+    ttl_seconds: int | None = None,
+    max_items: int | None = None,
+) -> bool:
+    author = str(payload.get("author") or "").strip()
+    if not client or not queue_key or not author:
+        return False
+    ttl = (
+        int(ttl_seconds)
+        if ttl_seconds is not None
+        else int(resolve_redis_author_cache_ttl_seconds())
+    )
+    maxlen = (
+        int(max_items)
+        if max_items is not None
+        else int(resolve_redis_author_cache_max_posts())
+    )
+    key = redis_author_recent_key(queue_key, author)
+    try:
+        _redis_push(client, key, payload, maxlen=maxlen)
+        client.expire(key, max(60, int(ttl)))
+        return True
+    except Exception:
+        return False
+
+
+def redis_author_recent_push_many(
+    client,
+    queue_key: str,
+    *,
+    author: str,
+    rows: list[dict[str, Any]],
+    ttl_seconds: int | None = None,
+    max_items: int | None = None,
+) -> int:
+    resolved_author = str(author or "").strip()
+    if not client or not queue_key or not resolved_author:
+        return 0
+    if not rows:
+        return 0
+    ttl = (
+        int(ttl_seconds)
+        if ttl_seconds is not None
+        else int(resolve_redis_author_cache_ttl_seconds())
+    )
+    maxlen = (
+        int(max_items)
+        if max_items is not None
+        else int(resolve_redis_author_cache_max_posts())
+    )
+    key = redis_author_recent_key(queue_key, resolved_author)
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        normalized.append(json.dumps(row, ensure_ascii=False))
+    if not normalized:
+        return 0
+    try:
+        pipe = client.pipeline()
+        for msg in reversed(normalized):
+            pipe.lpush(key, msg)
+        pipe.ltrim(key, 0, max(1, int(maxlen)) - 1)
+        pipe.expire(key, max(60, int(ttl)))
+        pipe.execute()
+        return int(len(normalized))
+    except Exception:
+        return 0
+
+
+def redis_author_recent_load(
+    client,
+    queue_key: str,
+    *,
+    author: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    resolved_author = str(author or "").strip()
+    if not client or not queue_key or not resolved_author:
+        return []
+    n = max(0, int(limit))
+    if n <= 0:
+        return []
+    key = redis_author_recent_key(queue_key, resolved_author)
+    try:
+        raw = client.lrange(key, 0, n - 1)
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw or []:
+        try:
+            parsed = json.loads(str(item))
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            out.append(parsed)
+    return out
+
+
+def redis_assertion_push_event(
+    client,
+    queue_key: str,
+    *,
+    payload: Dict[str, Any],
+) -> bool:
+    if not client or not queue_key:
+        return False
+    try:
+        _redis_push(
+            client,
+            redis_assertion_ready_key(queue_key),
+            payload,
+            maxlen=resolve_redis_assertion_queue_maxlen(),
+        )
+        return True
+    except Exception:
+        return False
+
+
+def redis_assertion_event_count(client, queue_key: str) -> int:
+    if not client or not queue_key:
+        return 0
+    try:
+        return int(client.llen(redis_assertion_ready_key(queue_key)) or 0)
+    except Exception:
+        return 0
+
+
+def redis_assertion_clear_events(client, queue_key: str) -> int:
+    if not client or not queue_key:
+        return 0
+    key = redis_assertion_ready_key(queue_key)
+    try:
+        count = int(client.llen(key) or 0)
+    except Exception:
+        count = 0
+    try:
+        client.delete(key)
+    except Exception:
+        return 0
+    return count
+
+
+def redis_assertion_get_cursor(client, queue_key: str) -> int:
+    if not client or not queue_key:
+        return 0
+    try:
+        value = client.get(redis_assertion_cursor_key(queue_key))
+    except Exception:
+        return 0
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        return max(0, int(text))
+    except Exception:
+        return 0
+
+
+def redis_assertion_set_cursor(client, queue_key: str, *, cursor: int) -> None:
+    if not client or not queue_key:
+        return
+    try:
+        client.set(redis_assertion_cursor_key(queue_key), int(max(0, int(cursor))))
+    except Exception:
+        return
 
 
 def redis_ai_requeue_processing(
@@ -222,6 +490,7 @@ def redis_ai_move_due_delayed_to_ready(
     for msg in msgs:
         pipe.zrem(delayed_key, msg)
         pipe.lpush(ready_key, msg)
+    pipe.ltrim(ready_key, 0, max(1, resolve_redis_ai_queue_maxlen()) - 1)
     pipe.execute()
     moved = len(msgs)
     if moved and verbose:

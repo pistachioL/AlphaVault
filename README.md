@@ -7,10 +7,10 @@
 - RSS 增量抓取（去重）
 - LLM 分析与观点抽取（写入 `posts` + `assertions`）
 - Turso 云端数据库作为队列 + 归档（幂等 upsert）
-- 可选 Redis：Turso 临时挂了时先排队（避免丢）
+- 可选 Redis：作为运行态主队列/缓存，降低 Turso 读取压力
 
 ## 目录结构（核心脚本）
-- `weibo_rss_turso_worker.py`：Worker（RSS → spool → Turso → AI → Turso）
+- `weibo_rss_turso_worker.py`：Worker（RSS → spool/Redis → AI → Turso）
 - `alphavault/db/turso_queue.py`：Turso 队列字段与读写
 - `alphavault/db/turso_db.py`：Turso engine + 基础表（posts/assertions）
 - `alphavault_reflex/`：Reflex 前端（交易流、个股页、板块页、整理中心）
@@ -78,7 +78,8 @@ uv run python weibo_rss_turso_worker.py --verbose
 - RSS 抓取网络参数：`RSS_TIMEOUT_SECONDS`（默认 60 秒）和 `RSS_RETRIES`（默认失败后再试 5 次）。
 - RSS 抓取节奏参数：`RSS_FEED_SLEEP_SECONDS`（默认 10 秒，表示每个 feed 抓完后 sleep；设 `0` 可关闭）。
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
-- Worker 会先写本地 `spool` 文件；再异步 flush 到 Turso。flush 失败时可推到 Redis 兜底。
+- Worker 会先写本地 `spool` 文件；Redis 可用时优先走 Redis AI 队列，AI 完成后再写 Turso。
+- Redis 打开后，作者线程上下文优先读 Redis 缓存；缓存 miss 才回源 Turso。
 - Reflex / Streamlit 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
 
 ## 手动触发 RSS 抓取 API

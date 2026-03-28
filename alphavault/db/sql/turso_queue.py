@@ -16,6 +16,35 @@ CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
     ON posts(ai_status, ai_next_retry_at);
 """
 
+CREATE_ASSERTION_OUTBOX_TABLE = """
+CREATE TABLE IF NOT EXISTS research_assertion_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL DEFAULT '',
+    post_uid TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    event_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)
+"""
+
+CREATE_IDX_ASSERTION_OUTBOX_CREATED_AT = """
+CREATE INDEX IF NOT EXISTS idx_research_assertion_outbox_created_at
+    ON research_assertion_outbox(created_at)
+"""
+
+INSERT_ASSERTION_OUTBOX = """
+INSERT INTO research_assertion_outbox(source, post_uid, author, event_json, created_at)
+VALUES (:source, :post_uid, :author, :event_json, :created_at)
+"""
+
+SELECT_ASSERTION_OUTBOX_AFTER_ID = """
+SELECT id, source, post_uid, author, event_json, created_at
+FROM research_assertion_outbox
+WHERE id > :after_id
+ORDER BY id ASC
+LIMIT :limit
+"""
+
 UPSERT_PENDING_POST = """
 INSERT INTO posts (
     post_uid, platform, platform_post_id, author, created_at, url, raw_text, display_md,

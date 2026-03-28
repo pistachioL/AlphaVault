@@ -15,9 +15,12 @@ from typing import Any, Dict, Iterable, Optional
 from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.turso_queue import (
+    CREATE_ASSERTION_OUTBOX_TABLE,
+    CREATE_IDX_ASSERTION_OUTBOX_CREATED_AT,
     CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT,
     DELETE_ASSERTIONS_BY_POST_UID,
     INSERT_ASSERTION,
+    INSERT_ASSERTION_OUTBOX,
     MARK_AI_ERROR,
     QUEUE_EXTRA_COLUMNS,
     RECOVER_DONE_WITHOUT_PROCESSED_AT,
@@ -26,6 +29,7 @@ from alphavault.db.sql.turso_queue import (
     RECOVER_STUCK_AI_TASKS_BY_PLATFORM,
     RESET_AI_RESULTS_ALL,
     SELECT_CLOUD_POST,
+    SELECT_ASSERTION_OUTBOX_AFTER_ID,
     SELECT_DUE_POST_UIDS,
     SELECT_DUE_POST_UIDS_BY_PLATFORM,
     SELECT_RECENT_POSTS_BY_AUTHOR,
@@ -79,6 +83,16 @@ class CloudPost:
     ai_retry_count: int
 
 
+@dataclass(frozen=True)
+class AssertionOutboxEvent:
+    id: int
+    source: str
+    post_uid: str
+    author: str
+    event_json: str
+    created_at: str
+
+
 def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
     """
     Ensure base schema exists (posts/assertions), then add queue columns to posts.
@@ -105,6 +119,8 @@ def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
                 print(f"[turso] schema add_column posts.{col_name}", flush=True)
 
         conn.execute(CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT)
+        conn.execute(CREATE_ASSERTION_OUTBOX_TABLE)
+        conn.execute(CREATE_IDX_ASSERTION_OUTBOX_CREATED_AT)
 
 
 def _execute_upsert_pending_post(
@@ -294,6 +310,38 @@ def load_recent_posts_by_author(
         return [dict(r) for r in rows if r]
 
 
+def load_assertion_outbox_events(
+    engine: TursoEngine,
+    *,
+    after_id: int,
+    limit: int,
+) -> list[AssertionOutboxEvent]:
+    with turso_connect_autocommit(engine) as conn:
+        rows = (
+            conn.execute(
+                SELECT_ASSERTION_OUTBOX_AFTER_ID,
+                {"after_id": max(0, int(after_id)), "limit": max(1, int(limit))},
+            )
+            .mappings()
+            .fetchall()
+        )
+        out: list[AssertionOutboxEvent] = []
+        for row in rows:
+            if not row:
+                continue
+            out.append(
+                AssertionOutboxEvent(
+                    id=int(row.get("id") or 0),
+                    source=str(row.get("source") or "").strip(),
+                    post_uid=str(row.get("post_uid") or "").strip(),
+                    author=str(row.get("author") or "").strip(),
+                    event_json=str(row.get("event_json") or ""),
+                    created_at=str(row.get("created_at") or "").strip(),
+                )
+            )
+        return out
+
+
 def reset_ai_results_all(
     engine: TursoEngine,
     *,
@@ -371,6 +419,9 @@ def write_assertions_and_mark_done(
     archived_at: str,
     ai_result_json: Optional[str],
     assertions: Iterable[Dict[str, Any]],
+    outbox_source: str = "",
+    outbox_author: str = "",
+    outbox_event_json: Optional[str] = None,
 ) -> None:
     """
     Commit AI outputs in a single atomic unit, without DBAPI commit/rollback.
@@ -415,6 +466,18 @@ def write_assertions_and_mark_done(
                     "ai_result_json": ai_result_json,
                 },
             )
+            resolved_event_json = str(outbox_event_json or "").strip()
+            if resolved_event_json:
+                conn.execute(
+                    INSERT_ASSERTION_OUTBOX,
+                    {
+                        "source": str(outbox_source or "").strip(),
+                        "post_uid": str(post_uid or "").strip(),
+                        "author": str(outbox_author or "").strip(),
+                        "event_json": resolved_event_json,
+                        "created_at": str(processed_at or "").strip(),
+                    },
+                )
 
 
 def mark_ai_error(
