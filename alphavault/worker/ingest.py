@@ -32,7 +32,6 @@ from alphavault.worker.redis_queue import (
     REDIS_PUSH_STATUS_DUPLICATE,
     REDIS_PUSH_STATUS_ERROR,
     REDIS_PUSH_STATUS_PUSHED,
-    redis_author_recent_push,
     resolve_redis_dedup_ttl_seconds,
     redis_try_push_ai_dedup_status,
 )
@@ -473,13 +472,7 @@ def ingest_rss_many_once(
                         REDIS_PUSH_STATUS_PUSHED,
                         REDIS_PUSH_STATUS_DUPLICATE,
                     }
-                    if pushed_or_duplicate:
-                        if redis_status == REDIS_PUSH_STATUS_PUSHED:
-                            redis_author_recent_push(
-                                redis_client,
-                                redis_queue_key,
-                                payload=payload,
-                            )
+                    if redis_status == REDIS_PUSH_STATUS_PUSHED:
                         enqueued = True
                         _mark_item_accepted(
                             post_uid=post_uid,
@@ -510,11 +503,6 @@ def ingest_rss_many_once(
                     verbose=bool(verbose),
                 )
                 if redis_status == REDIS_PUSH_STATUS_PUSHED:
-                    redis_author_recent_push(
-                        redis_client,
-                        redis_queue_key,
-                        payload=payload,
-                    )
                     seen_post_uids.add(post_uid)
                     seen_urls.add(link)
                     continue
@@ -548,12 +536,6 @@ def ingest_rss_many_once(
                         REDIS_PUSH_STATUS_PUSHED,
                         REDIS_PUSH_STATUS_DUPLICATE,
                     }
-                    if redis_status == REDIS_PUSH_STATUS_PUSHED:
-                        redis_author_recent_push(
-                            redis_client,
-                            redis_queue_key,
-                            payload=payload,
-                        )
                     if redis_status == REDIS_PUSH_STATUS_DUPLICATE:
                         try:
                             spool_delete(spool_dir, post_uid)
@@ -608,12 +590,6 @@ def ingest_rss_many_once(
                         REDIS_PUSH_STATUS_PUSHED,
                         REDIS_PUSH_STATUS_DUPLICATE,
                     }
-                    if redis_status == REDIS_PUSH_STATUS_PUSHED:
-                        redis_author_recent_push(
-                            redis_client,
-                            redis_queue_key,
-                            payload=payload,
-                        )
                     if redis_status == REDIS_PUSH_STATUS_DUPLICATE:
                         try:
                             spool_delete(spool_dir, post_uid)

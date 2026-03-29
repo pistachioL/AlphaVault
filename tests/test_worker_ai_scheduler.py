@@ -14,6 +14,7 @@ from alphavault.worker.worker import (
     _LowPriorityAISlotGate,
     _build_topic_prompt_v3_llm_log_line,
     _build_low_priority_should_continue,
+    _memoize_bool_with_ttl,
     _mark_spool_flush_retry,
     _mark_spool_flush_started,
     _mark_spool_item_ingested,
@@ -91,6 +92,33 @@ def test_should_continue_turns_false_when_rss_due_and_no_available_slots() -> No
     )
 
     assert should_continue() is False
+
+
+def test_memoize_bool_with_ttl_reuses_recent_result(monkeypatch) -> None:
+    calls: list[str] = []
+    now_state = {"now": 100.0}
+
+    monkeypatch.setattr(
+        worker_module.time,
+        "time",
+        lambda: float(now_state["now"]),
+    )
+
+    def _resolve() -> bool:
+        calls.append("call")
+        return True
+
+    cached = _memoize_bool_with_ttl(
+        resolver=_resolve,
+        ttl_seconds=1.0,
+    )
+    assert cached() is True
+    assert cached() is True
+    assert calls == ["call"]
+
+    now_state["now"] = 101.2
+    assert cached() is True
+    assert calls == ["call", "call"]
 
 
 def test_low_priority_slot_gate_respects_dynamic_cap() -> None:
@@ -497,3 +525,333 @@ def test_spool_flush_retry_retriggers_without_new_items() -> None:
 
     _mark_spool_flush_retry(source=source, has_more=False, has_error=True)
     assert _should_start_spool_flush(source=source) is True
+
+
+def test_process_one_redis_payload_skips_turso_recent_load_on_cache_hit(
+    monkeypatch, tmp_path
+) -> None:
+    load_calls: list[str] = []
+    ack_calls: list[str] = []
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_push",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_load_state",
+        lambda *_args, **_kwargs: ([{"post_uid": "weibo:hist"}], False),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "load_recent_posts_by_author",
+        lambda *_args, **_kwargs: load_calls.append("called"),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_process_one_post_uid",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def _fake_ack_and_cleanup(*_args, **_kwargs) -> bool:  # type: ignore[no-untyped-def]
+        ack_calls.append("acked")
+        return True
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_ack_and_cleanup",
+        _fake_ack_and_cleanup,
+    )
+
+    payload: dict[str, object] = {
+        "post_uid": "weibo:1",
+        "platform": "weibo",
+        "platform_post_id": "1",
+        "author": "作者A",
+        "created_at": "2026-03-28 10:00:00",
+        "url": "https://example.com/post/1",
+        "raw_text": "正文",
+        "display_md": "正文",
+        "ingested_at": 100,
+    }
+    config = LLMConfig(
+        api_key="k",
+        model="m",
+        prompt_version="p",
+        relevant_threshold=0.3,
+        base_url="",
+        api_mode="responses",
+        ai_stream=True,
+        ai_retries=0,
+        ai_temperature=0.1,
+        ai_reasoning_effort="low",
+        ai_rpm=12.0,
+        ai_timeout_seconds=30.0,
+        trace_out=None,
+        verbose=False,
+    )
+    worker_module._process_one_redis_payload(
+        engine=object(),  # type: ignore[arg-type]
+        payload=payload,
+        processing_msg="msg-1",
+        redis_client=object(),
+        redis_queue_key="queue",
+        spool_dir=tmp_path,
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+    )
+
+    assert load_calls == []
+    assert ack_calls == ["acked"]
+
+
+def test_process_one_redis_payload_marks_empty_author_cache_on_first_miss(
+    monkeypatch, tmp_path
+) -> None:
+    empty_mark_calls: list[str] = []
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_push",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_load_state",
+        lambda *_args, **_kwargs: ([], False),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "load_recent_posts_by_author",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def _fake_mark_empty(*_args, **kwargs) -> bool:  # type: ignore[no-untyped-def]
+        empty_mark_calls.append(str(kwargs.get("author") or ""))
+        return True
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_mark_empty",
+        _fake_mark_empty,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_process_one_post_uid",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_ack_and_cleanup",
+        lambda *_args, **_kwargs: True,
+    )
+
+    payload: dict[str, object] = {
+        "post_uid": "weibo:2",
+        "platform": "weibo",
+        "platform_post_id": "2",
+        "author": "作者B",
+        "created_at": "2026-03-28 10:00:00",
+        "url": "https://example.com/post/2",
+        "raw_text": "正文",
+        "display_md": "正文",
+        "ingested_at": 100,
+    }
+    config = LLMConfig(
+        api_key="k",
+        model="m",
+        prompt_version="p",
+        relevant_threshold=0.3,
+        base_url="",
+        api_mode="responses",
+        ai_stream=True,
+        ai_retries=0,
+        ai_temperature=0.1,
+        ai_reasoning_effort="low",
+        ai_rpm=12.0,
+        ai_timeout_seconds=30.0,
+        trace_out=None,
+        verbose=False,
+    )
+    worker_module._process_one_redis_payload(
+        engine=object(),  # type: ignore[arg-type]
+        payload=payload,
+        processing_msg="msg-2",
+        redis_client=object(),
+        redis_queue_key="queue",
+        spool_dir=tmp_path,
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+    )
+
+    assert empty_mark_calls == ["作者B"]
+
+
+def test_process_one_redis_payload_only_writes_final_author_cache_status(
+    monkeypatch, tmp_path
+) -> None:
+    pushed_statuses: list[str] = []
+
+    def _fake_author_push(*_args, **kwargs) -> bool:  # type: ignore[no-untyped-def]
+        payload = kwargs.get("payload")
+        if isinstance(payload, dict):
+            pushed_statuses.append(str(payload.get("ai_status") or ""))
+        return True
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_push",
+        _fake_author_push,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_load_state",
+        lambda *_args, **_kwargs: ([{"post_uid": "weibo:hist"}], False),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_process_one_post_uid",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_ack_and_cleanup",
+        lambda *_args, **_kwargs: True,
+    )
+
+    payload: dict[str, object] = {
+        "post_uid": "weibo:3",
+        "platform": "weibo",
+        "platform_post_id": "3",
+        "author": "作者C",
+        "created_at": "2026-03-28 10:00:00",
+        "url": "https://example.com/post/3",
+        "raw_text": "正文",
+        "display_md": "正文",
+        "ingested_at": 100,
+    }
+    config = LLMConfig(
+        api_key="k",
+        model="m",
+        prompt_version="p",
+        relevant_threshold=0.3,
+        base_url="",
+        api_mode="responses",
+        ai_stream=True,
+        ai_retries=0,
+        ai_temperature=0.1,
+        ai_reasoning_effort="low",
+        ai_rpm=12.0,
+        ai_timeout_seconds=30.0,
+        trace_out=None,
+        verbose=False,
+    )
+    worker_module._process_one_redis_payload(
+        engine=object(),  # type: ignore[arg-type]
+        payload=payload,
+        processing_msg="msg-3",
+        redis_client=object(),
+        redis_queue_key="queue",
+        spool_dir=tmp_path,
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+    )
+
+    assert pushed_statuses == ["done"]
+
+
+def test_process_one_redis_payload_reuses_local_author_cache_to_skip_redis_load(
+    monkeypatch, tmp_path
+) -> None:
+    load_state_calls: list[str] = []
+    ack_calls: list[str] = []
+
+    with worker_module._author_recent_local_cache_lock:
+        worker_module._author_recent_local_cache.clear()
+
+    def _fake_load_state(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        load_state_calls.append("load")
+        return ([{"post_uid": "weibo:hist"}], False)
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_load_state",
+        _fake_load_state,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_author_recent_push",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_process_one_post_uid",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def _fake_ack_and_cleanup(*_args, **_kwargs) -> bool:  # type: ignore[no-untyped-def]
+        ack_calls.append("acked")
+        return True
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_ack_and_cleanup",
+        _fake_ack_and_cleanup,
+    )
+
+    payload: dict[str, object] = {
+        "post_uid": "weibo:4",
+        "platform": "weibo",
+        "platform_post_id": "4",
+        "author": "作者D",
+        "created_at": "2026-03-28 10:00:00",
+        "url": "https://example.com/post/4",
+        "raw_text": "正文",
+        "display_md": "正文",
+        "ingested_at": 100,
+    }
+    config = LLMConfig(
+        api_key="k",
+        model="m",
+        prompt_version="p",
+        relevant_threshold=0.3,
+        base_url="",
+        api_mode="responses",
+        ai_stream=True,
+        ai_retries=0,
+        ai_temperature=0.1,
+        ai_reasoning_effort="low",
+        ai_rpm=12.0,
+        ai_timeout_seconds=30.0,
+        trace_out=None,
+        verbose=False,
+    )
+    worker_module._process_one_redis_payload(
+        engine=object(),  # type: ignore[arg-type]
+        payload=payload,
+        processing_msg="msg-4a",
+        redis_client=object(),
+        redis_queue_key="queue",
+        spool_dir=tmp_path,
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+    )
+    worker_module._process_one_redis_payload(
+        engine=object(),  # type: ignore[arg-type]
+        payload=payload,
+        processing_msg="msg-4b",
+        redis_client=object(),
+        redis_queue_key="queue",
+        spool_dir=tmp_path,
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+    )
+
+    assert load_state_calls == ["load"]
+    assert ack_calls == ["acked", "acked"]
