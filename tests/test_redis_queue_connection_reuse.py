@@ -198,3 +198,116 @@ def test_redis_author_recent_push_and_load_roundtrip() -> None:
     )
     assert len(rows) == 1
     assert rows[0]["post_uid"] == "weibo:1"
+
+
+def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
+    class _FakePipeline:
+        def __init__(self, parent) -> None:  # type: ignore[no-untyped-def]
+            self.parent = parent
+            self.ops: list[tuple[str, object]] = []
+
+        def lpush(self, key: str, msg: str) -> "_FakePipeline":
+            self.ops.append(("lpush", (key, msg)))
+            return self
+
+        def ltrim(self, key: str, start: int, end: int) -> "_FakePipeline":
+            self.ops.append(("ltrim", (key, start, end)))
+            return self
+
+        def execute(self) -> list[int]:
+            for op, payload in self.ops:
+                if op == "lpush":
+                    key, msg = cast(tuple[str, str], payload)
+                    self.parent.lpush(key, msg)
+                elif op == "ltrim":
+                    key, start, end = cast(tuple[str, int, int], payload)
+                    self.parent.ltrim(key, start, end)
+            return [1] * len(self.ops)
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.kv: dict[str, str] = {}
+            self.lists: dict[str, list[str]] = {}
+
+        def pipeline(self) -> _FakePipeline:
+            return _FakePipeline(self)
+
+        def set(self, key: str, value: str, ex: int | None = None) -> bool:
+            del ex
+            self.kv[key] = value
+            return True
+
+        def exists(self, key: str) -> int:
+            return 1 if (key in self.kv or key in self.lists) else 0
+
+        def delete(self, key: str) -> int:
+            removed = 0
+            if key in self.kv:
+                del self.kv[key]
+                removed += 1
+            if key in self.lists:
+                del self.lists[key]
+                removed += 1
+            return removed
+
+        def lrange(self, key: str, start: int, end: int) -> list[str]:
+            rows = self.lists.get(key, [])
+            if end < 0:
+                end = len(rows) - 1
+            return list(rows[start : end + 1])
+
+        def lpush(self, key: str, msg: str) -> int:
+            self.lists.setdefault(key, [])
+            self.lists[key].insert(0, msg)
+            return len(self.lists[key])
+
+        def ltrim(self, key: str, start: int, end: int) -> None:
+            rows = self.lists.get(key, [])
+            self.lists[key] = rows[start : end + 1]
+
+        def expire(self, key: str, ttl: int) -> bool:
+            del key, ttl
+            return True
+
+    client = _FakeClient()
+    marked = redis_queue.redis_author_recent_mark_empty(
+        client,
+        "test:q",
+        author="作者A",
+        ttl_seconds=600,
+    )
+    assert marked is True
+    assert (
+        redis_queue.redis_author_recent_is_marked_empty(
+            client,
+            "test:q",
+            author="作者A",
+        )
+        is True
+    )
+    assert (
+        redis_queue.redis_author_recent_load(
+            client,
+            "test:q",
+            author="作者A",
+            limit=50,
+        )
+        == []
+    )
+
+    push_ok = redis_queue.redis_author_recent_push(
+        client,
+        "test:q",
+        payload={"author": "作者A", "post_uid": "weibo:1"},
+        ttl_seconds=600,
+        max_items=5,
+    )
+    assert push_ok is True
+    rows = redis_queue.redis_author_recent_load(
+        client,
+        "test:q",
+        author="作者A",
+        limit=5,
+    )
+    assert len(rows) == 1
+    assert rows[0]["post_uid"] == "weibo:1"

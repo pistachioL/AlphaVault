@@ -79,6 +79,10 @@ def redis_author_recent_key(queue_key: str, author: str) -> str:
     return f"{queue_key}:author:recent:{_author_hash(author)}"
 
 
+def _redis_author_recent_empty_key(queue_key: str, author: str) -> str:
+    return f"{redis_author_recent_key(queue_key, author)}:empty"
+
+
 def _env_int_or_default(name: str, default: int, *, minimum: int = 1) -> int:
     raw = os.getenv(name, "").strip()
     if not raw:
@@ -271,9 +275,16 @@ def redis_author_recent_push(
         else int(resolve_redis_author_cache_max_posts())
     )
     key = redis_author_recent_key(queue_key, author)
+    empty_key = _redis_author_recent_empty_key(queue_key, author)
     try:
         _redis_push(client, key, payload, maxlen=maxlen)
         client.expire(key, max(60, int(ttl)))
+        delete_fn = getattr(client, "delete", None)
+        if callable(delete_fn):
+            try:
+                delete_fn(empty_key)
+            except Exception:
+                pass
         return True
     except Exception:
         return False
@@ -304,6 +315,7 @@ def redis_author_recent_push_many(
         else int(resolve_redis_author_cache_max_posts())
     )
     key = redis_author_recent_key(queue_key, resolved_author)
+    empty_key = _redis_author_recent_empty_key(queue_key, resolved_author)
     normalized = []
     for row in rows:
         if not isinstance(row, dict):
@@ -318,9 +330,61 @@ def redis_author_recent_push_many(
         pipe.ltrim(key, 0, max(1, int(maxlen)) - 1)
         pipe.expire(key, max(60, int(ttl)))
         pipe.execute()
+        delete_fn = getattr(client, "delete", None)
+        if callable(delete_fn):
+            try:
+                delete_fn(empty_key)
+            except Exception:
+                pass
         return int(len(normalized))
     except Exception:
         return 0
+
+
+def redis_author_recent_mark_empty(
+    client,
+    queue_key: str,
+    *,
+    author: str,
+    ttl_seconds: int | None = None,
+) -> bool:
+    resolved_author = str(author or "").strip()
+    if not client or not queue_key or not resolved_author:
+        return False
+    ttl = (
+        int(ttl_seconds)
+        if ttl_seconds is not None
+        else int(resolve_redis_author_cache_ttl_seconds())
+    )
+    key = redis_author_recent_key(queue_key, resolved_author)
+    empty_key = _redis_author_recent_empty_key(queue_key, resolved_author)
+    try:
+        delete_fn = getattr(client, "delete", None)
+        if callable(delete_fn):
+            try:
+                delete_fn(key)
+            except Exception:
+                pass
+        client.set(empty_key, "1", ex=max(60, int(ttl)))
+        return True
+    except Exception:
+        return False
+
+
+def redis_author_recent_is_marked_empty(
+    client,
+    queue_key: str,
+    *,
+    author: str,
+) -> bool:
+    resolved_author = str(author or "").strip()
+    if not client or not queue_key or not resolved_author:
+        return False
+    empty_key = _redis_author_recent_empty_key(queue_key, resolved_author)
+    try:
+        return bool(client.exists(empty_key))
+    except Exception:
+        return False
 
 
 def redis_author_recent_load(

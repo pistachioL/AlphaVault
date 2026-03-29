@@ -90,7 +90,9 @@ from alphavault.worker.redis_queue import (
     redis_ai_pop_to_processing,
     redis_ai_push_delayed,
     redis_ai_requeue_processing,
+    redis_author_recent_is_marked_empty,
     redis_author_recent_load,
+    redis_author_recent_mark_empty,
     redis_author_recent_push,
     redis_author_recent_push_many,
     try_get_redis,
@@ -1810,25 +1812,39 @@ def _process_one_redis_payload(
             ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
         ),
     )
+    resolved_author = str(cloud_post.author or "").strip()
     prefetched_recent = redis_author_recent_load(
         redis_client,
         redis_queue_key,
-        author=str(cloud_post.author or "").strip(),
+        author=resolved_author,
         limit=200,
     )
-    if not prefetched_recent:
+    has_recent_cache = bool(prefetched_recent)
+    if not has_recent_cache:
+        has_recent_cache = redis_author_recent_is_marked_empty(
+            redis_client,
+            redis_queue_key,
+            author=resolved_author,
+        )
+    if not has_recent_cache:
         try:
             prefetched_recent = load_recent_posts_by_author(
                 engine,
-                author=str(cloud_post.author or "").strip(),
+                author=resolved_author,
                 limit=200,
             )
             if prefetched_recent:
                 redis_author_recent_push_many(
                     redis_client,
                     redis_queue_key,
-                    author=str(cloud_post.author or "").strip(),
+                    author=resolved_author,
                     rows=list(prefetched_recent),
+                )
+            else:
+                redis_author_recent_mark_empty(
+                    redis_client,
+                    redis_queue_key,
+                    author=resolved_author,
                 )
         except BaseException as err:
             if isinstance(err, _FATAL_BASE_EXCEPTIONS):
