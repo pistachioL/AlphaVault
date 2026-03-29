@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import cast
 
@@ -190,14 +191,15 @@ def test_redis_author_recent_push_and_load_roundtrip() -> None:
         max_items=5,
     )
     assert ok is True
-    rows = redis_queue.redis_author_recent_load(
+    rows_with_state, marked_empty = redis_queue.redis_author_recent_load_state(
         client,
         "test:q",
         author="作者A",
         limit=5,
     )
-    assert len(rows) == 1
-    assert rows[0]["post_uid"] == "weibo:1"
+    assert len(rows_with_state) == 1
+    assert rows_with_state[0]["post_uid"] == "weibo:1"
+    assert marked_empty is False
 
 
 def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
@@ -214,6 +216,10 @@ def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
             self.ops.append(("ltrim", (key, start, end)))
             return self
 
+        def expire(self, key: str, ttl: int) -> "_FakePipeline":
+            self.ops.append(("expire", (key, ttl)))
+            return self
+
         def execute(self) -> list[int]:
             for op, payload in self.ops:
                 if op == "lpush":
@@ -222,29 +228,24 @@ def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
                 elif op == "ltrim":
                     key, start, end = cast(tuple[str, int, int], payload)
                     self.parent.ltrim(key, start, end)
+                elif op == "expire":
+                    key, ttl = cast(tuple[str, int], payload)
+                    self.parent.expire(key, ttl)
             return [1] * len(self.ops)
 
     class _FakeClient:
         def __init__(self) -> None:
-            self.kv: dict[str, str] = {}
             self.lists: dict[str, list[str]] = {}
+            self.ttls: dict[str, int] = {}
 
         def pipeline(self) -> _FakePipeline:
             return _FakePipeline(self)
 
-        def set(self, key: str, value: str, ex: int | None = None) -> bool:
-            del ex
-            self.kv[key] = value
-            return True
-
         def exists(self, key: str) -> int:
-            return 1 if (key in self.kv or key in self.lists) else 0
+            return 1 if key in self.lists else 0
 
         def delete(self, key: str) -> int:
             removed = 0
-            if key in self.kv:
-                del self.kv[key]
-                removed += 1
             if key in self.lists:
                 del self.lists[key]
                 removed += 1
@@ -266,7 +267,7 @@ def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
             self.lists[key] = rows[start : end + 1]
 
         def expire(self, key: str, ttl: int) -> bool:
-            del key, ttl
+            self.ttls[key] = int(ttl)
             return True
 
     client = _FakeClient()
@@ -277,23 +278,14 @@ def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
         ttl_seconds=600,
     )
     assert marked is True
-    assert (
-        redis_queue.redis_author_recent_is_marked_empty(
-            client,
-            "test:q",
-            author="作者A",
-        )
-        is True
+    rows, is_empty_marker = redis_queue.redis_author_recent_load_state(
+        client,
+        "test:q",
+        author="作者A",
+        limit=50,
     )
-    assert (
-        redis_queue.redis_author_recent_load(
-            client,
-            "test:q",
-            author="作者A",
-            limit=50,
-        )
-        == []
-    )
+    assert rows == []
+    assert is_empty_marker is True
 
     push_ok = redis_queue.redis_author_recent_push(
         client,
@@ -303,7 +295,7 @@ def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
         max_items=5,
     )
     assert push_ok is True
-    rows = redis_queue.redis_author_recent_load(
+    rows, marked_empty = redis_queue.redis_author_recent_load_state(
         client,
         "test:q",
         author="作者A",
@@ -311,3 +303,32 @@ def test_redis_author_recent_empty_marker_avoids_false_miss() -> None:
     )
     assert len(rows) == 1
     assert rows[0]["post_uid"] == "weibo:1"
+    assert marked_empty is False
+
+
+def test_redis_author_recent_load_state_does_not_need_exists_call() -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.rows: list[str] = []
+
+        def lrange(self, key: str, start: int, end: int) -> list[str]:
+            del key, start, end
+            return list(self.rows)
+
+        def exists(self, key: str) -> int:
+            raise AssertionError(f"unexpected exists call for key={key}")
+
+    marker = {
+        "post_uid": redis_queue.REDIS_AUTHOR_RECENT_EMPTY_MARKER_POST_UID,
+        "_cache_state": "empty",
+    }
+    client = _FakeClient()
+    client.rows = [json.dumps(marker, ensure_ascii=False)]
+    rows, marked_empty = redis_queue.redis_author_recent_load_state(
+        client,
+        "test:q",
+        author="作者Z",
+        limit=5,
+    )
+    assert rows == []
+    assert marked_empty is True

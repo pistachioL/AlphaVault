@@ -132,6 +132,8 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
             return ingest.REDIS_PUSH_STATUS_PUSHED
         return ingest.REDIS_PUSH_STATUS_ERROR
 
+    author_recent_push_calls: list[str] = []
+
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(
         ingest,
@@ -156,6 +158,17 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
     )
     monkeypatch.setattr(ingest, "_try_push_to_redis_status", _fake_push_to_redis_status)
 
+    def _fake_author_recent_push(*_args, **_kwargs) -> bool:  # type: ignore[no-untyped-def]
+        author_recent_push_calls.append("called")
+        return True
+
+    monkeypatch.setattr(
+        ingest,
+        "redis_author_recent_push",
+        _fake_author_recent_push,
+        raising=False,
+    )
+
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
         engine=object(),  # type: ignore[arg-type]
@@ -174,6 +187,7 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
     assert accepted == 1
     assert enqueue_error is False
     assert upsert_calls == []
+    assert author_recent_push_calls == []
     assert len(list(tmp_path.glob("*.json"))) == 1
 
 

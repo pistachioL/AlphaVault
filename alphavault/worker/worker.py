@@ -90,8 +90,7 @@ from alphavault.worker.redis_queue import (
     redis_ai_pop_to_processing,
     redis_ai_push_delayed,
     redis_ai_requeue_processing,
-    redis_author_recent_is_marked_empty,
-    redis_author_recent_load,
+    redis_author_recent_load_state,
     redis_author_recent_mark_empty,
     redis_author_recent_push,
     redis_author_recent_push_many,
@@ -137,6 +136,14 @@ BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
 SPOOL_FLUSH_MAX_ITEMS_PER_RUN = 200
 SPOOL_FLUSH_RETRY_INTERVAL_SECONDS = 1.0
 ASSERTION_OUTBOX_PUMP_BATCH_SIZE = 200
+AUTHOR_RECENT_CONTEXT_LIMIT = 200
+DUE_AI_CHECK_CACHE_TTL_SECONDS = 5.0
+AUTHOR_RECENT_LOCAL_CACHE_TTL_SECONDS = 30.0
+AUTHOR_RECENT_LOCAL_CACHE_MAX_AUTHORS = 32
+AUTHOR_RECENT_LOCAL_CACHE_MAX_ROWS = 80
+
+_author_recent_local_cache_lock = threading.Lock()
+_author_recent_local_cache: dict[str, tuple[float, list[dict[str, object]], bool]] = {}
 
 
 @dataclass(frozen=True)
@@ -1715,6 +1722,106 @@ def _build_low_priority_should_continue(
     return _should_continue
 
 
+def _memoize_bool_with_ttl(
+    *,
+    resolver: Callable[[], bool],
+    ttl_seconds: float,
+) -> Callable[[], bool]:
+    ttl = max(0.0, float(ttl_seconds))
+    cache_value = False
+    cache_expires_at = 0.0
+    has_cache = False
+
+    def _cached() -> bool:
+        nonlocal cache_value, cache_expires_at, has_cache
+        now = time.time()
+        if has_cache and now < cache_expires_at:
+            return bool(cache_value)
+        value = bool(resolver())
+        cache_value = bool(value)
+        has_cache = True
+        cache_expires_at = now + ttl
+        return bool(cache_value)
+
+    return _cached
+
+
+def _author_recent_local_cache_key(*, queue_key: str, author: str) -> str:
+    return f"{str(queue_key or '').strip()}::{str(author or '').strip().lower()}"
+
+
+def _author_recent_local_cache_trim_rows(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append(dict(row))
+        if len(out) >= int(AUTHOR_RECENT_LOCAL_CACHE_MAX_ROWS):
+            break
+    return out
+
+
+def _author_recent_local_cache_get(
+    *,
+    queue_key: str,
+    author: str,
+) -> tuple[list[dict[str, object]], bool, bool]:
+    key = _author_recent_local_cache_key(queue_key=queue_key, author=author)
+    if not key or key == "::":
+        return [], False, False
+    now = time.time()
+    with _author_recent_local_cache_lock:
+        entry = _author_recent_local_cache.get(key)
+        if entry is None:
+            return [], False, False
+        expires_at, cached_rows, marked_empty = entry
+        if now >= float(expires_at):
+            _author_recent_local_cache.pop(key, None)
+            return [], False, False
+        _author_recent_local_cache.pop(key, None)
+        _author_recent_local_cache[key] = (
+            float(expires_at),
+            list(cached_rows),
+            bool(marked_empty),
+        )
+    return (
+        [dict(row) for row in cached_rows if isinstance(row, dict)],
+        bool(marked_empty),
+        True,
+    )
+
+
+def _author_recent_local_cache_set(
+    *,
+    queue_key: str,
+    author: str,
+    rows: list[dict[str, object]],
+    marked_empty: bool,
+) -> None:
+    key = _author_recent_local_cache_key(queue_key=queue_key, author=author)
+    if not key or key == "::":
+        return
+    trimmed_rows = _author_recent_local_cache_trim_rows(rows)
+    resolved_marked_empty = bool(marked_empty and not bool(trimmed_rows))
+    expires_at = time.time() + float(AUTHOR_RECENT_LOCAL_CACHE_TTL_SECONDS)
+    with _author_recent_local_cache_lock:
+        _author_recent_local_cache.pop(key, None)
+        _author_recent_local_cache[key] = (
+            float(expires_at),
+            list(trimmed_rows),
+            bool(resolved_marked_empty),
+        )
+        while len(_author_recent_local_cache) > int(
+            AUTHOR_RECENT_LOCAL_CACHE_MAX_AUTHORS
+        ):
+            oldest_key = next(iter(_author_recent_local_cache.keys()), "")
+            if not oldest_key:
+                break
+            _author_recent_local_cache.pop(oldest_key, None)
+
+
 class _LowPriorityAISlotGate:
     def __init__(self, *, cap_getter: Callable[[], int]) -> None:
         self._cap_getter = cap_getter
@@ -1803,35 +1910,43 @@ def _process_one_redis_payload(
             return
         return
 
-    redis_author_recent_push(
-        redis_client,
-        redis_queue_key,
-        payload=_build_author_recent_payload(
-            post=cloud_post,
-            ai_status="pending",
-            ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
-        ),
-    )
     resolved_author = str(cloud_post.author or "").strip()
-    prefetched_recent = redis_author_recent_load(
-        redis_client,
-        redis_queue_key,
+    prefetched_recent: list[dict[str, object]] = []
+    has_recent_cache = False
+    local_rows, local_marked_empty, local_hit = _author_recent_local_cache_get(
+        queue_key=str(redis_queue_key or "").strip(),
         author=resolved_author,
-        limit=200,
     )
-    has_recent_cache = bool(prefetched_recent)
-    if not has_recent_cache:
-        has_recent_cache = redis_author_recent_is_marked_empty(
-            redis_client,
-            redis_queue_key,
-            author=resolved_author,
-        )
+    if local_hit:
+        prefetched_recent = list(local_rows)
+        has_recent_cache = bool(prefetched_recent) or bool(local_marked_empty)
+    else:
+        try:
+            cached_rows, marked_empty = redis_author_recent_load_state(
+                redis_client,
+                redis_queue_key,
+                author=resolved_author,
+                limit=int(AUTHOR_RECENT_CONTEXT_LIMIT),
+            )
+            prefetched_recent = [row for row in cached_rows if isinstance(row, dict)]
+            has_recent_cache = bool(prefetched_recent) or bool(marked_empty)
+            _author_recent_local_cache_set(
+                queue_key=str(redis_queue_key or "").strip(),
+                author=resolved_author,
+                rows=list(prefetched_recent),
+                marked_empty=bool(marked_empty),
+            )
+        except BaseException as err:
+            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+                raise
+            prefetched_recent = []
+            has_recent_cache = False
     if not has_recent_cache:
         try:
             prefetched_recent = load_recent_posts_by_author(
                 engine,
                 author=resolved_author,
-                limit=200,
+                limit=int(AUTHOR_RECENT_CONTEXT_LIMIT),
             )
             if prefetched_recent:
                 redis_author_recent_push_many(
@@ -1840,11 +1955,23 @@ def _process_one_redis_payload(
                     author=resolved_author,
                     rows=list(prefetched_recent),
                 )
+                _author_recent_local_cache_set(
+                    queue_key=str(redis_queue_key or "").strip(),
+                    author=resolved_author,
+                    rows=list(prefetched_recent),
+                    marked_empty=False,
+                )
             else:
                 redis_author_recent_mark_empty(
                     redis_client,
                     redis_queue_key,
                     author=resolved_author,
+                )
+                _author_recent_local_cache_set(
+                    queue_key=str(redis_queue_key or "").strip(),
+                    author=resolved_author,
+                    rows=[],
+                    marked_empty=True,
                 )
         except BaseException as err:
             if isinstance(err, _FATAL_BASE_EXCEPTIONS):
@@ -1861,14 +1988,21 @@ def _process_one_redis_payload(
         outbox_source=str(redis_queue_key or "").strip(),
     )
     if success:
+        done_payload = _build_author_recent_payload(
+            post=cloud_post,
+            ai_status="done",
+            ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
+        )
         redis_author_recent_push(
             redis_client,
             redis_queue_key,
-            payload=_build_author_recent_payload(
-                post=cloud_post,
-                ai_status="done",
-                ai_retry_count=int(max(1, cloud_post.ai_retry_count)),
-            ),
+            payload=done_payload,
+        )
+        _author_recent_local_cache_set(
+            queue_key=str(redis_queue_key or "").strip(),
+            author=resolved_author,
+            rows=[done_payload],
+            marked_empty=False,
         )
         redis_ai_ack_and_cleanup(
             redis_client,
@@ -1885,14 +2019,21 @@ def _process_one_redis_payload(
     retry_payload = dict(payload)
     retry_payload["retry_count"] = int(retry_count)
     retry_payload["next_retry_at"] = int(next_retry_at)
+    error_payload = _build_author_recent_payload(
+        post=cloud_post,
+        ai_status="error",
+        ai_retry_count=int(retry_count),
+    )
     redis_author_recent_push(
         redis_client,
         redis_queue_key,
-        payload=_build_author_recent_payload(
-            post=cloud_post,
-            ai_status="error",
-            ai_retry_count=int(retry_count),
-        ),
+        payload=error_payload,
+    )
+    _author_recent_local_cache_set(
+        queue_key=str(redis_queue_key or "").strip(),
+        author=resolved_author,
+        rows=[error_payload],
+        marked_empty=False,
     )
     try:
         redis_ai_push_delayed(
@@ -2940,7 +3081,7 @@ def main() -> None:
                     engine_for_due = active_engine
                     platform_for_due = source.config.platform
 
-                    def _has_due_ai_pending() -> bool:
+                    def _has_due_ai_pending_uncached() -> bool:
                         return _has_due_ai_posts(
                             engine=engine_for_due,
                             platform=platform_for_due,
@@ -2949,7 +3090,10 @@ def main() -> None:
                             redis_queue_key=source.redis_queue_key,
                         )
 
-                    has_due_ai_pending_getter = _has_due_ai_pending
+                    has_due_ai_pending_getter = _memoize_bool_with_ttl(
+                        resolver=_has_due_ai_pending_uncached,
+                        ttl_seconds=float(DUE_AI_CHECK_CACHE_TTL_SECONDS),
+                    )
 
                 should_continue_low_priority = _build_low_priority_should_continue(
                     ai_cap=int(ai_cap),
@@ -3184,13 +3328,7 @@ def main() -> None:
                         and (not stock_hot_has_more)
                     )
                     if can_try_finish_cycle:
-                        due_ai_pending = _has_due_ai_posts(
-                            engine=active_engine,
-                            platform=source.config.platform,
-                            verbose=verbose,
-                            redis_client=redis_client,
-                            redis_queue_key=source.redis_queue_key,
-                        )
+                        due_ai_pending = bool(has_due_ai_pending_getter())
                         if not due_ai_pending:
                             if (
                                 redis_client

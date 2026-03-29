@@ -26,6 +26,10 @@ DEFAULT_REDIS_QUEUE_KEY = "alphavault:rss_spool"
 REDIS_PUSH_STATUS_PUSHED = "pushed"
 REDIS_PUSH_STATUS_DUPLICATE = "duplicate"
 REDIS_PUSH_STATUS_ERROR = "error"
+REDIS_AUTHOR_RECENT_EMPTY_MARKER_POST_UID = "__alphavault_author_recent_empty__"
+
+_REDIS_AUTHOR_RECENT_CACHE_STATE_KEY = "_cache_state"
+_REDIS_AUTHOR_RECENT_CACHE_STATE_EMPTY = "empty"
 
 
 def try_get_redis():
@@ -79,8 +83,22 @@ def redis_author_recent_key(queue_key: str, author: str) -> str:
     return f"{queue_key}:author:recent:{_author_hash(author)}"
 
 
-def _redis_author_recent_empty_key(queue_key: str, author: str) -> str:
-    return f"{redis_author_recent_key(queue_key, author)}:empty"
+def _redis_author_recent_empty_marker(author: str) -> dict[str, str]:
+    return {
+        "post_uid": REDIS_AUTHOR_RECENT_EMPTY_MARKER_POST_UID,
+        "author": str(author or "").strip(),
+        _REDIS_AUTHOR_RECENT_CACHE_STATE_KEY: _REDIS_AUTHOR_RECENT_CACHE_STATE_EMPTY,
+    }
+
+
+def _is_redis_author_recent_empty_marker(item: dict[str, Any]) -> bool:
+    post_uid = str(item.get("post_uid") or "").strip()
+    if post_uid != REDIS_AUTHOR_RECENT_EMPTY_MARKER_POST_UID:
+        return False
+    return (
+        str(item.get(_REDIS_AUTHOR_RECENT_CACHE_STATE_KEY) or "").strip().lower()
+        == _REDIS_AUTHOR_RECENT_CACHE_STATE_EMPTY
+    )
 
 
 def _env_int_or_default(name: str, default: int, *, minimum: int = 1) -> int:
@@ -275,16 +293,9 @@ def redis_author_recent_push(
         else int(resolve_redis_author_cache_max_posts())
     )
     key = redis_author_recent_key(queue_key, author)
-    empty_key = _redis_author_recent_empty_key(queue_key, author)
     try:
         _redis_push(client, key, payload, maxlen=maxlen)
         client.expire(key, max(60, int(ttl)))
-        delete_fn = getattr(client, "delete", None)
-        if callable(delete_fn):
-            try:
-                delete_fn(empty_key)
-            except Exception:
-                pass
         return True
     except Exception:
         return False
@@ -315,7 +326,6 @@ def redis_author_recent_push_many(
         else int(resolve_redis_author_cache_max_posts())
     )
     key = redis_author_recent_key(queue_key, resolved_author)
-    empty_key = _redis_author_recent_empty_key(queue_key, resolved_author)
     normalized = []
     for row in rows:
         if not isinstance(row, dict):
@@ -330,12 +340,6 @@ def redis_author_recent_push_many(
         pipe.ltrim(key, 0, max(1, int(maxlen)) - 1)
         pipe.expire(key, max(60, int(ttl)))
         pipe.execute()
-        delete_fn = getattr(client, "delete", None)
-        if callable(delete_fn):
-            try:
-                delete_fn(empty_key)
-            except Exception:
-                pass
         return int(len(normalized))
     except Exception:
         return 0
@@ -357,63 +361,55 @@ def redis_author_recent_mark_empty(
         else int(resolve_redis_author_cache_ttl_seconds())
     )
     key = redis_author_recent_key(queue_key, resolved_author)
-    empty_key = _redis_author_recent_empty_key(queue_key, resolved_author)
     try:
-        delete_fn = getattr(client, "delete", None)
-        if callable(delete_fn):
-            try:
-                delete_fn(key)
-            except Exception:
-                pass
-        client.set(empty_key, "1", ex=max(60, int(ttl)))
+        pipe = client.pipeline()
+        pipe.lpush(
+            key,
+            json.dumps(
+                _redis_author_recent_empty_marker(resolved_author),
+                ensure_ascii=False,
+            ),
+        )
+        pipe.ltrim(key, 0, 0)
+        pipe.expire(key, max(60, int(ttl)))
+        pipe.execute()
         return True
     except Exception:
         return False
 
 
-def redis_author_recent_is_marked_empty(
-    client,
-    queue_key: str,
-    *,
-    author: str,
-) -> bool:
-    resolved_author = str(author or "").strip()
-    if not client or not queue_key or not resolved_author:
-        return False
-    empty_key = _redis_author_recent_empty_key(queue_key, resolved_author)
-    try:
-        return bool(client.exists(empty_key))
-    except Exception:
-        return False
-
-
-def redis_author_recent_load(
+def redis_author_recent_load_state(
     client,
     queue_key: str,
     *,
     author: str,
     limit: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     resolved_author = str(author or "").strip()
     if not client or not queue_key or not resolved_author:
-        return []
+        return [], False
     n = max(0, int(limit))
     if n <= 0:
-        return []
+        return [], False
     key = redis_author_recent_key(queue_key, resolved_author)
     try:
         raw = client.lrange(key, 0, n - 1)
     except Exception:
-        return []
+        return [], False
     out: list[dict[str, Any]] = []
+    has_empty_marker = False
     for item in raw or []:
         try:
             parsed = json.loads(str(item))
         except Exception:
             continue
-        if isinstance(parsed, dict):
-            out.append(parsed)
-    return out
+        if not isinstance(parsed, dict):
+            continue
+        if _is_redis_author_recent_empty_marker(parsed):
+            has_empty_marker = True
+            continue
+        out.append(parsed)
+    return out, (bool(has_empty_marker) and not bool(out))
 
 
 def redis_assertion_push_event(
