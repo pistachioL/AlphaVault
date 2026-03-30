@@ -184,37 +184,37 @@ def sync_stock_alias_relations(
             f"ai_max_inflight={max(1, int(ai_max_inflight))}"
         ),
     )
+    if acquire_low_priority_slot is not None:
+        gate_open = False
+        try:
+            gate_open = bool(acquire_low_priority_slot())
+        except Exception:
+            gate_open = False
+        if not gate_open:
+            remaining_aliases = ALIAS_SYNC_UNKNOWN_REMAINING
+            _log_alias_sync(
+                verbose=verbose,
+                message=(f"skip gate_busy=1 remaining={int(remaining_aliases)}"),
+            )
+            return {
+                "assertions": 0,
+                "resolved": 0,
+                "candidates": 0,
+                "inserted": 0,
+                "attempted": 0,
+                "eligible": 0,
+                "queued": 0,
+                "has_more": True,
+                "remaining_aliases": int(remaining_aliases),
+                "locked": True,
+            }
+        if release_low_priority_slot is not None:
+            try:
+                release_low_priority_slot()
+            except Exception:
+                pass
     ensure_research_workbench_schema(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
-        if acquire_low_priority_slot is not None:
-            gate_open = False
-            try:
-                gate_open = bool(acquire_low_priority_slot())
-            except Exception:
-                gate_open = False
-            if not gate_open:
-                remaining_aliases = ALIAS_SYNC_UNKNOWN_REMAINING
-                _log_alias_sync(
-                    verbose=verbose,
-                    message=(f"skip gate_busy=1 remaining={int(remaining_aliases)}"),
-                )
-                return {
-                    "assertions": 0,
-                    "resolved": 0,
-                    "candidates": 0,
-                    "inserted": 0,
-                    "attempted": 0,
-                    "eligible": 0,
-                    "queued": 0,
-                    "has_more": True,
-                    "remaining_aliases": int(remaining_aliases),
-                    "locked": True,
-                }
-            if release_low_priority_slot is not None:
-                try:
-                    release_low_priority_slot()
-                except Exception:
-                    pass
         assertions = _load_alias_assertions(conn)
         stock_relations = _load_stock_alias_relations(conn)
     _log_alias_sync(
