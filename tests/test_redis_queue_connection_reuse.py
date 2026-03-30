@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from typing import cast
@@ -118,9 +119,12 @@ def test_redis_ai_ack_and_cleanup_calls_ack_and_spool_delete(
     assert deleted == ["weibo:1"]
 
 
-def test_resolve_redis_dedup_ttl_seconds_reads_env(monkeypatch) -> None:
+def test_resolve_redis_dedup_ttl_seconds_reads_env_on_module_load(monkeypatch) -> None:
     monkeypatch.setenv("REDIS_DEDUP_TTL_SECONDS", "123")
-    assert redis_queue.resolve_redis_dedup_ttl_seconds() == 123
+    reloaded = importlib.reload(redis_queue)
+    assert reloaded.resolve_redis_dedup_ttl_seconds() == 123
+    monkeypatch.delenv("REDIS_DEDUP_TTL_SECONDS", raising=False)
+    importlib.reload(redis_queue)
 
 
 def test_redis_author_recent_push_and_load_roundtrip() -> None:

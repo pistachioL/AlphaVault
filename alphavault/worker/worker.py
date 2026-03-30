@@ -146,6 +146,7 @@ DUE_AI_CHECK_CACHE_TTL_SECONDS = 30.0
 AUTHOR_RECENT_LOCAL_CACHE_TTL_SECONDS = 30.0
 AUTHOR_RECENT_LOCAL_CACHE_MAX_AUTHORS = 32
 AUTHOR_RECENT_LOCAL_CACHE_MAX_ROWS = 80
+WORKER_TICK_HEARTBEAT_INTERVAL_SECONDS = 30.0
 
 _author_recent_local_cache_lock = threading.Lock()
 _author_recent_local_cache: dict[str, tuple[float, list[dict[str, object]], bool]] = {}
@@ -193,6 +194,7 @@ class WorkerSourceRuntime:
     cycle_running: bool = False
     cycle_started_at: float = 0.0
     cycle_finished_at: float = 0.0
+    tick_last_logged_at: float = 0.0
     # Cache of last-written progress payloads per stage — skip Turso write when unchanged.
     progress_state_cache: dict[str, dict] = field(default_factory=dict)
     # Memoized assertion-event check to avoid Redis llen on every tick.
@@ -3617,7 +3619,7 @@ def main() -> None:
                         verbose=verbose,
                     )
 
-                if verbose and (
+                _tick_has_event = bool(
                     do_maintenance
                     or start_spool_flush
                     or start_alias_sync
@@ -3639,29 +3641,35 @@ def main() -> None:
                     or redis_due_moved > 0
                     or spool_flushed > 0
                     or alias_inserted > 0
-                    or source.cycle_running
-                ):
-                    next_alias_sync_in = max(
-                        0.0, source.alias_sync_next_at - time.time()
+                )
+                tick_now = time.time()
+                _tick_is_heartbeat_due = bool(
+                    source.cycle_running
+                    and (
+                        tick_now - float(source.tick_last_logged_at)
+                        >= float(WORKER_TICK_HEARTBEAT_INTERVAL_SECONDS)
                     )
+                )
+                if verbose and (_tick_has_event or _tick_is_heartbeat_due):
+                    next_alias_sync_in = max(0.0, source.alias_sync_next_at - tick_now)
                     next_backfill_in = max(
-                        0.0, source.backfill_cache_next_at - time.time()
+                        0.0, source.backfill_cache_next_at - tick_now
                     )
                     next_relation_in = max(
-                        0.0, source.relation_cache_next_at - time.time()
+                        0.0, source.relation_cache_next_at - tick_now
                     )
                     next_stock_hot_in = max(
-                        0.0, source.stock_hot_cache_next_at - time.time()
+                        0.0, source.stock_hot_cache_next_at - tick_now
                     )
                     next_rss_in = (
                         -1.0
                         if source.rss_next_ingest_at == float("inf")
-                        else max(0.0, source.rss_next_ingest_at - time.time())
+                        else max(0.0, source.rss_next_ingest_at - tick_now)
                     )
                     next_turso_in = -1.0
                     if not source.turso_ready:
                         next_turso_in = max(
-                            0.0, float(source.turso_next_ready_check_at) - time.time()
+                            0.0, float(source.turso_next_ready_check_at) - tick_now
                         )
                     print(
                         f"[tick:{source.config.name}] turso_ready={1 if active_engine is not None else 0} "
@@ -3693,6 +3701,7 @@ def main() -> None:
                         f"next_turso={int(next_turso_in) if next_turso_in >= 0 else -1}s",
                         flush=True,
                     )
+                    source.tick_last_logged_at = tick_now
 
             next_deadline = maintenance_next_at
             any_alias_inflight = False

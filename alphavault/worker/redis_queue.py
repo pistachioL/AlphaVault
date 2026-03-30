@@ -112,44 +112,51 @@ def _env_int_or_default(name: str, default: int, *, minimum: int = 1) -> int:
     return max(minimum, int(value))
 
 
+REDIS_DEDUP_TTL_SECONDS = _env_int_or_default(
+    ENV_REDIS_DEDUP_TTL_SECONDS,
+    int(DEFAULT_REDIS_DEDUP_TTL_SECONDS),
+    minimum=1,
+)
+REDIS_AI_QUEUE_MAXLEN = _env_int_or_default(
+    ENV_REDIS_AI_QUEUE_MAXLEN,
+    int(DEFAULT_REDIS_AI_QUEUE_MAXLEN),
+    minimum=100,
+)
+REDIS_ASSERTION_QUEUE_MAXLEN = _env_int_or_default(
+    ENV_REDIS_ASSERTION_QUEUE_MAXLEN,
+    int(DEFAULT_REDIS_ASSERTION_QUEUE_MAXLEN),
+    minimum=100,
+)
+REDIS_AUTHOR_CACHE_TTL_SECONDS = _env_int_or_default(
+    ENV_REDIS_AUTHOR_CACHE_TTL_SECONDS,
+    int(DEFAULT_REDIS_AUTHOR_CACHE_TTL_SECONDS),
+    minimum=60,
+)
+REDIS_AUTHOR_CACHE_MAX_POSTS = _env_int_or_default(
+    ENV_REDIS_AUTHOR_CACHE_MAX_POSTS,
+    int(DEFAULT_REDIS_AUTHOR_CACHE_MAX_POSTS),
+    minimum=20,
+)
+
+
 def resolve_redis_dedup_ttl_seconds() -> int:
-    return _env_int_or_default(
-        ENV_REDIS_DEDUP_TTL_SECONDS,
-        int(DEFAULT_REDIS_DEDUP_TTL_SECONDS),
-        minimum=1,
-    )
+    return int(REDIS_DEDUP_TTL_SECONDS)
 
 
 def resolve_redis_ai_queue_maxlen() -> int:
-    return _env_int_or_default(
-        ENV_REDIS_AI_QUEUE_MAXLEN,
-        int(DEFAULT_REDIS_AI_QUEUE_MAXLEN),
-        minimum=100,
-    )
+    return int(REDIS_AI_QUEUE_MAXLEN)
 
 
 def resolve_redis_assertion_queue_maxlen() -> int:
-    return _env_int_or_default(
-        ENV_REDIS_ASSERTION_QUEUE_MAXLEN,
-        int(DEFAULT_REDIS_ASSERTION_QUEUE_MAXLEN),
-        minimum=100,
-    )
+    return int(REDIS_ASSERTION_QUEUE_MAXLEN)
 
 
 def resolve_redis_author_cache_ttl_seconds() -> int:
-    return _env_int_or_default(
-        ENV_REDIS_AUTHOR_CACHE_TTL_SECONDS,
-        int(DEFAULT_REDIS_AUTHOR_CACHE_TTL_SECONDS),
-        minimum=60,
-    )
+    return int(REDIS_AUTHOR_CACHE_TTL_SECONDS)
 
 
 def resolve_redis_author_cache_max_posts() -> int:
-    return _env_int_or_default(
-        ENV_REDIS_AUTHOR_CACHE_MAX_POSTS,
-        int(DEFAULT_REDIS_AUTHOR_CACHE_MAX_POSTS),
-        minimum=20,
-    )
+    return int(REDIS_AUTHOR_CACHE_MAX_POSTS)
 
 
 def _redis_try_push_dedup_status(
