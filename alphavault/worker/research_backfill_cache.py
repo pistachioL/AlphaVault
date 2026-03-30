@@ -4,7 +4,6 @@ import re
 import time
 from typing import Any, Callable
 
-from alphavault.db.introspect import table_columns
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
@@ -30,6 +29,7 @@ BACKFILL_CACHE_LOCK_LEASE_SECONDS = 600
 BACKFILL_CACHE_MAX_STOCKS_PER_RUN = 2
 BACKFILL_CACHE_MAX_ROWS_PER_STOCK = 12
 BACKFILL_CACHE_POST_BATCH_SIZE = 200
+BACKFILL_CACHE_MAX_SCAN_BATCHES_PER_STOCK = 20
 
 _WS_RE = re.compile(r"\s+")
 _STOCK_KEY_PREFIX = "stock:"
@@ -111,20 +111,41 @@ def _stock_terms(stock_key: str) -> list[str]:
     return out
 
 
+def _escape_like_term(term: str) -> str:
+    return str(term or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _build_text_match_clause(terms_lower: list[str]) -> tuple[str, dict[str, str]]:
+    clauses: list[str] = []
+    params: dict[str, str] = {}
+    for idx, term in enumerate(terms_lower):
+        text = str(term or "").strip()
+        if not text:
+            continue
+        key = f"term_{idx}"
+        params[key] = f"%{_escape_like_term(text)}%"
+        clauses.append(
+            f"(LOWER(COALESCE(raw_text, '')) LIKE :{key} ESCAPE '\\' "
+            f"OR LOWER(COALESCE(display_md, '')) LIKE :{key} ESCAPE '\\')"
+        )
+    if not clauses:
+        return "", {}
+    return f"\n  AND ({' OR '.join(clauses)})", params
+
+
 def _select_post_batch(
     conn: TursoConnection,
     *,
-    stock_key: str,
     cursor_created_at: str,
     cursor_post_uid: str,
     limit: int,
+    terms_lower: list[str],
 ) -> list[dict[str, Any]]:
-    post_cols = table_columns(conn, "posts")
-    display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
     cursor_clause = ""
+    text_clause, text_params = _build_text_match_clause(terms_lower)
     params: dict[str, Any] = {
-        "stock_key": str(stock_key or "").strip(),
         "limit": max(1, int(limit)),
+        **text_params,
     }
     if str(cursor_created_at or "").strip() and str(cursor_post_uid or "").strip():
         cursor_clause = """
@@ -134,22 +155,43 @@ def _select_post_batch(
         params["cursor_post_uid"] = str(cursor_post_uid or "").strip()
 
     sql = f"""
-SELECT post_uid, author, created_at, url, raw_text, {display_expr}
+SELECT post_uid, author, created_at, url, raw_text, display_md
 FROM posts
 WHERE processed_at IS NOT NULL
-  AND NOT EXISTS (
-    SELECT 1
-    FROM assertions a
-    WHERE a.post_uid = posts.post_uid
-      AND a.topic_key = :stock_key
-      AND a.action LIKE 'trade.%'
-  )
+{text_clause}
 {cursor_clause}
 ORDER BY created_at DESC, post_uid DESC
 LIMIT :limit
 """
     rows = conn.execute(sql, params).mappings().all()
     return [dict(row) for row in rows if row]
+
+
+def _select_asserted_post_uids(
+    conn: TursoConnection,
+    *,
+    stock_key: str,
+) -> set[str]:
+    key = str(stock_key or "").strip()
+    if not key:
+        return set()
+    rows = conn.execute(
+        """
+SELECT DISTINCT post_uid
+FROM assertions
+WHERE topic_key = :stock_key
+  AND action LIKE 'trade.%'
+""",
+        {"stock_key": key},
+    ).fetchall()
+    out: set[str] = set()
+    for row in rows:
+        if not row:
+            continue
+        post_uid = str(row[0] or "").strip()
+        if post_uid:
+            out.add(post_uid)
+    return out
 
 
 def _preview_text(text: str) -> str:
@@ -165,38 +207,58 @@ def _build_backfill_candidates_for_stock(
     stock_key: str,
     max_rows: int,
     post_batch_size: int,
-) -> list[dict[str, str]]:
+    max_scan_batches: int,
+) -> tuple[list[dict[str, str]], bool]:
     terms = _stock_terms(stock_key)
     if not terms:
-        return []
+        return [], False
     terms_lower = [term.lower() for term in terms]
+    asserted_post_uids = _select_asserted_post_uids(conn, stock_key=stock_key)
 
     out: list[dict[str, str]] = []
     cursor_created_at = ""
     cursor_post_uid = ""
     max_items = max(1, int(max_rows))
     batch_size = max(1, int(post_batch_size))
-    while len(out) < max_items:
+    scan_batches = 0
+    max_batches = max(1, int(max_scan_batches))
+    scan_exhausted = False
+    while len(out) < max_items and scan_batches < max_batches:
         rows = _select_post_batch(
             conn,
-            stock_key=stock_key,
             cursor_created_at=cursor_created_at,
             cursor_post_uid=cursor_post_uid,
             limit=batch_size,
+            terms_lower=terms_lower,
         )
+        scan_batches += 1
         if not rows:
+            scan_exhausted = True
             break
         last = rows[-1]
-        cursor_created_at = (
+        next_cursor_created_at = (
             str(last.get("created_at") or "").strip() or cursor_created_at
         )
-        cursor_post_uid = str(last.get("post_uid") or "").strip() or cursor_post_uid
+        next_cursor_post_uid = (
+            str(last.get("post_uid") or "").strip() or cursor_post_uid
+        )
+        # Prevent cursor stall (same page fetched repeatedly).
+        if (
+            next_cursor_created_at == cursor_created_at
+            and next_cursor_post_uid == cursor_post_uid
+        ):
+            scan_exhausted = True
+            break
+        cursor_created_at = next_cursor_created_at
+        cursor_post_uid = next_cursor_post_uid
 
         for row in rows:
             if len(out) >= max_items:
                 break
             post_uid = str(row.get("post_uid") or "").strip()
             if not post_uid:
+                continue
+            if post_uid in asserted_post_uids:
                 continue
             raw_text = str(row.get("raw_text") or "").strip()
             display_md = str(row.get("display_md") or "").strip()
@@ -221,7 +283,10 @@ def _build_backfill_candidates_for_stock(
                     "preview": _preview_text(haystack),
                 }
             )
-    return out
+    scan_truncated = bool(
+        len(out) < max_items and not scan_exhausted and scan_batches >= max_batches
+    )
+    return out, scan_truncated
 
 
 def _backfill_rows_signature(rows: list[dict[str, Any]]) -> list[tuple[str, ...]]:
@@ -313,32 +378,42 @@ def sync_stock_backfill_cache(
                     stock_key=stock_key,
                     limit=max(1, int(max_rows_per_stock)),
                 )
-                rows = _build_backfill_candidates_for_stock(
+                rows, scan_truncated = _build_backfill_candidates_for_stock(
                     conn,
                     stock_key=stock_key,
                     max_rows=int(max_rows_per_stock),
                     post_batch_size=int(post_batch_size),
+                    max_scan_batches=int(BACKFILL_CACHE_MAX_SCAN_BATCHES_PER_STOCK),
                 )
-                replaced_rows = replace_stock_backfill_posts(
-                    conn,
-                    stock_key=stock_key,
-                    posts=rows,
-                )
-                total_written += int(replaced_rows)
-                if _backfill_rows_signature(before_rows) != _backfill_rows_signature(
-                    rows
-                ):
-                    mark_stock_dirty(
+                keep_existing = bool(scan_truncated and before_rows)
+                if keep_existing:
+                    replaced_rows = 0
+                    signature_after = _backfill_rows_signature(before_rows)
+                    _log_backfill_sync(
+                        verbose=verbose,
+                        message=(
+                            f"scan_truncated_keep_existing stock_key={stock_key} "
+                            f"before={int(len(before_rows))} "
+                            f"candidates={int(len(rows))}"
+                        ),
+                    )
+                else:
+                    replaced_rows = replace_stock_backfill_posts(
                         conn,
                         stock_key=stock_key,
-                        reason="backfill_cache",
+                        posts=rows,
                     )
+                    total_written += int(replaced_rows)
+                    signature_after = _backfill_rows_signature(rows)
+                if _backfill_rows_signature(before_rows) != signature_after:
+                    mark_stock_dirty(conn, stock_key=stock_key, reason="backfill_cache")
                 _log_backfill_sync(
                     verbose=verbose,
                     message=(
                         f"stock_done stock_key={stock_key} "
                         f"before={int(len(before_rows))} "
                         f"candidates={int(len(rows))} "
+                        f"truncated={1 if scan_truncated else 0} "
                         f"written={int(replaced_rows)}"
                     ),
                 )

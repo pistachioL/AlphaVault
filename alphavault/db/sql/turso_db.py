@@ -130,7 +130,9 @@ CREATE TABLE IF NOT EXISTS assertions (
 CLOUD_SCHEMA_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_posts_author_created_at ON posts(author, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_posts_created_at_post_uid ON posts(created_at, post_uid)",
     "CREATE INDEX IF NOT EXISTS idx_posts_platform_post_id ON posts(platform_post_id)",
     "CREATE INDEX IF NOT EXISTS idx_assertions_topic_key ON assertions(topic_key)",
     "CREATE INDEX IF NOT EXISTS idx_assertions_action ON assertions(action)",
+    "CREATE INDEX IF NOT EXISTS idx_assertions_topic_action_post_uid ON assertions(topic_key, action, post_uid)",
 ]

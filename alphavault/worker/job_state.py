@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
+from threading import Lock
 from typing import Iterator
 
 from alphavault.timeutil import now_cst_str
@@ -10,10 +12,12 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
 )
 
-# Track which engines have already had their schema ensured, to avoid re-running
-# CREATE TABLE IF NOT EXISTS on every save_worker_job_cursor call (which was
-# causing ~2 extra Turso read ops per call × 6 stages × 20 ticks/min = 240 ops/min).
-_schema_ensured_engine_ids: set[int] = set()
+# Track schema ensure status at process scope, so all worker job-state operations
+# in the same process pay the DDL cost at most once.
+_schema_ensure_lock = Lock()
+_schema_ensured_process = False
+_TRUTHY_VALUES = {"1", "true", "yes", "on"}
+ENV_WORKER_JOB_STATE_ASSUME_SCHEMA_READY = "WORKER_JOB_STATE_ASSUME_SCHEMA_READY"
 
 
 WORKER_STATE_TABLE = "research_worker_state"
@@ -116,16 +120,24 @@ def ensure_worker_job_state_schema(
 
 
 def _ensure_schema_once(engine_or_conn: TursoEngine | TursoConnection) -> None:
-    """Run schema DDL only once per engine lifetime, not on every call."""
-    if isinstance(engine_or_conn, TursoConnection):
-        # Can't track per-connection; just run it (connections are short-lived).
+    """Run schema DDL only once per process, not on every call."""
+    assume_ready = (
+        str(os.getenv(ENV_WORKER_JOB_STATE_ASSUME_SCHEMA_READY, "") or "")
+        .strip()
+        .lower()
+        in _TRUTHY_VALUES
+    )
+    if assume_ready:
+        return
+
+    global _schema_ensured_process
+    if _schema_ensured_process:
+        return
+    with _schema_ensure_lock:
+        if _schema_ensured_process:
+            return
         ensure_worker_job_state_schema(engine_or_conn)
-        return
-    eid = id(engine_or_conn)
-    if eid in _schema_ensured_engine_ids:
-        return
-    ensure_worker_job_state_schema(engine_or_conn)
-    _schema_ensured_engine_ids.add(eid)
+        _schema_ensured_process = True
 
 
 def load_worker_job_cursor(
@@ -170,7 +182,7 @@ def try_acquire_worker_job_lock(
     key = str(lock_key or "").strip()
     if not key:
         return False
-    ensure_worker_job_state_schema(engine_or_conn)
+    _ensure_schema_once(engine_or_conn)
     locked_until = int(now_epoch) + max(1, int(lease_seconds))
     with _use_conn(engine_or_conn) as conn:
         inserted = conn.execute(
@@ -199,7 +211,7 @@ def release_worker_job_lock(
     key = str(lock_key or "").strip()
     if not key:
         return
-    ensure_worker_job_state_schema(engine_or_conn)
+    _ensure_schema_once(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
         conn.execute(
             SQL_RELEASE_LOCK,
