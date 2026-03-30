@@ -4,6 +4,7 @@ import json
 import threading
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -223,6 +224,100 @@ def test_maybe_run_redis_due_maintenance_uses_backoff_and_reset(monkeypatch) -> 
     assert source.redis_due_maintenance_empty_checks == 0
     assert source.redis_due_maintenance_next_at == 190.0
     assert moved_call_count["count"] == 3
+
+
+def test_maintenance_recovery_runs_on_first_cycle_then_interval_and_force() -> None:
+    source = _build_source_runtime()
+
+    assert (
+        worker_module._should_run_maintenance_recovery(
+            source=source,
+            force_maintenance=False,
+        )
+        is True
+    )
+    worker_module._update_maintenance_recovery_state(
+        source=source,
+        recovered=0,
+        maintenance_error=False,
+    )
+
+    for _ in range(4):
+        assert (
+            worker_module._should_run_maintenance_recovery(
+                source=source,
+                force_maintenance=False,
+            )
+            is False
+        )
+        worker_module._update_maintenance_recovery_state(
+            source=source,
+            recovered=0,
+            maintenance_error=False,
+        )
+
+    assert (
+        worker_module._should_run_maintenance_recovery(
+            source=source,
+            force_maintenance=False,
+        )
+        is True
+    )
+    worker_module._update_maintenance_recovery_state(
+        source=source,
+        recovered=2,
+        maintenance_error=False,
+    )
+    assert source.maintenance_recovery_force_next is True
+    assert (
+        worker_module._should_run_maintenance_recovery(
+            source=source,
+            force_maintenance=False,
+        )
+        is True
+    )
+
+
+def test_run_turso_maintenance_skips_recovery_when_disabled(monkeypatch) -> None:
+    monkeypatch.setattr(
+        worker_module,
+        "recover_stuck_ai_tasks",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("recovery should be skipped when disabled")
+        ),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "recover_done_without_processed_at",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("recovery should be skipped when disabled")
+        ),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_requeue_processing",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "_pump_assertion_outbox_to_redis",
+        lambda **_kwargs: (0, False),
+    )
+
+    recovered, flushed_redis, has_error = worker_module._run_turso_maintenance(
+        engine=object(),  # type: ignore[arg-type]
+        platform="weibo",
+        spool_dir=Path("/tmp"),
+        redis_client=object(),
+        redis_queue_key="queue",
+        stuck_seconds=3600,
+        verbose=False,
+        do_recovery=False,
+    )
+
+    assert recovered == 0
+    assert flushed_redis == 0
+    assert has_error is False
 
 
 def test_low_priority_slot_gate_respects_dynamic_cap() -> None:
@@ -672,6 +767,96 @@ def test_schedule_ai_redis_path_does_not_run_tick_level_redis_maintenance(
 
     assert has_error is False
     assert scheduled == 1
+
+
+def test_pump_assertion_outbox_skips_turso_read_when_queue_is_nearly_full(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        worker_module,
+        "redis_assertion_get_cursor",
+        lambda *_args, **_kwargs: 7,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_assertion_event_count",
+        lambda *_args, **_kwargs: 80,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "resolve_redis_assertion_queue_maxlen",
+        lambda: 100,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "load_assertion_outbox_events",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("queue is sufficiently full, should skip turso read")
+        ),
+    )
+
+    pushed, has_error = worker_module._pump_assertion_outbox_to_redis(
+        engine=object(),  # type: ignore[arg-type]
+        redis_client=object(),
+        redis_queue_key="queue",
+        verbose=False,
+    )
+
+    assert has_error is False
+    assert pushed == 0
+
+
+def test_pump_assertion_outbox_reads_turso_when_queue_not_full(monkeypatch) -> None:
+    cursor_state = {"saved": 0}
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_assertion_get_cursor",
+        lambda *_args, **_kwargs: 7,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_assertion_event_count",
+        lambda *_args, **_kwargs: 79,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "resolve_redis_assertion_queue_maxlen",
+        lambda: 100,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "load_assertion_outbox_events",
+        lambda *_args, **_kwargs: [
+            SimpleNamespace(
+                id=9,
+                post_uid="weibo:9",
+                author="作者C",
+                event_json='{"event_type":"ai_done","post_uid":"weibo:9"}',
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_assertion_push_event",
+        lambda *_args, **_kwargs: True,
+    )
+
+    def _save_cursor(_client, _key: str, *, cursor: int) -> None:  # type: ignore[no-untyped-def]
+        cursor_state["saved"] = int(cursor)
+
+    monkeypatch.setattr(worker_module, "redis_assertion_set_cursor", _save_cursor)
+
+    pushed, has_error = worker_module._pump_assertion_outbox_to_redis(
+        engine=object(),  # type: ignore[arg-type]
+        redis_client=object(),
+        redis_queue_key="queue",
+        verbose=False,
+    )
+
+    assert has_error is False
+    assert pushed == 1
+    assert cursor_state["saved"] == 9
 
 
 def _build_source_runtime() -> WorkerSourceRuntime:

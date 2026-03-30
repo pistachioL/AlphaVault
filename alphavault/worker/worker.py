@@ -94,6 +94,7 @@ from alphavault.worker.redis_queue import (
     redis_author_recent_mark_empty,
     redis_author_recent_push,
     redis_author_recent_push_many,
+    resolve_redis_assertion_queue_maxlen,
     try_get_redis,
 )
 from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
@@ -136,9 +137,11 @@ BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
 SPOOL_FLUSH_MAX_ITEMS_PER_RUN = 200
 SPOOL_FLUSH_RETRY_INTERVAL_SECONDS = 1.0
 ASSERTION_OUTBOX_PUMP_BATCH_SIZE = 200
+ASSERTION_OUTBOX_PUMP_SKIP_FILL_RATIO = 0.8
 AUTHOR_RECENT_CONTEXT_LIMIT = 200
 REDIS_AI_DUE_MAINTENANCE_MAX_ITEMS = 200
 REDIS_AI_REQUEUE_MAX_ITEMS = 200
+MAINTENANCE_RECOVERY_INTERVAL_CYCLES = 6
 DUE_AI_CHECK_CACHE_TTL_SECONDS = 30.0
 AUTHOR_RECENT_LOCAL_CACHE_TTL_SECONDS = 30.0
 AUTHOR_RECENT_LOCAL_CACHE_MAX_AUTHORS = 32
@@ -168,6 +171,8 @@ class WorkerSourceRuntime:
     rss_next_ingest_at: float
     redis_due_maintenance_next_at: float = 0.0
     redis_due_maintenance_empty_checks: int = 0
+    maintenance_recovery_cycle_count: int = 0
+    maintenance_recovery_force_next: bool = False
     rss_ingest_future: Future | None = None
     spool_flush_future: Future | None = None
     spool_flush_next_at: float = 0.0
@@ -374,6 +379,36 @@ def _maybe_run_redis_due_maintenance(
         )
     )
     return 0, False
+
+
+def _should_run_maintenance_recovery(
+    *,
+    source: WorkerSourceRuntime,
+    force_maintenance: bool,
+) -> bool:
+    source.maintenance_recovery_cycle_count = (
+        max(0, int(source.maintenance_recovery_cycle_count)) + 1
+    )
+    cycle_count = int(source.maintenance_recovery_cycle_count)
+    if bool(force_maintenance):
+        return True
+    if cycle_count <= 1:
+        return True
+    if bool(source.maintenance_recovery_force_next):
+        return True
+    interval_cycles = max(1, int(MAINTENANCE_RECOVERY_INTERVAL_CYCLES))
+    return bool(cycle_count % interval_cycles == 0)
+
+
+def _update_maintenance_recovery_state(
+    *,
+    source: WorkerSourceRuntime,
+    recovered: int,
+    maintenance_error: bool,
+) -> None:
+    source.maintenance_recovery_force_next = bool(
+        int(max(0, int(recovered))) > 0 or bool(maintenance_error)
+    )
 
 
 def _to_one_line_tail(value: str, *, max_chars: int) -> str:
@@ -2378,6 +2413,30 @@ def _pump_assertion_outbox_to_redis(
             )
         cursor = 0
     try:
+        queue_maxlen = max(1, int(resolve_redis_assertion_queue_maxlen()))
+        queue_skip_threshold = max(
+            1, int(float(queue_maxlen) * float(ASSERTION_OUTBOX_PUMP_SKIP_FILL_RATIO))
+        )
+        current_queue_len = max(
+            0, int(redis_assertion_event_count(redis_client, redis_queue_key))
+        )
+        if current_queue_len >= queue_skip_threshold:
+            if verbose:
+                print(
+                    f"[outbox] skip_turso_read queue_len={current_queue_len} "
+                    f"threshold={queue_skip_threshold}",
+                    flush=True,
+                )
+            return 0, False
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        if verbose:
+            print(
+                f"[outbox] redis_queue_count_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+    try:
         events = load_assertion_outbox_events(
             engine,
             after_id=max(0, int(cursor)),
@@ -2451,34 +2510,36 @@ def _run_turso_maintenance(
     redis_queue_key: str,
     stuck_seconds: int,
     verbose: bool,
+    do_recovery: bool,
 ) -> Tuple[int, int, bool]:
     if engine is None:
         return 0, 0, False
 
     turso_error = False
     recovered = 0
-    try:
-        recovered = recover_stuck_ai_tasks(
-            engine,
-            now_epoch=int(time.time()),
-            stuck_seconds=max(60, int(stuck_seconds)),
-            platform=str(platform or "").strip().lower() or None,
-            verbose=bool(verbose),
-        )
-        recovered += recover_done_without_processed_at(
-            engine,
-            platform=str(platform or "").strip().lower() or None,
-            verbose=bool(verbose),
-        )
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        _maybe_dispose_turso_engine_on_transient_error(
-            engine=engine, err=e, verbose=bool(verbose)
-        )
-        turso_error = True
-        if verbose:
-            print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
+    if bool(do_recovery):
+        try:
+            recovered = recover_stuck_ai_tasks(
+                engine,
+                now_epoch=int(time.time()),
+                stuck_seconds=max(60, int(stuck_seconds)),
+                platform=str(platform or "").strip().lower() or None,
+                verbose=bool(verbose),
+            )
+            recovered += recover_done_without_processed_at(
+                engine,
+                platform=str(platform or "").strip().lower() or None,
+                verbose=bool(verbose),
+            )
+        except BaseException as e:
+            if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                raise
+            _maybe_dispose_turso_engine_on_transient_error(
+                engine=engine, err=e, verbose=bool(verbose)
+            )
+            turso_error = True
+            if verbose:
+                print(f"[ai] recover_error {type(e).__name__}: {e}", flush=True)
 
     flushed_redis = 0
     flush_redis_error = False
@@ -2985,6 +3046,10 @@ def main() -> None:
                             0.0, maintenance_next_at - time.time()
                         )
                     _request_spool_flush(source=source)
+                    do_recovery = _should_run_maintenance_recovery(
+                        source=source,
+                        force_maintenance=bool(force_maintenance),
+                    )
                     recovered, flushed_redis, maintenance_error = (
                         _run_turso_maintenance(
                             engine=active_engine,
@@ -2994,7 +3059,13 @@ def main() -> None:
                             redis_queue_key=source.redis_queue_key,
                             stuck_seconds=int(args.ai_stuck_seconds),
                             verbose=verbose,
+                            do_recovery=bool(do_recovery),
                         )
+                    )
+                    _update_maintenance_recovery_state(
+                        source=source,
+                        recovered=int(recovered),
+                        maintenance_error=bool(maintenance_error),
                     )
 
                 tick_runtime.append(
