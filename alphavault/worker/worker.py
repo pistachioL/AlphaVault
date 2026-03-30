@@ -185,6 +185,7 @@ class WorkerSourceRuntime:
     turso_next_ready_check_at: float = 0.0
     alias_sync_future: Future | None = None
     alias_sync_next_at: float = 0.0
+    alias_sync_locked_until: float = 0.0
     backfill_cache_future: Future | None = None
     backfill_cache_next_at: float = 0.0
     relation_cache_future: Future | None = None
@@ -2943,6 +2944,10 @@ def main() -> None:
                 alias_resolved = int(alias_stats.get("resolved", 0))
                 alias_inserted = int(alias_stats.get("inserted", 0))
                 alias_has_more = bool(alias_stats.get("has_more", False))
+                if bool(alias_stats.get("locked", False)):
+                    alias_has_more = False
+                if bool(alias_stats.get("locked", False)) and alias_sync_finished:
+                    source.alias_sync_locked_until = time.time() + 10.0
                 if alias_sync_finished and verbose:
                     print(
                         f"[alias:{source.config.name}] sync_done resolved={alias_resolved} inserted={alias_inserted} "
@@ -3331,6 +3336,7 @@ def main() -> None:
                         or alias_has_more
                     )
                     and int(low_budget) > 0
+                    and now >= source.alias_sync_locked_until
                 )
                 (
                     source.alias_sync_future,
