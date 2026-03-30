@@ -2094,6 +2094,16 @@ def _process_one_redis_payload(
                 raise
             prefetched_recent = []
 
+    ok = try_mark_ai_running(
+        engine, post_uid=cloud_post.post_uid, now_epoch=int(time.time())
+    )
+    if not ok:
+        try:
+            redis_ai_ack_processing(redis_client, redis_queue_key, processing_msg)
+        except Exception:
+            pass
+        return
+
     success = _process_one_post_uid(
         engine=engine,
         post_uid=cloud_post.post_uid,

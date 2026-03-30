@@ -943,6 +943,11 @@ def test_process_one_redis_payload_skips_turso_recent_load_on_cache_hit(
         "redis_ai_ack_and_cleanup",
         _fake_ack_and_cleanup,
     )
+    monkeypatch.setattr(
+        worker_module,
+        "try_mark_ai_running",
+        lambda *_args, **_kwargs: True,
+    )
 
     payload: dict[str, object] = {
         "post_uid": "weibo:1",
@@ -1027,6 +1032,11 @@ def test_process_one_redis_payload_marks_empty_author_cache_on_first_miss(
         "redis_ai_ack_and_cleanup",
         lambda *_args, **_kwargs: True,
     )
+    monkeypatch.setattr(
+        worker_module,
+        "try_mark_ai_running",
+        lambda *_args, **_kwargs: True,
+    )
 
     payload: dict[str, object] = {
         "post_uid": "weibo:2",
@@ -1099,6 +1109,11 @@ def test_process_one_redis_payload_only_writes_final_author_cache_status(
     monkeypatch.setattr(
         worker_module,
         "redis_ai_ack_and_cleanup",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "try_mark_ai_running",
         lambda *_args, **_kwargs: True,
     )
 
@@ -1181,6 +1196,11 @@ def test_process_one_redis_payload_reuses_local_author_cache_to_skip_redis_load(
         worker_module,
         "redis_ai_ack_and_cleanup",
         _fake_ack_and_cleanup,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "try_mark_ai_running",
+        lambda *_args, **_kwargs: True,
     )
 
     payload: dict[str, object] = {
