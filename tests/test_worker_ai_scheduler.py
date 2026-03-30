@@ -121,6 +121,110 @@ def test_memoize_bool_with_ttl_reuses_recent_result(monkeypatch) -> None:
     assert calls == ["call", "call"]
 
 
+def test_due_ai_check_cache_ttl_defaults_to_30_seconds() -> None:
+    assert worker_module.DUE_AI_CHECK_CACHE_TTL_SECONDS == 30.0
+
+
+def test_compute_redis_due_maintenance_delay_caps_by_worker_interval() -> None:
+    assert (
+        worker_module._compute_redis_due_maintenance_delay_seconds(
+            consecutive_empty_checks=1,
+            worker_interval_seconds=600.0,
+        )
+        == 30.0
+    )
+    assert (
+        worker_module._compute_redis_due_maintenance_delay_seconds(
+            consecutive_empty_checks=2,
+            worker_interval_seconds=600.0,
+        )
+        == 60.0
+    )
+    assert (
+        worker_module._compute_redis_due_maintenance_delay_seconds(
+            consecutive_empty_checks=3,
+            worker_interval_seconds=90.0,
+        )
+        == 90.0
+    )
+
+
+def test_maybe_run_redis_due_maintenance_uses_backoff_and_reset(monkeypatch) -> None:
+    source = _build_source_runtime()
+    now_state = {"now": 100.0}
+    moved_values: list[int] = [0, 0, 2]
+    moved_call_count = {"count": 0}
+
+    monkeypatch.setattr(
+        worker_module.time,
+        "time",
+        lambda: float(now_state["now"]),
+    )
+
+    def _fake_move_due(*_args, **_kwargs) -> int:  # type: ignore[no-untyped-def]
+        moved_call_count["count"] += 1
+        if not moved_values:
+            return 0
+        return int(moved_values.pop(0))
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_move_due_delayed_to_ready",
+        _fake_move_due,
+    )
+
+    moved, has_error = worker_module._maybe_run_redis_due_maintenance(
+        source=source,
+        redis_client=object(),
+        worker_interval_seconds=90.0,
+        verbose=False,
+    )
+    assert has_error is False
+    assert moved == 0
+    assert source.redis_due_maintenance_empty_checks == 1
+    assert source.redis_due_maintenance_next_at == 130.0
+    assert moved_call_count["count"] == 1
+
+    now_state["now"] = 110.0
+    moved, has_error = worker_module._maybe_run_redis_due_maintenance(
+        source=source,
+        redis_client=object(),
+        worker_interval_seconds=90.0,
+        verbose=False,
+    )
+    assert has_error is False
+    assert moved == 0
+    assert source.redis_due_maintenance_empty_checks == 1
+    assert source.redis_due_maintenance_next_at == 130.0
+    assert moved_call_count["count"] == 1
+
+    now_state["now"] = 130.0
+    moved, has_error = worker_module._maybe_run_redis_due_maintenance(
+        source=source,
+        redis_client=object(),
+        worker_interval_seconds=90.0,
+        verbose=False,
+    )
+    assert has_error is False
+    assert moved == 0
+    assert source.redis_due_maintenance_empty_checks == 2
+    assert source.redis_due_maintenance_next_at == 190.0
+    assert moved_call_count["count"] == 2
+
+    now_state["now"] = 190.0
+    moved, has_error = worker_module._maybe_run_redis_due_maintenance(
+        source=source,
+        redis_client=object(),
+        worker_interval_seconds=90.0,
+        verbose=False,
+    )
+    assert has_error is False
+    assert moved == 2
+    assert source.redis_due_maintenance_empty_checks == 0
+    assert source.redis_due_maintenance_next_at == 190.0
+    assert moved_call_count["count"] == 3
+
+
 def test_low_priority_slot_gate_respects_dynamic_cap() -> None:
     state = {"cap": 2}
     gate = _LowPriorityAISlotGate(cap_getter=lambda: int(state["cap"]))
@@ -477,6 +581,97 @@ def test_schedule_ai_prefers_redis_queue_when_available(monkeypatch, tmp_path) -
     assert scheduled == 1
     assert len(scheduled_payloads) == 1
     assert str(scheduled_payloads[0].get("post_uid") or "") == "weibo:1"
+
+
+def test_schedule_ai_redis_path_does_not_run_tick_level_redis_maintenance(
+    monkeypatch, tmp_path
+) -> None:
+    redis_messages = [
+        json.dumps(
+            {
+                "post_uid": "weibo:2",
+                "platform": "weibo",
+                "platform_post_id": "2",
+                "author": "作者B",
+                "created_at": "2026-03-28 10:00:00",
+                "url": "https://example.com/post/2",
+                "raw_text": "文本2",
+                "display_md": "",
+                "ingested_at": 100,
+                "retry_count": 0,
+            },
+            ensure_ascii=False,
+        )
+    ]
+
+    class _FakeExecutor:
+        def submit(self, fn, **kwargs):  # type: ignore[no-untyped-def]
+            del fn, kwargs
+            fut: Future = Future()
+            fut.set_result(None)
+            return fut
+
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_move_due_delayed_to_ready",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("tick-level move_due should not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_requeue_processing",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("tick-level requeue should not be called")
+        ),
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "redis_ai_pop_to_processing",
+        lambda *_args, **_kwargs: redis_messages.pop(0) if redis_messages else None,
+    )
+    monkeypatch.setattr(
+        worker_module, "upsert_pending_post", lambda *_args, **_kwargs: None
+    )
+
+    config = LLMConfig(
+        api_key="k",
+        model="m",
+        prompt_version="p",
+        relevant_threshold=0.3,
+        base_url="",
+        api_mode="responses",
+        ai_stream=True,
+        ai_retries=0,
+        ai_temperature=0.1,
+        ai_reasoning_effort="low",
+        ai_rpm=12.0,
+        ai_timeout_seconds=30.0,
+        trace_out=None,
+        verbose=False,
+    )
+    inflight_futures: set[Future] = set()
+    inflight_owner_by_future: dict[Future, str] = {}
+    scheduled, has_error = _schedule_ai(
+        _FakeExecutor(),  # type: ignore[arg-type]
+        engine=object(),  # type: ignore[arg-type]
+        platform="weibo",
+        ai_cap=4,
+        low_inflight_now_get=lambda: 0,
+        inflight_futures=inflight_futures,
+        inflight_owner_by_future=inflight_owner_by_future,
+        inflight_owner="weibo",
+        wakeup_event=threading.Event(),
+        config=config,
+        limiter=RateLimiter(100.0),
+        verbose=False,
+        redis_client=object(),
+        redis_queue_key="queue",
+        spool_dir=tmp_path,
+    )
+
+    assert has_error is False
+    assert scheduled == 1
 
 
 def _build_source_runtime() -> WorkerSourceRuntime:

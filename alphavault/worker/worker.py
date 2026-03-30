@@ -137,7 +137,9 @@ SPOOL_FLUSH_MAX_ITEMS_PER_RUN = 200
 SPOOL_FLUSH_RETRY_INTERVAL_SECONDS = 1.0
 ASSERTION_OUTBOX_PUMP_BATCH_SIZE = 200
 AUTHOR_RECENT_CONTEXT_LIMIT = 200
-DUE_AI_CHECK_CACHE_TTL_SECONDS = 5.0
+REDIS_AI_DUE_MAINTENANCE_MAX_ITEMS = 200
+REDIS_AI_REQUEUE_MAX_ITEMS = 200
+DUE_AI_CHECK_CACHE_TTL_SECONDS = 30.0
 AUTHOR_RECENT_LOCAL_CACHE_TTL_SECONDS = 30.0
 AUTHOR_RECENT_LOCAL_CACHE_MAX_AUTHORS = 32
 AUTHOR_RECENT_LOCAL_CACHE_MAX_ROWS = 80
@@ -164,6 +166,8 @@ class WorkerSourceRuntime:
     spool_dir: Path
     redis_queue_key: str
     rss_next_ingest_at: float
+    redis_due_maintenance_next_at: float = 0.0
+    redis_due_maintenance_empty_checks: int = 0
     rss_ingest_future: Future | None = None
     spool_flush_future: Future | None = None
     spool_flush_next_at: float = 0.0
@@ -306,6 +310,70 @@ def _backoff_seconds(retry_count: int) -> int:
     n = max(1, int(retry_count))
     delay = 30 * (2 ** max(0, n - 1))
     return int(min(3600, delay))
+
+
+def _compute_redis_due_maintenance_delay_seconds(
+    *,
+    consecutive_empty_checks: int,
+    worker_interval_seconds: float,
+) -> float:
+    retries = max(1, int(consecutive_empty_checks))
+    worker_interval = max(1.0, float(worker_interval_seconds))
+    retry_delay = float(_backoff_seconds(retries))
+    return float(min(retry_delay, worker_interval))
+
+
+def _maybe_run_redis_due_maintenance(
+    *,
+    source: WorkerSourceRuntime,
+    redis_client,
+    worker_interval_seconds: float,
+    verbose: bool,
+) -> Tuple[int, bool]:
+    queue_key = str(source.redis_queue_key or "").strip()
+    if not redis_client or not queue_key:
+        return 0, False
+    now = time.time()
+    if now < float(source.redis_due_maintenance_next_at):
+        return 0, False
+    try:
+        moved_due = redis_ai_move_due_delayed_to_ready(
+            redis_client,
+            queue_key,
+            now_epoch=int(now),
+            max_items=int(REDIS_AI_DUE_MAINTENANCE_MAX_ITEMS),
+            verbose=bool(verbose),
+        )
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        source.redis_due_maintenance_empty_checks += 1
+        source.redis_due_maintenance_next_at = now + float(
+            _compute_redis_due_maintenance_delay_seconds(
+                consecutive_empty_checks=source.redis_due_maintenance_empty_checks,
+                worker_interval_seconds=worker_interval_seconds,
+            )
+        )
+        if verbose:
+            print(
+                f"[redis] ai_due_to_ready_error queue={queue_key} "
+                f"{type(err).__name__}: {err}",
+                flush=True,
+            )
+        return 0, True
+    moved = int(max(0, int(moved_due)))
+    if moved > 0:
+        source.redis_due_maintenance_empty_checks = 0
+        source.redis_due_maintenance_next_at = now
+        return moved, False
+    source.redis_due_maintenance_empty_checks += 1
+    source.redis_due_maintenance_next_at = now + float(
+        _compute_redis_due_maintenance_delay_seconds(
+            consecutive_empty_checks=source.redis_due_maintenance_empty_checks,
+            worker_interval_seconds=worker_interval_seconds,
+        )
+    )
+    return 0, False
 
 
 def _to_one_line_tail(value: str, *, max_chars: int) -> str:
@@ -2101,30 +2169,6 @@ def _schedule_ai_from_redis(
     if available <= 0:
         return 0, False
 
-    try:
-        redis_ai_move_due_delayed_to_ready(
-            redis_client,
-            redis_queue_key,
-            now_epoch=int(time.time()),
-            max_items=max(1, int(available) * 2),
-            verbose=bool(verbose),
-        )
-        redis_ai_requeue_processing(
-            redis_client,
-            redis_queue_key,
-            max_items=max(1, int(available)),
-            verbose=bool(verbose),
-        )
-    except BaseException as e:
-        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-            raise
-        if verbose:
-            print(
-                f"[ai] redis_maintenance_error owner={inflight_owner} {type(e).__name__}: {e}",
-                flush=True,
-            )
-        return 0, True
-
     scheduled = 0
     for _ in range(max(1, int(available))):
         if scheduled >= available:
@@ -2441,17 +2485,10 @@ def _run_turso_maintenance(
     del spool_dir
     if redis_client and str(redis_queue_key or "").strip():
         try:
-            moved_due = redis_ai_move_due_delayed_to_ready(
-                redis_client,
-                redis_queue_key,
-                now_epoch=int(time.time()),
-                max_items=200,
-                verbose=bool(verbose),
-            )
             requeued = redis_ai_requeue_processing(
                 redis_client,
                 redis_queue_key,
-                max_items=200,
+                max_items=int(REDIS_AI_REQUEUE_MAX_ITEMS),
                 verbose=bool(verbose),
             )
             pumped, pump_error = _pump_assertion_outbox_to_redis(
@@ -2460,7 +2497,7 @@ def _run_turso_maintenance(
                 redis_queue_key=redis_queue_key,
                 verbose=bool(verbose),
             )
-            flushed_redis = int(moved_due) + int(requeued) + int(pumped)
+            flushed_redis = int(requeued) + int(pumped)
             flush_redis_error = bool(pump_error)
         except BaseException as e:
             if isinstance(e, _FATAL_BASE_EXCEPTIONS):
@@ -3001,9 +3038,17 @@ def main() -> None:
             for tick in tick_runtime:
                 source = tick["source"]
                 active_engine = tick["active_engine"]
+                redis_due_moved = 0
+                redis_due_error = False
                 scheduled = 0
                 schedule_error = False
                 if active_engine is not None:
+                    redis_due_moved, redis_due_error = _maybe_run_redis_due_maintenance(
+                        source=source,
+                        redis_client=redis_client,
+                        worker_interval_seconds=float(worker_interval),
+                        verbose=verbose,
+                    )
                     scheduled, schedule_error = _schedule_ai(
                         executor,
                         engine=active_engine,
@@ -3025,6 +3070,8 @@ def main() -> None:
                         redis_queue_key=source.redis_queue_key,
                         spool_dir=source.spool_dir,
                     )
+                    schedule_error = bool(schedule_error or redis_due_error)
+                tick["redis_due_moved"] = int(redis_due_moved)
                 tick["scheduled"] = int(scheduled)
                 tick["schedule_error"] = bool(schedule_error)
 
@@ -3062,6 +3109,7 @@ def main() -> None:
                 recovered = int(tick["recovered"])
                 flushed_redis = int(tick["flushed_redis"])
                 maintenance_error = bool(tick["maintenance_error"])
+                redis_due_moved = int(tick["redis_due_moved"])
                 scheduled = int(tick["scheduled"])
                 schedule_error = bool(tick["schedule_error"])
 
@@ -3517,6 +3565,7 @@ def main() -> None:
                     or ingest_enqueue_error
                     or recovered > 0
                     or flushed_redis > 0
+                    or redis_due_moved > 0
                     or spool_flushed > 0
                     or alias_inserted > 0
                     or source.cycle_running
@@ -3556,7 +3605,8 @@ def main() -> None:
                         f"stock_hot_inflight={1 if source.stock_hot_cache_future is not None else 0} "
                         f"spool_inflight={1 if source.spool_flush_future is not None else 0} "
                         f"ai_scheduled={scheduled} "
-                        f"ai_recovered={recovered} redis_flush={flushed_redis} spool_flush={spool_flushed} "
+                        f"ai_recovered={recovered} redis_due_moved={redis_due_moved} "
+                        f"redis_flush={flushed_redis} spool_flush={spool_flushed} "
                         f"enqueue_error={1 if ingest_enqueue_error else 0} "
                         f"alias_resolved={alias_resolved} alias_inserted={alias_inserted} "
                         f"backfill_processed={backfill_processed} backfill_written={backfill_written} "
