@@ -82,6 +82,12 @@ When `REDIS_URL` is set, Redis acts as the primary AI work queue and dedup store
 - PRs: concise description + linked spec (`docs/superpowers/specs/...`) + UI screenshots for Reflex page changes.
 - Before opening a PR: `uv run pre-commit run -a` must pass.
 
+## Runtime Environment
+- **Hosting**: Render free tier — 0.1 CPU, 512 MB RAM, deployed via `Dockerfile`.
+- **Database**: Turso free tier (read/write quota limited; avoid unnecessary reads).
+- **Cache/Queue**: Upstash Redis free tier (command quota limited; use Redis sparingly).
+- Resource constraints are real: every extra Turso read or Redis command counts against daily free quotas. Prefer batching, caching, and early-exit guards over repeated I/O.
+
 ## Configuration & Secrets
 - Copy `.env.example` → `.env`; never commit secrets.
 - Key env groups: `WEIBO_TURSO_*` / `XUEQIU_TURSO_*`, `REDIS_URL`, `AI_MODEL` / `AI_BASE_URL` / `AI_API_KEY` / `AI_API_MODE`.
