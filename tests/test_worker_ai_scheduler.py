@@ -347,6 +347,11 @@ def test_should_fast_retry_for_periodic_job_false_when_no_more() -> None:
     assert _should_fast_retry_for_periodic_job(has_more=False) is False
 
 
+def test_should_fast_retry_for_periodic_job_requires_attempted_when_provided() -> None:
+    assert _should_fast_retry_for_periodic_job(has_more=True, attempted=0) is False
+    assert _should_fast_retry_for_periodic_job(has_more=True, attempted=1) is True
+
+
 def test_build_source_turso_error_excludes_ingest_enqueue_error() -> None:
     assert (
         _build_source_turso_error(

@@ -112,3 +112,49 @@ def test_sync_stock_alias_relations_marks_dirty_for_changed_pairs(monkeypatch) -
 
     assert inserted_pairs == [("stock:601899.SH", "stock:紫金")]
     assert marked == ["stock:601899.SH", "stock:紫金"]
+
+
+def test_sync_stock_alias_relations_returns_early_when_low_priority_slot_busy(
+    monkeypatch,
+) -> None:
+    @contextmanager
+    def _fake_conn_ctx(_engine_or_conn):
+        yield object()
+
+    def _should_not_load(_conn):
+        raise AssertionError("assertion load should be skipped when gate is busy")
+
+    monkeypatch.setattr(
+        "alphavault.worker.stock_alias_sync._use_conn",
+        _fake_conn_ctx,
+    )
+    monkeypatch.setattr(
+        "alphavault.worker.stock_alias_sync.ensure_research_workbench_schema",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "alphavault.worker.stock_alias_sync._load_alias_assertions",
+        _should_not_load,
+    )
+    monkeypatch.setattr(
+        "alphavault.worker.stock_alias_sync._load_stock_alias_relations",
+        _should_not_load,
+    )
+
+    stats = sync_stock_alias_relations(
+        cast(TursoConnection, object()),
+        acquire_low_priority_slot=lambda: False,
+    )
+
+    assert stats == {
+        "assertions": 0,
+        "resolved": 0,
+        "candidates": 0,
+        "inserted": 0,
+        "attempted": 0,
+        "eligible": 0,
+        "queued": 0,
+        "has_more": True,
+        "remaining_aliases": -1,
+        "locked": True,
+    }

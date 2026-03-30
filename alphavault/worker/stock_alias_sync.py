@@ -27,8 +27,8 @@ from alphavault.research_workbench import (
     ensure_research_workbench_schema,
     get_alias_resolve_tasks_map,
     increment_alias_resolve_attempts,
-    set_alias_resolve_task_status,
     record_stock_alias_relation,
+    set_alias_resolve_task_status,
 )
 from alphavault_reflex.services.stock_objects import (
     AiRuntimeConfig,
@@ -38,6 +38,7 @@ from alphavault_reflex.services.stock_objects import (
 
 ALIAS_SYNC_SOURCE = "ai_worker"
 ALIAS_SYNC_MAX_KEYS_PER_RUN = 8
+ALIAS_SYNC_UNKNOWN_REMAINING = -1
 
 WANTED_ALIAS_ASSERTION_COLUMNS = [
     "post_uid",
@@ -185,6 +186,35 @@ def sync_stock_alias_relations(
     )
     ensure_research_workbench_schema(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
+        if acquire_low_priority_slot is not None:
+            gate_open = False
+            try:
+                gate_open = bool(acquire_low_priority_slot())
+            except Exception:
+                gate_open = False
+            if not gate_open:
+                remaining_aliases = ALIAS_SYNC_UNKNOWN_REMAINING
+                _log_alias_sync(
+                    verbose=verbose,
+                    message=(f"skip gate_busy=1 remaining={int(remaining_aliases)}"),
+                )
+                return {
+                    "assertions": 0,
+                    "resolved": 0,
+                    "candidates": 0,
+                    "inserted": 0,
+                    "attempted": 0,
+                    "eligible": 0,
+                    "queued": 0,
+                    "has_more": True,
+                    "remaining_aliases": int(remaining_aliases),
+                    "locked": True,
+                }
+            if release_low_priority_slot is not None:
+                try:
+                    release_low_priority_slot()
+                except Exception:
+                    pass
         assertions = _load_alias_assertions(conn)
         stock_relations = _load_stock_alias_relations(conn)
     _log_alias_sync(

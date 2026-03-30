@@ -1619,8 +1619,18 @@ def _format_epoch_to_cst(value: float) -> str:
         return ""
 
 
-def _should_fast_retry_for_periodic_job(*, has_more: bool) -> bool:
-    return bool(has_more)
+def _should_fast_retry_for_periodic_job(
+    *,
+    has_more: bool,
+    attempted: int | None = None,
+) -> bool:
+    if attempted is None:
+        return bool(has_more)
+    try:
+        attempted_count = int(attempted)
+    except Exception:
+        attempted_count = 0
+    return bool(has_more) and attempted_count > 0
 
 
 def _build_source_turso_error(
@@ -2944,7 +2954,8 @@ def main() -> None:
                         flush=True,
                     )
                 alias_fast_retry = _should_fast_retry_for_periodic_job(
-                    has_more=alias_has_more
+                    has_more=alias_has_more,
+                    attempted=int(alias_stats.get("attempted", 0)),
                 )
                 if alias_fast_retry:
                     source.alias_sync_next_at = 0.0
