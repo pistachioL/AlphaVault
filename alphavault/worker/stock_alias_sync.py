@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Optional
 
 import pandas as pd
 
@@ -12,7 +12,6 @@ from alphavault.constants import (
     ENV_WORKER_STOCK_ALIAS_MAX_RETRIES,
 )
 from alphavault.db.introspect import table_columns
-from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
@@ -41,16 +40,12 @@ ALIAS_SYNC_MAX_KEYS_PER_RUN = 8
 ALIAS_SYNC_UNKNOWN_REMAINING = -1
 
 WANTED_ALIAS_ASSERTION_COLUMNS = [
-    "post_uid",
     "topic_key",
-    "action",
-    "summary",
-    "author",
-    "created_at",
     "stock_codes_json",
     "stock_names_json",
     "cluster_keys_json",
 ]
+ALIAS_ASSERTION_MAX_ID_COLUMN = "max_id"
 
 STOCK_ALIAS_RELATIONS_SQL = """
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
@@ -104,17 +99,56 @@ def _parse_json_list(value: object) -> list[str]:
     return [str(item).strip() for item in parsed if str(item).strip()]
 
 
-def _load_alias_assertions(conn) -> pd.DataFrame:
-    assertion_cols = table_columns(conn, "assertions")
-    selected = [
-        col for col in WANTED_ALIAS_ASSERTION_COLUMNS if col in set(assertion_cols)
-    ]
-    query = build_assertions_query(selected)
-    if "action" in selected:
-        query = f"{query} WHERE action LIKE 'trade.%'"
-    assertions = turso_read_sql_df(conn, query)
+def _build_alias_assertion_where_clause(
+    *, assertion_cols: set[str], last_id: int
+) -> tuple[str, dict[str, object]]:
+    clauses: list[str] = []
+    params: dict[str, object] = {}
+    if "action" in assertion_cols:
+        clauses.append("action LIKE 'trade.%'")
+    if "id" in assertion_cols and int(last_id) > 0:
+        clauses.append("id > :last_id")
+        params["last_id"] = int(last_id)
+    if not clauses:
+        return "", params
+    return f" WHERE {' AND '.join(clauses)}", params
+
+
+def _load_alias_assertions(conn, *, last_id: int = 0) -> tuple[pd.DataFrame, int]:
+    assertion_cols = set(table_columns(conn, "assertions"))
+    selected = [col for col in WANTED_ALIAS_ASSERTION_COLUMNS if col in assertion_cols]
+    where_clause, params = _build_alias_assertion_where_clause(
+        assertion_cols=assertion_cols,
+        last_id=int(last_id),
+    )
+
+    new_max_id = int(last_id)
+    if "id" in assertion_cols:
+        max_id_df = turso_read_sql_df(
+            conn,
+            f"SELECT MAX(id) AS {ALIAS_ASSERTION_MAX_ID_COLUMN} FROM assertions{where_clause}",
+            params=params,
+        )
+        if (
+            not max_id_df.empty
+            and ALIAS_ASSERTION_MAX_ID_COLUMN in max_id_df.columns
+            and pd.notna(max_id_df.iloc[0][ALIAS_ASSERTION_MAX_ID_COLUMN])
+        ):
+            raw_max_id = max_id_df.iloc[0][ALIAS_ASSERTION_MAX_ID_COLUMN]
+            try:
+                new_max_id = max(int(last_id), int(raw_max_id))
+            except (TypeError, ValueError):
+                new_max_id = int(last_id)
+
+    if not selected:
+        return pd.DataFrame(), int(new_max_id)
+    assertions = turso_read_sql_df(
+        conn,
+        f"SELECT DISTINCT {', '.join(selected)} FROM assertions{where_clause}",
+        params=params,
+    )
     if assertions.empty:
-        return assertions
+        return assertions, int(new_max_id)
 
     out = assertions.copy()
     if "cluster_keys" not in out.columns:
@@ -125,7 +159,7 @@ def _load_alias_assertions(conn) -> pd.DataFrame:
     if "created_at" in out.columns:
         out["created_at"] = pd.to_datetime(out["created_at"], errors="coerce", utc=True)
         out["created_at"] = out["created_at"].dt.tz_convert(None)
-    return out
+    return out, int(new_max_id)
 
 
 def _load_stock_alias_relations(conn) -> pd.DataFrame:
@@ -174,6 +208,9 @@ def sync_stock_alias_relations(
     should_continue: Callable[[], bool] | None = None,
     acquire_low_priority_slot: Callable[[], bool] | None = None,
     release_low_priority_slot: Callable[[], None] | None = None,
+    cached_assertions: Optional[pd.DataFrame] = None,
+    last_assertion_id: int = 0,
+    on_data_loaded: Optional[Callable[[pd.DataFrame, pd.DataFrame, int], None]] = None,
     verbose: bool = False,
 ) -> dict[str, int | bool]:
     _log_alias_sync(
@@ -215,12 +252,27 @@ def sync_stock_alias_relations(
                 pass
     ensure_research_workbench_schema(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
-        assertions = _load_alias_assertions(conn)
+        new_rows, new_max_id = _load_alias_assertions(
+            conn, last_id=int(last_assertion_id)
+        )
         stock_relations = _load_stock_alias_relations(conn)
+    if cached_assertions is not None:
+        if not new_rows.empty:
+            assertions = pd.concat([cached_assertions, new_rows], ignore_index=True)
+        else:
+            assertions = cached_assertions
+    else:
+        assertions = new_rows
+    if on_data_loaded is not None:
+        try:
+            on_data_loaded(new_rows, stock_relations, new_max_id)
+        except Exception:
+            pass
     _log_alias_sync(
         verbose=verbose,
         message=(
             f"loaded assertions={int(len(assertions))} "
+            f"new_rows={int(len(new_rows))} "
             f"stock_relations={int(len(stock_relations))}"
         ),
     )

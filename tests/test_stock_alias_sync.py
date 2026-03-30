@@ -67,7 +67,7 @@ def test_sync_stock_alias_relations_marks_dirty_for_changed_pairs(monkeypatch) -
     )
     monkeypatch.setattr(
         "alphavault.worker.stock_alias_sync._load_alias_assertions",
-        lambda _conn: pd.DataFrame(),
+        lambda _conn, *, last_id=0: (pd.DataFrame(), int(last_id)),
     )
     monkeypatch.setattr(
         "alphavault.worker.stock_alias_sync._load_stock_alias_relations",
@@ -121,7 +121,7 @@ def test_sync_stock_alias_relations_returns_early_when_low_priority_slot_busy(
     def _fake_conn_ctx(_engine_or_conn):
         yield object()
 
-    def _should_not_load(_conn):
+    def _should_not_load(_conn, **_kwargs):
         raise AssertionError("assertion load should be skipped when gate is busy")
 
     monkeypatch.setattr(

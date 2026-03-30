@@ -200,6 +200,10 @@ class WorkerSourceRuntime:
     progress_state_cache: dict[str, dict] = field(default_factory=dict)
     # Memoized assertion-event check to avoid Redis llen on every tick.
     assertion_events_getter: Callable[[], bool] | None = None
+    # Incremental alias-sync state: in-memory snapshot + cursor + per-source submit fn.
+    alias_assertions_snapshot: Any = None  # pd.DataFrame | None
+    alias_last_assertion_id: int = 0
+    alias_sync_fn: Callable[..., dict[str, int | bool]] | None = None
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
@@ -2660,31 +2664,55 @@ def main() -> None:
     research_cache_interval_seconds = float(alias_sync_interval_seconds)
     low_priority_ai_gate: _LowPriorityAISlotGate | None = None
 
-    def _submit_alias_sync_job(
-        sync_engine: Engine,
-        *,
-        ai_max_inflight: int,
-        should_continue: Callable[[], bool] | None = None,
-    ) -> dict[str, int | bool]:
-        effective_ai_max_inflight = max(1, int(ai_max_inflight))
-        return sync_stock_alias_relations(
-            sync_engine,
-            ai_runtime_config=alias_ai_runtime_config,
-            max_alias_keys_per_run=int(effective_ai_max_inflight),
-            ai_max_inflight=int(effective_ai_max_inflight),
-            should_continue=should_continue,
-            acquire_low_priority_slot=(
-                low_priority_ai_gate.try_acquire
-                if low_priority_ai_gate is not None
-                else None
-            ),
-            release_low_priority_slot=(
-                low_priority_ai_gate.release
-                if low_priority_ai_gate is not None
-                else None
-            ),
-            verbose=bool(config.verbose),
-        )
+    def _make_alias_sync_fn(
+        src: WorkerSourceRuntime,
+    ) -> Callable[..., dict[str, int | bool]]:
+        def _on_loaded(
+            new_rows: Any,
+            _stock_relations: Any,
+            new_max_id: int,
+        ) -> None:
+            import pandas as _pd
+
+            if src.alias_assertions_snapshot is None:
+                src.alias_assertions_snapshot = new_rows
+            elif not new_rows.empty:
+                src.alias_assertions_snapshot = _pd.concat(
+                    [src.alias_assertions_snapshot, new_rows], ignore_index=True
+                )
+            if new_max_id > src.alias_last_assertion_id:
+                src.alias_last_assertion_id = new_max_id
+
+        def _submit(
+            sync_engine: Engine,
+            *,
+            ai_max_inflight: int,
+            should_continue: Callable[[], bool] | None = None,
+        ) -> dict[str, int | bool]:
+            effective = max(1, int(ai_max_inflight))
+            return sync_stock_alias_relations(
+                sync_engine,
+                ai_runtime_config=alias_ai_runtime_config,
+                max_alias_keys_per_run=effective,
+                ai_max_inflight=effective,
+                should_continue=should_continue,
+                acquire_low_priority_slot=(
+                    low_priority_ai_gate.try_acquire
+                    if low_priority_ai_gate is not None
+                    else None
+                ),
+                release_low_priority_slot=(
+                    low_priority_ai_gate.release
+                    if low_priority_ai_gate is not None
+                    else None
+                ),
+                cached_assertions=src.alias_assertions_snapshot,
+                last_assertion_id=src.alias_last_assertion_id,
+                on_data_loaded=_on_loaded,
+                verbose=bool(config.verbose),
+            )
+
+        return _submit
 
     def _submit_backfill_cache_job(
         sync_engine: Engine,
@@ -2766,6 +2794,9 @@ def main() -> None:
                 rss_inflight_now=int(_rss_inflight_now()),
             )
         )
+
+        for source in sources:
+            source.alias_sync_fn = _make_alias_sync_fn(source)
 
         while True:
             verbose = bool(args.verbose)
@@ -3351,7 +3382,7 @@ def main() -> None:
                     next_run_at=source.alias_sync_next_at,
                     interval_seconds=alias_interval,
                     wakeup_event=wakeup_event,
-                    submit_fn=_submit_alias_sync_job,
+                    submit_fn=source.alias_sync_fn,
                     submit_kwargs={
                         "ai_max_inflight": int(low_budget),
                         "should_continue": should_continue_low_priority,
