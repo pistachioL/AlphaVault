@@ -184,6 +184,10 @@ class WorkerSourceRuntime:
     cycle_running: bool = False
     cycle_started_at: float = 0.0
     cycle_finished_at: float = 0.0
+    # Cache of last-written progress payloads per stage — skip Turso write when unchanged.
+    progress_state_cache: dict[str, dict] = field(default_factory=dict)
+    # Memoized assertion-event check to avoid Redis llen on every tick.
+    assertion_events_getter: Callable[[], bool] | None = None
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
@@ -1570,6 +1574,13 @@ def _save_worker_progress_state(
     data["source"] = str(source.config.name or "").strip()
     data["stage"] = str(stage or "").strip()
     data["updated_at"] = now_str()
+    # Skip the Turso write when nothing relevant changed (ignore updated_at).
+    cache_key = str(stage or "").strip()
+    cached = source.progress_state_cache.get(cache_key)
+    comparable = {k: v for k, v in data.items() if k != "updated_at"}
+    if cached is not None and cached == comparable:
+        return
+    source.progress_state_cache[cache_key] = comparable
     try:
         save_worker_job_cursor(
             source.engine,
@@ -3101,11 +3112,26 @@ def main() -> None:
                     low_inflight_now_get=low_inflight_now_getter,
                     has_due_ai_pending_get=has_due_ai_pending_getter,
                 )
-                has_assertion_events = _has_pending_assertion_events(
-                    redis_client=redis_client,
-                    redis_queue_key=source.redis_queue_key,
-                    verbose=False,
-                )
+                # Lazily build a memoized getter for assertion events (Redis llen).
+                # Rebuilding when queue key changes (e.g. source reconnect).
+                if source.assertion_events_getter is None:
+                    _redis_client_for_evt = redis_client
+                    _queue_key_for_evt = source.redis_queue_key
+
+                    def _assertion_events_uncached(
+                        _rc=_redis_client_for_evt, _qk=_queue_key_for_evt
+                    ) -> bool:
+                        return _has_pending_assertion_events(
+                            redis_client=_rc,
+                            redis_queue_key=_qk,
+                            verbose=False,
+                        )
+
+                    source.assertion_events_getter = _memoize_bool_with_ttl(
+                        resolver=_assertion_events_uncached,
+                        ttl_seconds=float(DUE_AI_CHECK_CACHE_TTL_SECONDS),
+                    )
+                has_assertion_events = source.assertion_events_getter()
                 cycle_triggered = bool(
                     do_maintenance or force_maintenance or has_assertion_events
                 )

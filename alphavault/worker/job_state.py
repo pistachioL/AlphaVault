@@ -10,6 +10,11 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
 )
 
+# Track which engines have already had their schema ensured, to avoid re-running
+# CREATE TABLE IF NOT EXISTS on every save_worker_job_cursor call (which was
+# causing ~2 extra Turso read ops per call × 6 stages × 20 ticks/min = 240 ops/min).
+_schema_ensured_engine_ids: set[int] = set()
+
 
 WORKER_STATE_TABLE = "research_worker_state"
 WORKER_LOCKS_TABLE = "research_worker_locks"
@@ -110,6 +115,19 @@ def ensure_worker_job_state_schema(
         conn.execute(SQL_CREATE_WORKER_LOCKS_TABLE)
 
 
+def _ensure_schema_once(engine_or_conn: TursoEngine | TursoConnection) -> None:
+    """Run schema DDL only once per engine lifetime, not on every call."""
+    if isinstance(engine_or_conn, TursoConnection):
+        # Can't track per-connection; just run it (connections are short-lived).
+        ensure_worker_job_state_schema(engine_or_conn)
+        return
+    eid = id(engine_or_conn)
+    if eid in _schema_ensured_engine_ids:
+        return
+    ensure_worker_job_state_schema(engine_or_conn)
+    _schema_ensured_engine_ids.add(eid)
+
+
 def load_worker_job_cursor(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
@@ -118,7 +136,7 @@ def load_worker_job_cursor(
     key = str(state_key or "").strip()
     if not key:
         return ""
-    ensure_worker_job_state_schema(engine_or_conn)
+    _ensure_schema_once(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
         return str(
             conn.execute(SQL_SELECT_WORKER_CURSOR, {"state_key": key}).scalar() or ""
@@ -134,7 +152,7 @@ def save_worker_job_cursor(
     key = str(state_key or "").strip()
     if not key:
         return
-    ensure_worker_job_state_schema(engine_or_conn)
+    _ensure_schema_once(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
         conn.execute(
             SQL_UPSERT_WORKER_STATE,
