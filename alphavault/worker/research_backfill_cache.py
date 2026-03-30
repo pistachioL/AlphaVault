@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import time
 from typing import Any, Callable
@@ -10,19 +12,19 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
 )
 from alphavault.research_backfill_cache import (
-    list_stock_backfill_posts,
+    list_stock_backfill_dirty_keys,
+    load_stock_backfill_meta,
+    remove_stock_backfill_dirty_keys,
     replace_stock_backfill_posts,
+    save_stock_backfill_meta,
 )
 from alphavault.research_stock_cache import mark_stock_dirty
 from alphavault.worker.job_state import (
-    load_worker_job_cursor,
     release_worker_job_lock,
-    save_worker_job_cursor,
     try_acquire_worker_job_lock,
 )
 
 
-BACKFILL_CACHE_CURSOR_KEY = "stock_backfill_cache.stock_cursor"
 BACKFILL_CACHE_LOCK_KEY = "stock_backfill_cache.lock"
 BACKFILL_CACHE_LOCK_LEASE_SECONDS = 600
 
@@ -39,48 +41,6 @@ def _log_backfill_sync(*, verbose: bool, message: str) -> None:
     if not verbose:
         return
     print(f"[backfill_cache] {message}", flush=True)
-
-
-def _select_stock_keys_batch(
-    conn: TursoConnection,
-    *,
-    after_stock_key: str,
-    limit: int,
-) -> list[str]:
-    sql = """
-SELECT DISTINCT topic_key
-FROM assertions
-WHERE action LIKE 'trade.%'
-  AND topic_key LIKE 'stock:%'
-  AND topic_key > :after_stock_key
-ORDER BY topic_key ASC
-LIMIT :limit
-"""
-    rows = conn.execute(
-        sql,
-        {
-            "after_stock_key": str(after_stock_key or "").strip(),
-            "limit": max(0, int(limit)),
-        },
-    ).fetchall()
-    return [
-        str(row[0] or "").strip() for row in rows if row and str(row[0] or "").strip()
-    ]
-
-
-def _has_more_stock_keys(conn: TursoConnection, *, after_stock_key: str) -> bool:
-    sql = """
-SELECT 1
-FROM assertions
-WHERE action LIKE 'trade.%'
-  AND topic_key LIKE 'stock:%'
-  AND topic_key > :after_stock_key
-LIMIT 1
-"""
-    row = conn.execute(
-        sql, {"after_stock_key": str(after_stock_key or "").strip()}
-    ).fetchone()
-    return bool(row)
 
 
 def _stock_terms(stock_key: str) -> list[str]:
@@ -242,7 +202,6 @@ def _build_backfill_candidates_for_stock(
         next_cursor_post_uid = (
             str(last.get("post_uid") or "").strip() or cursor_post_uid
         )
-        # Prevent cursor stall (same page fetched repeatedly).
         if (
             next_cursor_created_at == cursor_created_at
             and next_cursor_post_uid == cursor_post_uid
@@ -305,6 +264,19 @@ def _backfill_rows_signature(rows: list[dict[str, Any]]) -> list[tuple[str, ...]
     return sorted(normalized, key=lambda item: (item[2], item[0]), reverse=True)
 
 
+def _signature_digest(rows: list[dict[str, Any]]) -> tuple[str, int]:
+    signature_rows = _backfill_rows_signature(rows)
+    if not signature_rows:
+        return "", 0
+    payload = json.dumps(signature_rows, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.sha1(payload.encode("utf-8")).hexdigest()
+    return digest, len(signature_rows)
+
+
+def _has_more_dirty_stock_keys(conn: TursoConnection) -> bool:
+    return bool(list_stock_backfill_dirty_keys(conn, limit=1))
+
+
 def sync_stock_backfill_cache(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
@@ -333,51 +305,28 @@ def sync_stock_backfill_cache(
     ):
         _log_backfill_sync(verbose=verbose, message="lock_busy skip=1")
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
+
     try:
-        cursor = load_worker_job_cursor(
-            engine_or_conn, state_key=BACKFILL_CACHE_CURSOR_KEY
-        )
-        _log_backfill_sync(
-            verbose=verbose,
-            message=f"cursor_loaded value={cursor or '(empty)'}",
-        )
         with (
             turso_connect_autocommit(engine_or_conn)
             if isinstance(engine_or_conn, TursoEngine)
             else engine_or_conn
         ) as conn:
-            stock_keys = _select_stock_keys_batch(
+            stock_keys = list_stock_backfill_dirty_keys(
                 conn,
-                after_stock_key=cursor,
                 limit=max(1, int(max_stocks_per_run)),
             )
             if not stock_keys:
-                if cursor:
-                    save_worker_job_cursor(
-                        engine_or_conn,
-                        state_key=BACKFILL_CACHE_CURSOR_KEY,
-                        cursor="",
-                    )
-                    _log_backfill_sync(
-                        verbose=verbose,
-                        message="stock_keys_empty cursor_reset=1",
-                    )
-                else:
-                    _log_backfill_sync(
-                        verbose=verbose,
-                        message="stock_keys_empty cursor_reset=0",
-                    )
+                _log_backfill_sync(verbose=verbose, message="dirty_keys_empty")
                 return {"processed": 0, "written": 0, "has_more": False}
 
             can_continue = should_continue or (lambda: True)
-            total_written = 0
             processed_count = 0
+            total_written = 0
+            total_changed = 0
+            removable_keys: list[str] = []
+
             for stock_key in stock_keys:
-                before_rows = list_stock_backfill_posts(
-                    conn,
-                    stock_key=stock_key,
-                    limit=max(1, int(max_rows_per_stock)),
-                )
                 rows, scan_truncated = _build_backfill_candidates_for_stock(
                     conn,
                     stock_key=stock_key,
@@ -385,86 +334,106 @@ def sync_stock_backfill_cache(
                     post_batch_size=int(post_batch_size),
                     max_scan_batches=int(BACKFILL_CACHE_MAX_SCAN_BATCHES_PER_STOCK),
                 )
-                keep_existing = bool(scan_truncated and before_rows)
+                candidate_signature, candidate_count = _signature_digest(rows)
+                meta = load_stock_backfill_meta(conn, stock_key=stock_key)
+                before_signature = str(meta.get("signature") or "").strip()
+                raw_before_count = str(meta.get("row_count") or "").strip()
+                try:
+                    before_count = max(0, int(raw_before_count or "0"))
+                except ValueError:
+                    before_count = 0
+
+                keep_existing = bool(scan_truncated and before_count > 0)
+                skip_write = False
+                changed = False
+                replaced_rows = 0
                 if keep_existing:
-                    replaced_rows = 0
-                    signature_after = _backfill_rows_signature(before_rows)
+                    skip_write = True
                     _log_backfill_sync(
                         verbose=verbose,
                         message=(
                             f"scan_truncated_keep_existing stock_key={stock_key} "
-                            f"before={int(len(before_rows))} "
-                            f"candidates={int(len(rows))}"
+                            f"before={int(before_count)} candidates={int(candidate_count)}"
                         ),
                     )
                 else:
-                    replaced_rows = replace_stock_backfill_posts(
-                        conn,
-                        stock_key=stock_key,
-                        posts=rows,
-                    )
-                    total_written += int(replaced_rows)
-                    signature_after = _backfill_rows_signature(rows)
-                if _backfill_rows_signature(before_rows) != signature_after:
+                    if (
+                        before_signature == candidate_signature
+                        and before_count == candidate_count
+                    ):
+                        skip_write = True
+                    else:
+                        replaced_rows = replace_stock_backfill_posts(
+                            conn,
+                            stock_key=stock_key,
+                            posts=rows,
+                        )
+                        save_stock_backfill_meta(
+                            conn,
+                            stock_key=stock_key,
+                            signature=candidate_signature,
+                            row_count=int(candidate_count),
+                        )
+                        total_written += int(replaced_rows)
+                        total_changed += 1
+                        changed = True
+
+                if changed:
                     mark_stock_dirty(conn, stock_key=stock_key, reason="backfill_cache")
+
                 _log_backfill_sync(
                     verbose=verbose,
                     message=(
                         f"stock_done stock_key={stock_key} "
-                        f"before={int(len(before_rows))} "
-                        f"candidates={int(len(rows))} "
+                        f"before={int(before_count)} "
+                        f"candidates={int(candidate_count)} "
                         f"truncated={1 if scan_truncated else 0} "
+                        f"changed={1 if changed else 0} "
+                        f"skip_write={1 if skip_write else 0} "
                         f"written={int(replaced_rows)}"
                     ),
                 )
+                if not keep_existing:
+                    removable_keys.append(stock_key)
                 processed_count += 1
                 try:
                     continue_now = bool(can_continue())
                 except Exception:
                     continue_now = False
                 if not continue_now:
-                    save_worker_job_cursor(
-                        engine_or_conn,
-                        state_key=BACKFILL_CACHE_CURSOR_KEY,
-                        cursor=stock_key,
-                    )
+                    remove_stock_backfill_dirty_keys(conn, stock_keys=removable_keys)
                     remaining_in_batch = bool(processed_count < len(stock_keys))
-                    has_more = remaining_in_batch or _has_more_stock_keys(
-                        conn, after_stock_key=stock_key
-                    )
+                    has_more = remaining_in_batch or _has_more_dirty_stock_keys(conn)
                     _log_backfill_sync(
                         verbose=verbose,
                         message=(
                             f"yield_to_rss processed={int(processed_count)} "
+                            f"changed={int(total_changed)} "
                             f"written={int(total_written)} "
-                            f"has_more={1 if has_more else 0} "
-                            f"cursor_out={stock_key}"
+                            f"has_more={1 if has_more else 0}"
                         ),
                     )
                     return {
                         "processed": int(processed_count),
+                        "changed": int(total_changed),
                         "written": int(total_written),
                         "has_more": bool(has_more),
                     }
 
-            new_cursor = stock_keys[-1]
-            save_worker_job_cursor(
-                engine_or_conn,
-                state_key=BACKFILL_CACHE_CURSOR_KEY,
-                cursor=new_cursor,
-            )
-            has_more = _has_more_stock_keys(conn, after_stock_key=new_cursor)
+            remove_stock_backfill_dirty_keys(conn, stock_keys=removable_keys)
+            has_more = _has_more_dirty_stock_keys(conn)
             _log_backfill_sync(
                 verbose=verbose,
                 message=(
                     f"done processed={int(processed_count)} "
+                    f"changed={int(total_changed)} "
                     f"written={int(total_written)} "
-                    f"has_more={1 if has_more else 0} "
-                    f"cursor_out={new_cursor}"
+                    f"has_more={1 if has_more else 0}"
                 ),
             )
             return {
                 "processed": int(processed_count),
+                "changed": int(total_changed),
                 "written": int(total_written),
                 "has_more": bool(has_more),
             }

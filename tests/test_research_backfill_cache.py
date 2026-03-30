@@ -5,8 +5,13 @@ import libsql
 from alphavault.db.turso_db import TursoConnection, TursoEngine
 from alphavault.research_backfill_cache import (
     ensure_research_backfill_cache_schema,
+    list_stock_backfill_dirty_keys,
     list_stock_backfill_posts,
+    load_stock_backfill_meta,
+    mark_stock_backfill_dirty_from_assertions,
+    remove_stock_backfill_dirty_keys,
     replace_stock_backfill_posts,
+    save_stock_backfill_meta,
 )
 
 
@@ -64,3 +69,50 @@ def test_ensure_research_backfill_cache_schema_runs_once_per_engine(
     module.ensure_research_backfill_cache_schema(engine)
 
     assert calls == ["libsql://unit.test"]
+
+
+def test_mark_list_and_remove_backfill_dirty_keys() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_backfill_cache_schema(conn)
+        marked = mark_stock_backfill_dirty_from_assertions(
+            conn,
+            assertions=[
+                {"topic_key": "stock:601899.SH", "stock_codes_json": "[]"},
+                {"topic_key": "stock:紫金", "stock_codes_json": '["601899.SH"]'},
+                {"topic_key": "cluster:gold", "stock_codes_json": "[]"},
+            ],
+            reason="ai_done",
+        )
+        assert marked == 2
+
+        keys = list_stock_backfill_dirty_keys(conn, limit=10)
+        assert set(keys) == {"stock:601899.SH", "stock:紫金"}
+
+        removed = remove_stock_backfill_dirty_keys(
+            conn,
+            stock_keys=["stock:601899.SH"],
+        )
+        assert removed == 1
+        assert list_stock_backfill_dirty_keys(conn, limit=10) == ["stock:紫金"]
+    finally:
+        conn.close()
+
+
+def test_save_and_load_stock_backfill_meta() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_backfill_cache_schema(conn)
+        save_stock_backfill_meta(
+            conn,
+            stock_key="stock:601899.SH",
+            signature="sig-1",
+            row_count=7,
+        )
+        meta = load_stock_backfill_meta(conn, stock_key="stock:601899.SH")
+        assert meta["stock_key"] == "stock:601899.SH"
+        assert meta["signature"] == "sig-1"
+        assert meta["row_count"] == 7
+        assert str(meta["updated_at"]).strip() != ""
+    finally:
+        conn.close()

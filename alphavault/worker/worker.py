@@ -114,6 +114,9 @@ from alphavault.worker.job_state import (
     WORKER_PROGRESS_STAGE_RELATION,
     WORKER_PROGRESS_STAGE_STOCK_HOT,
 )
+from alphavault.research_backfill_cache import (
+    mark_stock_backfill_dirty_from_assertions,
+)
 from alphavault.research_stock_cache import mark_stock_dirty_from_assertions
 from alphavault_reflex.services.stock_objects import AiRuntimeConfig
 
@@ -134,6 +137,7 @@ LLM_LOG_PREFIX = "[llm]"
 TOPIC_PROMPT_V3_LABEL = "topic_prompt_v3"
 LOG_EMPTY_VALUE = "(empty)"
 BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
+BACKFILL_CACHE_FALLBACK_INTERVAL_SECONDS = 1800.0
 SPOOL_FLUSH_MAX_ITEMS_PER_RUN = 200
 SPOOL_FLUSH_RETRY_INTERVAL_SECONDS = 1.0
 ASSERTION_OUTBOX_PUMP_BATCH_SIZE = 200
@@ -1062,6 +1066,18 @@ def _process_one_post_uid_topic_prompt_v3(
                             f"[stock_hot] mark_dirty_failed post_uid={uid}",
                             flush=True,
                         )
+                try:
+                    mark_stock_backfill_dirty_from_assertions(
+                        engine,
+                        assertions=rows,
+                        reason="ai_done",
+                    )
+                except BaseException:
+                    if config.verbose:
+                        print(
+                            f"[backfill_cache] mark_dirty_failed post_uid={uid}",
+                            flush=True,
+                        )
         return True
     except Exception as e:
         if isinstance(e, AiInvalidJsonError):
@@ -1239,6 +1255,18 @@ def _process_one_post_uid(
                 if config.verbose:
                     print(
                         f"[stock_hot] mark_dirty_failed post_uid={post_uid}",
+                        flush=True,
+                    )
+            try:
+                mark_stock_backfill_dirty_from_assertions(
+                    engine,
+                    assertions=assertions,
+                    reason="ai_done",
+                )
+            except BaseException:
+                if config.verbose:
+                    print(
+                        f"[backfill_cache] mark_dirty_failed post_uid={post_uid}",
                         flush=True,
                     )
         return True
@@ -2660,6 +2688,7 @@ def main() -> None:
     limit = args.limit if args.limit and args.limit > 0 else None
     alias_sync_interval_seconds = _resolve_stock_alias_sync_interval_seconds()
     stock_hot_cache_interval_seconds = _resolve_stock_hot_cache_interval_seconds()
+    backfill_cache_interval_seconds = float(BACKFILL_CACHE_FALLBACK_INTERVAL_SECONDS)
     alias_ai_runtime_config = _build_alias_ai_runtime_config(config)
     research_cache_interval_seconds = float(alias_sync_interval_seconds)
     low_priority_ai_gate: _LowPriorityAISlotGate | None = None
@@ -3327,6 +3356,7 @@ def main() -> None:
                 stock_hot_interval = (
                     0.0 if run_to_completion else stock_hot_cache_interval_seconds
                 )
+                backfill_interval = float(backfill_cache_interval_seconds)
 
                 spool_trigger = _should_start_spool_flush(source=source)
                 (
@@ -3395,11 +3425,13 @@ def main() -> None:
                         flush=True,
                     )
 
+                if has_assertion_events or backfill_has_more:
+                    source.backfill_cache_next_at = 0.0
+
                 backfill_trigger = bool(
                     (
                         do_maintenance
                         or force_maintenance
-                        or run_to_completion
                         or has_assertion_events
                         or backfill_has_more
                     )
@@ -3416,7 +3448,7 @@ def main() -> None:
                     trigger=backfill_trigger,
                     now=now,
                     next_run_at=source.backfill_cache_next_at,
-                    interval_seconds=periodic_interval,
+                    interval_seconds=backfill_interval,
                     wakeup_event=wakeup_event,
                     submit_fn=_submit_backfill_cache_job,
                     submit_kwargs={
@@ -3427,7 +3459,7 @@ def main() -> None:
                 if start_backfill_cache and verbose:
                     print(
                         f"[backfill_cache:{source.config.name}] sync_start trigger={1 if backfill_trigger else 0} "
-                        f"backfill_run_cap={int(backfill_run_cap)} interval={int(periodic_interval)}s",
+                        f"backfill_run_cap={int(backfill_run_cap)} interval={int(backfill_interval)}s",
                         flush=True,
                     )
 

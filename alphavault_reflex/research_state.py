@@ -31,6 +31,9 @@ from alphavault.research_workbench import (
     block_relation_candidate,
 )
 from alphavault.research_stock_cache import mark_stock_dirty
+from alphavault.research_backfill_cache import (
+    mark_stock_backfill_dirty_from_assertions,
+)
 from alphavault_reflex.services.research_data import (
     build_sector_research_view,
 )
@@ -170,6 +173,11 @@ def run_direct_stock_backfill(post_uid: str, stock_key: str, display_name: str) 
     mark_stock_dirty(
         engine,
         stock_key=target_stock_key,
+        reason="direct_backfill",
+    )
+    mark_stock_backfill_dirty_from_assertions(
+        engine,
+        assertions=merged,
         reason="direct_backfill",
     )
     return max(0, len(merged) - len(existing_assertions))
