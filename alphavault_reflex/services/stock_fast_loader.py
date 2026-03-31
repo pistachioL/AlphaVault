@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from functools import lru_cache
+from typing import Any
 
 import pandas as pd
 
 from alphavault.db.introspect import table_columns
+from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
@@ -29,6 +31,45 @@ from alphavault_reflex.services.turso_read_utils import (
 
 FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE = 240
 FAST_STOCK_TOTAL_TIMEOUT_SECONDS = 8.0
+
+FAST_STOCK_ALIAS_KEY_LIMIT = 64
+
+FAST_STOCK_ALIAS_KEYS_SQL = """
+SELECT right_key
+FROM research_relations
+WHERE relation_type = 'stock_alias'
+  AND left_key = :stock_key
+  AND relation_label = 'alias_of'
+ORDER BY right_key ASC
+LIMIT :limit
+"""
+
+
+def _load_stock_alias_keys(conn: Any, *, stock_key: str) -> list[str]:
+    key = str(stock_key or "").strip()
+    if not key:
+        return []
+    try:
+        rows = conn.execute(
+            FAST_STOCK_ALIAS_KEYS_SQL,
+            {"stock_key": key, "limit": int(FAST_STOCK_ALIAS_KEY_LIMIT)},
+        ).fetchall()
+    except BaseException:
+        return []
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not row:
+            continue
+        alias_key = str(row[0] or "").strip()
+        if not alias_key or alias_key in seen:
+            continue
+        if not alias_key.startswith("stock:"):
+            continue
+        seen.add(alias_key)
+        out.append(alias_key)
+    return out
 
 
 @lru_cache(maxsize=64)
@@ -55,22 +96,37 @@ def load_stock_trade_sources_fast_cached(
             return pd.DataFrame(), pd.DataFrame()
 
         base_query = build_assertions_query(selected_assertion_cols)
-        code_clause = ""
         params: dict[str, object] = {"stock_key": normalized_key, "limit": limit}
-        if stock_code and "stock_codes_json" in assertion_cols:
-            code_clause = " OR stock_codes_json LIKE :stock_code_like"
-            params["stock_code_like"] = f"%{stock_code}%"
+        alias_keys = _load_stock_alias_keys(conn, stock_key=normalized_key)
+        key_clause = "topic_key = :stock_key"
+        if alias_keys:
+            placeholders = make_in_placeholders(prefix="k", count=len(alias_keys))
+            params.update(make_in_params(prefix="k", values=alias_keys))
+            key_clause = f"(topic_key = :stock_key OR topic_key IN ({placeholders}))"
         order_clause = (
             " ORDER BY created_at DESC" if "created_at" in assertion_cols else ""
         )
         assertions_query = (
             f"{base_query}\n"
             "WHERE action LIKE 'trade.%'\n"
-            f"  AND (topic_key = :stock_key{code_clause})"
+            f"  AND {key_clause}"
             f"{order_clause}\n"
             "LIMIT :limit"
         )
         assertions = turso_read_sql_df(conn, assertions_query, params=params)
+        if assertions.empty and stock_code and "stock_codes_json" in assertion_cols:
+            fallback_params: dict[str, object] = {
+                "stock_code_like": f"%{stock_code}%",
+                "limit": limit,
+            }
+            fallback_query = (
+                f"{base_query}\n"
+                "WHERE action LIKE 'trade.%'\n"
+                "  AND stock_codes_json LIKE :stock_code_like"
+                f"{order_clause}\n"
+                "LIMIT :limit"
+            )
+            assertions = turso_read_sql_df(conn, fallback_query, params=fallback_params)
 
         posts = pd.DataFrame()
         if not assertions.empty:

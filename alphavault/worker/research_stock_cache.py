@@ -24,7 +24,9 @@ from alphavault.research_workbench import (
     list_pending_candidates_for_left_key,
 )
 from alphavault.worker.job_state import (
+    load_worker_job_cursor,
     release_worker_job_lock,
+    save_worker_job_cursor,
     try_acquire_worker_job_lock,
 )
 from alphavault.worker.stock_hot_payload_builder import (
@@ -33,6 +35,9 @@ from alphavault.worker.stock_hot_payload_builder import (
 )
 
 STOCK_HOT_CACHE_LOCK_KEY = "stock_hot_cache.lock"
+STOCK_HOT_CACHE_BOOTSTRAP_CURSOR_STATE_KEY = (
+    "worker.progress.stock_hot.bootstrap_cursor"
+)
 STOCK_HOT_CACHE_LOCK_LEASE_SECONDS = 600
 STOCK_HOT_CACHE_MAX_STOCKS_PER_RUN = 4
 STOCK_HOT_CACHE_DIRTY_LIMIT = 16
@@ -55,6 +60,31 @@ def _log_stock_hot_cache(*, verbose: bool, message: str) -> None:
     if not verbose:
         return
     print(f"[stock_hot_cache] {message}", flush=True)
+
+
+def _load_bootstrap_cursor(conn: object) -> str:
+    if not isinstance(conn, TursoConnection):
+        return ""
+    try:
+        return load_worker_job_cursor(
+            conn,
+            state_key=STOCK_HOT_CACHE_BOOTSTRAP_CURSOR_STATE_KEY,
+        )
+    except BaseException:
+        return ""
+
+
+def _save_bootstrap_cursor(conn: object, cursor: str) -> None:
+    if not isinstance(conn, TursoConnection):
+        return
+    try:
+        save_worker_job_cursor(
+            conn,
+            state_key=STOCK_HOT_CACHE_BOOTSTRAP_CURSOR_STATE_KEY,
+            cursor=cursor,
+        )
+    except BaseException:
+        return
 
 
 def _list_missing_hot_cache_stock_keys(
@@ -235,10 +265,18 @@ def sync_stock_hot_cache(
             )
             dirty_entries = dirty_entries[: max(1, int(max_stocks_per_run))]
             if not dirty_entries:
+                bootstrap_cursor = _load_bootstrap_cursor(conn)
                 bootstrap_keys = _list_missing_hot_cache_stock_keys(
                     conn,
                     limit=max(1, int(max_stocks_per_run)),
+                    after_stock_key=bootstrap_cursor,
                 )
+                if not bootstrap_keys and bootstrap_cursor:
+                    _save_bootstrap_cursor(conn, "")
+                    bootstrap_keys = _list_missing_hot_cache_stock_keys(
+                        conn,
+                        limit=max(1, int(max_stocks_per_run)),
+                    )
                 dirty_entries = [
                     {
                         "stock_key": key,
@@ -283,6 +321,8 @@ def sync_stock_hot_cache(
                 remove_stock_dirty_keys(conn, stock_keys=[stock_key])
                 if entity_key != stock_key and entity_key.startswith("stock:"):
                     remove_stock_dirty_keys(conn, stock_keys=[entity_key])
+                if reason == "bootstrap_missing_hot":
+                    _save_bootstrap_cursor(conn, stock_key)
                 processed_keys.append(stock_key)
                 written += 1
                 _log_stock_hot_cache(
