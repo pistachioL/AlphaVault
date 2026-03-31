@@ -78,7 +78,7 @@ def _collect_spool_flush(
         print(
             f"[spool:{source_name}] flush_done flushed={flushed} "
             f"has_more={1 if has_more else 0} "
-            f"error={1 if has_error else 0}",
+            f"ok={0 if has_error else 1}",
             flush=True,
         )
     return bool(has_error)

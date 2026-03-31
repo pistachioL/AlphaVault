@@ -64,7 +64,7 @@ def run_maintenance_if_due(
     if ctx.verbose and (recovered > 0 or flushed_redis > 0 or maintenance_error):
         print(
             f"[maintenance:{source_name}] recovered={recovered} flushed_redis={flushed_redis} "
-            f"error={1 if maintenance_error else 0}",
+            f"ok={0 if maintenance_error else 1}",
             flush=True,
         )
     return maintenance_error
