@@ -143,4 +143,9 @@ CLOUD_SCHEMA_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_assertions_topic_key ON assertions(topic_key)",
     "CREATE INDEX IF NOT EXISTS idx_assertions_action ON assertions(action)",
     "CREATE INDEX IF NOT EXISTS idx_assertions_topic_action_post_uid ON assertions(topic_key, action, post_uid)",
+    (
+        "CREATE INDEX IF NOT EXISTS idx_assertions_trade_stock_topic_key "
+        "ON assertions(topic_key) "
+        "WHERE action LIKE 'trade.%' AND topic_key LIKE 'stock:%'"
+    ),
 ]
