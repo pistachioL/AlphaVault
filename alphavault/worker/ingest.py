@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from alphavault.ai.analyze import clean_text
+from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
 from alphavault.db.turso_db import (
     TursoEngine,
     is_turso_libsql_panic_error,
@@ -60,7 +61,7 @@ def _build_post_texts(
     platform: str,
 ) -> tuple[str, str]:
     resolved_text = _build_raw_text(title=title, content_text=content_text)
-    if str(platform or "").strip().lower() != "xueqiu":
+    if str(platform or "").strip().lower() != PLATFORM_XUEQIU:
         return resolved_text, resolved_text
 
     segments = split_xueqiu_context_segments(resolved_text)
@@ -68,7 +69,7 @@ def _build_post_texts(
         return resolved_text, resolved_text
 
     display_text = "\n\n---\n\n".join(segments)
-    return segments[-1], display_text
+    return display_text, display_text
 
 
 def _try_push_to_redis_status(
@@ -251,7 +252,7 @@ def ingest_rss_many_once(
     enqueue_error = False
     seen_post_uids: set[str] = set()
     seen_urls: set[str] = set()
-    normalized_platform = str(platform or "weibo").strip().lower()
+    normalized_platform = str(platform or PLATFORM_WEIBO).strip().lower()
     feed_sleep_seconds = _coerce_nonnegative_float(rss_feed_sleep_seconds, default=0.0)
     feed_total = len(rss_urls)
 
@@ -259,10 +260,12 @@ def ingest_rss_many_once(
     write_conn_context: Any = None
 
     def build_display_md(*, text: str, author_name: str, image_urls: list[str]) -> str:
-        if normalized_platform == "weibo":
+        if normalized_platform == PLATFORM_WEIBO:
             return format_weibo_display_md(
                 text, author=author_name, image_urls=image_urls
             )
+        if normalized_platform == PLATFORM_XUEQIU:
+            return ""
         if not text and not image_urls:
             return ""
         img_lines = [f'<img class="ke_img" src="{url}" />' for url in image_urls]
@@ -405,7 +408,7 @@ def ingest_rss_many_once(
                     continue
                 if post_uid in seen_post_uids:
                     continue
-                if link in seen_urls and normalized_platform == "weibo":
+                if link in seen_urls and normalized_platform == PLATFORM_WEIBO:
                     continue
 
                 raw_title = clean_text(entry.get("title") or "")

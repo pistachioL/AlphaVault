@@ -21,7 +21,7 @@ from alphavault.domains.thread_tree.parse import (
     _to_one_line_text,
     parse_display_md_segments,
 )
-from alphavault.weibo.display import format_weibo_display_md
+from alphavault.weibo.display import SEGMENT_SEPARATOR, format_weibo_display_md
 
 # Hard limits to prevent huge prompts.
 MAX_THREAD_POSTS = 60
@@ -47,9 +47,10 @@ def _truncate_text(text: str, *, max_chars: int) -> tuple[str, bool]:
 def _ensure_display_md(*, raw_text: str, display_md: str, author: str) -> str:
     if str(display_md or "").strip():
         return str(display_md or "")
-    return format_weibo_display_md(
-        str(raw_text or ""), author=str(author or "").strip()
-    )
+    raw_value = str(raw_text or "")
+    if SEGMENT_SEPARATOR in raw_value:
+        return raw_value
+    return format_weibo_display_md(raw_value, author=str(author or "").strip())
 
 
 def thread_root_info_for_post(

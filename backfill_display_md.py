@@ -122,6 +122,8 @@ def _build_updates(rows: list[dict]) -> tuple[list[dict], set[str]]:
         raw_text = str(row.get("raw_text") or "")
         if not post_uid:
             continue
+        if post_uid.lower().startswith("xueqiu:"):
+            continue
         display_md = format_weibo_display_md(raw_text, author=author)
         updates.append({"post_uid": post_uid, "display_md": display_md})
         found_uids.add(post_uid)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
 from alphavault.db.turso_db import TursoEngine
 from alphavault.db.turso_queue import CloudPost, upsert_pending_post
 from alphavault.rss.utils import now_str
@@ -90,13 +91,16 @@ def ensure_prefetched_post_persisted(
 ) -> None:
     raw_text = str(post.raw_text or "")
     author = str(post.author or "")
+    platform = str(post.platform or PLATFORM_WEIBO).strip().lower() or PLATFORM_WEIBO
     display_md = str(post.display_md or "")
-    if not display_md.strip():
+    if platform == PLATFORM_XUEQIU:
+        display_md = ""
+    elif not display_md.strip():
         display_md = format_weibo_display_md(raw_text, author=author)
     upsert_pending_post(
         engine,
         post_uid=str(post.post_uid or "").strip(),
-        platform=str(post.platform or "weibo").strip() or "weibo",
+        platform=platform,
         platform_post_id=str(post.platform_post_id or "").strip(),
         author=author,
         created_at=str(post.created_at or now_str()),
