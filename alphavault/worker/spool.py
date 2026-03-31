@@ -7,7 +7,12 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from alphavault.constants import DEFAULT_SPOOL_DIR, ENV_SPOOL_DIR
+from alphavault.constants import (
+    DEFAULT_SPOOL_DIR,
+    ENV_SPOOL_DIR,
+    PLATFORM_WEIBO,
+    PLATFORM_XUEQIU,
+)
 from alphavault.db.turso_db import (
     TursoEngine,
     is_turso_libsql_panic_error,
@@ -234,15 +239,21 @@ def flush_spool_to_turso(
                     continue
 
                 try:
+                    platform = (
+                        str(payload.get("platform") or PLATFORM_WEIBO).strip().lower()
+                        or PLATFORM_WEIBO
+                    )
                     raw_text = str(payload.get("raw_text") or "")
                     author = str(payload.get("author") or "")
                     display_md = str(payload.get("display_md") or "")
-                    if not display_md.strip():
+                    if platform == PLATFORM_XUEQIU:
+                        display_md = ""
+                    elif not display_md.strip():
                         display_md = format_weibo_display_md(raw_text, author=author)
                     upsert_pending_post(
                         conn,
                         post_uid=post_uid,
-                        platform=str(payload.get("platform") or "weibo"),
+                        platform=platform,
                         platform_post_id=str(payload.get("platform_post_id") or ""),
                         author=str(payload.get("author") or ""),
                         created_at=str(payload.get("created_at") or now_str()),
