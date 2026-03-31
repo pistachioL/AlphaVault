@@ -4,10 +4,9 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from sqlalchemy.engine import Engine
-
 from alphavault.ai.analyze import clean_text
 from alphavault.db.turso_db import (
+    TursoEngine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
     turso_connect_autocommit,
@@ -220,7 +219,7 @@ def _coerce_nonnegative_float(value: object, *, default: float) -> float:
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
-    *, engine: Engine, err: BaseException
+    *, engine: TursoEngine, err: BaseException
 ) -> None:
     if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
         return
@@ -233,7 +232,7 @@ def _maybe_dispose_turso_engine_on_transient_error(
 def ingest_rss_many_once(
     *,
     rss_urls: list[str],
-    engine: Optional[Engine],
+    engine: Optional[TursoEngine],
     spool_dir: Path,
     redis_client,
     redis_queue_key: str,

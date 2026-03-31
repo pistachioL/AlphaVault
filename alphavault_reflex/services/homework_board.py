@@ -10,8 +10,8 @@ from alphavault_reflex.services.homework_constants import (
     TRADE_BOARD_DEFAULT_WINDOW_DAYS,
     TRADE_BOARD_MAX_WINDOW_DAYS,
 )
-from alphavault_reflex.services.thread_tree import build_post_tree
-from alphavault_reflex.services.thread_tree import normalize_tree_lookup_post_uid
+from alphavault.domains.thread_tree.service import build_post_tree
+from alphavault.domains.thread_tree.service import normalize_tree_lookup_post_uid
 
 TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})

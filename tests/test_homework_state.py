@@ -139,7 +139,7 @@ def test_homework_state_refresh_does_not_call_ai_alias_map(monkeypatch) -> None:
         raise AssertionError("build_ai_stock_alias_map should not be called on refresh")
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.build_ai_stock_alias_map",
+        "alphavault.infra.ai.stock_alias.build_ai_stock_alias_map",
         _should_not_call,
     )
 

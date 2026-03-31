@@ -7,10 +7,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from sqlalchemy.engine import Engine
-
 from alphavault.constants import DEFAULT_SPOOL_DIR, ENV_SPOOL_DIR
 from alphavault.db.turso_db import (
+    TursoEngine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
     turso_connect_autocommit,
@@ -180,7 +179,7 @@ def _recover_stale_processing_files(*, spool_dir: Path, verbose: bool) -> int:
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
-    *, engine: Engine, err: BaseException
+    *, engine: TursoEngine, err: BaseException
 ) -> None:
     if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
         return
@@ -193,7 +192,7 @@ def _maybe_dispose_turso_engine_on_transient_error(
 def flush_spool_to_turso(
     *,
     spool_dir: Path,
-    engine: Optional[Engine],
+    engine: Optional[TursoEngine],
     max_items: int,
     verbose: bool,
     redis_client=None,

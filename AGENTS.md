@@ -5,13 +5,12 @@
 - `alphavault_reflex/`: Reflex web UI (state, services, pages). Key entry: `alphavault_reflex/alphavault_reflex.py`; config: `rxconfig.py`.
 - `tests/`: `pytest` suite (`test_*.py`).
 - `assets/`: static CSS/JS used by the UI.
-- Root scripts: `weibo_rss_turso_worker.py` (main worker), `streamlit_app.py` (legacy UI shell), plus one-off maintenance tools.
+- Root scripts: `weibo_rss_turso_worker.py` (main worker), plus one-off maintenance tools.
 - `docs/superpowers/specs/`: design/architecture specs and notes.
 
 ## Build, Test, and Development Commands
 Uses `uv` (lockfile: `uv.lock`).
 - `uv sync`: install dependencies.
-- `uv sync --group streamlit`: install optional Streamlit extras.
 - `uv run pre-commit install`: install git hooks.
 - `uv run pre-commit run -a`: run format/lint/type-check/spell-check/tests (Ruff, mypy, codespell, vulture, pytest).
 - `uv run pytest`: run tests.

@@ -2,28 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import Callable
 
 import pandas as pd
 
-from alphavault.research_workbench import make_candidate_id
-from alphavault_reflex.services.relation_candidates import (
-    RELATION_LABEL_RELATED,
-    build_sector_relation_candidates,
-    build_stock_alias_candidates,
-    build_stock_sector_candidates,
-    enrich_candidates_with_ai,
-)
 from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
-from alphavault_reflex.services.stock_objects import (
+from alphavault.domains.stock.object_index import (
     build_stock_object_index,
     build_stock_search_rows,
     filter_assertions_for_stock_object,
 )
-from alphavault_reflex.services.thread_tree import build_post_tree_map
+from alphavault.domains.thread_tree.service import build_post_tree_map
 
 
 STOCK_KEY_PREFIX = "stock:"
@@ -178,109 +169,6 @@ def build_sector_research_view(
         signals=_build_signal_rows(sector_view, posts=posts),
         related_stocks=_build_related_stock_rows(sector_view),
         pending_candidates=[],
-    )
-
-
-def build_stock_pending_candidates(
-    assertions: pd.DataFrame,
-    *,
-    stock_key: str,
-    ai_enabled: bool,
-    should_continue: Callable[[], bool] | None = None,
-) -> list[dict[str, str]]:
-    alias_rows = build_stock_alias_candidates(assertions, stock_key=stock_key)
-    sector_rows = build_stock_sector_candidates(assertions, stock_key=stock_key)
-
-    candidates: list[dict[str, str]] = []
-    for row in alias_rows:
-        alias_key = str(row.get("alias_key") or "").strip()
-        if not alias_key:
-            continue
-        candidates.append(
-            {
-                **row,
-                "relation_type": "stock_alias",
-                "left_key": stock_key,
-                "right_key": alias_key,
-                "relation_label": "alias_of",
-                "candidate_id": make_candidate_id(
-                    relation_type="stock_alias",
-                    left_key=stock_key,
-                    right_key=alias_key,
-                    relation_label="alias_of",
-                ),
-                "candidate_key": alias_key,
-                "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
-            }
-        )
-    for row in sector_rows:
-        sector_key = str(row.get("sector_key") or "").strip()
-        if not sector_key:
-            continue
-        candidates.append(
-            {
-                **row,
-                "relation_type": "stock_sector",
-                "left_key": stock_key,
-                "right_key": f"cluster:{sector_key}",
-                "relation_label": "member_of",
-                "candidate_id": make_candidate_id(
-                    relation_type="stock_sector",
-                    left_key=stock_key,
-                    right_key=f"cluster:{sector_key}",
-                    relation_label="member_of",
-                ),
-                "candidate_key": sector_key,
-                "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
-            }
-        )
-    return _finalize_candidate_rows(
-        enrich_candidates_with_ai(
-            candidates,
-            relation_type="stock_sector",
-            ai_enabled=ai_enabled,
-            should_continue=should_continue,
-        )
-    )
-
-
-def build_sector_pending_candidates(
-    assertions: pd.DataFrame,
-    *,
-    sector_key: str,
-    ai_enabled: bool,
-    should_continue: Callable[[], bool] | None = None,
-) -> list[dict[str, str]]:
-    candidates = build_sector_relation_candidates(assertions, sector_key=sector_key)
-    rows: list[dict[str, str]] = []
-    for row in candidates:
-        candidate_sector = str(row.get("sector_key") or "").strip()
-        if not candidate_sector:
-            continue
-        rows.append(
-            {
-                **row,
-                "relation_type": "sector_sector",
-                "left_key": f"cluster:{sector_key}",
-                "right_key": f"cluster:{candidate_sector}",
-                "relation_label": RELATION_LABEL_RELATED,
-                "candidate_id": make_candidate_id(
-                    relation_type="sector_sector",
-                    left_key=f"cluster:{sector_key}",
-                    right_key=f"cluster:{candidate_sector}",
-                    relation_label=RELATION_LABEL_RELATED,
-                ),
-                "candidate_key": candidate_sector,
-                "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
-            }
-        )
-    return _finalize_candidate_rows(
-        enrich_candidates_with_ai(
-            rows,
-            relation_type="sector_sector",
-            ai_enabled=ai_enabled,
-            should_continue=should_continue,
-        )
     )
 
 

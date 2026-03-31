@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from alphavault_reflex.services import turso_read
+from alphavault_reflex.services import stock_fast_loader
 
 
 def test_load_stock_sources_fast_from_env_returns_partial_error(monkeypatch) -> None:
-    monkeypatch.setattr(turso_read, "load_dotenv_if_present", lambda: None)
+    monkeypatch.setattr(stock_fast_loader, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
-        turso_read,
+        stock_fast_loader,
         "load_configured_turso_sources_from_env",
         lambda: [
             SimpleNamespace(name="weibo", url="u1", token="t1"),
@@ -35,15 +35,10 @@ def test_load_stock_sources_fast_from_env_returns_partial_error(monkeypatch) -> 
         )
         return posts, assertions
 
-    monkeypatch.setattr(
-        turso_read,
-        "_load_stock_trade_sources_fast_cached",
-        _fake_fast_cached,
-    )
-
-    posts, assertions, err = turso_read.load_stock_sources_fast_from_env(
+    posts, assertions, err = stock_fast_loader.load_stock_sources_fast_from_env(
         "03316.HK",
         per_source_limit=16,
+        load_cached_fn=_fake_fast_cached,
     )
 
     assert not posts.empty
@@ -52,9 +47,9 @@ def test_load_stock_sources_fast_from_env_returns_partial_error(monkeypatch) -> 
 
 
 def test_load_stock_sources_fast_from_env_normalizes_stock_key(monkeypatch) -> None:
-    monkeypatch.setattr(turso_read, "load_dotenv_if_present", lambda: None)
+    monkeypatch.setattr(stock_fast_loader, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
-        turso_read,
+        stock_fast_loader,
         "load_configured_turso_sources_from_env",
         lambda: [SimpleNamespace(name="weibo", url="u1", token="t1")],
     )
@@ -72,11 +67,8 @@ def test_load_stock_sources_fast_from_env_normalizes_stock_key(monkeypatch) -> N
         seen_stock_keys.append(stock_key)
         return pd.DataFrame(), pd.DataFrame()
 
-    monkeypatch.setattr(
-        turso_read,
-        "_load_stock_trade_sources_fast_cached",
-        _fake_fast_cached,
+    _posts, _assertions, _err = stock_fast_loader.load_stock_sources_fast_from_env(
+        "03316.HK",
+        load_cached_fn=_fake_fast_cached,
     )
-
-    _posts, _assertions, _err = turso_read.load_stock_sources_fast_from_env("03316.HK")
     assert seen_stock_keys == ["stock:03316.HK"]

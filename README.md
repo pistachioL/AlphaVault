@@ -14,7 +14,6 @@
 - `alphavault/db/turso_queue.py`：Turso 队列字段与读写
 - `alphavault/db/turso_db.py`：Turso engine + 基础表（posts/assertions）
 - `alphavault_reflex/`：Reflex 前端（交易流、个股页、板块页、整理中心）
-- `streamlit_app.py`：旧入口壳（保留总览、风险、日志；研究入口已跳到 Reflex）
 
 ## 环境要求
 - Python 3.10+
@@ -24,11 +23,6 @@
 ## 安装
 ```bash
 uv sync
-```
-
-如果你要跑旧版 Streamlit 入口，再额外装可选依赖：
-```bash
-uv sync --group streamlit
 ```
 
 ## 开发（pre-commit + tests）
@@ -80,7 +74,7 @@ uv run python weibo_rss_turso_worker.py --verbose
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
 - Worker 会先写本地 `spool` 文件；Redis 可用时优先走 Redis AI 队列，AI 完成后再写 Turso。
 - Redis 打开后，作者线程上下文优先读 Redis 缓存；缓存 miss 才回源 Turso。
-- Reflex / Streamlit 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
+- Reflex 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
 
 ## 手动触发 RSS 抓取 API
 先设置鉴权 key：
@@ -135,7 +129,7 @@ uv run reflex run
 其实不是库里没有，
 而是同一只票被拆成了几块。
 
-以前在旧 `Streamlit` 里，遇到这种情况，经常靠“关键字搜索”硬补。
+以前在旧 `Streamlit`（已下线）里，遇到这种情况，经常靠“关键字搜索”硬补。
 这能救急，但有两个问题：
 - 关键字命中不等于真的在讲这只票
 - 人每次都要自己猜关键字，流程很绕
@@ -265,23 +259,12 @@ uv run reflex run
 - `简称 / 黑话`：AI 候选判断
 - `AI 漏抽文章`：待回补文章 + 定向 AI 回补
 
-## 旧 Streamlit 入口
+## Web 入口
 ```bash
-uv run streamlit run streamlit_app.py
+uv run reflex run
 ```
 
-注意：`streamlit` 现在是可选依赖组，先执行一次：
-```bash
-uv sync --group streamlit
-```
-
-保留原因：
-- 总览
-- 风险雷达
-- 主题时间线
-- 学习库 / 日志 / 数据表
-
-已经迁走的研究入口：
+当前只保留 Reflex 入口：
 - `交易流` -> `Reflex /homework`
 - `关注页` -> `Reflex /organizer`
 - `主题聚合` -> `Reflex /organizer`
@@ -342,5 +325,5 @@ docker run -d --name alphavault \
 ## 常见问题
 - `auth role not found`：Turso token 与 DB 不匹配，请重新生成 token 并核对 URL。
 - Turso 连不上：worker 不会退出，会先写 `spool`/Redis；恢复后会自动 flush + 重试 AI。
-- Reflex / Streamlit 看不到数据：因为只展示 `processed_at IS NOT NULL`（AI 还没跑完就不会显示）。
+- Reflex 看不到数据：因为只展示 `processed_at IS NOT NULL`（AI 还没跑完就不会显示）。
 - RSS 抓取正常但 LLM 不跑：确认 `AI_API_KEY` / `AI_MODEL` / `AI_BASE_URL` 配置正确。

@@ -35,7 +35,8 @@ from alphavault.constants import (
 from alphavault.db.turso_db import get_turso_engine_from_env
 from alphavault.db.turso_queue import ensure_cloud_queue_schema, try_mark_ai_running
 from alphavault.rss.utils import RateLimiter, env_bool, env_float, env_int
-from alphavault.worker.worker import LLMConfig, _process_one_post_uid
+from alphavault.worker.post_processor import process_one_post_uid
+from alphavault.worker.runtime_models import LLMConfig
 
 
 DEFAULT_RELEVANT_THRESHOLD = 0.35
@@ -211,7 +212,7 @@ def main() -> None:
             f"[manual] run post_uid={post_uid} prompt_version={config.prompt_version}",
             flush=True,
         )
-        _process_one_post_uid(
+        process_one_post_uid(
             engine=engine, post_uid=post_uid, config=config, limiter=limiter
         )
         ok += 1

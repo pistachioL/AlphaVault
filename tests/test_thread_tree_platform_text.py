@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from alphavault_reflex.services.thread_tree import build_post_tree
+from alphavault.domains.thread_tree.service import build_post_tree
 
 
 def test_build_post_tree_uses_raw_text_for_xueqiu() -> None:

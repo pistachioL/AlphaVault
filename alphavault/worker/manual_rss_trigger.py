@@ -5,8 +5,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy.engine import Engine
-
 from alphavault.constants import (
     DEFAULT_RSS_FEED_SLEEP_SECONDS,
     DEFAULT_RSS_RETRIES,
@@ -17,6 +15,7 @@ from alphavault.constants import (
     ENV_RSS_TIMEOUT_SECONDS,
 )
 from alphavault.db.turso_db import (
+    TursoEngine,
     ensure_turso_engine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
@@ -95,7 +94,7 @@ def _build_source_redis_queue_key(
 def _flush_source_spool_to_turso(
     *,
     spool_dir: Path,
-    engine: Engine,
+    engine: TursoEngine,
     redis_client: Any,
     redis_queue_key: str,
 ) -> tuple[int, bool]:
@@ -118,7 +117,7 @@ def _flush_source_spool_to_turso(
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
-    *, engine: Engine, err: BaseException
+    *, engine: TursoEngine, err: BaseException
 ) -> None:
     if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
         return

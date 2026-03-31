@@ -230,6 +230,16 @@ WHERE candidate_id = :candidate_id
 """
 
 
+def select_candidate_status_by_ids(table: str, *, id_count: int) -> str:
+    count = max(1, int(id_count or 0))
+    placeholders = ", ".join(["?"] * count)
+    return f"""
+SELECT candidate_id, status
+FROM {table}
+WHERE candidate_id IN ({placeholders})
+"""
+
+
 def update_candidate_status(table: str) -> str:
     return f"""
 UPDATE {table}
@@ -255,6 +265,16 @@ VALUES (:alias_key, :status, :attempt_count, :now, :now)
 ON CONFLICT(alias_key) DO UPDATE SET
     status = excluded.status,
     updated_at = excluded.updated_at
+"""
+
+
+def select_alias_resolve_tasks_by_keys(table: str, *, key_count: int) -> str:
+    count = max(1, int(key_count or 0))
+    placeholders = ", ".join(["?"] * count)
+    return f"""
+SELECT alias_key, status, attempt_count
+FROM {table}
+WHERE alias_key IN ({placeholders})
 """
 
 

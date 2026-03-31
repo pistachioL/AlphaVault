@@ -3,38 +3,41 @@ from __future__ import annotations
 import pandas as pd
 
 from alphavault.db.turso_env import TursoSource
-from alphavault_reflex.services import turso_read
+from alphavault_reflex.services import trade_board_loader
 
 
 def test_resolve_homework_source_workers_uses_default_when_env_missing(
     monkeypatch,
 ) -> None:
-    monkeypatch.delenv(turso_read.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, raising=False)
-    assert turso_read._resolve_homework_source_workers(source_count=5) == 2
+    monkeypatch.delenv(
+        trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS,
+        raising=False,
+    )
+    assert trade_board_loader.resolve_homework_source_workers(source_count=5) == 2
 
 
 def test_resolve_homework_source_workers_falls_back_on_invalid_env(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv(turso_read.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "bad")
-    assert turso_read._resolve_homework_source_workers(source_count=5) == 2
+    monkeypatch.setenv(trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "bad")
+    assert trade_board_loader.resolve_homework_source_workers(source_count=5) == 2
 
 
 def test_resolve_homework_source_workers_clamps_to_valid_bounds(
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv(turso_read.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "0")
-    assert turso_read._resolve_homework_source_workers(source_count=5) == 1
+    monkeypatch.setenv(trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "0")
+    assert trade_board_loader.resolve_homework_source_workers(source_count=5) == 1
 
-    monkeypatch.setenv(turso_read.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "9")
-    assert turso_read._resolve_homework_source_workers(source_count=2) == 2
+    monkeypatch.setenv(trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "9")
+    assert trade_board_loader.resolve_homework_source_workers(source_count=2) == 2
 
 
 def test_load_homework_board_payload_from_env_merges_source_rows(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        turso_read,
+        trade_board_loader,
         "load_configured_turso_sources_from_env",
         lambda: [
             TursoSource(name="weibo", url="u1", token="t1"),
@@ -80,9 +83,12 @@ def test_load_homework_board_payload_from_env_merges_source_rows(
         )
         return assertions, relations
 
-    monkeypatch.setattr(turso_read, "_load_homework_board_payload_cached", _fake_cached)
-
-    assertions, relations, err = turso_read.load_homework_board_payload_from_env(3)
+    assertions, relations, err = (
+        trade_board_loader.load_homework_board_payload_from_env(
+            3,
+            load_cached_fn=_fake_cached,
+        )
+    )
 
     assert err == ""
     assert len(assertions) == 2
@@ -101,7 +107,7 @@ def test_load_homework_board_payload_from_env_returns_turso_error(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        turso_read,
+        trade_board_loader,
         "load_configured_turso_sources_from_env",
         lambda: [TursoSource(name="weibo", url="u1", token="t1")],
     )
@@ -115,11 +121,12 @@ def test_load_homework_board_payload_from_env_returns_turso_error(
         del db_url, auth_token, source_name, lookback_days
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(
-        turso_read, "_load_homework_board_payload_cached", _raise_cached
+    assertions, relations, err = (
+        trade_board_loader.load_homework_board_payload_from_env(
+            3,
+            load_cached_fn=_raise_cached,
+        )
     )
-
-    assertions, relations, err = turso_read.load_homework_board_payload_from_env(3)
 
     assert assertions.empty
     assert relations.empty
@@ -134,7 +141,7 @@ def test_load_homework_board_payload_from_env_serial_parallel_same(
         TursoSource(name="xueqiu", url="u2", token="t2"),
     ]
     monkeypatch.setattr(
-        turso_read,
+        trade_board_loader,
         "load_configured_turso_sources_from_env",
         lambda: sources,
     )
@@ -152,16 +159,20 @@ def test_load_homework_board_payload_from_env_serial_parallel_same(
             pd.DataFrame([{"source": source_name}]),
         )
 
-    monkeypatch.setattr(turso_read, "_load_homework_board_payload_cached", _fake_cached)
-
-    monkeypatch.setenv(turso_read.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "1")
+    monkeypatch.setenv(trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "1")
     serial_assertions, serial_relations, serial_err = (
-        turso_read.load_homework_board_payload_from_env(3)
+        trade_board_loader.load_homework_board_payload_from_env(
+            3,
+            load_cached_fn=_fake_cached,
+        )
     )
 
-    monkeypatch.setenv(turso_read.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "2")
+    monkeypatch.setenv(trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "2")
     parallel_assertions, parallel_relations, parallel_err = (
-        turso_read.load_homework_board_payload_from_env(3)
+        trade_board_loader.load_homework_board_payload_from_env(
+            3,
+            load_cached_fn=_fake_cached,
+        )
     )
 
     assert serial_err == ""

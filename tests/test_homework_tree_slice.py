@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from alphavault_reflex.services.thread_tree import slice_posts_for_single_post_tree
+from alphavault.domains.thread_tree.service import slice_posts_for_single_post_tree
 
 
 def test_slice_posts_for_single_post_tree_matches_post_uid() -> None:

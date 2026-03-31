@@ -242,19 +242,29 @@ def test_list_pending_candidates_for_left_key_includes_candidate_key() -> None:
         conn.close()
 
 
-def test_ensure_research_workbench_schema_runs_once_per_engine(monkeypatch) -> None:
+def test_research_workbench_exports_schema_ensure_function() -> None:
     from alphavault import research_workbench as module
+    from alphavault.research_workbench import schema as schema_module
+
+    assert (
+        module.ensure_research_workbench_schema
+        is schema_module.ensure_research_workbench_schema
+    )
+
+
+def test_ensure_research_workbench_schema_runs_once_per_engine(monkeypatch) -> None:
+    from alphavault.research_workbench import schema as schema_module
 
     calls: list[str] = []
-    monkeypatch.setattr(module, "_SCHEMA_READY_KEYS", set())
+    monkeypatch.setattr(schema_module, "_SCHEMA_READY_KEYS", set())
     monkeypatch.setattr(
-        module,
-        "_run_schema_ddl",
+        schema_module,
+        "run_schema_ddl",
         lambda engine_or_conn: calls.append(str(engine_or_conn.remote_url)),
     )
 
     engine = TursoEngine(remote_url="libsql://unit.test", auth_token="token")
-    module.ensure_research_workbench_schema(engine)
-    module.ensure_research_workbench_schema(engine)
+    schema_module.ensure_research_workbench_schema(engine)
+    schema_module.ensure_research_workbench_schema(engine)
 
     assert calls == ["libsql://unit.test"]

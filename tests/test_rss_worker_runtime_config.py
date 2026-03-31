@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import sys
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 import requests
 
+from alphavault.db.turso_db import TursoEngine
 from alphavault.rss import utils as rss_utils
 from alphavault.worker import ingest
 from alphavault.worker.cli import parse_args
@@ -686,7 +688,7 @@ def test_ingest_rss_many_once_prints_feed_sleep_log(
 def test_ingest_rss_many_once_reuses_single_turso_connection(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     conn_marker = object()
     connect_calls: list[object] = []
     upsert_conn_ids: list[int] = []
@@ -765,7 +767,7 @@ def test_ingest_rss_many_once_reuses_single_turso_connection(
 def test_ingest_rss_many_once_reconnects_after_write_error(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     first_conn = object()
     second_conn = object()
     connect_calls: list[object] = []
@@ -851,7 +853,7 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
 def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     connect_calls: list[object] = []
     upsert_calls: list[object] = []
 

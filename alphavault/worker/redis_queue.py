@@ -448,21 +448,6 @@ def redis_assertion_event_count(client, queue_key: str) -> int:
         return 0
 
 
-def redis_assertion_clear_events(client, queue_key: str) -> int:
-    if not client or not queue_key:
-        return 0
-    key = redis_assertion_ready_key(queue_key)
-    try:
-        count = int(client.llen(key) or 0)
-    except Exception:
-        count = 0
-    try:
-        client.delete(key)
-    except Exception:
-        return 0
-    return count
-
-
 def redis_assertion_get_cursor(client, queue_key: str) -> int:
     if not client or not queue_key:
         return 0

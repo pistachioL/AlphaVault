@@ -4,7 +4,9 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import cast
 
+from alphavault.db.turso_db import TursoEngine
 from alphavault.worker import spool
 
 
@@ -48,7 +50,7 @@ def test_claim_spool_file_refreshes_processing_mtime(tmp_path) -> None:
 
 
 def test_flush_spool_to_turso_reuses_single_connection(monkeypatch, tmp_path) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     conn_marker = object()
     connect_calls: list[object] = []
     upsert_conn_ids: list[int] = []
@@ -90,7 +92,7 @@ def test_flush_spool_to_turso_reuses_single_connection(monkeypatch, tmp_path) ->
 
 
 def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     conn_marker = object()
 
     class _ConnContext:
@@ -131,7 +133,7 @@ def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -
 def test_flush_spool_to_turso_recovers_stale_processing_file(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     conn_marker = object()
     seen_post_uids: list[str] = []
 
@@ -177,7 +179,7 @@ def test_flush_spool_to_turso_recovers_stale_processing_file(
 def test_flush_spool_to_turso_skips_fresh_processing_file(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     conn_marker = object()
     seen_post_uids: list[str] = []
 
@@ -221,7 +223,7 @@ def test_flush_spool_to_turso_skips_fresh_processing_file(
 def test_flush_spool_to_turso_restores_json_when_turso_write_fails(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = object()
+    engine_marker = cast(TursoEngine, object())
     conn_marker = object()
 
     class _ConnContext:

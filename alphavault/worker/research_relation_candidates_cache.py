@@ -24,8 +24,8 @@ from alphavault.research_workbench import (
     upsert_relation_candidate,
 )
 from alphavault.rss.utils import RateLimiter
-from alphavault.ui.follow_pages_key_match import parse_json_list
-from alphavault_reflex.services.research_data import (
+from alphavault.domains.common.json_list import parse_json_list
+from alphavault.app.relation.candidate_builders import (
     build_sector_pending_candidates,
     build_stock_pending_candidates,
 )

@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from alphavault.ui.thread_tree_parse import (
+from alphavault.domains.thread_tree.parse import (
     _content_key_for_compare,
     _extract_speaker_name,
     _make_synthetic_source_id,

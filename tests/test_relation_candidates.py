@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pandas as pd
 
-from alphavault_reflex.services.relation_candidates import (
+from alphavault.domains.relation.relation_candidates import (
     build_sector_relation_candidates,
     build_stock_alias_candidates,
     build_stock_sector_candidates,
     classify_sector_relation_label,
-    enrich_candidates_with_ai,
 )
+from alphavault.infra.ai.relation_candidate_ranker import enrich_candidates_with_ai
 
 
 def test_build_stock_sector_candidates_prefers_high_overlap_entities() -> None:

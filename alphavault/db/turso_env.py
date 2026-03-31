@@ -8,10 +8,9 @@ from alphavault.constants import (
     ENV_WEIBO_TURSO_DATABASE_URL,
     ENV_XUEQIU_TURSO_AUTH_TOKEN,
     ENV_XUEQIU_TURSO_DATABASE_URL,
+    PLATFORM_WEIBO,
+    PLATFORM_XUEQIU,
 )
-
-PLATFORM_WEIBO = "weibo"
-PLATFORM_XUEQIU = "xueqiu"
 
 
 @dataclass(frozen=True)

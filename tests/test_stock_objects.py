@@ -5,12 +5,12 @@ import time
 
 import pandas as pd
 
-from alphavault_reflex.services.stock_objects import (
-    build_ai_stock_alias_map,
+from alphavault.domains.stock.object_index import (
     build_stock_object_index,
     filter_assertions_for_stock_object,
     resolve_stock_object_key,
 )
+from alphavault.infra.ai.stock_alias import build_ai_stock_alias_map
 
 
 def test_build_stock_object_index_merges_code_and_full_name_but_not_short_alias() -> (
@@ -76,11 +76,11 @@ def test_build_ai_stock_alias_map_resolves_short_alias_with_ai(monkeypatch) -> N
     )
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        "alphavault.infra.ai.stock_alias.ai_is_configured",
         lambda: (True, ""),
     )
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects._call_ai_with_litellm",
+        "alphavault.infra.ai.stock_alias._call_ai_with_litellm",
         lambda **kwargs: {
             "target_object_key": "stock:601899.SH",
             "ai_reason": "同作者同板块，判断是紫金矿业简称",
@@ -157,7 +157,7 @@ def test_build_ai_stock_alias_map_ignores_non_stock_like_topic_keys(
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        "alphavault.infra.ai.stock_alias.ai_is_configured",
         lambda: (True, ""),
     )
 
@@ -166,7 +166,7 @@ def test_build_ai_stock_alias_map_ignores_non_stock_like_topic_keys(
         return {"target_object_key": "", "ai_reason": ""}
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects._call_ai_with_litellm",
+        "alphavault.infra.ai.stock_alias._call_ai_with_litellm",
         _fake_ai,
     )
 
@@ -227,7 +227,7 @@ def test_build_ai_stock_alias_map_respects_max_alias_keys_and_stats(
     stats: dict[str, int] = {}
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        "alphavault.infra.ai.stock_alias.ai_is_configured",
         lambda: (True, ""),
     )
 
@@ -236,7 +236,7 @@ def test_build_ai_stock_alias_map_respects_max_alias_keys_and_stats(
         return {"target_object_key": "", "ai_reason": ""}
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects._call_ai_with_litellm",
+        "alphavault.infra.ai.stock_alias._call_ai_with_litellm",
         _fake_ai,
     )
 
@@ -299,7 +299,7 @@ def test_build_ai_stock_alias_map_respects_ai_max_inflight(monkeypatch) -> None:
         ]
     )
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        "alphavault.infra.ai.stock_alias.ai_is_configured",
         lambda: (True, ""),
     )
 
@@ -321,7 +321,7 @@ def test_build_ai_stock_alias_map_respects_ai_max_inflight(monkeypatch) -> None:
         return ""
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects._resolve_single_alias_with_ai",
+        "alphavault.infra.ai.stock_alias._resolve_single_alias_with_ai",
         _fake_resolve,
     )
 
@@ -381,7 +381,7 @@ def test_build_ai_stock_alias_map_respects_shared_slot_gate(monkeypatch) -> None
         ]
     )
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        "alphavault.infra.ai.stock_alias.ai_is_configured",
         lambda: (True, ""),
     )
 
@@ -418,7 +418,7 @@ def test_build_ai_stock_alias_map_respects_shared_slot_gate(monkeypatch) -> None
         return ""
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects._resolve_single_alias_with_ai",
+        "alphavault.infra.ai.stock_alias._resolve_single_alias_with_ai",
         _fake_resolve,
     )
 
@@ -483,7 +483,7 @@ def test_build_ai_stock_alias_map_stops_when_should_continue_false(
         ]
     )
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        "alphavault.infra.ai.stock_alias.ai_is_configured",
         lambda: (True, ""),
     )
 
@@ -498,7 +498,7 @@ def test_build_ai_stock_alias_map_stops_when_should_continue_false(
         return ""
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects._resolve_single_alias_with_ai",
+        "alphavault.infra.ai.stock_alias._resolve_single_alias_with_ai",
         _fake_resolve,
     )
 

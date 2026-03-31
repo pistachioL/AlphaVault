@@ -13,18 +13,20 @@ from alphavault.research_workbench import (
     record_stock_alias_relation,
     set_alias_resolve_task_status,
 )
-from alphavault_reflex.research_state import apply_candidate_action
-from alphavault_reflex.services.research_data import (
-    build_search_index,
+from alphavault_reflex.services.relation_actions import apply_candidate_action_by_id
+from alphavault.app.relation.candidate_builders import (
     build_sector_pending_candidates,
     build_stock_pending_candidates,
+)
+from alphavault_reflex.services.research_data import (
+    build_search_index,
 )
 from alphavault_reflex.services.turso_read import (
     clear_reflex_source_caches,
     load_stock_alias_relations_from_env,
     load_sources_from_env,
 )
-from alphavault.ui.follow_pages_key_match import (
+from alphavault.domains.stock.key_match import (
     is_stock_code_value,
     normalize_stock_code,
 )
@@ -180,20 +182,13 @@ class OrganizerState(rx.State):
         self.pending_rows, self.load_error = load_pending_rows(self.active_section)
 
     def _mutate_candidate(self, candidate_id: str, *, action: str) -> None:
-        target = str(candidate_id or "").strip()
-        if not target:
-            return
-        row = next(
-            (
-                item
-                for item in self.pending_rows
-                if str(item.get("candidate_id") or "").strip() == target
-            ),
-            None,
+        applied = apply_candidate_action_by_id(
+            rows=self.pending_rows,
+            candidate_id=candidate_id,
+            action=action,
         )
-        if row is None:
+        if not applied:
             return
-        apply_candidate_action(row, action)
         clear_reflex_source_caches()
         self.pending_rows, self.load_error = load_pending_rows(self.active_section)
 

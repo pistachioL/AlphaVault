@@ -127,6 +127,14 @@ CREATE TABLE IF NOT EXISTS assertions (
 );
 """
 
+SELECT_ASSERTIONS_FOR_POST_UID = """
+SELECT topic_key, action, action_strength, summary, evidence, confidence,
+       stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
+FROM assertions
+WHERE post_uid = :post_uid
+ORDER BY idx ASC
+"""
+
 CLOUD_SCHEMA_INDEX_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_posts_created_at ON posts(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_posts_author_created_at ON posts(author, created_at)",

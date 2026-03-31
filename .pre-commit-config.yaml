@@ -45,9 +45,8 @@ repos:
         args:
           [
             --ignore-names,
-            "row_factory,do_GET,log_message,server_version,_access_log,root,healthz,user_rss,handle_starttag",
+            "row_factory,do_GET,log_message,server_version,_access_log,root,healthz,user_rss,handle_starttag,SELECT_ASSERTIONS_FOR_POST_UID,slice_posts_for_single_post_tree,build_post_tree",
             "alphavault",
-            "streamlit_app.py",
             "weibo_rss_turso_worker.py",
             "manual_run_ai.py",
             "reset_ai_results.py",

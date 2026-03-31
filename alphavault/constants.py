@@ -1,7 +1,12 @@
 """Shared constants (env names, defaults)."""
 
-# Datetime format used in DB timestamps and logs.
-DATETIME_FMT = "%Y-%m-%d %H:%M:%S"
+from alphavault.domains.common.time_format import DATETIME_FMT as _DATETIME_FMT
+
+DATETIME_FMT = _DATETIME_FMT
+
+# Platform names.
+PLATFORM_WEIBO = "weibo"
+PLATFORM_XUEQIU = "xueqiu"
 
 # Env var names (keep centralized to avoid typos).
 ENV_SPOOL_DIR = "SPOOL_DIR"

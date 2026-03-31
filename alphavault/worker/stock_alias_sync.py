@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import json
 import os
 from typing import Callable, Iterator, Optional
 
@@ -29,11 +28,10 @@ from alphavault.research_workbench import (
     record_stock_alias_relation,
     set_alias_resolve_task_status,
 )
-from alphavault_reflex.services.stock_objects import (
-    AiRuntimeConfig,
-    build_ai_stock_alias_map,
-    pick_unresolved_stock_alias_keys,
-)
+from alphavault.domains.common.json_list import parse_json_list
+from alphavault.domains.stock.object_index import pick_unresolved_stock_alias_keys
+from alphavault.infra.ai.runtime_config import AiRuntimeConfig
+from alphavault.infra.ai.stock_alias import build_ai_stock_alias_map
 
 ALIAS_SYNC_SOURCE = "ai_worker"
 ALIAS_SYNC_MAX_KEYS_PER_RUN = 8
@@ -80,23 +78,6 @@ def _use_conn(
         return
     with turso_connect_autocommit(engine_or_conn) as conn:
         yield conn
-
-
-def _parse_json_list(value: object) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    text = str(value or "").strip()
-    if not text:
-        return []
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [str(item).strip() for item in parsed if str(item).strip()]
 
 
 def _build_alias_assertion_where_clause(
@@ -153,7 +134,7 @@ def _load_alias_assertions(conn, *, last_id: int = 0) -> tuple[pd.DataFrame, int
     out = assertions.copy()
     if "cluster_keys" not in out.columns:
         if "cluster_keys_json" in out.columns:
-            out["cluster_keys"] = out["cluster_keys_json"].apply(_parse_json_list)
+            out["cluster_keys"] = out["cluster_keys_json"].apply(parse_json_list)
         else:
             out["cluster_keys"] = [[] for _ in range(len(out))]
     if "created_at" in out.columns:

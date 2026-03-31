@@ -7,13 +7,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `alphavault_reflex/`: Reflex web UI (state, services, pages). Entry: `alphavault_reflex/alphavault_reflex.py`; config: `rxconfig.py`.
 - `tests/`: `pytest` suite (`test_*.py`).
 - `assets/`: static CSS/JS used by the UI.
-- Root scripts: `weibo_rss_turso_worker.py` (main worker entry), `streamlit_app.py` (legacy UI shell), plus one-off maintenance tools (`backfill_display_md.py`, `reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
+- Root scripts: `weibo_rss_turso_worker.py` (main worker entry), plus one-off maintenance tools (`backfill_display_md.py`, `reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
 - `docs/superpowers/specs/`: design/architecture specs and notes.
 
 ## Build, Test, and Development Commands
 Uses `uv` (lockfile: `uv.lock`).
 - `uv sync`: install dependencies.
-- `uv sync --group streamlit`: install optional Streamlit extras.
 - `uv run pre-commit install`: install git hooks.
 - `uv run pre-commit run -a`: run format/lint/type-check/spell-check/tests (Ruff, mypy, codespell, vulture, pytest).
 - `uv run pytest`: run all tests.
@@ -47,11 +46,15 @@ The main loop runs two parallel tracks:
 - `topic_prompt_v3.py` + `topic_prompt_v3_header.txt`: prompt construction. The prompt asks the model to return structured `assertions` (with `topic_key`, `action`, `stock_codes_json`, `stock_names_json`, etc.).
 - `tag_validate.py`: post-hoc validation of AI output tags.
 
-### Stock object / alias layer (`alphavault_reflex/services/`)
-- `stock_objects.py`: resolves fragmented `topic_key` values (e.g. `stock:601899.SH`, `stock:紫金矿业`, `stock:紫金`) into canonical stock objects. Uses explicit `alias_of` relations stored in Turso, plus AI-assisted candidate matching (`relation_candidates.py`).
-- `research_models.py`: `canonical_stock_key` and related model helpers used across research pages.
-- `turso_read.py`: read-only query helpers for the Reflex UI (posts, assertions, stock objects, relations).
-- `stock_backfill.py`: identifies posts that mention a stock in their raw text but have no matching assertion, surfaces them as "待回补" (pending backfill) on the stock research page.
+### Stock object / alias layer (`alphavault/domains/stock` + `alphavault/infra/ai`)
+- `alphavault/domains/stock/object_index.py`: builds stock objects from fragmented `topic_key` / `stock_codes_json` / `stock_names_json`, and resolves aliases via confirmed relations.
+- `alphavault/infra/ai/stock_alias.py`: optional AI-assisted alias resolving for short names / nicknames (can be disabled).
+- `alphavault/app/relation/candidate_builders.py`: builds relation candidates for the organizer.
+- `alphavault/infra/ai/relation_candidate_ranker.py`: optional AI ranking for relation candidates (can be disabled).
+
+### Reflex read layer (`alphavault_reflex/services/`)
+- `turso_read.py`: a small facade; actual loaders live in `*_loader.py` (`trade_board_loader.py`, `tree_loader.py`, `stock_fast_loader.py`, `url_loader.py`, `source_loader.py`).
+- `stock_backfill.py`: finds posts that mention a stock but lack assertions, surfaced as "待回补" on the stock research page.
 
 ### Reflex UI (`alphavault_reflex/`)
 - `alphavault_reflex.py`: app entry, registers all pages and the `/api/rss/trigger` API route.

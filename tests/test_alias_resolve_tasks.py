@@ -73,7 +73,7 @@ def test_set_status_and_list_manual() -> None:
 def test_worker_marks_manual_after_max_retries(monkeypatch) -> None:
     monkeypatch.setenv("WORKER_STOCK_ALIAS_MAX_RETRIES", "2")
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects.ai_is_configured",
+        "alphavault.infra.ai.stock_alias.ai_is_configured",
         lambda: (True, ""),
     )
     ai_calls: list[str] = []
@@ -83,7 +83,7 @@ def test_worker_marks_manual_after_max_retries(monkeypatch) -> None:
         return {"target_object_key": "", "ai_reason": "没把握"}
 
     monkeypatch.setattr(
-        "alphavault_reflex.services.stock_objects._call_ai_with_litellm",
+        "alphavault.infra.ai.stock_alias._call_ai_with_litellm",
         _fake_call_ai,
     )
 

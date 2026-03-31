@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from alphavault.ui.thread_tree_parse import (
+from alphavault.domains.thread_tree.api import (
     FORWARD_ORIGINAL_MARKER,
     extract_platform_post_id,
     parse_display_md_segments,

@@ -20,9 +20,9 @@ from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
-from alphavault_reflex.services.thread_tree import normalize_tree_lookup_post_uid
-from alphavault_reflex.services.thread_tree import slice_posts_for_single_post_tree
-from alphavault_reflex.services.stock_objects import (
+from alphavault.domains.thread_tree.service import normalize_tree_lookup_post_uid
+from alphavault.domains.thread_tree.service import slice_posts_for_single_post_tree
+from alphavault.domains.stock.object_index import (
     build_stock_object_index,
 )
 from alphavault_reflex.services.turso_read import (

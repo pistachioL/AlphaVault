@@ -29,7 +29,7 @@ from alphavault.constants import (
     ENV_AI_TIMEOUT_SEC,
 )
 from alphavault.rss.utils import build_analysis_context, build_row_meta
-from alphavault.ui.follow_pages_key_match import is_stock_code_value
+from alphavault.domains.stock.key_match import is_stock_code_value
 
 BACKFILL_PROMPT_VERSION = "stock_backfill_v1"
 MAX_TARGETED_ASSERTIONS = 3
