@@ -204,16 +204,19 @@ WHERE processed_at IS NOT NULL
 def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.DataFrame:
     if assertions.empty or posts.empty or "post_uid" not in assertions.columns:
         return assertions
-    post_cols = posts[["post_uid", "raw_text", "display_md", "author"]].copy()
+    # Include post url so UI can show an "open original" link.
+    wanted_post_cols = ["post_uid", "raw_text", "display_md", "author", "url"]
+    post_cols = posts[[col for col in wanted_post_cols if col in posts.columns]].copy()
     post_cols = post_cols.rename(
         columns={
             "raw_text": "_post_raw_text",
             "display_md": "_post_display_md",
             "author": "_post_author",
+            "url": "_post_url",
         }
     )
     merged = assertions.merge(post_cols, on="post_uid", how="left")
-    for col in ["raw_text", "display_md", "author"]:
+    for col in ["raw_text", "display_md", "author", "url"]:
         if col not in merged.columns:
             merged[col] = ""
         merged[col] = merged[col].fillna("").astype(str)
@@ -228,8 +231,12 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     merged.loc[merged["author"].eq(""), "author"] = (
         merged.loc[merged["author"].eq(""), "_post_author"].fillna("").astype(str)
     )
+    if "_post_url" in merged.columns:
+        merged.loc[merged["url"].eq(""), "url"] = (
+            merged.loc[merged["url"].eq(""), "_post_url"].fillna("").astype(str)
+        )
     return merged.drop(
-        columns=["_post_raw_text", "_post_display_md", "_post_author"],
+        columns=["_post_raw_text", "_post_display_md", "_post_author", "_post_url"],
         errors="ignore",
     )
 
@@ -363,6 +370,7 @@ def build_stock_hot_payload(
                 "created_at_line": _format_signal_created_at_line(
                     row.get("created_at")
                 ),
+                "url": str(row.get("url") or "").strip(),
                 "raw_text": str(row.get("raw_text") or "").strip(),
                 "display_md": str(row.get("display_md") or "").strip(),
                 "tree_label": str(tree_label or "").strip(),

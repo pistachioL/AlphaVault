@@ -47,7 +47,7 @@ def test_signal_card_renders_action_author_and_time_in_one_row() -> None:
         "trade.watch",
         "挖地瓜的超级鹿鼎公",
     ]
-    assert _rendered_text(time_child) == "2026-03-25 06:19 · 19小时前"
+    assert _rendered_text(time_child) == "发言时间：2026-03-25 06:19 · 19小时前"
 
 
 def test_stock_research_page_uses_root_hydration_to_hide_stale_content() -> None:

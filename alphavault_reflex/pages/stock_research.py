@@ -31,7 +31,10 @@ def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.text(row["author"], class_name="av-research-muted"),
         rx.cond(
             row["created_at_line"] != "",
-            rx.text(row["created_at_line"], class_name="av-research-muted"),
+            rx.text(
+                "发言时间：" + row["created_at_line"],
+                class_name="av-research-muted",
+            ),
             rx.el.div(),
         ),
         style={
@@ -72,7 +75,12 @@ def _related_post_card(row: rx.Var[dict[str, str]]) -> rx.Component:
             ),
             rx.cond(
                 row["url"] != "",
-                rx.link("打开原文", href=row["url"], is_external=True),
+                rx.link(
+                    "原文链",
+                    href=row["url"],
+                    is_external=True,
+                    class_name="av-research-chip",
+                ),
                 rx.el.span(""),
             ),
             spacing="3",
