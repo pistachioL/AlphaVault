@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS {table} (
     url TEXT NOT NULL DEFAULT '',
     matched_terms TEXT NOT NULL DEFAULT '',
     preview TEXT NOT NULL DEFAULT '',
+    tree_text TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     PRIMARY KEY(stock_key, post_uid)
 )
@@ -117,6 +118,7 @@ INSERT INTO {table}(
     url,
     matched_terms,
     preview,
+    tree_text,
     updated_at
 )
 VALUES (
@@ -127,6 +129,7 @@ VALUES (
     :url,
     :matched_terms,
     :preview,
+    :tree_text,
     :updated_at
 )
 """
@@ -134,7 +137,7 @@ VALUES (
 
 def select_stock_backfill_posts(table: str) -> str:
     return f"""
-SELECT post_uid, author, created_at, url, matched_terms, preview, updated_at
+SELECT post_uid, author, created_at, url, matched_terms, preview, tree_text, updated_at
 FROM {table}
 WHERE stock_key = :stock_key
 ORDER BY created_at DESC, post_uid DESC

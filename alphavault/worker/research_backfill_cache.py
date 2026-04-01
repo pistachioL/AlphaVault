@@ -6,11 +6,14 @@ import re
 import time
 from typing import Any, Callable
 
+import pandas as pd
+
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
     turso_connect_autocommit,
 )
+from alphavault.domains.thread_tree.service import build_post_tree_map
 from alphavault.research_backfill_cache import (
     list_stock_backfill_dirty_keys,
     load_stock_backfill_meta,
@@ -115,7 +118,7 @@ def _select_post_batch(
         params["cursor_post_uid"] = str(cursor_post_uid or "").strip()
 
     sql = f"""
-SELECT post_uid, author, created_at, url, raw_text, display_md
+SELECT post_uid, author, created_at, url
 FROM posts
 WHERE processed_at IS NOT NULL
 {text_clause}
@@ -125,6 +128,49 @@ LIMIT :limit
 """
     rows = conn.execute(sql, params).mappings().all()
     return [dict(row) for row in rows if row]
+
+
+def _select_posts_text(
+    conn: TursoConnection,
+    *,
+    post_uids: list[str],
+) -> dict[str, dict[str, str]]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in post_uids:
+        uid = str(raw or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        cleaned.append(uid)
+    if not cleaned:
+        return {}
+
+    params: dict[str, Any] = {}
+    placeholders: list[str] = []
+    for idx, uid in enumerate(cleaned):
+        key = f"uid_{idx}"
+        params[key] = uid
+        placeholders.append(f":{key}")
+    clause = ", ".join(placeholders)
+    sql = f"""
+SELECT post_uid, raw_text, display_md
+FROM posts
+WHERE post_uid IN ({clause})
+"""
+    rows = conn.execute(sql, params).mappings().all()
+    out: dict[str, dict[str, str]] = {}
+    for row in rows:
+        if not row:
+            continue
+        post_uid = str(row.get("post_uid") or "").strip()
+        if not post_uid:
+            continue
+        out[post_uid] = {
+            "raw_text": str(row.get("raw_text") or "").strip(),
+            "display_md": str(row.get("display_md") or "").strip(),
+        }
+    return out
 
 
 def _select_asserted_post_uids(
@@ -161,6 +207,32 @@ def _preview_text(text: str) -> str:
     return preview
 
 
+def _attach_tree_text(
+    rows: list[dict[str, str]],
+    *,
+    posts_rows: list[dict[str, str]],
+) -> None:
+    if not rows:
+        return
+    if not posts_rows:
+        for row in rows:
+            row["tree_text"] = ""
+        return
+    posts = pd.DataFrame(posts_rows)
+    post_uids = [
+        str(row.get("post_uid") or "").strip()
+        for row in rows
+        if str(row.get("post_uid") or "").strip()
+    ]
+    tree_map = build_post_tree_map(post_uids=post_uids, posts=posts)
+    for row in rows:
+        post_uid = str(row.get("post_uid") or "").strip()
+        if not post_uid:
+            continue
+        _label, tree_text = tree_map.get(post_uid, ("", ""))
+        row["tree_text"] = str(tree_text or "").strip()
+
+
 def _build_backfill_candidates_for_stock(
     conn: TursoConnection,
     *,
@@ -176,6 +248,8 @@ def _build_backfill_candidates_for_stock(
     asserted_post_uids = _select_asserted_post_uids(conn, stock_key=stock_key)
 
     out: list[dict[str, str]] = []
+    selected_meta: dict[str, dict[str, str]] = {}
+    selected_uids: list[str] = []
     cursor_created_at = ""
     cursor_post_uid = ""
     max_items = max(1, int(max_rows))
@@ -212,39 +286,63 @@ def _build_backfill_candidates_for_stock(
         cursor_post_uid = next_cursor_post_uid
 
         for row in rows:
-            if len(out) >= max_items:
+            if len(selected_uids) >= max_items:
                 break
             post_uid = str(row.get("post_uid") or "").strip()
             if not post_uid:
                 continue
             if post_uid in asserted_post_uids:
                 continue
-            raw_text = str(row.get("raw_text") or "").strip()
-            display_md = str(row.get("display_md") or "").strip()
-            haystack = (raw_text or display_md).strip()
-            if not haystack:
+            if post_uid in selected_meta:
                 continue
-            haystack_lower = haystack.lower()
-            matched_terms = [
-                term
-                for term, term_lower in zip(terms, terms_lower, strict=False)
-                if term_lower and term_lower in haystack_lower
-            ]
-            if not matched_terms:
-                continue
-            out.append(
-                {
-                    "post_uid": post_uid,
-                    "author": str(row.get("author") or "").strip(),
-                    "created_at": str(row.get("created_at") or "").strip(),
-                    "url": str(row.get("url") or "").strip(),
-                    "matched_terms": ", ".join(matched_terms[:3]),
-                    "preview": _preview_text(haystack),
-                }
-            )
+            selected_uids.append(post_uid)
+            selected_meta[post_uid] = {
+                "post_uid": post_uid,
+                "author": str(row.get("author") or "").strip(),
+                "created_at": str(row.get("created_at") or "").strip(),
+                "url": str(row.get("url") or "").strip(),
+            }
     scan_truncated = bool(
-        len(out) < max_items and not scan_exhausted and scan_batches >= max_batches
+        len(selected_uids) < max_items
+        and not scan_exhausted
+        and scan_batches >= max_batches
     )
+    post_text = _select_posts_text(conn, post_uids=selected_uids)
+    posts_rows: list[dict[str, str]] = []
+    for post_uid in selected_uids:
+        meta = selected_meta.get(post_uid) or {}
+        raw_text = str((post_text.get(post_uid) or {}).get("raw_text") or "").strip()
+        display_md = str(
+            (post_text.get(post_uid) or {}).get("display_md") or ""
+        ).strip()
+        combined_lower = f"{raw_text}\n{display_md}".lower()
+        matched_terms = [
+            term
+            for term, term_lower in zip(terms, terms_lower, strict=False)
+            if term_lower and term_lower in combined_lower
+        ]
+        haystack = (raw_text or display_md).strip()
+        out.append(
+            {
+                "post_uid": post_uid,
+                "author": str(meta.get("author") or "").strip(),
+                "created_at": str(meta.get("created_at") or "").strip(),
+                "url": str(meta.get("url") or "").strip(),
+                "matched_terms": ", ".join(matched_terms[:3]),
+                "preview": _preview_text(haystack),
+            }
+        )
+        posts_rows.append(
+            {
+                "post_uid": post_uid,
+                "author": str(meta.get("author") or "").strip(),
+                "created_at": str(meta.get("created_at") or "").strip(),
+                "url": str(meta.get("url") or "").strip(),
+                "raw_text": raw_text,
+                "display_md": display_md,
+            }
+        )
+    _attach_tree_text(out, posts_rows=posts_rows)
     return out, scan_truncated
 
 
@@ -257,6 +355,7 @@ def _backfill_rows_signature(rows: list[dict[str, Any]]) -> list[tuple[str, ...]
             str(row.get("url") or "").strip(),
             str(row.get("matched_terms") or "").strip(),
             str(row.get("preview") or "").strip(),
+            str(row.get("tree_text") or "").strip(),
         )
         for row in rows
         if str(row.get("post_uid") or "").strip()
