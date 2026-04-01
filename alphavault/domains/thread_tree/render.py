@@ -11,11 +11,11 @@ import re
 import pandas as pd
 
 from alphavault.domains.thread_tree.parse import (
-    _content_key_for_compare,
-    _extract_speaker_name,
-    _to_one_line_text,
+    content_key_for_compare,
+    extract_speaker_name,
     parse_display_md_segments,
     strip_csv_raw_fields,
+    to_one_line_text,
 )
 
 VIRTUAL_NODE_LABEL = "回复"
@@ -108,7 +108,7 @@ def _ascii_node_line(
         text = _maybe_prefix_focus_symbol(segments[-1], blogger_authors=blogger_authors)
         return f"{text}{suffix}"
 
-    text = _to_one_line_text(raw_text)
+    text = to_one_line_text(raw_text)
     if not text and missing:
         return f"（缺失）{suffix}"
 
@@ -136,7 +136,7 @@ def _ascii_node_main_content(node_id: str, *, nodes: dict[str, dict]) -> str:
     if segments:
         return segments[-1]
 
-    text = _to_one_line_text(raw_text)
+    text = to_one_line_text(raw_text)
     if (
         author
         and text
@@ -158,11 +158,11 @@ def _segment_dedup_key(text: str, *, author_hint: str = "") -> str:
     if not s:
         return ""
 
-    speaker = str(_extract_speaker_name(s) or "").strip()
+    speaker = str(extract_speaker_name(s) or "").strip()
     if not speaker:
         speaker = str(author_hint or "").strip()
 
-    content_key = _content_key_for_compare(s, author_hint=speaker)
+    content_key = content_key_for_compare(s, author_hint=speaker)
     if not content_key:
         return ""
 
@@ -306,7 +306,7 @@ def _ascii_expand_edge(
     child_node = nodes.get(child_id) or {}
 
     parent_main = _ascii_node_main_content(parent_id, nodes=nodes)
-    parent_key = _content_key_for_compare(
+    parent_key = content_key_for_compare(
         parent_main,
         author_hint=str(parent_node.get("author") or "").strip(),
     )
@@ -314,7 +314,7 @@ def _ascii_expand_edge(
     child_segments = _node_segments(child_id, nodes=nodes)
 
     if child_segments and len(child_segments) >= 2 and parent_key:
-        first_key = _content_key_for_compare(child_segments[0])
+        first_key = content_key_for_compare(child_segments[0])
         if first_key and first_key == parent_key:
             child_segments = child_segments[1:]
 
@@ -502,10 +502,16 @@ def _node_segments(node_id: str, *, nodes: dict[str, dict]) -> list[str]:
     )
 
 
+format_ts = _format_ts
+render_ascii_tree = _render_ascii_tree
+short_text = _short_text
+to_ts = _to_ts
+
+
 __all__ = [
     "VIRTUAL_NODE_LABEL",
-    "_format_ts",
-    "_render_ascii_tree",
-    "_short_text",
-    "_to_ts",
+    "format_ts",
+    "render_ascii_tree",
+    "short_text",
+    "to_ts",
 ]
