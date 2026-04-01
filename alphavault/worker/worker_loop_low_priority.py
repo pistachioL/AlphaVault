@@ -19,23 +19,6 @@ from alphavault.worker.worker_loop_runtime import (
 )
 
 
-def _build_on_alias_data_loaded(source):
-    def _on_alias_data_loaded(new_rows, _stock_relations, new_max_id, src=source):  # type: ignore[no-untyped-def]
-        import pandas as _pd
-
-        if src.alias_assertions_snapshot is None:
-            src.alias_assertions_snapshot = new_rows
-        elif hasattr(new_rows, "empty") and not new_rows.empty:
-            src.alias_assertions_snapshot = _pd.concat(
-                [src.alias_assertions_snapshot, new_rows],
-                ignore_index=True,
-            )
-        if int(new_max_id) > int(getattr(src, "alias_last_assertion_id", 0) or 0):
-            src.alias_last_assertion_id = int(new_max_id)
-
-    return _on_alias_data_loaded
-
-
 def _build_should_continue_low_priority(
     *,
     ctx: SourceTickContext,
@@ -63,7 +46,6 @@ def _schedule_alias_sync(
     interval_seconds: float,
     should_continue_low_priority,
 ) -> None:
-    on_alias_data_loaded = _build_on_alias_data_loaded(source)
     source.alias_sync_future, source.alias_sync_next_at, _ = (
         periodic_jobs.maybe_start_periodic_job(
             executor=execs.alias_executor,
@@ -76,7 +58,7 @@ def _schedule_alias_sync(
             wakeup_event=wakeup_event,
             submit_fn=sync_stock_alias_relations,
             submit_kwargs={
-                "ai_runtime_config": ctx.alias_ai_runtime_config,
+                "source_name": str(source.config.name or "").strip(),
                 "ai_max_inflight": max(1, int(ctx.ai_cap)),
                 "should_continue": should_continue_low_priority,
                 "acquire_low_priority_slot": (
@@ -89,11 +71,6 @@ def _schedule_alias_sync(
                     if ctx.low_priority_gate is not None
                     else None
                 ),
-                "cached_assertions": getattr(source, "alias_assertions_snapshot", None),
-                "last_assertion_id": int(
-                    getattr(source, "alias_last_assertion_id", 0) or 0
-                ),
-                "on_data_loaded": on_alias_data_loaded,
                 "verbose": ctx.verbose,
             },
         )
@@ -150,7 +127,7 @@ def _schedule_relation_cache(
 ) -> None:
     source.relation_cache_future, source.relation_cache_next_at, _ = (
         periodic_jobs.maybe_start_periodic_job(
-            executor=execs.relation_executor,
+            executor=execs.alias_executor,
             future=source.relation_cache_future,
             active_engine=active_engine,
             trigger=ctx.now
@@ -163,6 +140,7 @@ def _schedule_relation_cache(
             submit_kwargs={
                 "limiter": ctx.limiter,
                 "ai_enabled": True,
+                "source_name": str(source.config.name or "").strip(),
                 "max_stocks_per_run": max(1, int(ctx.ai_cap)),
                 "max_sectors_per_run": max(1, int(ctx.ai_cap)),
                 "ai_max_inflight": max(1, int(ctx.ai_cap)),

@@ -45,6 +45,7 @@ def schedule_ai_for_source(
     inflight_owner_by_future: dict[Future, str],
     wakeup_event: threading.Event,
 ) -> bool:
+    source_name = str(getattr(source.config, "name", "") or "").strip()
     scheduled, schedule_error = scheduler.schedule_ai(
         executor=ai_executor,
         engine=active_engine,
@@ -64,6 +65,7 @@ def schedule_ai_for_source(
         verbose=ctx.verbose,
         redis_client=ctx.redis_client,
         redis_queue_key=str(source.redis_queue_key or ""),
+        source_name=source_name,
         spool_dir=source.spool_dir,
         schedule_ai_from_redis_fn=_schedule_ai_from_redis,
         prune_inflight_futures_fn=periodic_jobs.prune_inflight_futures,

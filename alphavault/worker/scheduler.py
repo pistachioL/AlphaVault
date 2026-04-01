@@ -117,6 +117,7 @@ def schedule_ai_from_redis(
     verbose: bool,
     redis_client: Any,
     redis_queue_key: str,
+    source_name: str = "",
     spool_dir: Path | str,
     prune_inflight_futures_fn: Callable[[set[Future], dict[Future, str]], None],
     compute_rss_available_slots_fn: Callable[..., int],
@@ -186,6 +187,7 @@ def schedule_ai_from_redis(
             processing_msg=str(msg),
             redis_client=redis_client,
             redis_queue_key=redis_queue_key,
+            source_name=str(source_name or "").strip(),
             spool_dir=spool_dir,
             config=config,
             limiter=limiter,
@@ -214,6 +216,7 @@ def schedule_ai(
     verbose: bool,
     redis_client: Any,
     redis_queue_key: str,
+    source_name: str = "",
     spool_dir: Path | None,
     schedule_ai_from_redis_fn: Callable[..., tuple[int, bool]],
     prune_inflight_futures_fn: Callable[[set[Future], dict[Future, str]], None],
@@ -243,6 +246,7 @@ def schedule_ai(
             verbose=bool(verbose),
             redis_client=redis_client,
             redis_queue_key=str(redis_queue_key),
+            source_name=str(source_name or "").strip(),
             spool_dir=spool_dir,
         )
 
@@ -317,6 +321,7 @@ def schedule_ai(
             post_uid=post_uid,
             config=config,
             limiter=limiter,
+            source_name=str(source_name or "").strip(),
         )
         fut.add_done_callback(lambda _f: wakeup_event.set())
         inflight_futures.add(fut)

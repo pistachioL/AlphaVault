@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
 import time
 
@@ -33,9 +34,14 @@ from alphavault.weibo.topic_prompt_tree import (
 from alphavault.worker.backoff import backoff_seconds
 from alphavault.worker.post_processor_utils import (
     as_str_list,
-    build_assertion_outbox_event_json,
+    build_assertion_outbox_event_payload,
     ensure_prefetched_post_persisted,
     score_from_assertions,
+)
+from alphavault.worker.local_cache import (
+    apply_outbox_event_payload,
+    open_local_cache,
+    resolve_local_cache_db_path,
 )
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
 from alphavault.worker.topic_prompt_v3 import (
@@ -143,6 +149,7 @@ def process_one_post_uid_topic_prompt_v3(
     limiter: RateLimiter,
     prefetched_post: CloudPost | None = None,
     prefetched_recent: list[dict[str, object]] | None = None,
+    source_name: str = "",
     outbox_source: str = "",
 ) -> bool:
     post = (
@@ -349,68 +356,119 @@ def process_one_post_uid_topic_prompt_v3(
             max_assertions_per_post=5,
         )
 
-        for uid in locked_post_uids:
-            rows = assertions_by_post_uid.get(uid, [])
-            is_relevant = bool(rows)
-            final_status = "relevant" if is_relevant else "irrelevant"
-            invest_score = score_from_assertions(rows)
-            processed_at = now_str()
-            archived_at = now_str()
-            if prefetched_post is not None and uid == str(post.post_uid or "").strip():
-                ensure_prefetched_post_persisted(
-                    engine=engine,
-                    post=prefetched_post,
-                    archived_at=archived_at,
-                    ingested_at=int(time.time()),
-                )
-            write_assertions_and_mark_done(
-                engine,
+        post_by_uid: dict[str, CloudPost] = {}
+        platform_value = str(post.platform or "").strip() or "weibo"
+        for row in kept:
+            uid = str(row.get("post_uid") or "").strip()
+            if not uid:
+                continue
+            post_by_uid[uid] = CloudPost(
                 post_uid=uid,
-                final_status=final_status,
-                invest_score=invest_score,
-                processed_at=processed_at,
-                model=config.model,
-                prompt_version=config.prompt_version,
-                archived_at=archived_at,
-                ai_result_json=None,
-                assertions=rows,
-                outbox_source=str(outbox_source or "").strip(),
-                outbox_author=str(post.author or "").strip(),
-                outbox_event_json=(
-                    build_assertion_outbox_event_json(
-                        post=post,
-                        final_status=final_status,
-                        rows=rows,
-                    )
-                    if uid == str(post.post_uid or "").strip()
-                    else None
+                platform=platform_value,
+                platform_post_id=str(row.get("platform_post_id") or "").strip(),
+                author=str(row.get("author") or "").strip(),
+                created_at=str(row.get("created_at") or "").strip(),
+                url=str(row.get("url") or "").strip(),
+                raw_text=str(row.get("raw_text") or ""),
+                display_md=str(row.get("display_md") or ""),
+                ai_retry_count=_clamp_int(
+                    row.get("ai_retry_count"),
+                    0,
+                    1_000_000,
+                    0,
                 ),
             )
-            if rows:
-                try:
-                    mark_stock_dirty_from_assertions(
-                        engine,
-                        assertions=rows,
-                        reason="ai_done",
+
+        with ExitStack() as stack:
+            cache_conn = None
+            try:
+                db_path = resolve_local_cache_db_path(
+                    source_name=str(source_name or "").strip()
+                )
+                cache_conn = stack.enter_context(open_local_cache(db_path=db_path))
+            except Exception as cache_err:
+                cache_conn = None
+                if config.verbose:
+                    print(
+                        f"[local_cache] open_error post_uid={post_uid} "
+                        f"{type(cache_err).__name__}: {cache_err}",
+                        flush=True,
                     )
-                except BaseException:
-                    if config.verbose:
-                        print(
-                            f"[stock_hot] mark_dirty_failed post_uid={uid}",
-                            flush=True,
-                        )
-                try:
-                    mark_stock_backfill_dirty_from_assertions(
-                        engine,
-                        assertions=rows,
-                        reason="ai_done",
+
+            for uid in locked_post_uids:
+                rows = assertions_by_post_uid.get(uid, [])
+                is_relevant = bool(rows)
+                final_status = "relevant" if is_relevant else "irrelevant"
+                invest_score = score_from_assertions(rows)
+                processed_at = now_str()
+                archived_at = now_str()
+                post_for_outbox = post_by_uid.get(uid) or post
+                outbox_payload = build_assertion_outbox_event_payload(
+                    post=post_for_outbox,
+                    final_status=final_status,
+                    rows=rows,
+                )
+                if (
+                    prefetched_post is not None
+                    and uid == str(post.post_uid or "").strip()
+                ):
+                    ensure_prefetched_post_persisted(
+                        engine=engine,
+                        post=prefetched_post,
+                        archived_at=archived_at,
+                        ingested_at=int(time.time()),
                     )
-                except BaseException:
-                    if config.verbose:
-                        print(
-                            f"[backfill_cache] mark_dirty_failed post_uid={uid}",
-                            flush=True,
+                write_assertions_and_mark_done(
+                    engine,
+                    post_uid=uid,
+                    final_status=final_status,
+                    invest_score=invest_score,
+                    processed_at=processed_at,
+                    model=config.model,
+                    prompt_version=config.prompt_version,
+                    archived_at=archived_at,
+                    ai_result_json=None,
+                    assertions=rows,
+                    outbox_source=str(outbox_source or "").strip(),
+                    outbox_author=str(post_for_outbox.author or "").strip(),
+                    outbox_event_json=json.dumps(outbox_payload, ensure_ascii=False),
+                )
+                if cache_conn is not None:
+                    try:
+                        apply_outbox_event_payload(cache_conn, payload=outbox_payload)
+                    except Exception as write_err:
+                        if config.verbose:
+                            print(
+                                f"[local_cache] write_error post_uid={uid} "
+                                f"{type(write_err).__name__}: {write_err}",
+                                flush=True,
+                            )
+
+                if rows:
+                    try:
+                        mark_stock_dirty_from_assertions(
+                            engine,
+                            assertions=rows,
+                            reason="ai_done",
                         )
+                    except BaseException:
+                        if config.verbose:
+                            print(
+                                f"[stock_hot] mark_dirty_failed post_uid={uid}",
+                                flush=True,
+                            )
+                    try:
+                        mark_stock_backfill_dirty_from_assertions(
+                            engine,
+                            assertions=rows,
+                            reason="ai_done",
+                        )
+                    except BaseException:
+                        if config.verbose:
+                            print(
+                                f"[backfill_cache] mark_dirty_failed post_uid={uid}",
+                                flush=True,
+                            )
         return True
     except Exception as err:
         if isinstance(err, AiInvalidJsonError):

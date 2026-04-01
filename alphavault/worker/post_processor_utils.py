@@ -53,6 +53,20 @@ def build_assertion_outbox_event_json(
     final_status: str,
     rows: list[dict[str, object]],
 ) -> str:
+    payload = build_assertion_outbox_event_payload(
+        post=post,
+        final_status=final_status,
+        rows=rows,
+    )
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def build_assertion_outbox_event_payload(
+    *,
+    post: CloudPost,
+    final_status: str,
+    rows: list[dict[str, object]],
+) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -79,7 +93,7 @@ def build_assertion_outbox_event_json(
         "final_status": str(final_status or "").strip(),
         "assertions": items,
     }
-    return json.dumps(payload, ensure_ascii=False)
+    return payload
 
 
 def ensure_prefetched_post_persisted(
@@ -115,6 +129,7 @@ def ensure_prefetched_post_persisted(
 __all__ = [
     "as_str_list",
     "build_assertion_outbox_event_json",
+    "build_assertion_outbox_event_payload",
     "ensure_prefetched_post_persisted",
     "json_to_str_list",
     "score_from_assertions",

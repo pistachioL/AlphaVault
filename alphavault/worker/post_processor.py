@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 from alphavault.ai.analyze import (
@@ -31,10 +32,15 @@ from alphavault.worker.post_processor_topic_prompt_v3 import (
 )
 from alphavault.worker.post_processor_utils import (
     as_str_list,
-    build_assertion_outbox_event_json,
+    build_assertion_outbox_event_payload,
     ensure_prefetched_post_persisted,
     json_to_str_list,
     score_from_assertions,
+)
+from alphavault.worker.local_cache import (
+    apply_outbox_event_payload,
+    open_local_cache,
+    resolve_local_cache_db_path,
 )
 from alphavault.worker.runtime_models import LLMConfig
 
@@ -47,6 +53,7 @@ def process_one_post_uid(
     limiter: RateLimiter,
     prefetched_post: CloudPost | None = None,
     prefetched_recent: list[dict[str, object]] | None = None,
+    source_name: str = "",
     outbox_source: str = "",
 ) -> bool:
     try:
@@ -58,6 +65,7 @@ def process_one_post_uid(
                 limiter=limiter,
                 prefetched_post=prefetched_post,
                 prefetched_recent=prefetched_recent,
+                source_name=str(source_name or "").strip(),
                 outbox_source=outbox_source,
             )
         post = (
@@ -127,6 +135,11 @@ def process_one_post_uid(
                 ingested_at=int(time.time()),
             )
 
+        outbox_payload = build_assertion_outbox_event_payload(
+            post=post,
+            final_status=final_result.status,
+            rows=assertions,
+        )
         write_assertions_and_mark_done(
             engine,
             post_uid=post_uid,
@@ -140,12 +153,21 @@ def process_one_post_uid(
             assertions=assertions,
             outbox_source=str(outbox_source or "").strip(),
             outbox_author=str(post.author or "").strip(),
-            outbox_event_json=build_assertion_outbox_event_json(
-                post=post,
-                final_status=final_result.status,
-                rows=assertions,
-            ),
+            outbox_event_json=json.dumps(outbox_payload, ensure_ascii=False),
         )
+        try:
+            db_path = resolve_local_cache_db_path(
+                source_name=str(source_name or "").strip()
+            )
+            with open_local_cache(db_path=db_path) as cache_conn:
+                apply_outbox_event_payload(cache_conn, payload=outbox_payload)
+        except Exception as cache_err:
+            if config.verbose:
+                print(
+                    f"[local_cache] write_error post_uid={post_uid} "
+                    f"{type(cache_err).__name__}: {cache_err}",
+                    flush=True,
+                )
         if assertions:
             try:
                 mark_stock_dirty_from_assertions(
@@ -208,7 +230,6 @@ def process_one_post_uid(
 __all__ = [
     "as_str_list",
     "backoff_seconds",
-    "build_assertion_outbox_event_json",
     "ensure_prefetched_post_persisted",
     "json_to_str_list",
     "map_topic_prompt_items_to_assertions",

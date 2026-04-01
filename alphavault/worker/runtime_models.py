@@ -6,7 +6,7 @@ import threading
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
@@ -60,11 +60,11 @@ class WorkerSourceRuntime:
     backfill_cache_next_at: float = 0.0
     relation_cache_future: Future | None = None
     relation_cache_next_at: float = 0.0
+    local_cache_ready: bool = False
+    local_cache_rebuild_next_at: float = 0.0
     stock_hot_cache_future: Future | None = None
     stock_hot_cache_next_at: float = 0.0
     progress_state_cache: dict[str, dict] = field(default_factory=dict)
-    alias_assertions_snapshot: Any = None  # pd.DataFrame | None
-    alias_last_assertion_id: int = 0
 
 
 @dataclass

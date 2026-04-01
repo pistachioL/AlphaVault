@@ -3,7 +3,6 @@ from __future__ import annotations
 import libsql
 
 from alphavault.db.turso_db import TursoConnection
-from alphavault.db.sql.turso_db import CREATE_ASSERTIONS_TABLE
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
     ensure_research_workbench_schema,
@@ -11,6 +10,12 @@ from alphavault.research_workbench import (
     increment_alias_resolve_attempts,
     list_manual_alias_resolve_tasks,
     set_alias_resolve_task_status,
+)
+from alphavault.worker.local_cache import (
+    ENV_LOCAL_CACHE_DB_PATH,
+    apply_outbox_event_payload,
+    open_local_cache,
+    resolve_local_cache_db_path,
 )
 
 
@@ -70,63 +75,36 @@ def test_set_status_and_list_manual() -> None:
         conn.close()
 
 
-def test_worker_marks_manual_after_max_retries(monkeypatch) -> None:
+def test_worker_marks_manual_after_max_retries(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("WORKER_STOCK_ALIAS_MAX_RETRIES", "2")
-    monkeypatch.setattr(
-        "alphavault.infra.ai.stock_alias.ai_is_configured",
-        lambda: (True, ""),
-    )
-    ai_calls: list[str] = []
-
-    def _fake_call_ai(**kwargs):
-        ai_calls.append(str(kwargs.get("trace_label") or ""))
-        return {"target_object_key": "", "ai_reason": "没把握"}
-
-    monkeypatch.setattr(
-        "alphavault.infra.ai.stock_alias._call_ai_with_litellm",
-        _fake_call_ai,
-    )
 
     from alphavault.worker.stock_alias_sync import sync_stock_alias_relations
 
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
-        conn.execute(CREATE_ASSERTIONS_TABLE)
-        conn.execute(
-            "ALTER TABLE assertions ADD COLUMN author TEXT NOT NULL DEFAULT ''"
-        )
-        conn.execute(
-            "ALTER TABLE assertions ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
-        )
-        conn.execute(
-            "ALTER TABLE assertions ADD COLUMN cluster_keys_json TEXT NOT NULL DEFAULT '[]'"
-        )
-        conn.execute(
-            """
-INSERT INTO assertions(
-    post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-    stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json,
-    author, created_at, cluster_keys_json
-) VALUES (
-    'p1', 1, 'stock:601899.SH', 'trade.buy', 1, '建仓', 'e', 0.9,
-    '["601899.SH"]', '["紫金矿业"]', '[]', '[]', '[]',
-    'alice', '2026-03-25 10:00:00', '["gold"]'
-)
-"""
-        )
-        conn.execute(
-            """
-INSERT INTO assertions(
-    post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-    stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json,
-    author, created_at, cluster_keys_json
-) VALUES (
-    'p2', 1, 'stock:紫金', 'trade.buy', 1, '继续拿着', 'e', 0.9,
-    '[]', '["紫金"]', '[]', '[]', '[]',
-    'alice', '2026-03-26 10:00:00', '["gold"]'
-)
-"""
-        )
+        monkeypatch.setenv(ENV_LOCAL_CACHE_DB_PATH, str(tmp_path / "cache.sqlite3"))
+        db_path = resolve_local_cache_db_path(source_name="")
+        with open_local_cache(db_path=db_path) as cache_conn:
+            apply_outbox_event_payload(
+                cache_conn,
+                payload={
+                    "event_type": "ai_done",
+                    "post_uid": "p1",
+                    "author": "alice",
+                    "created_at": "2026-03-26 10:00:00",
+                    "final_status": "relevant",
+                    "assertions": [
+                        {
+                            "topic_key": "stock:紫金",
+                            "action": "trade.buy",
+                            "action_strength": 1,
+                            "confidence": 0.9,
+                            "stock_codes": [],
+                            "stock_names": ["紫金"],
+                        }
+                    ],
+                },
+            )
 
         ensure_research_workbench_schema(conn)
 
@@ -138,10 +116,8 @@ INSERT INTO assertions(
         assert manual[0]["alias_key"] == "stock:紫金"
         assert str(manual[0]["attempt_count"]) == "2"
         assert manual[0]["status"] == ALIAS_TASK_STATUS_MANUAL
-        assert len(ai_calls) == 2
 
         sync_stock_alias_relations(conn)
-        assert len(ai_calls) == 2
     finally:
         conn.close()
 

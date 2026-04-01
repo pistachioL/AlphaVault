@@ -5,8 +5,6 @@ import threading
 import time
 from typing import cast
 
-import pandas as pd
-
 from alphavault.db.turso_db import TursoConnection
 from alphavault.rss.utils import RateLimiter
 from alphavault.worker import research_relation_candidates_cache as relation_cache
@@ -53,11 +51,12 @@ def _patch_common(monkeypatch, *, stock_keys: list[str]) -> None:
     )
     monkeypatch.setattr(
         relation_cache,
-        "_load_trade_assertions",
-        lambda _conn: pd.DataFrame([{"topic_key": "stock:seed", "cluster_keys": []}]),
+        "_load_distinct_trade_stock_keys",
+        lambda *, db_path: stock_keys,
     )
-    monkeypatch.setattr(relation_cache, "_unique_stock_keys", lambda _df: stock_keys)
-    monkeypatch.setattr(relation_cache, "_unique_sector_keys", lambda _df: [])
+    monkeypatch.setattr(
+        relation_cache, "enrich_candidates_with_ai", lambda rows, **_k: rows
+    )
     monkeypatch.setattr(
         relation_cache,
         "_upsert_candidate_batch",
@@ -75,9 +74,7 @@ def _patch_common(monkeypatch, *, stock_keys: list[str]) -> None:
     )
     monkeypatch.setattr(relation_cache, "turso_savepoint", _fake_savepoint)
     monkeypatch.setattr(
-        relation_cache,
-        "build_sector_pending_candidates",
-        lambda *_args, **_kwargs: [],
+        relation_cache, "_build_stock_alias_candidates", lambda **_k: []
     )
 
 
@@ -91,8 +88,7 @@ def test_sync_relation_candidates_cache_respects_ai_max_inflight(monkeypatch) ->
     max_active = 0
     calls: list[str] = []
 
-    def _fake_build(_assertions, *, stock_key: str, ai_enabled: bool, **_kwargs):
-        del ai_enabled
+    def _fake_build(*, stock_key: str, **_kwargs):
         nonlocal active, max_active
         with lock:
             active += 1
@@ -103,7 +99,7 @@ def test_sync_relation_candidates_cache_respects_ai_max_inflight(monkeypatch) ->
             active -= 1
         return []
 
-    monkeypatch.setattr(relation_cache, "build_stock_pending_candidates", _fake_build)
+    monkeypatch.setattr(relation_cache, "_build_stock_alias_candidates", _fake_build)
 
     stats = relation_cache.sync_relation_candidates_cache(
         cast(TursoConnection, _FakeConn()),
@@ -129,13 +125,12 @@ def test_sync_relation_candidates_cache_stops_when_should_continue_false(
     stop = {"value": False}
     calls: list[str] = []
 
-    def _fake_build(_assertions, *, stock_key: str, ai_enabled: bool, **_kwargs):
-        del ai_enabled
+    def _fake_build(*, stock_key: str, **_kwargs):
         calls.append(stock_key)
         stop["value"] = True
         return []
 
-    monkeypatch.setattr(relation_cache, "build_stock_pending_candidates", _fake_build)
+    monkeypatch.setattr(relation_cache, "_build_stock_alias_candidates", _fake_build)
 
     stats = relation_cache.sync_relation_candidates_cache(
         cast(TursoConnection, _FakeConn()),

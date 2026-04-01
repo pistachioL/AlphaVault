@@ -63,6 +63,7 @@ def process_one_redis_payload(
     processing_msg: str,
     redis_client: Any,
     redis_queue_key: str,
+    source_name: str = "",
     spool_dir: Path,
     config: Any,
     limiter: Any,
@@ -184,6 +185,7 @@ def process_one_redis_payload(
         limiter=limiter,
         prefetched_post=cloud_post,
         prefetched_recent=prefetched_recent,
+        source_name=str(source_name or "").strip(),
         outbox_source=str(redis_queue_key or "").strip(),
     )
     if success:

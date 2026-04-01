@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import os
-from typing import Callable, Iterator, Optional
+import sqlite3
+from typing import Callable, Iterator
 
 import pandas as pd
 
@@ -10,7 +11,6 @@ from alphavault.constants import (
     DEFAULT_WORKER_STOCK_ALIAS_MAX_RETRIES,
     ENV_WORKER_STOCK_ALIAS_MAX_RETRIES,
 )
-from alphavault.db.introspect import table_columns
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
@@ -28,22 +28,24 @@ from alphavault.research_workbench import (
     record_stock_alias_relation,
     set_alias_resolve_task_status,
 )
-from alphavault.domains.common.json_list import parse_json_list
-from alphavault.domains.stock.object_index import pick_unresolved_stock_alias_keys
-from alphavault.infra.ai.runtime_config import AiRuntimeConfig
-from alphavault.infra.ai.stock_alias import build_ai_stock_alias_map
+from alphavault.domains.stock.key_match import is_stock_code_value
+from alphavault.domains.stock.keys import (
+    STOCK_KEY_PREFIX,
+    normalize_stock_key,
+    stock_value,
+)
+from alphavault.worker.local_cache import (
+    CACHE_ASSERTIONS_TABLE,
+    CACHE_STOCK_CODES_TABLE,
+    CACHE_STOCK_NAMES_TABLE,
+    TRADE_ACTION_PREFIX,
+    open_local_cache,
+    resolve_local_cache_db_path,
+)
 
 ALIAS_SYNC_SOURCE = "ai_worker"
 ALIAS_SYNC_MAX_KEYS_PER_RUN = 8
 ALIAS_SYNC_UNKNOWN_REMAINING = -1
-
-WANTED_ALIAS_ASSERTION_COLUMNS = [
-    "topic_key",
-    "stock_codes_json",
-    "stock_names_json",
-    "cluster_keys_json",
-]
-ALIAS_ASSERTION_MAX_ID_COLUMN = "max_id"
 
 STOCK_ALIAS_RELATIONS_SQL = """
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
@@ -78,69 +80,6 @@ def _use_conn(
         return
     with turso_connect_autocommit(engine_or_conn) as conn:
         yield conn
-
-
-def _build_alias_assertion_where_clause(
-    *, assertion_cols: set[str], last_id: int
-) -> tuple[str, dict[str, object]]:
-    clauses: list[str] = []
-    params: dict[str, object] = {}
-    if "action" in assertion_cols:
-        clauses.append("action LIKE 'trade.%'")
-    if "id" in assertion_cols and int(last_id) > 0:
-        clauses.append("id > :last_id")
-        params["last_id"] = int(last_id)
-    if not clauses:
-        return "", params
-    return f" WHERE {' AND '.join(clauses)}", params
-
-
-def _load_alias_assertions(conn, *, last_id: int = 0) -> tuple[pd.DataFrame, int]:
-    assertion_cols = set(table_columns(conn, "assertions"))
-    selected = [col for col in WANTED_ALIAS_ASSERTION_COLUMNS if col in assertion_cols]
-    where_clause, params = _build_alias_assertion_where_clause(
-        assertion_cols=assertion_cols,
-        last_id=int(last_id),
-    )
-
-    new_max_id = int(last_id)
-    if "id" in assertion_cols:
-        max_id_df = turso_read_sql_df(
-            conn,
-            f"SELECT MAX(id) AS {ALIAS_ASSERTION_MAX_ID_COLUMN} FROM assertions{where_clause}",
-            params=params,
-        )
-        if (
-            not max_id_df.empty
-            and ALIAS_ASSERTION_MAX_ID_COLUMN in max_id_df.columns
-            and pd.notna(max_id_df.iloc[0][ALIAS_ASSERTION_MAX_ID_COLUMN])
-        ):
-            raw_max_id = max_id_df.iloc[0][ALIAS_ASSERTION_MAX_ID_COLUMN]
-            try:
-                new_max_id = max(int(last_id), int(raw_max_id))
-            except (TypeError, ValueError):
-                new_max_id = int(last_id)
-
-    if not selected:
-        return pd.DataFrame(), int(new_max_id)
-    assertions = turso_read_sql_df(
-        conn,
-        f"SELECT DISTINCT {', '.join(selected)} FROM assertions{where_clause}",
-        params=params,
-    )
-    if assertions.empty:
-        return assertions, int(new_max_id)
-
-    out = assertions.copy()
-    if "cluster_keys" not in out.columns:
-        if "cluster_keys_json" in out.columns:
-            out["cluster_keys"] = out["cluster_keys_json"].apply(parse_json_list)
-        else:
-            out["cluster_keys"] = [[] for _ in range(len(out))]
-    if "created_at" in out.columns:
-        out["created_at"] = pd.to_datetime(out["created_at"], errors="coerce", utc=True)
-        out["created_at"] = out["created_at"].dt.tz_convert(None)
-    return out, int(new_max_id)
 
 
 def _load_stock_alias_relations(conn) -> pd.DataFrame:
@@ -179,19 +118,145 @@ def _candidate_alias_pairs(
     return pairs
 
 
+def _load_distinct_trade_stock_keys(cache_conn: sqlite3.Connection) -> list[str]:
+    rows = cache_conn.execute(
+        f"""
+SELECT DISTINCT topic_key
+FROM {CACHE_ASSERTIONS_TABLE}
+WHERE action LIKE ?
+  AND topic_key LIKE 'stock:%'
+""",
+        (f"{TRADE_ACTION_PREFIX}%",),
+    ).fetchall()
+    keys: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not row:
+            continue
+        key = str(row[0] or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    keys.sort()
+    return keys
+
+
+def _is_unresolved_alias_key(stock_key: str) -> bool:
+    key = normalize_stock_key(str(stock_key or "").strip())
+    if not key.startswith(STOCK_KEY_PREFIX):
+        return False
+    value = stock_value(key)
+    if not value or ":" in value:
+        return False
+    return not bool(is_stock_code_value(value))
+
+
+def _pick_top_candidates(rows: list[tuple[object, object]]) -> list[tuple[str, int]]:
+    out: list[tuple[str, int]] = []
+    for raw_value, raw_count in rows:
+        value = str(raw_value or "").strip()
+        if not value:
+            continue
+        try:
+            count = int(str(raw_count or 0).strip() or 0)
+        except Exception:
+            count = 0
+        if count <= 0:
+            continue
+        out.append((value, int(count)))
+    return out
+
+
+def _is_unambiguous(top: int, second: int) -> bool:
+    if top <= 0:
+        return False
+    if second <= 0:
+        return top >= 2
+    return top >= max(3, int(second) * 2)
+
+
+def _resolve_alias_target_from_cache(
+    cache_conn: sqlite3.Connection,
+    *,
+    alias_key: str,
+) -> str:
+    alias = normalize_stock_key(str(alias_key or "").strip())
+    if not alias:
+        return ""
+    alias_value = stock_value(alias)
+    if not alias_value:
+        return ""
+
+    action_like = f"{TRADE_ACTION_PREFIX}%"
+    code_rows = cache_conn.execute(
+        f"""
+SELECT c.stock_code, COUNT(1) AS n
+FROM {CACHE_STOCK_CODES_TABLE} c
+JOIN {CACHE_ASSERTIONS_TABLE} a
+  ON a.post_uid = c.post_uid AND a.idx = c.idx
+LEFT JOIN {CACHE_STOCK_NAMES_TABLE} hit
+  ON hit.post_uid = a.post_uid AND hit.idx = a.idx AND hit.stock_name = ?
+WHERE a.action LIKE ?
+  AND (a.topic_key = ? OR hit.stock_name IS NOT NULL)
+GROUP BY c.stock_code
+ORDER BY n DESC, c.stock_code ASC
+LIMIT 2
+""",
+        (alias_value, action_like, alias),
+    ).fetchall()
+    code_candidates = [
+        (code, count)
+        for code, count in _pick_top_candidates(code_rows)
+        if is_stock_code_value(code)
+    ]
+
+    name_rows = cache_conn.execute(
+        f"""
+SELECT n.stock_name, COUNT(1) AS n
+FROM {CACHE_STOCK_NAMES_TABLE} n
+JOIN {CACHE_ASSERTIONS_TABLE} a
+  ON a.post_uid = n.post_uid AND a.idx = n.idx
+LEFT JOIN {CACHE_STOCK_NAMES_TABLE} hit
+  ON hit.post_uid = a.post_uid AND hit.idx = a.idx AND hit.stock_name = ?
+WHERE a.action LIKE ?
+  AND (a.topic_key = ? OR hit.stock_name IS NOT NULL)
+  AND n.stock_name <> ?
+GROUP BY n.stock_name
+ORDER BY n DESC, n.stock_name ASC
+LIMIT 2
+""",
+        (alias_value, action_like, alias, alias_value),
+    ).fetchall()
+    name_candidates = [
+        (name, count)
+        for name, count in _pick_top_candidates(name_rows)
+        if name and (":" not in name) and (not is_stock_code_value(name))
+    ]
+
+    if code_candidates:
+        top = int(code_candidates[0][1])
+        second = int(code_candidates[1][1]) if len(code_candidates) > 1 else 0
+        if _is_unambiguous(top, second):
+            return normalize_stock_key(f"{STOCK_KEY_PREFIX}{code_candidates[0][0]}")
+    if name_candidates:
+        top = int(name_candidates[0][1])
+        second = int(name_candidates[1][1]) if len(name_candidates) > 1 else 0
+        if _is_unambiguous(top, second):
+            return normalize_stock_key(f"{STOCK_KEY_PREFIX}{name_candidates[0][0]}")
+    return ""
+
+
 def sync_stock_alias_relations(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     source: str = ALIAS_SYNC_SOURCE,
-    ai_runtime_config: AiRuntimeConfig | None = None,
+    source_name: str = "",
     max_alias_keys_per_run: int = ALIAS_SYNC_MAX_KEYS_PER_RUN,
     ai_max_inflight: int = 1,
     should_continue: Callable[[], bool] | None = None,
     acquire_low_priority_slot: Callable[[], bool] | None = None,
     release_low_priority_slot: Callable[[], None] | None = None,
-    cached_assertions: Optional[pd.DataFrame] = None,
-    last_assertion_id: int = 0,
-    on_data_loaded: Optional[Callable[[pd.DataFrame, pd.DataFrame, int], None]] = None,
     verbose: bool = False,
 ) -> dict[str, int | bool]:
     _log_alias_sync(
@@ -233,35 +298,27 @@ def sync_stock_alias_relations(
                 pass
     ensure_research_workbench_schema(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
-        new_rows, new_max_id = _load_alias_assertions(
-            conn, last_id=int(last_assertion_id)
-        )
         stock_relations = _load_stock_alias_relations(conn)
-    if cached_assertions is not None:
-        if not new_rows.empty:
-            assertions = pd.concat([cached_assertions, new_rows], ignore_index=True)
-        else:
-            assertions = cached_assertions
-    else:
-        assertions = new_rows
-    if on_data_loaded is not None:
-        try:
-            on_data_loaded(new_rows, stock_relations, new_max_id)
-        except Exception:
-            pass
-    _log_alias_sync(
-        verbose=verbose,
-        message=(
-            f"loaded assertions={int(len(assertions))} "
-            f"new_rows={int(len(new_rows))} "
-            f"stock_relations={int(len(stock_relations))}"
-        ),
-    )
+    db_path = resolve_local_cache_db_path(source_name=str(source_name or ""))
+    unresolved_aliases: list[str] = []
+    try:
+        with open_local_cache(db_path=db_path) as cache_conn:
+            stock_keys = _load_distinct_trade_stock_keys(cache_conn)
+            existing_pairs = _existing_alias_pairs(stock_relations)
+            existing_alias_keys = {alias_key for _left, alias_key in existing_pairs}
+            unresolved_aliases = [
+                normalize_stock_key(key)
+                for key in stock_keys
+                if _is_unresolved_alias_key(key)
+                and normalize_stock_key(key) not in existing_alias_keys
+            ]
+    except Exception as err:
+        _log_alias_sync(
+            verbose=verbose,
+            message=f"cache_error skip=1 err={type(err).__name__}",
+        )
+        unresolved_aliases = []
 
-    alias_stats: dict[str, int] = {}
-    unresolved_aliases = pick_unresolved_stock_alias_keys(
-        assertions, stock_relations=stock_relations
-    )
     tasks_map = get_alias_resolve_tasks_map(engine_or_conn, unresolved_aliases)
     max_retries = _resolve_alias_max_retries()
 
@@ -297,34 +354,23 @@ def sync_stock_alias_relations(
         ),
     )
     attempted_aliases: list[str] = []
-    ai_alias_map: dict[str, str] = {}
+    alias_map: dict[str, str] = {}
+    attempted_aliases = list(aliases_to_process)
     if aliases_to_process:
-        _log_alias_sync(
-            verbose=verbose,
-            message=f"ai_map_start alias_keys={int(len(aliases_to_process))}",
-        )
-        ai_alias_map = build_ai_stock_alias_map(
-            assertions,
-            stock_relations=stock_relations,
-            alias_keys=aliases_to_process,
-            runtime_config=ai_runtime_config,
-            max_alias_keys=len(aliases_to_process),
-            stats_out=alias_stats,
-            ai_max_inflight=max(1, int(ai_max_inflight)),
-            should_continue=should_continue,
-            acquire_low_priority_slot=acquire_low_priority_slot,
-            release_low_priority_slot=release_low_priority_slot,
-            attempted_aliases_out=attempted_aliases,
-        )
-        _log_alias_sync(
-            verbose=verbose,
-            message=(
-                f"ai_map_done attempted={int(len(attempted_aliases))} "
-                f"resolved={int(len(ai_alias_map))}"
-            ),
-        )
-    else:
-        _log_alias_sync(verbose=verbose, message="ai_map_skip reason=no_eligible_alias")
+        try:
+            with open_local_cache(db_path=db_path) as cache_conn:
+                for alias_key in aliases_to_process:
+                    target = _resolve_alias_target_from_cache(
+                        cache_conn,
+                        alias_key=alias_key,
+                    )
+                    if target:
+                        alias_map[alias_key] = target
+        except Exception as err:
+            _log_alias_sync(
+                verbose=verbose,
+                message=f"cache_read_error skip=1 err={type(err).__name__}",
+            )
 
     attempt_counts: dict[str, int] = {}
     if attempted_aliases:
@@ -334,7 +380,7 @@ def sync_stock_alias_relations(
 
     for alias_key in attempted_aliases:
         attempts = int(attempt_counts.get(alias_key, 0) or 0)
-        if alias_key in ai_alias_map:
+        if alias_key in alias_map:
             set_alias_resolve_task_status(
                 engine_or_conn,
                 alias_key=alias_key,
@@ -350,7 +396,7 @@ def sync_stock_alias_relations(
                 attempt_count=attempts,
             )
 
-    candidate_pairs = _candidate_alias_pairs(ai_alias_map)
+    candidate_pairs = _candidate_alias_pairs(alias_map)
     existing_pairs = _existing_alias_pairs(stock_relations)
     new_pairs = [pair for pair in candidate_pairs if pair not in existing_pairs]
     _log_alias_sync(
@@ -394,15 +440,15 @@ def sync_stock_alias_relations(
     _log_alias_sync(
         verbose=verbose,
         message=(
-            f"done inserted={int(inserted)} resolved={int(len(ai_alias_map))} "
+            f"done inserted={int(inserted)} resolved={int(len(alias_map))} "
             f"attempted={attempted_count} remaining={remaining_aliases} "
             f"has_more={1 if has_more else 0}"
         ),
     )
 
     return {
-        "assertions": int(len(assertions)),
-        "resolved": int(len(ai_alias_map)),
+        "assertions": 0,
+        "resolved": int(len(alias_map)),
         "candidates": int(len(candidate_pairs)),
         "inserted": int(inserted),
         "attempted": attempted_count,

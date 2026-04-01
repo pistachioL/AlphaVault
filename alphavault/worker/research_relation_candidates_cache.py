@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 import bisect
+from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from pathlib import Path
 import time
 from typing import Any, Callable
 
-import pandas as pd
-
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
     turso_connect_autocommit,
     turso_savepoint,
 )
-from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.research_stock_cache import mark_stock_dirty
 from alphavault.research_workbench import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
@@ -24,16 +21,27 @@ from alphavault.research_workbench import (
     upsert_relation_candidate,
 )
 from alphavault.rss.utils import RateLimiter
-from alphavault.domains.common.json_list import parse_json_list
-from alphavault.app.relation.candidate_builders import (
-    build_sector_pending_candidates,
-    build_stock_pending_candidates,
+from alphavault.domains.relation.ids import make_candidate_id
+from alphavault.domains.stock.key_match import is_stock_code_value
+from alphavault.domains.stock.keys import (
+    STOCK_KEY_PREFIX,
+    normalize_stock_key,
+    stock_value,
 )
+from alphavault.infra.ai.relation_candidate_ranker import enrich_candidates_with_ai
 from alphavault.worker.job_state import (
     load_worker_job_cursor,
     release_worker_job_lock,
     save_worker_job_cursor,
     try_acquire_worker_job_lock,
+)
+from alphavault.worker.local_cache import (
+    CACHE_ASSERTIONS_TABLE,
+    CACHE_STOCK_CODES_TABLE,
+    CACHE_STOCK_NAMES_TABLE,
+    TRADE_ACTION_PREFIX,
+    open_local_cache,
+    resolve_local_cache_db_path,
 )
 
 
@@ -51,76 +59,163 @@ AI_RANK_SCORE_WEIGHT = 1_000_000.0
 AI_RANK_SCORE_BASE = 1000
 
 
-WANTED_ASSERTION_COLUMNS = [
-    "post_uid",
-    "topic_key",
-    "action",
-    "summary",
-    "author",
-    "created_at",
-    "stock_codes_json",
-    "stock_names_json",
-    "cluster_keys_json",
-    "cluster_key",
-]
-
-
 def _log_relation_cache(*, verbose: bool, message: str) -> None:
     if not verbose:
         return
     print(f"[relation_cache] {message}", flush=True)
 
 
-def _load_trade_assertions(conn: TursoConnection) -> pd.DataFrame:
-    assertion_cols = table_columns(conn, "assertions")
-    selected = [col for col in WANTED_ASSERTION_COLUMNS if col in set(assertion_cols)]
-    query = build_assertions_query(selected)
-    if "action" in selected:
-        query = f"{query} WHERE action LIKE 'trade.%'"
-    df = turso_read_sql_df(conn, query)
-    if df.empty:
-        return df
-    out = df.copy()
-    if "cluster_keys" not in out.columns:
-        if "cluster_keys_json" in out.columns:
-            out["cluster_keys"] = out["cluster_keys_json"].apply(parse_json_list)
-        else:
-            out["cluster_keys"] = [[] for _ in range(len(out))]
+def _finalize_candidate_rows(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            {
+                str(key): str(raw or "").strip()
+                for key, raw in item.items()
+                if str(key).strip()
+            }
+        )
     return out
 
 
-def _unique_stock_keys(assertions: pd.DataFrame) -> list[str]:
-    if assertions.empty or "topic_key" not in assertions.columns:
+def _load_distinct_trade_stock_keys(*, db_path: Path) -> list[str]:
+    action_like = f"{TRADE_ACTION_PREFIX}%"
+    try:
+        with open_local_cache(db_path=db_path) as cache_conn:
+            rows = cache_conn.execute(
+                f"""
+SELECT DISTINCT topic_key
+FROM {CACHE_ASSERTIONS_TABLE}
+WHERE action LIKE ?
+  AND topic_key LIKE 'stock:%'
+""",
+                (action_like,),
+            ).fetchall()
+            keys: list[str] = []
+            seen: set[str] = set()
+            for row in rows:
+                if not row:
+                    continue
+                key = normalize_stock_key(str(row[0] or "").strip())
+                if not key or key in seen:
+                    continue
+                if not key.startswith(STOCK_KEY_PREFIX):
+                    continue
+                if not is_stock_code_value(stock_value(key)):
+                    continue
+                seen.add(key)
+                keys.append(key)
+            keys.sort()
+            return keys
+    except Exception:
         return []
-    seen: set[str] = set()
-    out: list[str] = []
-    for raw in assertions["topic_key"].tolist():
-        key = str(raw or "").strip()
-        if not key.startswith("stock:"):
-            continue
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(key)
-    out.sort()
-    return out
 
 
-def _unique_sector_keys(assertions: pd.DataFrame) -> list[str]:
-    if assertions.empty:
+def _build_stock_alias_candidates(
+    *,
+    db_path: Path,
+    stock_key: str,
+) -> list[dict[str, Any]]:
+    left = normalize_stock_key(str(stock_key or "").strip())
+    if not left:
         return []
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in assertions.get("cluster_keys", pd.Series(dtype=object)).tolist():
-        if not isinstance(item, list):
-            continue
-        for raw in item:
-            key = str(raw or "").strip()
-            if not key or key in seen:
+    code_value = stock_value(left)
+    if not is_stock_code_value(code_value):
+        return []
+
+    action_like = f"{TRADE_ACTION_PREFIX}%"
+    alias_counts: Counter[str] = Counter()
+    with open_local_cache(db_path=db_path) as cache_conn:
+        # 1) From rows where the stock code is present (even if topic_key is alias).
+        rows = cache_conn.execute(
+            f"""
+SELECT a.topic_key, COUNT(1) AS n
+FROM {CACHE_ASSERTIONS_TABLE} a
+JOIN {CACHE_STOCK_CODES_TABLE} c
+  ON c.post_uid = a.post_uid AND c.idx = a.idx
+WHERE a.action LIKE ?
+  AND c.stock_code = ?
+GROUP BY a.topic_key
+ORDER BY n DESC, a.topic_key ASC
+LIMIT 200
+""",
+            (action_like, code_value),
+        ).fetchall()
+        for raw_key, raw_count in rows:
+            key = normalize_stock_key(str(raw_key or "").strip())
+            if not key.startswith(STOCK_KEY_PREFIX):
                 continue
-            seen.add(key)
-            out.append(key)
-    out.sort()
+            value = stock_value(key)
+            if not value or ":" in value or is_stock_code_value(value):
+                continue
+            if key == left:
+                continue
+            try:
+                count = int(raw_count or 0)
+            except Exception:
+                count = 0
+            if count > 0:
+                alias_counts[key] += int(count)
+
+        # 2) From stock_names on rows where topic_key is the stock code.
+        name_rows = cache_conn.execute(
+            f"""
+SELECT n.stock_name, COUNT(1) AS n
+FROM {CACHE_STOCK_NAMES_TABLE} n
+JOIN {CACHE_ASSERTIONS_TABLE} a
+  ON a.post_uid = n.post_uid AND a.idx = n.idx
+WHERE a.action LIKE ?
+  AND a.topic_key = ?
+GROUP BY n.stock_name
+ORDER BY n DESC, n.stock_name ASC
+LIMIT 200
+""",
+            (action_like, left),
+        ).fetchall()
+        for raw_name, raw_count in name_rows:
+            name = str(raw_name or "").strip()
+            if not name or ":" in name or is_stock_code_value(name):
+                continue
+            alias_key = normalize_stock_key(f"{STOCK_KEY_PREFIX}{name}")
+            if not alias_key or alias_key == left:
+                continue
+            try:
+                count = int(raw_count or 0)
+            except Exception:
+                count = 0
+            if count > 0:
+                alias_counts[alias_key] += int(count)
+
+    if not alias_counts:
+        return []
+
+    ranked = sorted(alias_counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
+    out: list[dict[str, Any]] = []
+    for alias_key, score in ranked[
+        : int(RELATION_CANDIDATES_MAX_CANDIDATES_PER_LEFT_KEY)
+    ]:
+        out.append(
+            {
+                "relation_type": "stock_alias",
+                "left_key": left,
+                "right_key": alias_key,
+                "relation_label": "alias_of",
+                "candidate_id": make_candidate_id(
+                    relation_type="stock_alias",
+                    left_key=left,
+                    right_key=alias_key,
+                    relation_label="alias_of",
+                ),
+                "candidate_key": alias_key,
+                "suggestion_reason": f"同票名称共现 {int(score)} 次",
+                "evidence_summary": f"同票名称共现 {int(score)} 次",
+                "score": str(int(score)),
+            }
+        )
     return out
 
 
@@ -337,6 +432,7 @@ def sync_relation_candidates_cache(
     *,
     limiter: RateLimiter,
     ai_enabled: bool,
+    source_name: str = "",
     max_stocks_per_run: int = RELATION_CANDIDATES_MAX_STOCKS_PER_RUN,
     max_sectors_per_run: int = RELATION_CANDIDATES_MAX_SECTORS_PER_RUN,
     lock_lease_seconds: int = RELATION_CANDIDATES_LOCK_LEASE_SECONDS,
@@ -379,56 +475,60 @@ def sync_relation_candidates_cache(
         sector_cursor = load_worker_job_cursor(
             engine_or_conn, state_key=RELATION_CANDIDATES_SECTOR_CURSOR_KEY
         )
+        db_path = resolve_local_cache_db_path(source_name=str(source_name or ""))
+        stock_keys = _load_distinct_trade_stock_keys(db_path=db_path)
+        sector_keys: list[str] = []
+        if not stock_keys and not sector_keys:
+            _log_relation_cache(verbose=verbose, message="cache_empty skip=1")
+            return {"processed": 0, "upserted": 0, "deleted": 0, "has_more": False}
+
+        stocks_to_process, stocks_has_more = _slice_after_cursor(
+            stock_keys,
+            cursor=stock_cursor,
+            limit=max(0, int(max_stocks_per_run)),
+        )
+        sectors_to_process, sectors_has_more = _slice_after_cursor(
+            sector_keys,
+            cursor=sector_cursor,
+            limit=max(0, int(max_sectors_per_run)),
+        )
+        _log_relation_cache(
+            verbose=verbose,
+            message=(
+                f"keys_total stocks={int(len(stock_keys))} sectors={int(len(sector_keys))} "
+                f"picked_stocks={int(len(stocks_to_process))} picked_sectors={int(len(sectors_to_process))}"
+            ),
+        )
+
+        processed = 0
+        upserted = 0
+        deleted = 0
+
+        stock_results, stocks_stopped_early = _collect_candidates_parallel(
+            keys=stocks_to_process,
+            ai_enabled=bool(ai_enabled),
+            ai_max_inflight=max(1, int(ai_max_inflight)),
+            should_continue=should_continue,
+            acquire_low_priority_slot=acquire_low_priority_slot,
+            release_low_priority_slot=release_low_priority_slot,
+            limiter=limiter,
+            build_candidates=lambda stock_key: _finalize_candidate_rows(
+                enrich_candidates_with_ai(
+                    _build_stock_alias_candidates(
+                        db_path=db_path,
+                        stock_key=stock_key,
+                    ),
+                    relation_type="stock_alias",
+                    ai_enabled=bool(ai_enabled),
+                    should_continue=should_continue,
+                )
+            ),
+        )
         with (
             turso_connect_autocommit(engine_or_conn)
             if isinstance(engine_or_conn, TursoEngine)
             else engine_or_conn
         ) as conn:
-            assertions = _load_trade_assertions(conn)
-            if assertions.empty:
-                _log_relation_cache(verbose=verbose, message="assertions_empty skip=1")
-                return {"processed": 0, "upserted": 0, "deleted": 0, "has_more": False}
-
-            stock_keys = _unique_stock_keys(assertions)
-            sector_keys = _unique_sector_keys(assertions)
-
-            stocks_to_process, stocks_has_more = _slice_after_cursor(
-                stock_keys,
-                cursor=stock_cursor,
-                limit=max(0, int(max_stocks_per_run)),
-            )
-            sectors_to_process, sectors_has_more = _slice_after_cursor(
-                sector_keys,
-                cursor=sector_cursor,
-                limit=max(0, int(max_sectors_per_run)),
-            )
-            _log_relation_cache(
-                verbose=verbose,
-                message=(
-                    f"keys_total stocks={int(len(stock_keys))} sectors={int(len(sector_keys))} "
-                    f"picked_stocks={int(len(stocks_to_process))} picked_sectors={int(len(sectors_to_process))}"
-                ),
-            )
-
-            processed = 0
-            upserted = 0
-            deleted = 0
-
-            stock_results, stocks_stopped_early = _collect_candidates_parallel(
-                keys=stocks_to_process,
-                ai_enabled=bool(ai_enabled),
-                ai_max_inflight=max(1, int(ai_max_inflight)),
-                should_continue=should_continue,
-                acquire_low_priority_slot=acquire_low_priority_slot,
-                release_low_priority_slot=release_low_priority_slot,
-                limiter=limiter,
-                build_candidates=lambda stock_key: build_stock_pending_candidates(
-                    assertions,
-                    stock_key=stock_key,
-                    ai_enabled=bool(ai_enabled),
-                    should_continue=should_continue,
-                ),
-            )
             for stock_key, candidates in stock_results:
                 left_key_for_stock = stock_key
                 changed_for_stock = False
@@ -440,7 +540,7 @@ def sync_relation_candidates_cache(
                     )
                     left_key_for_stock = left_key or stock_key
                     if not rel_types:
-                        rel_types = ["stock_alias", "stock_sector"]
+                        rel_types = ["stock_alias"]
                     upserted += int(batch_upserted)
                     batch_deleted = _delete_stale_pending_candidates(
                         conn,
@@ -473,82 +573,32 @@ def sync_relation_candidates_cache(
                     state_key=RELATION_CANDIDATES_STOCK_CURSOR_KEY,
                     cursor=stock_key,
                 )
-            if stocks_stopped_early:
-                stocks_has_more = True
-                _log_relation_cache(
-                    verbose=verbose,
-                    message="stocks_stopped_early=1",
-                )
-
-            sector_results, sectors_stopped_early = _collect_candidates_parallel(
-                keys=sectors_to_process,
-                ai_enabled=bool(ai_enabled),
-                ai_max_inflight=max(1, int(ai_max_inflight)),
-                should_continue=should_continue,
-                acquire_low_priority_slot=acquire_low_priority_slot,
-                release_low_priority_slot=release_low_priority_slot,
-                limiter=limiter,
-                build_candidates=lambda sector_key: build_sector_pending_candidates(
-                    assertions,
-                    sector_key=sector_key,
-                    ai_enabled=bool(ai_enabled),
-                    should_continue=should_continue,
-                ),
-            )
-            for sector_key, candidates in sector_results:
-                left_key = f"cluster:{sector_key}" if sector_key else ""
-                batch_upserted = 0
-                batch_deleted = 0
-                with turso_savepoint(conn):
-                    batch_upserted, rel_types, keep_ids, left_from_rows = (
-                        _upsert_candidate_batch(conn, candidates=candidates)
-                    )
-                    upserted += int(batch_upserted)
-                    batch_deleted = _delete_stale_pending_candidates(
-                        conn,
-                        left_key=left_from_rows or left_key,
-                        relation_types=rel_types or ["sector_sector"],
-                        keep_candidate_ids=keep_ids,
-                    )
-                    deleted += int(batch_deleted)
-                processed += 1
-                _log_relation_cache(
-                    verbose=verbose,
-                    message=(
-                        f"sector_done left_key={left_from_rows or left_key} "
-                        f"candidates={int(len(candidates))} "
-                        f"upserted={int(batch_upserted)} "
-                        f"deleted={int(batch_deleted)}"
-                    ),
-                )
-                save_worker_job_cursor(
-                    engine_or_conn,
-                    state_key=RELATION_CANDIDATES_SECTOR_CURSOR_KEY,
-                    cursor=sector_key,
-                )
-            if sectors_stopped_early:
-                sectors_has_more = True
-                _log_relation_cache(
-                    verbose=verbose,
-                    message="sectors_stopped_early=1",
-                )
-
-            has_more = bool(stocks_has_more or sectors_has_more)
+        if stocks_stopped_early:
+            stocks_has_more = True
             _log_relation_cache(
                 verbose=verbose,
-                message=(
-                    f"done processed={int(processed)} "
-                    f"upserted={int(upserted)} "
-                    f"deleted={int(deleted)} "
-                    f"has_more={1 if has_more else 0}"
-                ),
+                message="stocks_stopped_early=1",
             )
-            return {
-                "processed": int(processed),
-                "upserted": int(upserted),
-                "deleted": int(deleted),
-                "has_more": bool(has_more),
-            }
+
+        if sectors_to_process:
+            _log_relation_cache(verbose=verbose, message="sectors_skip reason=no_data")
+
+        has_more = bool(stocks_has_more or sectors_has_more)
+        _log_relation_cache(
+            verbose=verbose,
+            message=(
+                f"done processed={int(processed)} "
+                f"upserted={int(upserted)} "
+                f"deleted={int(deleted)} "
+                f"has_more={1 if has_more else 0}"
+            ),
+        )
+        return {
+            "processed": int(processed),
+            "upserted": int(upserted),
+            "deleted": int(deleted),
+            "has_more": bool(has_more),
+        }
     finally:
         release_worker_job_lock(engine_or_conn, lock_key=RELATION_CANDIDATES_LOCK_KEY)
 
