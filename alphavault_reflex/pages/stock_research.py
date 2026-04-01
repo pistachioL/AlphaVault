@@ -12,7 +12,6 @@ from alphavault_reflex.services.research_status_text import (
 
 EMPTY_TEXT = "暂无。"
 LOADING_TEXT = "加载中…"
-NO_SIGNAL_TEXT = "没有信号。"
 PAGE_LOADING = research_page_loading_var()
 PAGE_TITLE = stock_page_title_var()
 HELP_MARK_TEXT = "?"
@@ -20,6 +19,14 @@ HELP_MARK_TEXT = "?"
 
 def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.div(
+        rx.cond(
+            row["signal_badge"] != "",
+            rx.el.span(
+                row["signal_badge"],
+                class_name="av-research-chip",
+            ),
+            rx.el.span(""),
+        ),
         rx.text(row["action"], class_name="av-research-muted"),
         rx.text(row["author"], class_name="av-research-muted"),
         rx.cond(
@@ -36,41 +43,9 @@ def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
-def _signal_pager() -> rx.Component:
-    return rx.hstack(
-        rx.button(
-            "上一页",
-            on_click=ResearchState.prev_signal_page,
-            variant="soft",
-            disabled=PAGE_LOADING | (ResearchState.signal_page <= 1),
-        ),
-        rx.text(ResearchState.signal_page_caption, class_name="av-research-muted"),
-        rx.button(
-            "下一页",
-            on_click=ResearchState.next_signal_page,
-            variant="soft",
-            disabled=PAGE_LOADING
-            | (ResearchState.signal_page >= ResearchState.signal_total_pages),
-        ),
-        rx.spacer(),
-        rx.text("每页", class_name="av-research-muted"),
-        rx.select(
-            ResearchState.signal_page_size_options,
-            value=ResearchState.signal_page_size_text,
-            on_change=ResearchState.set_signal_page_size,
-            width="120px",
-            disabled=PAGE_LOADING,
-        ),
-        spacing="3",
-        align="center",
-        width="100%",
-        margin_top="10px",
-    )
-
-
-def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+def _related_post_card(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.div(
-        rx.text(row["summary"], class_name="av-research-signal-title"),
+        rx.text(row["title"], class_name="av-research-signal-title"),
         _signal_meta_row(row),
         rx.cond(
             row["tree_text"] != "",
@@ -78,8 +53,30 @@ def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
             rx.cond(
                 row["display_md"] != "",
                 rx.text(row["display_md"], class_name="av-research-signal-body"),
-                rx.text(row["raw_text"], class_name="av-research-signal-body"),
+                rx.cond(
+                    row["raw_text"] != "",
+                    rx.text(row["raw_text"], class_name="av-research-signal-body"),
+                    rx.text(row["preview"], class_name="av-research-signal-body"),
+                ),
             ),
+        ),
+        rx.hstack(
+            rx.cond(
+                row["is_signal"] != "1",
+                rx.button(
+                    "排队 AI 回补",
+                    on_click=lambda: ResearchState.queue_backfill_post(row["post_uid"]),
+                    class_name="av-btn av-btn-small",
+                ),
+                rx.el.span(""),
+            ),
+            rx.cond(
+                row["url"] != "",
+                rx.link("打开原文", href=row["url"], is_external=True),
+                rx.el.span(""),
+            ),
+            spacing="3",
+            margin_top="10px",
         ),
         class_name="av-research-card",
     )
@@ -115,29 +112,6 @@ def _pending_item(row: rx.Var[dict[str, str]]) -> rx.Component:
                 color_scheme="gray",
             ),
             spacing="2",
-            margin_top="10px",
-        ),
-        class_name="av-research-side-item",
-    )
-
-
-def _backfill_item(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.el.div(
-        rx.text(row["matched_terms"], class_name="av-research-side-title"),
-        rx.text(row["author"], class_name="av-research-muted"),
-        rx.text(row["preview"], class_name="av-research-muted"),
-        rx.hstack(
-            rx.button(
-                "排队 AI 回补",
-                on_click=lambda: ResearchState.queue_backfill_post(row["post_uid"]),
-                class_name="av-btn av-btn-small",
-            ),
-            rx.cond(
-                row["url"] != "",
-                rx.link("打开原文", href=row["url"], is_external=True),
-                rx.el.span(""),
-            ),
-            spacing="3",
             margin_top="10px",
         ),
         class_name="av-research-side-item",
@@ -190,7 +164,7 @@ def stock_research_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
             rx.heading(PAGE_TITLE, size="6"),
-            rx.text("最近买卖信号 + 原文", class_name="av-research-muted"),
+            rx.text("相关帖子", class_name="av-research-muted"),
             class_name="av-research-head",
         ),
         rx.cond(
@@ -243,48 +217,65 @@ def stock_research_page() -> rx.Component:
         ),
         rx.el.div(
             rx.el.div(
-                rx.heading("最近信号", size="4"),
-                rx.cond(
-                    PAGE_LOADING,
-                    rx.el.div(),
-                    rx.cond(
-                        ResearchState.signal_page_caption != "",
-                        _signal_pager(),
-                        rx.el.div(),
+                rx.hstack(
+                    rx.heading("相关帖子", size="4"),
+                    rx.spacer(),
+                    rx.button(
+                        "全部",
+                        on_click=lambda: ResearchState.set_related_filter("all"),
+                        variant=rx.cond(
+                            ResearchState.related_filter == "all",
+                            "solid",
+                            "soft",
+                        ),
+                        disabled=PAGE_LOADING,
                     ),
+                    rx.button(
+                        "只看信号",
+                        on_click=lambda: ResearchState.set_related_filter("signal"),
+                        variant=rx.cond(
+                            ResearchState.related_filter == "signal",
+                            "solid",
+                            "soft",
+                        ),
+                        disabled=PAGE_LOADING,
+                    ),
+                    rx.button(
+                        "刷新",
+                        on_click=ResearchState.refresh_stock_related,
+                        variant="soft",
+                        disabled=PAGE_LOADING,
+                    ),
+                    spacing="2",
+                    align="center",
+                    width="100%",
                 ),
                 rx.cond(
                     PAGE_LOADING,
                     _section_loading(),
                     rx.cond(
-                        ResearchState.has_signals,
+                        ResearchState.has_related_posts,
                         rx.el.div(
-                            rx.foreach(ResearchState.primary_signals, _signal_card),
+                            rx.foreach(ResearchState.related_posts, _related_post_card),
                             class_name="av-research-list",
                         ),
                         rx.cond(
-                            ResearchState.show_signal_empty,
-                            rx.text(NO_SIGNAL_TEXT, class_name="av-research-muted"),
-                            rx.el.div(),
-                        ),
-                    ),
-                ),
-                rx.heading("待回补文章", size="4", margin_top="24px"),
-                rx.cond(
-                    ResearchState.show_extras_loading,
-                    _section_loading(),
-                    rx.cond(
-                        ResearchState.has_backfill_posts,
-                        rx.el.div(
-                            rx.foreach(ResearchState.backfill_posts, _backfill_item),
-                            class_name="av-research-side-list",
-                        ),
-                        rx.cond(
-                            ResearchState.show_backfill_empty,
+                            ResearchState.show_related_posts_empty,
                             rx.text(EMPTY_TEXT, class_name="av-research-muted"),
                             rx.el.div(),
                         ),
                     ),
+                ),
+                rx.cond(
+                    ResearchState.related_has_more,
+                    rx.button(
+                        "加载更多",
+                        on_click=ResearchState.load_more_related,
+                        variant="soft",
+                        disabled=PAGE_LOADING,
+                        margin_top="12px",
+                    ),
+                    rx.el.div(),
                 ),
                 class_name="av-research-main",
             ),

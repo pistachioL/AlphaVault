@@ -26,6 +26,16 @@ from alphavault_reflex.services.research_state_utils import (
     prepare_stock_links as _prepare_stock_links,
     resolve_route_slug as _resolve_route_slug,
 )
+from alphavault_reflex.services.stock_related_feed import (
+    DEFAULT_RELATED_LIMIT,
+    MAX_RELATED_LIMIT,
+    RELATED_FILTER_ALL,
+    RELATED_FILTER_SIGNAL,
+    RELATED_LIMIT_STEP,
+    build_related_feed,
+    normalize_related_filter,
+    normalize_related_limit,
+)
 from alphavault_reflex.services.stock_hot_read import clear_stock_hot_read_caches
 from alphavault_reflex.services.turso_read import clear_reflex_source_caches
 
@@ -55,10 +65,32 @@ class ResearchState(rx.State):
     signal_page: int = 1
     signal_page_size: int = DEFAULT_SIGNAL_PAGE_SIZE
     signal_total: int = 0
+    related_posts: list[dict[str, str]] = []
+    related_total: int = 0
+    related_filter: str = RELATED_FILTER_ALL
+    related_limit: int = DEFAULT_RELATED_LIMIT
 
     @rx.var
     def has_signals(self) -> bool:
         return bool(self.primary_signals)
+
+    @rx.var
+    def has_related_posts(self) -> bool:
+        return bool(self.related_posts)
+
+    @rx.var
+    def show_related_posts_empty(self) -> bool:
+        return bool(
+            self.loaded_once
+            and (not self.loading)
+            and (str(self.load_error or "").strip() == "")
+            and (not self.related_posts)
+        )
+
+    @rx.var
+    def related_has_more(self) -> bool:
+        total = max(int(self.related_total or 0), 0)
+        return bool(total > len(self.related_posts))
 
     @rx.var
     def show_loading(self) -> bool:
@@ -151,6 +183,8 @@ class ResearchState(rx.State):
         )
         if self.entity_type != "stock" or _normalize_stock_key(slug) != self.entity_key:
             self.signal_page = 1
+            self.related_filter = RELATED_FILTER_ALL
+            self.related_limit = DEFAULT_RELATED_LIMIT
         stock_key = _normalize_stock_key(slug)
         self.stock_load_request_id = max(int(self.stock_load_request_id), 0) + 1
         self.entity_type = "stock"
@@ -167,15 +201,18 @@ class ResearchState(rx.State):
         self.worker_running = False
         self.pending_candidates = []
         self.backfill_posts = []
+        self.related_posts = []
+        self.related_total = 0
 
         view = load_stock_page_cached_view(
             slug,
-            signal_page=_normalize_signal_page(self.signal_page),
-            signal_page_size=_normalize_signal_page_size(self.signal_page_size),
+            signal_page=1,
+            signal_page_size=normalize_related_limit(self.related_limit),
         )
         self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
         self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
         self.backfill_posts = _coerce_rows(view.get("backfill_posts"))
+        self._refresh_related_posts()
         self.extras_updated_at = str(view.get("extras_updated_at") or "").strip()
         self.worker_status_text = str(view.get("worker_status_text") or "").strip()
         self.worker_next_run_at = str(view.get("worker_next_run_at") or "").strip()
@@ -200,6 +237,23 @@ class ResearchState(rx.State):
                 or bool(self.backfill_posts)
             )
         )
+
+    def _refresh_related_posts(self) -> None:
+        self.related_filter = normalize_related_filter(self.related_filter)
+        self.related_limit = normalize_related_limit(self.related_limit)
+        feed = build_related_feed(
+            signals=self.primary_signals,
+            backfill_posts=self.backfill_posts,
+            related_filter=self.related_filter,
+            limit=self.related_limit,
+        )
+        self.related_posts = feed.rows
+        if self.related_filter == RELATED_FILTER_SIGNAL:
+            self.related_total = max(int(self.signal_total or 0), 0)
+        else:
+            self.related_total = max(int(self.signal_total or 0), 0) + len(
+                self.backfill_posts or []
+            )
 
     def _apply_stock_primary_view(
         self, view: dict[str, object], *, fallback_stock_key: str
@@ -243,6 +297,30 @@ class ResearchState(rx.State):
         self.signal_page_size = _normalize_signal_page_size(value)
         self.signal_page = 1
         return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+
+    @rx.event
+    def set_related_filter(self, value: str) -> None:
+        self.related_filter = normalize_related_filter(value)
+        self.related_limit = DEFAULT_RELATED_LIMIT
+        if self.entity_key.startswith("stock:"):
+            return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+
+    @rx.event
+    def load_more_related(self) -> None:
+        current = normalize_related_limit(self.related_limit)
+        self.related_limit = min(
+            int(MAX_RELATED_LIMIT),
+            current + int(RELATED_LIMIT_STEP),
+        )
+        if self.entity_key.startswith("stock:"):
+            return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+
+    @rx.event
+    def refresh_stock_related(self) -> None:
+        clear_reflex_source_caches()
+        clear_stock_hot_read_caches()
+        if self.entity_key.startswith("stock:"):
+            return self.load_stock_page(self.entity_key.removeprefix("stock:"))
 
     @rx.event
     def load_sector_page(self, sector_slug: str | None = None) -> None:

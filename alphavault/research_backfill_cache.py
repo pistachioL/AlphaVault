@@ -5,6 +5,7 @@ import json
 import threading
 from typing import Iterator
 
+from alphavault.db.introspect import table_columns
 from alphavault.db.sql.research_backfill_cache import (
     create_research_stock_backfill_dirty_keys_index,
     create_research_stock_backfill_dirty_keys_table,
@@ -41,6 +42,15 @@ _SCHEMA_READY_KEYS: set[str] = set()
 
 def _now_str() -> str:
     return now_cst_str()
+
+
+def _ensure_backfill_posts_schema(conn: TursoConnection) -> None:
+    cols = table_columns(conn, RESEARCH_STOCK_BACKFILL_POSTS_TABLE)
+    if "tree_text" not in cols:
+        conn.execute(
+            f"ALTER TABLE {RESEARCH_STOCK_BACKFILL_POSTS_TABLE} "
+            "ADD COLUMN tree_text TEXT NOT NULL DEFAULT ''"
+        )
 
 
 @contextmanager
@@ -102,6 +112,7 @@ def _run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
                 RESEARCH_STOCK_BACKFILL_POSTS_TABLE
             )
         )
+        _ensure_backfill_posts_schema(conn)
         conn.execute(
             create_research_stock_backfill_posts_index(
                 RESEARCH_STOCK_BACKFILL_POSTS_TABLE
@@ -180,6 +191,7 @@ def replace_stock_backfill_posts(
                         "url": str(row.get("url") or "").strip(),
                         "matched_terms": str(row.get("matched_terms") or "").strip(),
                         "preview": str(row.get("preview") or "").strip(),
+                        "tree_text": str(row.get("tree_text") or "").strip(),
                         "updated_at": now,
                     }
                     for row in posts

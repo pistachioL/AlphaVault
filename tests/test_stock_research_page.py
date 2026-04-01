@@ -4,7 +4,7 @@ import json
 
 import alphavault_reflex.alphavault_reflex as app_module
 from alphavault_reflex.pages.stock_research import stock_research_page
-from alphavault_reflex.pages.stock_research import _signal_card
+from alphavault_reflex.pages.stock_research import _signal_meta_row
 
 
 def _rendered_text(child: dict) -> str:
@@ -30,24 +30,20 @@ def _collect_cond_states(node: object) -> list[str]:
 
 
 def test_signal_card_renders_action_author_and_time_in_one_row() -> None:
-    component = _signal_card(
+    component = _signal_meta_row(
         {
-            "summary": "继续看",
+            "signal_badge": "",
             "action": "trade.watch",
             "author": "挖地瓜的超级鹿鼎公",
             "created_at_line": "2026-03-25 06:19 · 19小时前",
-            "tree_text": "",
-            "display_md": "",
-            "raw_text": "原文内容",
         }
     )
     rendered = component.render()
-    meta_row = rendered["children"][1]
-    time_fragment = meta_row["children"][2]
+    time_fragment = rendered["children"][3]
     time_child = time_fragment["children"][0]["true_value"]["children"][0]
 
-    assert meta_row["name"] == '"div"'
-    assert [_rendered_text(child) for child in meta_row["children"][:2]] == [
+    assert rendered["name"] == '"div"'
+    assert [_rendered_text(child) for child in rendered["children"][1:3]] == [
         "trade.watch",
         "挖地瓜的超级鹿鼎公",
     ]

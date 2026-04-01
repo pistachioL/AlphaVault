@@ -8,8 +8,9 @@ from alphavault_reflex.services.research_models import (
 )
 from alphavault_reflex.services.research_status_text import STOCK_CACHE_PREPARING_HINTS
 
-DEFAULT_SIGNAL_PAGE_SIZE = 5
-SIGNAL_PAGE_SIZE_OPTIONS = (5, 10, 20)
+DEFAULT_SIGNAL_PAGE_SIZE = 20
+SIGNAL_PAGE_SIZE_OPTIONS = (20, 40, 60)
+MAX_SIGNAL_PAGE_SIZE = 500
 
 
 def resolve_route_slug(
@@ -84,9 +85,9 @@ def normalize_signal_page_size(value: object) -> int:
         parsed = int(str(value or "").strip())
     except (TypeError, ValueError):
         return DEFAULT_SIGNAL_PAGE_SIZE
-    if parsed in SIGNAL_PAGE_SIZE_OPTIONS:
-        return int(parsed)
-    return DEFAULT_SIGNAL_PAGE_SIZE
+    if parsed <= 0:
+        return DEFAULT_SIGNAL_PAGE_SIZE
+    return max(1, min(int(parsed), int(MAX_SIGNAL_PAGE_SIZE)))
 
 
 def normalize_signal_total(value: object, *, fallback: int) -> int:
@@ -157,6 +158,7 @@ def is_stock_cache_preparing_warning(warning: str) -> bool:
 
 __all__ = [
     "DEFAULT_SIGNAL_PAGE_SIZE",
+    "MAX_SIGNAL_PAGE_SIZE",
     "SIGNAL_PAGE_SIZE_OPTIONS",
     "coerce_rows",
     "is_stock_cache_preparing_warning",
