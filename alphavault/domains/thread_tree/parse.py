@@ -315,6 +315,17 @@ def extract_parent_post_id(*, csv_fields: Dict[str, Any]) -> str:
     return _clean_id(csv_fields.get("源微博id"))
 
 
+clean_id = _clean_id
+content_key_for_compare = _content_key_for_compare
+extract_forward_original_text = _extract_forward_original_text
+extract_repost_original_text = _extract_repost_original_text
+extract_speaker_name = _extract_speaker_name
+make_synthetic_source_id = _make_synthetic_source_id
+match_key = _match_key
+strip_leading_speaker = _strip_leading_speaker
+to_one_line_text = _to_one_line_text
+
+
 __all__ = [
     "CSV_RAW_FIELDS_MARKER",
     "DISPLAY_MD_SPLIT_RE",
@@ -322,9 +333,18 @@ __all__ = [
     "MATCH_KEY_LEN",
     "REPOST_TOKEN",
     "SYNTHETIC_SOURCE_ID_PREFIX",
+    "clean_id",
+    "content_key_for_compare",
+    "extract_forward_original_text",
     "extract_parent_post_id",
+    "extract_repost_original_text",
+    "extract_speaker_name",
     "extract_platform_post_id",
+    "make_synthetic_source_id",
+    "match_key",
     "parse_display_md_segments",
     "parse_weibo_csv_raw_fields",
+    "strip_leading_speaker",
     "strip_csv_raw_fields",
+    "to_one_line_text",
 ]

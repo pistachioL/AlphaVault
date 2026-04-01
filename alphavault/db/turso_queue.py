@@ -39,10 +39,10 @@ from alphavault.db.sql.turso_queue import (
     alter_posts_add_column,
     build_reset_ai_results_for_post_uids,
 )
+from alphavault.db.turso_schema import init_cloud_schema
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
-    init_cloud_schema,
     is_fatal_base_exception,
     maybe_dispose_turso_engine_on_transient_error,
     turso_connect_autocommit,
