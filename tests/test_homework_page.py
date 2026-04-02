@@ -17,7 +17,6 @@ def _sample_row() -> dict[str, str]:
         "sector_slug": "",
         "sector_route": "",
         "tree_post_uid": "",
-        "consensus": "",
         "summary": "",
         "url": "",
         "recent_action": "",
