@@ -97,6 +97,17 @@ def _resolve_stock_key_candidates(stock_key: str) -> list[str]:
 def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     if not rows:
         return []
+
+    def _as_clean_text(value: object) -> str:
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except TypeError:
+            pass
+        return str(value).strip()
+
     frame = pd.DataFrame(rows)
     if "created_at" in frame.columns:
         frame["created_at"] = pd.to_datetime(frame["created_at"], errors="coerce")
@@ -105,7 +116,7 @@ def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     seen: set[str] = set()
     for _, row in frame.iterrows():
         payload = {
-            str(key): str(value or "").strip() for key, value in row.to_dict().items()
+            str(key): _as_clean_text(value) for key, value in row.to_dict().items()
         }
         post_uid = str(payload.get("post_uid") or "").strip()
         if post_uid and post_uid in seen:

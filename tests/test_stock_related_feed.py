@@ -70,19 +70,21 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
         backfill_posts=backfill,
         related_filter="all",
         limit=2,
+        now="2026-04-01 10:30",
     )
     assert feed.total == 3
     assert [row["post_uid"] for row in feed.rows] == ["weibo:1", "weibo:3"]
     assert feed.rows[0]["is_signal"] == "1"
     assert feed.rows[0]["signal_badge"] == "买"
     assert feed.rows[0]["title"] == "s1"
+    assert feed.rows[0]["created_at_line"] == "2026-04-01 10:00 · 30分钟前"
     assert feed.rows[1]["is_signal"] == ""
     assert feed.rows[1]["signal_badge"] == ""
     assert feed.rows[1]["action"] == ""
     assert feed.rows[1]["raw_text"] == ""
     assert feed.rows[1]["display_md"] == ""
     assert feed.rows[1]["title"] == "m"
-    assert feed.rows[1]["created_at_line"] == "2026-04-01 09:30"
+    assert feed.rows[1]["created_at_line"] == "2026-04-01 09:30 · 1小时前"
 
 
 def test_build_related_feed_signal_filter_excludes_backfill() -> None:

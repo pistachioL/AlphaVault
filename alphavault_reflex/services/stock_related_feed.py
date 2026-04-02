@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from alphavault_reflex.services.research_data import _coerce_signal_timestamp
+from alphavault_reflex.services.research_data import _default_signal_reference_time
+from alphavault_reflex.services.research_data import _format_signal_created_at_line
+
 
 RELATED_FILTER_ALL = "all"
 RELATED_FILTER_SIGNAL = "signal"
@@ -59,12 +63,28 @@ class RelatedFeed:
     total: int
 
 
+def _ensure_created_at_line(row: dict[str, str], *, now) -> str:
+    """Return a stable `created_at_line` with relative age ("· xx小时前")."""
+    existing = str(row.get("created_at_line") or "").strip()
+    if existing and "·" in existing:
+        return existing
+
+    created_at = str(row.get("created_at") or "").strip()
+    source = created_at or existing
+    if not source:
+        return existing
+
+    filled = _format_signal_created_at_line(source, now=now)
+    return filled or existing
+
+
 def build_related_feed(
     *,
     signals: list[dict[str, str]] | list[object],
     backfill_posts: list[dict[str, str]] | list[object],
     related_filter: object,
     limit: object,
+    now: object | None = None,
 ) -> RelatedFeed:
     """
     Merge stock signals + backfill candidates into one feed.
@@ -73,6 +93,7 @@ def build_related_feed(
     """
     wanted_filter = normalize_related_filter(related_filter)
     wanted_limit = normalize_related_limit(limit)
+    reference_now = _coerce_signal_timestamp(now) or _default_signal_reference_time()
 
     items: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -92,6 +113,7 @@ def build_related_feed(
                 "is_signal": "1",
                 "signal_badge": badge,
                 "created_at_sort": _as_time_sort_text(row.get("created_at")),
+                "created_at_line": _ensure_created_at_line(row, now=reference_now),
                 "title": str(row.get("summary") or "").strip(),
                 "preview": "",
                 "tree_text": str(row.get("tree_text") or "").strip(),
@@ -113,9 +135,7 @@ def build_related_feed(
                 "is_signal": "",
                 "signal_badge": "",
                 "created_at_sort": _as_time_sort_text(created_at),
-                "created_at_line": created_at[:16]
-                if len(created_at) >= 16
-                else created_at,
+                "created_at_line": _ensure_created_at_line(row, now=reference_now),
                 "title": title,
                 "action": "",
                 "raw_text": "",
