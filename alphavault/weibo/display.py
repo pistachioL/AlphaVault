@@ -20,6 +20,8 @@ from typing import Iterable, List, Optional
 
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
+WEIBO_META_MARKER = "[微博元信息]"
+FORWARD_ORIGINAL_MARKER = "[转发原文]"
 
 QUOTE_MARKER = "//@"
 SEGMENT_SEPARATOR = "\n\n---\n\n"
@@ -56,6 +58,29 @@ def _strip_csv_raw_fields(raw_text: str) -> str:
     if idx < 0:
         return text.strip()
     return text[:idx].strip()
+
+
+def _strip_weibo_trailing_meta_sections(text: str) -> str:
+    """
+    Remove noisy trailer sections that should not join reply-chain segments.
+
+    For many repost texts, "[微博元信息]" / "[转发原文]" appears after the compact
+    "//@" chain. Keeping that trailer causes the oldest quoted segment to be
+    polluted with metadata and original-content blocks.
+    """
+    value = str(text or "")
+    if not value:
+        return ""
+
+    cut_positions: list[int] = []
+    for marker in (WEIBO_META_MARKER, FORWARD_ORIGINAL_MARKER):
+        idx = value.find(marker)
+        if idx > 0:
+            cut_positions.append(idx)
+
+    if not cut_positions:
+        return value
+    return value[: min(cut_positions)].rstrip()
 
 
 def normalize_weibo_text(text: str) -> str:
@@ -182,6 +207,7 @@ def parse_weibo_reply_chain(
       B -> A -> default_author
     """
     text = normalize_weibo_text(_strip_csv_raw_fields(raw_text))
+    text = _strip_weibo_trailing_meta_sections(text)
     text = _maybe_dedupe_repeated_blocks(text)
     if not text:
         return []

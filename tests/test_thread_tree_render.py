@@ -68,6 +68,34 @@ def test_build_post_tree_shows_plain_repost_as_author_forward() -> None:
     assert "转发的人：转发 [转发 ID: https://weibo.com/1000/abc]" in tree_text
 
 
+def test_build_post_tree_prefers_source_raw_text_as_root_when_available() -> None:
+    post_uid = "weibo:222"
+    raw_text = (
+        "当前评论//@A:中间回复//@B:最早回复\n\n"
+        "[转发原文]\n原微博正文\n\n"
+        '[CSV原始字段]\n{"源用户昵称":"原作者","源微博id":"111","源微博正文":"原微博正文"}'
+    )
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": post_uid,
+                "platform_post_id": "222",
+                "author": "当前作者",
+                "raw_text": raw_text,
+                "display_md": raw_text,
+                "created_at": "2026-03-25 10:23:48",
+            }
+        ]
+    )
+
+    _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
+
+    assert "原作者：原微博正文 [源帖 ID: 111]" in tree_text
+    assert "B：最早回复" in tree_text
+    assert "A：中间回复" in tree_text
+    assert "当前作者：当前评论 [转发 ID: 222]" in tree_text
+
+
 def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
     posts = pd.DataFrame(
         [

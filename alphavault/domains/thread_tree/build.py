@@ -425,16 +425,24 @@ def _ensure_parent_stubs(nodes: dict[str, dict]) -> None:
         else:
             child_csv = {}
         source_stub = _source_stub_from_child_csv(child_csv)
+        child_raw_text = str(node.get("raw_text") or "")
+        if not str(source_stub.get("raw_text") or "").strip():
+            forward_original = extract_forward_original_text(child_raw_text)
+            if forward_original:
+                source_stub["raw_text"] = forward_original
         child_display_md = str(node.get("display_md") or "").strip()
         child_segments = parse_display_md_segments(
             child_display_md,
             author=str(node.get("author") or "").strip(),
-            raw_text=str(node.get("raw_text") or ""),
+            raw_text=child_raw_text,
         )
         fallback_source = child_segments[0] if child_segments else ""
         if fallback_source and not str(source_stub.get("raw_text") or "").strip():
             source_stub["raw_text"] = fallback_source
-        stub_display_md = fallback_source if fallback_source else ""
+        source_raw_text = str(source_stub.get("raw_text") or "").strip()
+        # Prefer showing source raw text as the root node content.
+        # Keep fallback segment only when no source text is available.
+        stub_display_md = "" if source_raw_text else (fallback_source if fallback_source else "")
 
         nodes[parent_id] = {
             "platform_post_id": parent_id,
