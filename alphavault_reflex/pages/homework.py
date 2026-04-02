@@ -34,22 +34,11 @@ def _controls() -> rx.Component:
             spacing="2",
         ),
         rx.vstack(
-            rx.text("排序", class_name="av-label"),
+            rx.text("trade 筛选", class_name="av-label"),
             rx.select(
-                HomeworkState.sort_mode_options,
-                value=HomeworkState.sort_mode,
-                on_change=HomeworkState.set_sort_mode,
-                width="180px",
-                disabled=HomeworkState.show_table_loading,
-            ),
-            spacing="2",
-        ),
-        rx.vstack(
-            rx.text("共识筛选", class_name="av-label"),
-            rx.select(
-                HomeworkState.consensus_filter_options,
-                value=HomeworkState.consensus_filter,
-                on_change=HomeworkState.set_consensus_filter,
+                HomeworkState.trade_filter_options,
+                value=HomeworkState.trade_filter,
+                on_change=HomeworkState.set_trade_filter,
                 width="240px",
                 disabled=HomeworkState.show_table_loading,
             ),
@@ -111,7 +100,8 @@ def _topic_cell(row: rx.Var[dict[str, str]]) -> rx.Component:
 def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.tr(
         _topic_cell(row),
-        rx.el.td(row["consensus"], class_name="av-td av-consensus"),
+        rx.el.td(row["recent_action"], class_name="av-td av-recent-action"),
+        rx.el.td(row["recent_author"], class_name="av-td av-recent-author"),
         rx.el.td(row["summary"], class_name="av-td av-summary"),
         rx.el.td(
             rx.cond(
@@ -135,14 +125,7 @@ def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
             ),
             class_name="av-td av-link",
         ),
-        rx.el.td(row["recent_action"], class_name="av-td av-recent-action"),
         rx.el.td(row["recent_age"], class_name="av-td av-recent-age"),
-        rx.el.td(row["recent_author"], class_name="av-td av-recent-author"),
-        rx.el.td(row["net_strength"], class_name="av-td av-num"),
-        rx.el.td(row["buy_strength"], class_name="av-td av-num"),
-        rx.el.td(row["sell_strength"], class_name="av-td av-num"),
-        rx.el.td(row["mentions"], class_name="av-td av-num"),
-        rx.el.td(row["author_count"], class_name="av-td av-num"),
         class_name="av-tr",
     )
 
@@ -150,33 +133,21 @@ def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
 def _board_table() -> rx.Component:
     labels = [
         "主题",
-        "共识",
+        "动作",
+        "大佬",
         "总结",
         "对话流",
         "链接",
-        "最近动作",
         "最近",
-        "最近大佬",
-        "净",
-        "买",
-        "卖",
-        "提及",
-        "大佬",
     ]
     col_widths = [
         "240px",
-        "120px",
+        "220px",
+        "180px",
         "520px",
         "84px",
         "84px",
-        "220px",
         "90px",
-        "180px",
-        "72px",
-        "72px",
-        "72px",
-        "72px",
-        "72px",
     ]
     cols = [rx.el.col(style={"width": w}) for w in col_widths]
     header_cells = [

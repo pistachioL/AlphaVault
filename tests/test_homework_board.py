@@ -35,8 +35,7 @@ def test_build_board_caption_only_shows_window_line() -> None:
         group_col="topic_key",
         group_label="主题",
         window_days=3,
-        sort_mode="最新",
-        consensus_filter="全部",
+        trade_filter="全部",
     )
 
     assert "窗口：" in result.caption
@@ -65,8 +64,97 @@ def test_build_board_keeps_xueqiu_tree_post_uid_without_strip() -> None:
         group_col="topic_key",
         group_label="主题",
         window_days=3,
-        sort_mode="最新",
-        consensus_filter="全部",
+        trade_filter="全部",
     )
 
     assert result.rows[0]["tree_post_uid"] == raw_uid
+
+
+def test_build_board_trade_filter_only_keeps_latest_buy() -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "a1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.sell",
+                "action_strength": 2,
+                "summary": "先卖一点",
+                "author": "alice",
+                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
+            },
+            {
+                "post_uid": "a2",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "又买回来",
+                "author": "alice",
+                "created_at": pd.Timestamp("2026-03-26 10:00:00"),
+            },
+            {
+                "post_uid": "b1",
+                "topic_key": "stock:000001.SZ",
+                "action": "trade.buy",
+                "action_strength": 1,
+                "summary": "先试试",
+                "author": "bob",
+                "created_at": pd.Timestamp("2026-03-25 09:00:00"),
+            },
+            {
+                "post_uid": "b2",
+                "topic_key": "stock:000001.SZ",
+                "action": "trade.sell",
+                "action_strength": 3,
+                "summary": "卖掉",
+                "author": "bob",
+                "created_at": pd.Timestamp("2026-03-27 10:00:00"),
+            },
+        ]
+    )
+
+    result = build_board(
+        assertions,
+        pd.DataFrame(),
+        group_col="topic_key",
+        group_label="主题",
+        window_days=10,
+        trade_filter="买",
+    )
+
+    assert [row["topic"] for row in result.rows] == ["stock:600519.SH"]
+
+
+def test_build_board_trade_filter_hold_includes_watch() -> None:
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "a1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.watch",
+                "action_strength": 2,
+                "summary": "先看看",
+                "author": "alice",
+                "created_at": pd.Timestamp("2026-03-27 10:00:00"),
+            },
+            {
+                "post_uid": "b1",
+                "topic_key": "stock:000001.SZ",
+                "action": "trade.sell",
+                "action_strength": 3,
+                "summary": "卖掉",
+                "author": "bob",
+                "created_at": pd.Timestamp("2026-03-27 10:00:00"),
+            },
+        ]
+    )
+
+    result = build_board(
+        assertions,
+        pd.DataFrame(),
+        group_col="topic_key",
+        group_label="主题",
+        window_days=10,
+        trade_filter="只看",
+    )
+
+    assert [row["topic"] for row in result.rows] == ["stock:600519.SH"]

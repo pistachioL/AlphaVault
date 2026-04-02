@@ -9,8 +9,7 @@ from alphavault_reflex.services.homework_constants import (
     TRADE_BOARD_MAX_WINDOW_DAYS,
 )
 from alphavault_reflex.services.homework_board import (
-    CONSENSUS_FILTER_OPTIONS,
-    SORT_MODE_OPTIONS,
+    TRADE_FILTER_OPTIONS,
     build_board,
     build_tree,
 )
@@ -50,8 +49,7 @@ class HomeworkState(rx.State):
 
     window_max_days: int = TRADE_BOARD_MAX_WINDOW_DAYS
     window_days: int = TRADE_BOARD_DEFAULT_WINDOW_DAYS
-    sort_mode: str = SORT_MODE_OPTIONS[0]
-    consensus_filter: str = CONSENSUS_FILTER_OPTIONS[0]
+    trade_filter: str = TRADE_FILTER_OPTIONS[0]
 
     rows: list[dict[str, str]] = []
 
@@ -63,12 +61,8 @@ class HomeworkState(rx.State):
     selected_tree_debug_text: str = ""
 
     @rx.var
-    def sort_mode_options(self) -> list[str]:
-        return SORT_MODE_OPTIONS
-
-    @rx.var
-    def consensus_filter_options(self) -> list[str]:
-        return CONSENSUS_FILTER_OPTIONS
+    def trade_filter_options(self) -> list[str]:
+        return TRADE_FILTER_OPTIONS
 
     @rx.var
     def show_table_loading(self) -> bool:
@@ -108,8 +102,7 @@ class HomeworkState(rx.State):
             group_col="board_group_key",
             group_label="主题",
             window_days=int(self.window_days),
-            sort_mode=str(self.sort_mode),
-            consensus_filter=str(self.consensus_filter),
+            trade_filter=str(self.trade_filter),
         )
         _fill_trade_board_urls(result.rows)
         for row in result.rows:
@@ -165,13 +158,8 @@ class HomeworkState(rx.State):
         yield from self._refresh_with_loading()
 
     @rx.event
-    def set_sort_mode(self, value: str):
-        self.sort_mode = str(value or SORT_MODE_OPTIONS[0])
-        yield from self._refresh_with_loading()
-
-    @rx.event
-    def set_consensus_filter(self, value: str):
-        self.consensus_filter = str(value or CONSENSUS_FILTER_OPTIONS[0])
+    def set_trade_filter(self, value: str):
+        self.trade_filter = str(value or TRADE_FILTER_OPTIONS[0])
         yield from self._refresh_with_loading()
 
     @rx.event

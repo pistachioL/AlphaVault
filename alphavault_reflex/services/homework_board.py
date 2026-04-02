@@ -15,46 +15,25 @@ from alphavault.domains.thread_tree.service import normalize_tree_lookup_post_ui
 
 TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})
-TRADE_HOLD_ACTIONS = frozenset({"trade.hold"})
+TRADE_HOLD_ACTIONS = frozenset({"trade.hold", "trade.watch"})
 
-CONSENSUS_BUY = "↑偏买"
-CONSENSUS_SELL = "↓偏卖"
-CONSENSUS_HOLD = "→只看"
-CONSENSUS_UNKNOWN = "·不清楚"
+TRADE_FILTER_ALL = "全部"
+TRADE_FILTER_BUY = "买"
+TRADE_FILTER_SELL = "卖"
+TRADE_FILTER_HOLD = "只看"
 
-CONSENSUS_FILTER_ALL = "全部"
-CONSENSUS_FILTER_HAS = "只看有共识（买/卖）"
-CONSENSUS_FILTER_BUY = f"只看偏买（{CONSENSUS_BUY}）"
-CONSENSUS_FILTER_SELL = f"只看偏卖（{CONSENSUS_SELL}）"
-CONSENSUS_FILTER_HOLD = f"只看只看（{CONSENSUS_HOLD}）"
-CONSENSUS_FILTER_UNKNOWN = f"只看不清楚（{CONSENSUS_UNKNOWN}）"
-
-CONSENSUS_FILTER_OPTIONS = [
-    CONSENSUS_FILTER_ALL,
-    CONSENSUS_FILTER_HAS,
-    CONSENSUS_FILTER_BUY,
-    CONSENSUS_FILTER_SELL,
-    CONSENSUS_FILTER_HOLD,
-    CONSENSUS_FILTER_UNKNOWN,
+TRADE_FILTER_OPTIONS = [
+    TRADE_FILTER_ALL,
+    TRADE_FILTER_BUY,
+    TRADE_FILTER_SELL,
+    TRADE_FILTER_HOLD,
 ]
 
-CONSENSUS_FILTER_VALUES = {
-    CONSENSUS_FILTER_HAS: frozenset({CONSENSUS_BUY, CONSENSUS_SELL}),
-    CONSENSUS_FILTER_BUY: frozenset({CONSENSUS_BUY}),
-    CONSENSUS_FILTER_SELL: frozenset({CONSENSUS_SELL}),
-    CONSENSUS_FILTER_HOLD: frozenset({CONSENSUS_HOLD}),
-    CONSENSUS_FILTER_UNKNOWN: frozenset({CONSENSUS_UNKNOWN}),
+TRADE_FILTER_VALUES = {
+    TRADE_FILTER_BUY: TRADE_BUY_ACTIONS,
+    TRADE_FILTER_SELL: TRADE_SELL_ACTIONS,
+    TRADE_FILTER_HOLD: TRADE_HOLD_ACTIONS,
 }
-
-SORT_MODE_NEWEST = "最新"
-SORT_MODE_AUTHOR = "大佬最多"
-SORT_MODE_CONSENSUS = "共识最强"
-
-SORT_MODE_OPTIONS = [
-    SORT_MODE_NEWEST,
-    SORT_MODE_AUTHOR,
-    SORT_MODE_CONSENSUS,
-]
 
 
 @dataclass(frozen=True)
@@ -95,20 +74,8 @@ def trade_action_badge(action: str, strength: object) -> str:
     elif strength_num >= 3:
         strength_text = "很强"
 
-    action_cn = "交易"
-    if action_str in TRADE_BUY_ACTIONS:
-        action_cn = "买"
-    elif action_str in TRADE_SELL_ACTIONS:
-        action_cn = "卖"
-    elif action_str in TRADE_HOLD_ACTIONS:
-        action_cn = "只看"
-    elif action_str.startswith("trade."):
-        action_cn = "交易"
-    elif action_str:
-        action_cn = action_str
-
     parts = [
-        str(action_cn),
+        str(action_str),
         str(strength_text),
         f"强度 {strength_num}",
     ]
@@ -176,8 +143,7 @@ def build_board(
     group_col: str,
     group_label: str,
     window_days: int,
-    sort_mode: str,
-    consensus_filter: str,
+    trade_filter: str,
 ) -> BoardResult:
     if assertions.empty or "action" not in assertions.columns:
         return BoardResult(caption="", window_max_days=1, used_window_days=1, rows=[])
@@ -286,38 +252,16 @@ def build_board(
         lambda ts: format_age_label(max_ts, ts)
     )
 
-    consensus = pd.Series([CONSENSUS_UNKNOWN] * len(agg), index=agg.index)
-    consensus = consensus.mask(agg["net_strength"] > 0, CONSENSUS_BUY)
-    consensus = consensus.mask(agg["net_strength"] < 0, CONSENSUS_SELL)
-    consensus = consensus.mask(
-        (agg["net_strength"] == 0)
-        & (agg["buy_strength_sum"] == 0)
-        & (agg["sell_strength_sum"] == 0)
-        & (agg["hold_mentions_sum"] > 0),
-        CONSENSUS_HOLD,
+    agg["recent_trade_action"] = (
+        agg[group_col].map(last_rows.get("action")).fillna("").astype(str).str.strip()
     )
-    agg["consensus"] = consensus
 
-    if sort_mode == SORT_MODE_NEWEST:
-        agg_sorted = agg.sort_values(by="recent_time", ascending=False)
-    elif sort_mode == SORT_MODE_AUTHOR:
-        agg_sorted = agg.sort_values(
-            by=["author_count", "mentions", "recent_time"], ascending=False
-        )
-    else:
-        abs_net = agg["net_strength"].abs()
-        agg_sorted = (
-            agg.assign(_abs_net=abs_net)
-            .sort_values(
-                by=["_abs_net", "author_count", "recent_time"], ascending=False
-            )
-            .drop(columns=["_abs_net"])
-        )
+    agg_sorted = agg.sort_values(by="recent_time", ascending=False)
 
-    allowed = CONSENSUS_FILTER_VALUES.get(str(consensus_filter or "").strip())
-    if allowed:
+    allowed_actions = TRADE_FILTER_VALUES.get(str(trade_filter or "").strip())
+    if allowed_actions:
         agg_sorted = agg_sorted[
-            agg_sorted["consensus"].astype(str).isin(allowed)
+            agg_sorted["recent_trade_action"].astype(str).isin(allowed_actions)
         ].copy()
 
     keys = (
@@ -370,7 +314,6 @@ def build_board(
         rows.append(
             {
                 "topic": topic,
-                "consensus": str(row.get("consensus") or "").strip(),
                 "summary": str(row.get("summary") or "").strip(),
                 "url": str(row.get("url") or "").strip(),
                 "recent_action": str(row.get("recent_action") or "").strip(),
