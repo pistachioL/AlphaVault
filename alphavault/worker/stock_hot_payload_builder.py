@@ -205,7 +205,14 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     if assertions.empty or posts.empty or "post_uid" not in assertions.columns:
         return assertions
     # Include post url so UI can show an "open original" link.
-    wanted_post_cols = ["post_uid", "raw_text", "display_md", "author", "url"]
+    wanted_post_cols = [
+        "post_uid",
+        "raw_text",
+        "display_md",
+        "author",
+        "url",
+        "created_at",
+    ]
     post_cols = posts[[col for col in wanted_post_cols if col in posts.columns]].copy()
     post_cols = post_cols.rename(
         columns={
@@ -213,6 +220,7 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
             "display_md": "_post_display_md",
             "author": "_post_author",
             "url": "_post_url",
+            "created_at": "_post_created_at",
         }
     )
     merged = assertions.merge(post_cols, on="post_uid", how="left")
@@ -235,8 +243,23 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
         merged.loc[merged["url"].eq(""), "url"] = (
             merged.loc[merged["url"].eq(""), "_post_url"].fillna("").astype(str)
         )
+
+    if "_post_created_at" in merged.columns:
+        post_created_at = pd.to_datetime(merged["_post_created_at"], errors="coerce")
+        if "created_at" not in merged.columns:
+            merged["created_at"] = post_created_at
+        else:
+            merged["created_at"] = pd.to_datetime(merged["created_at"], errors="coerce")
+            merged.loc[merged["created_at"].isna(), "created_at"] = post_created_at
+
     return merged.drop(
-        columns=["_post_raw_text", "_post_display_md", "_post_author", "_post_url"],
+        columns=[
+            "_post_raw_text",
+            "_post_display_md",
+            "_post_author",
+            "_post_url",
+            "_post_created_at",
+        ],
         errors="ignore",
     )
 
