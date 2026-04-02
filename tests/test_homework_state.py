@@ -284,13 +284,28 @@ def test_selected_tree_render_lines_preserves_tree_prefix_and_content() -> None:
     assert lines[1]["content"] == "子节点A 子节点A 子节点A"
 
 
+def test_selected_tree_render_lines_splits_id_suffix_from_content() -> None:
+    state = HomeworkState()
+    state.selected_tree_text = (
+        "根节点 [原帖 ID: xueqiu:comment:401613598]\n"
+        "│   └── 子节点A [转发 ID: 400768409]"
+    )
+
+    lines = state.selected_tree_render_lines
+
+    assert len(lines) == 2
+    assert lines[0]["prefix"] == ""
+    assert lines[0]["content"] == "根节点"
+    assert lines[0]["id_suffix"] == "[原帖 ID: xueqiu:comment:401613598]"
+    assert lines[1]["prefix"] == "│   └── "
+    assert lines[1]["content"] == "子节点A"
+    assert lines[1]["id_suffix"] == "[转发 ID: 400768409]"
+
+
 def test_selected_tree_render_lines_keeps_multiline_child_as_continuation() -> None:
     state = HomeworkState()
     state.selected_tree_text = (
-        "根节点\n"
-        "│   └── 子节点第一行\n"
-        "子节点第二行（续）\n"
-        "│   └── 子节点B"
+        "根节点\n│   └── 子节点第一行\n子节点第二行（续）\n│   └── 子节点B"
     )
 
     lines = state.selected_tree_render_lines

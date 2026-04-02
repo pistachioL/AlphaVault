@@ -337,6 +337,13 @@ body {
   border-left-color: rgba(100, 116, 139, 0.28);
 }
 
+.av-tree-line-id {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(71, 85, 105, 0.75);
+}
+
 .av-tree-pre-nowrap {
   white-space: pre;
   word-break: normal;

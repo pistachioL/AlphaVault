@@ -161,9 +161,11 @@ def test_load_homework_board_payload_from_env_keeps_partial_success(
         )
 
     monkeypatch.setenv(trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "2")
-    assertions, relations, err = trade_board_loader.load_homework_board_payload_from_env(
-        3,
-        load_cached_fn=_fake_cached,
+    assertions, relations, err = (
+        trade_board_loader.load_homework_board_payload_from_env(
+            3,
+            load_cached_fn=_fake_cached,
+        )
     )
 
     assert err == ""

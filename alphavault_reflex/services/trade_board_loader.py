@@ -292,7 +292,9 @@ def load_homework_board_payload_from_env(
                 except BaseException as err:
                     if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                         raise
-                    source_errors.append(f"turso_connect_error:{name}:{type(err).__name__}")
+                    source_errors.append(
+                        f"turso_connect_error:{name}:{type(err).__name__}"
+                    )
                     _logger.warning(
                         "homework_payload source_failed source=%s mode=parallel err=%s",
                         name,

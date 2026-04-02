@@ -458,11 +458,13 @@ def mark_processing(
     return attempts
 
 
-def mark_error(conn: sqlite3.Connection, post_uid: str, error: str, attempts: int) -> None:
+def mark_error(
+    conn: sqlite3.Connection, post_uid: str, error: str, attempts: int
+) -> None:
     retry_minutes = min(60, 2 ** min(attempts, 6))
-    next_retry = (datetime.now(timezone.utc) + timedelta(minutes=retry_minutes)).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+    next_retry = (
+        datetime.now(timezone.utc) + timedelta(minutes=retry_minutes)
+    ).strftime("%Y-%m-%d %H:%M:%S")
     conn.execute(
         """
         UPDATE posts
@@ -476,7 +478,9 @@ def mark_error(conn: sqlite3.Connection, post_uid: str, error: str, attempts: in
     )
 
 
-def write_assertions(conn: sqlite3.Connection, post_uid: str, assertions: List[Dict[str, Any]]) -> None:
+def write_assertions(
+    conn: sqlite3.Connection, post_uid: str, assertions: List[Dict[str, Any]]
+) -> None:
     conn.execute("DELETE FROM assertions WHERE post_uid = ?", (post_uid,))
     for idx, a in enumerate(assertions, start=1):
         conn.execute(
@@ -654,7 +658,9 @@ def process_csv(
                             quoted_text=task.analysis_context["quoted_text"],
                         )
 
-                    assertions = result.assertions if result.status == "relevant" else []
+                    assertions = (
+                        result.assertions if result.status == "relevant" else []
+                    )
                     write_assertions(conn, task.post_uid, assertions)
                     mark_done(
                         conn,
@@ -720,7 +726,8 @@ def process_csv(
 
                     platform_post_id = mid
                     created_at = normalize_datetime(
-                        clean_text(row.get("完整日期", "")) or clean_text(row.get("日期", ""))
+                        clean_text(row.get("完整日期", ""))
+                        or clean_text(row.get("日期", ""))
                     )
                     url = build_url(row, user_id=user_id)
                     raw_text = build_raw_text(row)
@@ -934,7 +941,9 @@ def process_db_status(
                             quoted_text=task.analysis_context["quoted_text"],
                         )
 
-                    assertions = result.assertions if result.status == "relevant" else []
+                    assertions = (
+                        result.assertions if result.status == "relevant" else []
+                    )
                     write_assertions(conn, task.post_uid, assertions)
                     mark_done(
                         conn,
@@ -1129,7 +1138,9 @@ def main() -> None:
         choices=["none", "minimal", "low", "medium", "high", "xhigh"],
     )
     parser.add_argument("--ai-rpm", type=float, default=0.0)
-    parser.add_argument("--heartbeat-seconds", type=float, default=DEFAULT_HEARTBEAT_SECONDS)
+    parser.add_argument(
+        "--heartbeat-seconds", type=float, default=DEFAULT_HEARTBEAT_SECONDS
+    )
     parser.add_argument("--ai-max-inflight", type=int, default=DEFAULT_AI_MAX_INFLIGHT)
     parser.add_argument("--trace-out", type=Path, default=None)
     parser.add_argument("--progress-every", type=int, default=100)
@@ -1163,7 +1174,9 @@ def main() -> None:
         raise RuntimeError(
             f"Missing API key. Provide --api-key or set {ENV_AI_API_KEY} (fallback GEMINI_API_KEY)."
         )
-    timeout_seconds = args.ai_timeout_sec if args.ai_timeout_sec is not None else args.timeout_seconds
+    timeout_seconds = (
+        args.ai_timeout_sec if args.ai_timeout_sec is not None else args.timeout_seconds
+    )
 
     if args.only_status:
         process_db_status(

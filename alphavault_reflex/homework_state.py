@@ -38,6 +38,7 @@ TREE_MESSAGE_EMPTY = "没有对话流。"
 TREE_MESSAGE_LOAD_ERROR_PREFIX = "加载失败："
 TREE_PREVIEW_LINE_COUNT = 32
 TREE_PREFIX_RE = re.compile(r"^(((?:│   |    )*)(?:├── |└── ))")
+TREE_ID_SUFFIX_RE = re.compile(r"\s*(\[(?:原帖|转发|源帖|帖子) ID: [^\]]+\])\s*$")
 TREE_COLLAPSE_HINT_PREFIX = "…… 已折叠 "
 TREE_DEBUG_UNKNOWN = "-"
 TREE_DEBUG_STAGE_UID_EMPTY = "uid_empty"
@@ -113,7 +114,7 @@ class HomeworkState(rx.State):
         preview = "\n".join(lines[:TREE_PREVIEW_LINE_COUNT]).rstrip()
         if hidden_lines <= 0:
             return text
-        return f'{preview}\n\n…… 已折叠 {hidden_lines} 行，点「展开全文」继续查看。'
+        return f"{preview}\n\n…… 已折叠 {hidden_lines} 行，点「展开全文」继续查看。"
 
     @rx.var
     def selected_tree_render_lines(self) -> list[dict[str, str]]:
@@ -126,10 +127,12 @@ class HomeworkState(rx.State):
             prefix, content = _split_tree_line(raw_line)
             if prefix:
                 last_tree_prefix = prefix
+                main, id_suffix = _split_tree_id_suffix(content)
                 lines.append(
                     {
                         "prefix": prefix,
-                        "content": content if content != "" else " ",
+                        "content": main if main != "" else " ",
+                        "id_suffix": id_suffix,
                         "row_class": "av-tree-line",
                         "prefix_class": "av-tree-line-prefix",
                     }
@@ -144,10 +147,12 @@ class HomeworkState(rx.State):
                 and not stripped.startswith(TREE_COLLAPSE_HINT_PREFIX)
             )
             if is_continuation:
+                main, id_suffix = _split_tree_id_suffix(line)
                 lines.append(
                     {
                         "prefix": " " * len(last_tree_prefix),
-                        "content": line,
+                        "content": main if main != "" else " ",
+                        "id_suffix": id_suffix,
                         "row_class": "av-tree-line av-tree-line-continuation",
                         "prefix_class": (
                             "av-tree-line-prefix av-tree-line-prefix-continuation"
@@ -158,10 +163,12 @@ class HomeworkState(rx.State):
 
             if stripped:
                 last_tree_prefix = ""
+            main, id_suffix = _split_tree_id_suffix(line)
             lines.append(
                 {
                     "prefix": "",
-                    "content": line if line != "" else " ",
+                    "content": main if main != "" else " ",
+                    "id_suffix": id_suffix,
                     "row_class": "av-tree-line av-tree-line-no-prefix",
                     "prefix_class": "",
                 }
@@ -414,6 +421,16 @@ def _split_tree_line(raw_line: object) -> tuple[str, str]:
     prefix = str(match.group(1) or "")
     content = line[len(prefix) :]
     return prefix, content
+
+
+def _split_tree_id_suffix(raw_content: object) -> tuple[str, str]:
+    content = str(raw_content or "")
+    match = TREE_ID_SUFFIX_RE.search(content)
+    if match is None:
+        return content, ""
+    suffix = str(match.group(1) or "")
+    main = content[: match.start()].rstrip()
+    return main, suffix
 
 
 def _prepare_board_assertions(
