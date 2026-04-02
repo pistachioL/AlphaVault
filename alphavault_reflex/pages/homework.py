@@ -226,15 +226,24 @@ def _board_table() -> rx.Component:
 
 
 def _tree_line_row(line: rx.Var[dict[str, str]]) -> rx.Component:
+    content = rx.el.div(
+        rx.el.span(line["content"]),
+        rx.cond(
+            line["id_suffix"] != "",
+            rx.el.span(line["id_suffix"], class_name="av-tree-line-id"),
+            rx.el.span(),
+        ),
+        class_name="av-tree-line-content",
+    )
     return rx.cond(
         line["prefix"] != "",
         rx.el.div(
             rx.el.span(line["prefix"], class_name=line["prefix_class"]),
-            rx.el.span(line["content"], class_name="av-tree-line-content"),
+            content,
             class_name=line["row_class"],
         ),
         rx.el.div(
-            rx.el.span(line["content"], class_name="av-tree-line-content"),
+            content,
             class_name=line["row_class"],
         ),
     )
