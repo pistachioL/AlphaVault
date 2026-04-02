@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from alphavault_reflex.homework_state import HomeworkState
+from alphavault_reflex.homework_state import TREE_PREVIEW_LINE_COUNT
 
 
 def test_homework_state_keeps_unlinked_stock_alias_as_separate_rows(
@@ -238,3 +239,64 @@ def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
     list(state.load_data())
 
     assert calls == ["cleared"]
+
+
+def test_selected_tree_render_text_collapses_long_tree() -> None:
+    lines = [f"line {idx}" for idx in range(TREE_PREVIEW_LINE_COUNT + 3)]
+    state = HomeworkState()
+    state.selected_tree_text = "\n".join(lines)
+
+    assert state.selected_tree_line_count == TREE_PREVIEW_LINE_COUNT + 3
+    assert state.tree_text_collapsible is True
+    assert "已折叠 3 行" in state.selected_tree_render_text
+    assert f"line {TREE_PREVIEW_LINE_COUNT}" not in state.selected_tree_render_text
+
+
+def test_expand_tree_text_shows_full_tree_content() -> None:
+    lines = [f"line {idx}" for idx in range(TREE_PREVIEW_LINE_COUNT + 1)]
+    state = HomeworkState()
+    state.selected_tree_text = "\n".join(lines)
+
+    state.expand_tree_text()
+
+    assert state.tree_show_full_text is True
+    assert state.selected_tree_render_text == state.selected_tree_text
+
+
+def test_toggle_tree_wrap_lines_switches_flag() -> None:
+    state = HomeworkState()
+
+    state.toggle_tree_wrap_lines()
+
+    assert state.tree_wrap_lines is False
+
+
+def test_selected_tree_render_lines_preserves_tree_prefix_and_content() -> None:
+    state = HomeworkState()
+    state.selected_tree_text = "根节点\n│   └── 子节点A 子节点A 子节点A"
+
+    lines = state.selected_tree_render_lines
+
+    assert len(lines) == 2
+    assert lines[0]["prefix"] == ""
+    assert lines[0]["content"] == "根节点"
+    assert lines[1]["prefix"] == "│   └── "
+    assert lines[1]["content"] == "子节点A 子节点A 子节点A"
+
+
+def test_selected_tree_render_lines_keeps_multiline_child_as_continuation() -> None:
+    state = HomeworkState()
+    state.selected_tree_text = (
+        "根节点\n"
+        "│   └── 子节点第一行\n"
+        "子节点第二行（续）\n"
+        "│   └── 子节点B"
+    )
+
+    lines = state.selected_tree_render_lines
+
+    assert len(lines) == 4
+    assert lines[1]["prefix"] == "│   └── "
+    assert lines[2]["prefix"] == " " * len("│   └── ")
+    assert lines[2]["content"] == "子节点第二行（续）"
+    assert "av-tree-line-continuation" in lines[2]["row_class"]

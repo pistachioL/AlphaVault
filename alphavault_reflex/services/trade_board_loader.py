@@ -238,6 +238,7 @@ def load_homework_board_payload_from_env(
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     assertions_frames: list[pd.DataFrame] = []
     relation_frames: list[pd.DataFrame] = []
+    source_errors: list[str] = []
 
     max_workers = resolve_workers_fn(source_count=len(sources))
     if max_workers == 1:
@@ -253,11 +254,15 @@ def load_homework_board_payload_from_env(
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                     raise
-                return (
-                    pd.DataFrame(),
-                    pd.DataFrame(),
-                    f"turso_connect_error:{source.name}:{type(err).__name__}",
+                source_errors.append(
+                    f"turso_connect_error:{source.name}:{type(err).__name__}"
                 )
+                _logger.warning(
+                    "homework_payload source_failed source=%s mode=serial err=%s",
+                    source.name,
+                    type(err).__name__,
+                )
+                continue
             assertions_frames.append(assertions)
             relation_frames.append(relations)
             _logger.debug(
@@ -287,11 +292,13 @@ def load_homework_board_payload_from_env(
                 except BaseException as err:
                     if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                         raise
-                    return (
-                        pd.DataFrame(),
-                        pd.DataFrame(),
-                        f"turso_connect_error:{name}:{type(err).__name__}",
+                    source_errors.append(f"turso_connect_error:{name}:{type(err).__name__}")
+                    _logger.warning(
+                        "homework_payload source_failed source=%s mode=parallel err=%s",
+                        name,
+                        type(err).__name__,
                     )
+                    continue
                 assertions_frames.append(assertions)
                 relation_frames.append(relations)
                 _logger.debug(
@@ -303,6 +310,8 @@ def load_homework_board_payload_from_env(
                 )
 
     if not assertions_frames:
+        if source_errors:
+            return pd.DataFrame(), pd.DataFrame(), source_errors[0]
         return pd.DataFrame(), pd.DataFrame(), "turso_sources_empty"
     assertions_all = pd.concat(assertions_frames, ignore_index=True)
     relations_all = pd.concat(relation_frames, ignore_index=True)

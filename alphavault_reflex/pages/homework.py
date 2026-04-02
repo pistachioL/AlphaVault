@@ -225,6 +225,21 @@ def _board_table() -> rx.Component:
     )
 
 
+def _tree_line_row(line: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.cond(
+        line["prefix"] != "",
+        rx.el.div(
+            rx.el.span(line["prefix"], class_name=line["prefix_class"]),
+            rx.el.span(line["content"], class_name="av-tree-line-content"),
+            class_name=line["row_class"],
+        ),
+        rx.el.div(
+            rx.el.span(line["content"], class_name="av-tree-line-content"),
+            class_name=line["row_class"],
+        ),
+    )
+
+
 def _tree_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
@@ -243,9 +258,70 @@ def _tree_dialog() -> rx.Component:
                 ),
                 rx.cond(
                     HomeworkState.selected_tree_text != "",
-                    rx.el.pre(
-                        HomeworkState.selected_tree_text,
-                        class_name="av-tree-pre",
+                    rx.vstack(
+                        rx.hstack(
+                            rx.text(
+                                "共 ",
+                                HomeworkState.selected_tree_line_count,
+                                " 行",
+                                class_name="av-muted av-tree-meta",
+                            ),
+                            rx.spacer(),
+                            rx.cond(
+                                HomeworkState.tree_text_collapsible,
+                                rx.cond(
+                                    HomeworkState.tree_show_full_text,
+                                    rx.button(
+                                        "收起",
+                                        variant="soft",
+                                        size="1",
+                                        on_click=HomeworkState.collapse_tree_text,
+                                    ),
+                                    rx.button(
+                                        "展开全文",
+                                        variant="soft",
+                                        size="1",
+                                        on_click=HomeworkState.expand_tree_text,
+                                    ),
+                                ),
+                                rx.el.div(),
+                            ),
+                            rx.cond(
+                                HomeworkState.tree_wrap_lines,
+                                rx.button(
+                                    "关闭自动换行",
+                                    variant="soft",
+                                    size="1",
+                                    on_click=HomeworkState.toggle_tree_wrap_lines,
+                                ),
+                                rx.button(
+                                    "开启自动换行",
+                                    variant="soft",
+                                    size="1",
+                                    on_click=HomeworkState.toggle_tree_wrap_lines,
+                                ),
+                            ),
+                            class_name="av-tree-toolbar",
+                            width="100%",
+                            align="center",
+                            spacing="2",
+                        ),
+                        rx.cond(
+                            HomeworkState.tree_wrap_lines,
+                            rx.el.div(
+                                rx.foreach(
+                                    HomeworkState.selected_tree_render_lines,
+                                    _tree_line_row,
+                                ),
+                                class_name="av-tree-lines",
+                            ),
+                            rx.el.pre(
+                                HomeworkState.selected_tree_render_text,
+                                class_name="av-tree-pre av-tree-pre-nowrap",
+                            ),
+                        ),
+                        spacing="2",
+                        align="stretch",
                     ),
                     rx.cond(
                         HomeworkState.selected_tree_message != "",

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from alphavault_reflex.homework_state import HomeworkState
 from alphavault_reflex.pages.homework import _topic_cell
 from alphavault_reflex.pages.homework import _row_tr
@@ -86,6 +84,6 @@ def test_close_tree_dialog_stops_loading_and_closes() -> None:
 
 def test_tree_dialog_includes_debug_text_binding() -> None:
     rendered = _tree_dialog().render()
-    payload = json.dumps(rendered, ensure_ascii=False)
+    payload = str(rendered)
 
     assert "selected_tree_debug_text_rx_state_" in payload

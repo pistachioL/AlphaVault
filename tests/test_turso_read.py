@@ -133,6 +133,50 @@ def test_load_homework_board_payload_from_env_returns_turso_error(
     assert err == "turso_connect_error:weibo:RuntimeError"
 
 
+def test_load_homework_board_payload_from_env_keeps_partial_success(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        trade_board_loader,
+        "load_configured_turso_sources_from_env",
+        lambda: [
+            TursoSource(name="weibo", url="u1", token="t1"),
+            TursoSource(name="xueqiu", url="u2", token="t2"),
+        ],
+    )
+
+    def _fake_cached(
+        db_url: str,
+        auth_token: str,
+        source_name: str,
+        lookback_days: int,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        del db_url, auth_token
+        assert lookback_days == 3
+        if source_name == "xueqiu":
+            raise ValueError("bad token")
+        return (
+            pd.DataFrame([{"post_uid": "weibo:p1"}]),
+            pd.DataFrame([{"source": "weibo"}]),
+        )
+
+    monkeypatch.setenv(trade_board_loader.ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS, "2")
+    assertions, relations, err = trade_board_loader.load_homework_board_payload_from_env(
+        3,
+        load_cached_fn=_fake_cached,
+    )
+
+    assert err == ""
+    assert {
+        str(item).strip()
+        for item in assertions.get("post_uid", pd.Series(dtype=str)).tolist()
+    } == {"weibo:p1"}
+    assert {
+        str(item).strip()
+        for item in relations.get("source", pd.Series(dtype=str)).tolist()
+    } == {"weibo"}
+
+
 def test_load_homework_board_payload_from_env_serial_parallel_same(
     monkeypatch,
 ) -> None:

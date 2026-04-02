@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 import reflex as rx
 
@@ -34,6 +36,9 @@ from alphavault_reflex.services.turso_read import (
 
 TREE_MESSAGE_EMPTY = "没有对话流。"
 TREE_MESSAGE_LOAD_ERROR_PREFIX = "加载失败："
+TREE_PREVIEW_LINE_COUNT = 32
+TREE_PREFIX_RE = re.compile(r"^(((?:│   |    )*)(?:├── |└── ))")
+TREE_COLLAPSE_HINT_PREFIX = "…… 已折叠 "
 TREE_DEBUG_UNKNOWN = "-"
 TREE_DEBUG_STAGE_UID_EMPTY = "uid_empty"
 TREE_DEBUG_STAGE_LOAD_ERROR = "load_error"
@@ -61,6 +66,8 @@ class HomeworkState(rx.State):
     selected_tree_text: str = ""
     selected_tree_message: str = ""
     selected_tree_debug_text: str = ""
+    tree_wrap_lines: bool = True
+    tree_show_full_text: bool = False
 
     @rx.var
     def sort_mode_options(self) -> list[str]:
@@ -82,6 +89,84 @@ class HomeworkState(rx.State):
             and (str(self.load_error or "").strip() == "")
             and (not self.rows)
         )
+
+    @rx.var
+    def selected_tree_line_count(self) -> int:
+        text = str(self.selected_tree_text or "")
+        if not text:
+            return 0
+        return len(text.splitlines()) or 1
+
+    @rx.var
+    def tree_text_collapsible(self) -> bool:
+        return int(self.selected_tree_line_count) > TREE_PREVIEW_LINE_COUNT
+
+    @rx.var
+    def selected_tree_render_text(self) -> str:
+        text = str(self.selected_tree_text or "")
+        if not text or not self.tree_text_collapsible:
+            return text
+        if self.tree_show_full_text:
+            return text
+        lines = text.splitlines()
+        hidden_lines = max(0, len(lines) - TREE_PREVIEW_LINE_COUNT)
+        preview = "\n".join(lines[:TREE_PREVIEW_LINE_COUNT]).rstrip()
+        if hidden_lines <= 0:
+            return text
+        return f'{preview}\n\n…… 已折叠 {hidden_lines} 行，点「展开全文」继续查看。'
+
+    @rx.var
+    def selected_tree_render_lines(self) -> list[dict[str, str]]:
+        text = str(self.selected_tree_render_text or "")
+        if not text:
+            return []
+        lines: list[dict[str, str]] = []
+        last_tree_prefix = ""
+        for raw_line in text.splitlines():
+            prefix, content = _split_tree_line(raw_line)
+            if prefix:
+                last_tree_prefix = prefix
+                lines.append(
+                    {
+                        "prefix": prefix,
+                        "content": content if content != "" else " ",
+                        "row_class": "av-tree-line",
+                        "prefix_class": "av-tree-line-prefix",
+                    }
+                )
+                continue
+
+            line = str(raw_line or "")
+            stripped = line.strip()
+            is_continuation = bool(
+                last_tree_prefix
+                and stripped
+                and not stripped.startswith(TREE_COLLAPSE_HINT_PREFIX)
+            )
+            if is_continuation:
+                lines.append(
+                    {
+                        "prefix": " " * len(last_tree_prefix),
+                        "content": line,
+                        "row_class": "av-tree-line av-tree-line-continuation",
+                        "prefix_class": (
+                            "av-tree-line-prefix av-tree-line-prefix-continuation"
+                        ),
+                    }
+                )
+                continue
+
+            if stripped:
+                last_tree_prefix = ""
+            lines.append(
+                {
+                    "prefix": "",
+                    "content": line if line != "" else " ",
+                    "row_class": "av-tree-line av-tree-line-no-prefix",
+                    "prefix_class": "",
+                }
+            )
+        return lines
 
     def _refresh(self) -> None:
         assertions, stock_relations, err = load_homework_board_payload_from_env(
@@ -186,6 +271,20 @@ class HomeworkState(rx.State):
         self.tree_dialog_open = False
         self.tree_loading = False
         self.selected_tree_debug_text = ""
+        self.tree_wrap_lines = True
+        self.tree_show_full_text = False
+
+    @rx.event
+    def toggle_tree_wrap_lines(self) -> None:
+        self.tree_wrap_lines = not self.tree_wrap_lines
+
+    @rx.event
+    def expand_tree_text(self) -> None:
+        self.tree_show_full_text = True
+
+    @rx.event
+    def collapse_tree_text(self) -> None:
+        self.tree_show_full_text = False
 
     @rx.event
     def open_tree_dialog(self, post_uid: str):
@@ -199,6 +298,8 @@ class HomeworkState(rx.State):
         self.selected_tree_text = ""
         self.selected_tree_message = ""
         self.selected_tree_debug_text = ""
+        self.tree_wrap_lines = True
+        self.tree_show_full_text = False
         if not uid:
             self.tree_loading = False
             self.selected_tree_message = TREE_MESSAGE_EMPTY
@@ -303,6 +404,16 @@ def _build_tree_debug_text(
         f"错误: {error_line}",
     ]
     return "\n".join(lines)
+
+
+def _split_tree_line(raw_line: object) -> tuple[str, str]:
+    line = str(raw_line or "")
+    match = TREE_PREFIX_RE.match(line)
+    if match is None:
+        return "", line
+    prefix = str(match.group(1) or "")
+    content = line[len(prefix) :]
+    return prefix, content
 
 
 def _prepare_board_assertions(
