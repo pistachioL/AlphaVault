@@ -3,6 +3,7 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault_reflex.homework_state import HomeworkState
+from alphavault_reflex.pages.thread_tree_components import tree_line_row
 
 
 def index_page() -> rx.Component:
@@ -196,30 +197,6 @@ def _board_table() -> rx.Component:
     )
 
 
-def _tree_line_row(line: rx.Var[dict[str, str]]) -> rx.Component:
-    content = rx.el.div(
-        rx.el.span(line["content"]),
-        rx.cond(
-            line["id_suffix"] != "",
-            rx.el.span(line["id_suffix"], class_name="av-tree-line-id"),
-            rx.el.span(),
-        ),
-        class_name="av-tree-line-content",
-    )
-    return rx.cond(
-        line["prefix"] != "",
-        rx.el.div(
-            rx.el.span(line["prefix"], class_name=line["prefix_class"]),
-            content,
-            class_name=line["row_class"],
-        ),
-        rx.el.div(
-            content,
-            class_name=line["row_class"],
-        ),
-    )
-
-
 def _tree_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
@@ -291,7 +268,7 @@ def _tree_dialog() -> rx.Component:
                             rx.el.div(
                                 rx.foreach(
                                     HomeworkState.selected_tree_render_lines,
-                                    _tree_line_row,
+                                    tree_line_row,
                                 ),
                                 class_name="av-tree-lines",
                             ),

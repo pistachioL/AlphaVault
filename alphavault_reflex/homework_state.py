@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-
 import pandas as pd
 import reflex as rx
 
@@ -26,6 +24,8 @@ from alphavault.domains.thread_tree.service import slice_posts_for_single_post_t
 from alphavault.domains.stock.object_index import (
     build_stock_object_index,
 )
+from alphavault_reflex.services.thread_tree_lines import TREE_COLLAPSE_HINT_PREFIX
+from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 from alphavault_reflex.services.turso_read import (
     clear_reflex_source_caches,
     load_homework_board_payload_from_env,
@@ -36,9 +36,6 @@ from alphavault_reflex.services.turso_read import (
 TREE_MESSAGE_EMPTY = "没有对话流。"
 TREE_MESSAGE_LOAD_ERROR_PREFIX = "加载失败："
 TREE_PREVIEW_LINE_COUNT = 32
-TREE_PREFIX_RE = re.compile(r"^(((?:│   |    )*)(?:├── |└── ))")
-TREE_ID_SUFFIX_RE = re.compile(r"\s*(\[(?:原帖|转发|源帖|帖子) ID: [^\]]+\])\s*$")
-TREE_COLLAPSE_HINT_PREFIX = "…… 已折叠 "
 TREE_DEBUG_UNKNOWN = "-"
 TREE_DEBUG_STAGE_UID_EMPTY = "uid_empty"
 TREE_DEBUG_STAGE_LOAD_ERROR = "load_error"
@@ -108,66 +105,14 @@ class HomeworkState(rx.State):
         preview = "\n".join(lines[:TREE_PREVIEW_LINE_COUNT]).rstrip()
         if hidden_lines <= 0:
             return text
-        return f"{preview}\n\n…… 已折叠 {hidden_lines} 行，点「展开全文」继续查看。"
+        return (
+            f"{preview}\n\n{TREE_COLLAPSE_HINT_PREFIX}{hidden_lines} "
+            "行，点「展开全文」继续查看。"
+        )
 
     @rx.var
     def selected_tree_render_lines(self) -> list[dict[str, str]]:
-        text = str(self.selected_tree_render_text or "")
-        if not text:
-            return []
-        lines: list[dict[str, str]] = []
-        last_tree_prefix = ""
-        for raw_line in text.splitlines():
-            prefix, content = _split_tree_line(raw_line)
-            if prefix:
-                last_tree_prefix = prefix
-                main, id_suffix = _split_tree_id_suffix(content)
-                lines.append(
-                    {
-                        "prefix": prefix,
-                        "content": main if main != "" else " ",
-                        "id_suffix": id_suffix,
-                        "row_class": "av-tree-line",
-                        "prefix_class": "av-tree-line-prefix",
-                    }
-                )
-                continue
-
-            line = str(raw_line or "")
-            stripped = line.strip()
-            is_continuation = bool(
-                last_tree_prefix
-                and stripped
-                and not stripped.startswith(TREE_COLLAPSE_HINT_PREFIX)
-            )
-            if is_continuation:
-                main, id_suffix = _split_tree_id_suffix(line)
-                lines.append(
-                    {
-                        "prefix": " " * len(last_tree_prefix),
-                        "content": main if main != "" else " ",
-                        "id_suffix": id_suffix,
-                        "row_class": "av-tree-line av-tree-line-continuation",
-                        "prefix_class": (
-                            "av-tree-line-prefix av-tree-line-prefix-continuation"
-                        ),
-                    }
-                )
-                continue
-
-            if stripped:
-                last_tree_prefix = ""
-            main, id_suffix = _split_tree_id_suffix(line)
-            lines.append(
-                {
-                    "prefix": "",
-                    "content": main if main != "" else " ",
-                    "id_suffix": id_suffix,
-                    "row_class": "av-tree-line av-tree-line-no-prefix",
-                    "prefix_class": "",
-                }
-            )
-        return lines
+        return build_tree_render_lines(self.selected_tree_render_text)
 
     def _refresh(self) -> None:
         assertions, stock_relations, err = load_homework_board_payload_from_env(
@@ -399,26 +344,6 @@ def _build_tree_debug_text(
         f"错误: {error_line}",
     ]
     return "\n".join(lines)
-
-
-def _split_tree_line(raw_line: object) -> tuple[str, str]:
-    line = str(raw_line or "")
-    match = TREE_PREFIX_RE.match(line)
-    if match is None:
-        return "", line
-    prefix = str(match.group(1) or "")
-    content = line[len(prefix) :]
-    return prefix, content
-
-
-def _split_tree_id_suffix(raw_content: object) -> tuple[str, str]:
-    content = str(raw_content or "")
-    match = TREE_ID_SUFFIX_RE.search(content)
-    if match is None:
-        return content, ""
-    suffix = str(match.group(1) or "")
-    main = content[: match.start()].rstrip()
-    return main, suffix
 
 
 def _prepare_board_assertions(

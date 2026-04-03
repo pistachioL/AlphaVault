@@ -32,6 +32,7 @@ from alphavault_reflex.services.stock_related_feed import (
     RELATED_FILTER_ALL,
     RELATED_FILTER_SIGNAL,
     RELATED_LIMIT_STEP,
+    StockRelatedPostRow,
     build_related_feed,
     normalize_related_filter,
     normalize_related_limit,
@@ -65,7 +66,7 @@ class ResearchState(rx.State):
     signal_page: int = 1
     signal_page_size: int = DEFAULT_SIGNAL_PAGE_SIZE
     signal_total: int = 0
-    related_posts: list[dict[str, str]] = []
+    related_posts: list[StockRelatedPostRow] = []
     related_total: int = 0
     related_filter: str = RELATED_FILTER_ALL
     related_limit: int = DEFAULT_RELATED_LIMIT
