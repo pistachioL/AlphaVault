@@ -244,6 +244,12 @@ class HomeworkState(rx.State):
         yield from self._refresh_with_loading()
 
     @rx.event
+    def load_data_if_needed(self):
+        if self.loaded_once:
+            return
+        yield from self._refresh_with_loading()
+
+    @rx.event
     def set_window_days(self, value: list[int | float]):
         if value:
             self.window_days = int(value[0])

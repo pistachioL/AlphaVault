@@ -442,7 +442,9 @@ def _ensure_parent_stubs(nodes: dict[str, dict]) -> None:
         source_raw_text = str(source_stub.get("raw_text") or "").strip()
         # Prefer showing source raw text as the root node content.
         # Keep fallback segment only when no source text is available.
-        stub_display_md = "" if source_raw_text else (fallback_source if fallback_source else "")
+        stub_display_md = (
+            "" if source_raw_text else (fallback_source if fallback_source else "")
+        )
 
         nodes[parent_id] = {
             "platform_post_id": parent_id,
