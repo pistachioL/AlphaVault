@@ -239,6 +239,20 @@ class ResearchState(rx.State):
             )
         )
 
+    @rx.event
+    def load_stock_page_if_needed(self, stock_slug: str | None = None):
+        slug = _resolve_route_slug(
+            self, explicit_slug=stock_slug, route_key="stock_slug"
+        )
+        stock_key = _normalize_stock_key(slug)
+        if (
+            self.loaded_once
+            and self.entity_type == "stock"
+            and stock_key == self.entity_key
+        ):
+            return
+        return self.load_stock_page(slug)
+
     def _refresh_related_posts(self) -> None:
         self.related_filter = normalize_related_filter(self.related_filter)
         self.related_limit = normalize_related_limit(self.related_limit)
@@ -352,6 +366,23 @@ class ResearchState(rx.State):
         self.backfill_posts = []
         self.loaded_once = True
         self.loading = False
+
+    @rx.event
+    def load_sector_page_if_needed(self, sector_slug: str | None = None) -> None:
+        slug = _resolve_route_slug(
+            self,
+            explicit_slug=sector_slug,
+            route_key="sector_slug",
+        )
+        sector_key = str(slug or "").strip()
+        target_entity_key = f"cluster:{sector_key}" if sector_key else ""
+        if (
+            self.loaded_once
+            and self.entity_type == "sector"
+            and target_entity_key == self.entity_key
+        ):
+            return
+        return self.load_sector_page(slug)
 
     @rx.event
     def accept_candidate(self, candidate_id: str):

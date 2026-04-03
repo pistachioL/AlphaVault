@@ -43,19 +43,19 @@ app.add_page(
     homework_page,
     route="/homework",
     title="作业板",
-    on_load=HomeworkState.load_data,
+    on_load=HomeworkState.load_data_if_needed,
 )
 app.add_page(
     stock_research_page,
     route="/research/stocks/[stock_slug]",
     title=stock_browser_title_var(),
-    on_load=ResearchState.load_stock_page,
+    on_load=ResearchState.load_stock_page_if_needed,
 )
 app.add_page(
     sector_research_page,
     route="/research/sectors/[sector_slug]",
     title=sector_browser_title_var(),
-    on_load=ResearchState.load_sector_page,
+    on_load=ResearchState.load_sector_page_if_needed,
 )
 app.add_page(
     organizer_page,

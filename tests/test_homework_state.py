@@ -241,6 +241,71 @@ def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
     assert calls == ["cleared"]
 
 
+def test_load_data_if_needed_runs_on_first_load(monkeypatch) -> None:
+    calls: list[str] = []
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "weibo:1",
+                "topic_key": "stock:600519.SH",
+                "action": "trade.buy",
+                "action_strength": 1,
+                "summary": "小仓",
+                "author": "alice",
+                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
+                "stock_codes_json": '["600519.SH"]',
+                "stock_names_json": '["贵州茅台"]',
+            }
+        ]
+    )
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.clear_reflex_source_caches",
+        lambda: calls.append("cleared"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
+        lambda lookback_days: (assertions, pd.DataFrame(), ""),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_post_urls_from_env",
+        lambda post_uids: ({}, ""),
+    )
+
+    state = HomeworkState()
+    list(state.load_data_if_needed())
+
+    assert calls == ["cleared"]
+    assert state.loaded_once is True
+
+
+def test_load_data_if_needed_skips_when_already_loaded(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.clear_reflex_source_caches",
+        lambda: calls.append("cleared"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
+        lambda lookback_days: calls.append("loaded"),
+    )
+
+    state = HomeworkState()
+    state.loaded_once = True
+    state.caption = "已有数据"
+    state.rows = [{"topic": "stock:600519.SH"}]
+
+    result = state.load_data_if_needed()
+
+    assert list(result) == []
+    assert calls == []
+    assert state.caption == "已有数据"
+    assert state.rows == [{"topic": "stock:600519.SH"}]
+
+
 def test_selected_tree_render_text_collapses_long_tree() -> None:
     lines = [f"line {idx}" for idx in range(TREE_PREVIEW_LINE_COUNT + 3)]
     state = HomeworkState()

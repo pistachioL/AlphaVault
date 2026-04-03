@@ -177,6 +177,140 @@ def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:
     assert state.pending_candidates[0]["candidate_key"] == "consumer"
 
 
+def test_load_stock_page_if_needed_runs_on_first_load(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _fake_load_stock_page_cached_view(stock_slug, **_kwargs):
+        calls.append(stock_slug)
+        return {
+            "entity_key": "stock:600519.SH",
+            "header_title": "600519.SH",
+            "signals": [{"summary": "继续加仓"}],
+            "related_sectors": [],
+            "pending_candidates": [],
+            "backfill_posts": [],
+            "signal_total": 1,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        _fake_load_stock_page_cached_view,
+    )
+
+    state = ResearchState()
+    state.load_stock_page_if_needed("600519.SH")
+
+    assert calls == ["600519.SH"]
+    assert state.entity_key == "stock:600519.SH"
+
+
+def test_load_stock_page_if_needed_skips_when_same_stock_loaded(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        lambda stock_slug, **_kwargs: calls.append(stock_slug),
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "stock"
+    state.entity_key = "stock:600519.SH"
+    state.page_title = "贵州茅台"
+
+    result = state.load_stock_page_if_needed("600519.SH")
+
+    assert result is None
+    assert calls == []
+    assert state.page_title == "贵州茅台"
+
+
+def test_load_stock_page_if_needed_loads_when_stock_changes(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _fake_load_stock_page_cached_view(stock_slug, **_kwargs):
+        calls.append(stock_slug)
+        return {
+            "entity_key": "stock:600519.SH",
+            "header_title": "600519.SH",
+            "signals": [{"summary": "继续加仓"}],
+            "related_sectors": [],
+            "pending_candidates": [],
+            "backfill_posts": [],
+            "signal_total": 1,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        _fake_load_stock_page_cached_view,
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "stock"
+    state.entity_key = "stock:000001.SZ"
+
+    state.load_stock_page_if_needed("600519.SH")
+
+    assert calls == ["600519.SH"]
+    assert state.entity_key == "stock:600519.SH"
+
+
+def test_load_sector_page_if_needed_skips_when_same_sector_loaded(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_sector_page_view",
+        lambda sector_slug: calls.append(sector_slug),
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "sector"
+    state.entity_key = "cluster:white_liquor"
+    state.page_title = "白酒"
+
+    result = state.load_sector_page_if_needed("white_liquor")
+
+    assert result is None
+    assert calls == []
+    assert state.page_title == "白酒"
+
+
+def test_load_sector_page_if_needed_loads_when_sector_changes(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _fake_load_sector_page_view(sector_slug):
+        calls.append(sector_slug)
+        return {
+            "header_title": "white_liquor",
+            "signals": [{"summary": "板块继续走强"}],
+            "related_stocks": [{"stock_key": "stock:600519.SH"}],
+            "pending_candidates": [{"candidate_key": "consumer"}],
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_sector_page_view",
+        _fake_load_sector_page_view,
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "sector"
+    state.entity_key = "cluster:coal"
+
+    state.load_sector_page_if_needed("white_liquor")
+
+    assert calls == ["white_liquor"]
+    assert state.entity_key == "cluster:white_liquor"
+
+
 def test_accept_candidate_clears_caches_and_marks_candidate_accepted(
     monkeypatch,
 ) -> None:
