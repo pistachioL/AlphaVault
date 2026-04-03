@@ -56,14 +56,50 @@ def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
 
 
 def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
+    root_open_line = rx.cond(
+        row["tree_root_full_line"]["content"] != "",
+        tree_line_row(row["tree_root_full_line"]),
+        tree_line_row(row["tree_root_preview_line"]),
+    )
+    root_expand_inline = rx.el.details(
+        rx.el.summary(
+            rx.el.div(
+                rx.el.div(
+                    tree_line_row(row["tree_root_preview_line"]),
+                    class_name="av-research-root-closed",
+                ),
+                rx.el.div(
+                    root_open_line,
+                    class_name="av-research-root-open",
+                ),
+                class_name="av-research-root-summary-text",
+            ),
+            rx.el.span(
+                row["tree_root_expand_label"],
+                class_name="av-research-tree-expand av-research-tree-expand-pill",
+            ),
+            class_name="av-research-root-summary",
+        ),
+        class_name="av-research-root-inline-details",
+    )
     return rx.el.div(
         rx.text(row["title"], class_name="av-research-signal-title"),
         _signal_meta_row(row),
         rx.cond(
             row["tree_text"] != "",
             rx.el.div(
-                rx.foreach(row["tree_lines"], tree_line_row),
-                class_name="av-tree-lines",
+                rx.cond(
+                    row["tree_root_can_expand"] == "1",
+                    rx.el.div(
+                        root_expand_inline,
+                        rx.foreach(row["tree_tail_lines"], tree_line_row),
+                        class_name="av-tree-lines",
+                    ),
+                    rx.el.div(
+                        rx.foreach(row["tree_lines"], tree_line_row),
+                        class_name="av-tree-lines",
+                    ),
+                ),
             ),
             rx.cond(
                 row["display_md"] != "",
