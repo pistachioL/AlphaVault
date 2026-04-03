@@ -24,6 +24,10 @@
   gap: 18px;
 }
 
+.av-stock-research-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .av-research-main,
 .av-research-side {
   border: 1px solid var(--av-research-border);
@@ -103,8 +107,66 @@
   font-weight: 600;
 }
 
+.av-stock-sidebar-toggle {
+  align-self: flex-start;
+}
+
+.av-stock-sidebar-shell {
+  pointer-events: none;
+}
+
+.av-stock-sidebar-shell-open {
+  pointer-events: auto;
+}
+
+.av-stock-sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.24);
+  z-index: 40;
+}
+
+.av-stock-sidebar-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(380px, calc(100vw - 24px));
+  height: 100vh;
+  background: #fff;
+  border-radius: 24px 0 0 24px;
+  overflow-y: auto;
+  z-index: 41;
+  transform: translateX(100%);
+  transition: transform 180ms ease;
+}
+
+.av-stock-sidebar-panel .av-research-side-item {
+  background: #fff;
+}
+
+.av-stock-sidebar-panel-open {
+  transform: translateX(0);
+}
+
+.av-stock-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.av-stock-sidebar-close {
+  flex-shrink: 0;
+}
+
 @media (max-width: 960px) {
   .av-research-layout {
     grid-template-columns: 1fr;
+  }
+
+  .av-stock-sidebar-panel {
+    width: min(100vw, 420px);
+    border-radius: 20px 0 0 20px;
   }
 }
