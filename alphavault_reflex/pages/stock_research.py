@@ -5,6 +5,8 @@ import reflex as rx
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import research_page_loading_var
 from alphavault_reflex.research_state import stock_page_title_var
+from alphavault_reflex.pages.thread_tree_components import tree_line_row
+from alphavault_reflex.services.stock_related_feed import StockRelatedPostRow
 from alphavault_reflex.services.research_status_text import (
     BACKGROUND_PROCESSING_TEXT,
     BACKGROUND_PROCESSING_TOOLTIP,
@@ -17,7 +19,7 @@ PAGE_TITLE = stock_page_title_var()
 HELP_MARK_TEXT = "?"
 
 
-def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
+def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
     return rx.el.div(
         rx.cond(
             row["signal_badge"] != "",
@@ -46,13 +48,16 @@ def _signal_meta_row(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
-def _related_post_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
     return rx.el.div(
         rx.text(row["title"], class_name="av-research-signal-title"),
         _signal_meta_row(row),
         rx.cond(
             row["tree_text"] != "",
-            rx.el.pre(row["tree_text"], class_name="av-research-signal-tree"),
+            rx.el.div(
+                rx.foreach(row["tree_lines"], tree_line_row),
+                class_name="av-tree-lines",
+            ),
             rx.cond(
                 row["display_md"] != "",
                 rx.text(row["display_md"], class_name="av-research-signal-body"),

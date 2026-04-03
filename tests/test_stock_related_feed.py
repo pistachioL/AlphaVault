@@ -78,6 +78,7 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
     assert feed.rows[0]["signal_badge"] == "买"
     assert feed.rows[0]["title"] == "s1"
     assert feed.rows[0]["created_at_line"] == "2026-04-01 10:00 · 30分钟前"
+    assert feed.rows[0]["tree_lines"][0]["content"] == "tree1"
     assert feed.rows[1]["is_signal"] == ""
     assert feed.rows[1]["signal_badge"] == ""
     assert feed.rows[1]["action"] == ""
@@ -85,6 +86,7 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
     assert feed.rows[1]["display_md"] == ""
     assert feed.rows[1]["title"] == "m"
     assert feed.rows[1]["created_at_line"] == "2026-04-01 09:30 · 1小时前"
+    assert feed.rows[1]["tree_lines"][0]["content"] == "tree3"
 
 
 def test_build_related_feed_signal_filter_excludes_backfill() -> None:

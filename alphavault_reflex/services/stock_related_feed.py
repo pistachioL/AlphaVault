@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TypedDict
 
 from alphavault_reflex.services.research_data import _coerce_signal_timestamp
 from alphavault_reflex.services.research_data import _default_signal_reference_time
 from alphavault_reflex.services.research_data import _format_signal_created_at_line
+from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 
 
 RELATED_FILTER_ALL = "all"
@@ -14,6 +17,23 @@ RELATED_FILTERS = {RELATED_FILTER_ALL, RELATED_FILTER_SIGNAL}
 DEFAULT_RELATED_LIMIT = 20
 RELATED_LIMIT_STEP = 20
 MAX_RELATED_LIMIT = 500
+
+
+class StockRelatedPostRow(TypedDict):
+    post_uid: str
+    title: str
+    is_signal: str
+    signal_badge: str
+    action: str
+    author: str
+    created_at_sort: str
+    created_at_line: str
+    url: str
+    raw_text: str
+    display_md: str
+    preview: str
+    tree_text: str
+    tree_lines: list[dict[str, str]]
 
 
 def normalize_related_filter(value: object) -> str:
@@ -59,11 +79,11 @@ def _coerce_row_dict(value: object) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class RelatedFeed:
-    rows: list[dict[str, str]]
+    rows: list[StockRelatedPostRow]
     total: int
 
 
-def _ensure_created_at_line(row: dict[str, str], *, now) -> str:
+def _ensure_created_at_line(row: Mapping[str, object], *, now) -> str:
     """Return a stable `created_at_line` with relative age ("· xx小时前")."""
     existing = str(row.get("created_at_line") or "").strip()
     if existing and "·" in existing:
@@ -95,7 +115,7 @@ def build_related_feed(
     wanted_limit = normalize_related_limit(limit)
     reference_now = _coerce_signal_timestamp(now) or _default_signal_reference_time()
 
-    items: list[dict[str, str]] = []
+    items: list[StockRelatedPostRow] = []
     seen: set[str] = set()
 
     for raw in signals or []:
@@ -106,17 +126,24 @@ def build_related_feed(
         seen.add(post_uid)
         action = str(row.get("action") or "").strip()
         badge = _signal_badge(action)
+        tree_text = str(row.get("tree_text") or "").strip()
+        tree_lines = build_tree_render_lines(tree_text)
         items.append(
             {
-                **row,
                 "post_uid": post_uid,
                 "is_signal": "1",
                 "signal_badge": badge,
-                "created_at_sort": _as_time_sort_text(row.get("created_at")),
                 "created_at_line": _ensure_created_at_line(row, now=reference_now),
+                "created_at_sort": _as_time_sort_text(row.get("created_at")),
                 "title": str(row.get("summary") or "").strip(),
+                "action": action,
+                "author": str(row.get("author") or "").strip(),
                 "preview": "",
-                "tree_text": str(row.get("tree_text") or "").strip(),
+                "tree_text": tree_text,
+                "tree_lines": tree_lines,
+                "url": str(row.get("url") or "").strip(),
+                "raw_text": str(row.get("raw_text") or "").strip(),
+                "display_md": str(row.get("display_md") or "").strip(),
             }
         )
 
@@ -128,9 +155,11 @@ def build_related_feed(
         seen.add(post_uid)
         created_at = str(row.get("created_at") or "").strip()
         title = str(row.get("matched_terms") or "").strip() or "相关帖子"
+        tree_text = str(row.get("tree_text") or "").strip()
+        tree_lines = build_tree_render_lines(tree_text)
+        preview = str(row.get("preview") or "").strip()
         items.append(
             {
-                **row,
                 "post_uid": post_uid,
                 "is_signal": "",
                 "signal_badge": "",
@@ -138,9 +167,13 @@ def build_related_feed(
                 "created_at_line": _ensure_created_at_line(row, now=reference_now),
                 "title": title,
                 "action": "",
+                "author": str(row.get("author") or "").strip(),
+                "url": str(row.get("url") or "").strip(),
                 "raw_text": "",
                 "display_md": "",
-                "tree_text": str(row.get("tree_text") or "").strip(),
+                "preview": preview,
+                "tree_text": tree_text,
+                "tree_lines": tree_lines,
             }
         )
 
