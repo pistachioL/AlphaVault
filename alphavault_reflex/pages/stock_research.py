@@ -17,6 +17,13 @@ LOADING_TEXT = "加载中…"
 PAGE_LOADING = research_page_loading_var()
 PAGE_TITLE = stock_page_title_var()
 HELP_MARK_TEXT = "?"
+SIDEBAR_TOGGLE_TEXT = "关系"
+SIDEBAR_TITLE = "关系"
+SIDEBAR_CLOSE_TEXT = "关"
+RELATED_SECTION_TITLE = "相关板块"
+PENDING_SECTION_TITLE = "待确认关系"
+SIDEBAR_READY_TEXT = "关系数据已就绪。"
+SIDEBAR_UPDATED_AT_PREFIX = "扩展数据更新时间："
 
 
 def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
@@ -173,6 +180,92 @@ def _hint_with_help(text: str, help_text: str) -> rx.Component:
     )
 
 
+def _stock_sidebar_sections() -> rx.Component:
+    return rx.el.div(
+        rx.cond(
+            ResearchState.show_extras_loading,
+            _section_loading(),
+            rx.el.div(
+                rx.cond(
+                    ResearchState.extras_updated_at != "",
+                    rx.text(
+                        SIDEBAR_UPDATED_AT_PREFIX + ResearchState.extras_updated_at,
+                        class_name="av-research-muted",
+                    ),
+                    rx.text(SIDEBAR_READY_TEXT, class_name="av-research-muted"),
+                ),
+                rx.heading(RELATED_SECTION_TITLE, size="4", margin_top="12px"),
+                rx.cond(
+                    ResearchState.has_related_items,
+                    rx.el.div(
+                        rx.foreach(ResearchState.related_items, _related_link),
+                        class_name="av-research-chip-wrap",
+                    ),
+                    rx.cond(
+                        ResearchState.show_related_empty,
+                        rx.text(EMPTY_TEXT, class_name="av-research-muted"),
+                        rx.el.div(),
+                    ),
+                ),
+                rx.heading(PENDING_SECTION_TITLE, size="4", margin_top="18px"),
+                rx.cond(
+                    ResearchState.has_pending_candidates,
+                    rx.el.div(
+                        rx.foreach(ResearchState.pending_candidates, _pending_item),
+                        class_name="av-research-side-list",
+                    ),
+                    rx.cond(
+                        ResearchState.show_pending_empty,
+                        rx.text(EMPTY_TEXT, class_name="av-research-muted"),
+                        rx.el.div(),
+                    ),
+                ),
+            ),
+        ),
+        rx.cond(
+            ResearchState.backfill_notice != "",
+            rx.text(ResearchState.backfill_notice, class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+    )
+
+
+def _stock_sidebar() -> rx.Component:
+    return rx.el.div(
+        rx.cond(
+            ResearchState.stock_sidebar_open,
+            rx.el.div(
+                on_click=ResearchState.close_stock_sidebar,
+                class_name="av-stock-sidebar-backdrop",
+            ),
+            rx.el.div(),
+        ),
+        rx.el.aside(
+            rx.el.div(
+                rx.heading(SIDEBAR_TITLE, size="4"),
+                rx.button(
+                    SIDEBAR_CLOSE_TEXT,
+                    on_click=ResearchState.close_stock_sidebar,
+                    variant="soft",
+                    class_name="av-stock-sidebar-close",
+                ),
+                class_name="av-stock-sidebar-head",
+            ),
+            _stock_sidebar_sections(),
+            class_name=rx.cond(
+                ResearchState.stock_sidebar_open,
+                "av-research-side av-stock-sidebar-panel av-stock-sidebar-panel-open",
+                "av-research-side av-stock-sidebar-panel",
+            ),
+        ),
+        class_name=rx.cond(
+            ResearchState.stock_sidebar_open,
+            "av-stock-sidebar-shell av-stock-sidebar-shell-open",
+            "av-stock-sidebar-shell",
+        ),
+    )
+
+
 def stock_research_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
@@ -217,15 +310,8 @@ def stock_research_page() -> rx.Component:
             rx.el.div(),
         ),
         rx.cond(
-            ResearchState.signals_ready & ResearchState.extras_ready,
-            rx.cond(
-                ResearchState.extras_updated_at != "",
-                rx.text(
-                    "扩展数据更新时间：" + ResearchState.extras_updated_at,
-                    class_name="av-research-muted",
-                ),
-                rx.text("数据已就绪。", class_name="av-research-muted"),
-            ),
+            ResearchState.signals_ready,
+            rx.text("数据已就绪。", class_name="av-research-muted"),
             _hint_with_help(BACKGROUND_PROCESSING_TEXT, BACKGROUND_PROCESSING_TOOLTIP),
         ),
         rx.el.div(
@@ -252,6 +338,13 @@ def stock_research_page() -> rx.Component:
                             "soft",
                         ),
                         disabled=PAGE_LOADING,
+                    ),
+                    rx.button(
+                        SIDEBAR_TOGGLE_TEXT,
+                        on_click=ResearchState.open_stock_sidebar,
+                        variant="soft",
+                        disabled=PAGE_LOADING,
+                        class_name="av-stock-sidebar-toggle",
                     ),
                     rx.button(
                         "刷新",
@@ -292,51 +385,8 @@ def stock_research_page() -> rx.Component:
                 ),
                 class_name="av-research-main",
             ),
-            rx.el.aside(
-                rx.heading("相关板块", size="4"),
-                rx.cond(
-                    PAGE_LOADING,
-                    _section_loading(),
-                    rx.cond(
-                        ResearchState.has_related_items,
-                        rx.el.div(
-                            rx.foreach(ResearchState.related_items, _related_link),
-                            class_name="av-research-chip-wrap",
-                        ),
-                        rx.cond(
-                            ResearchState.show_related_empty,
-                            rx.text(EMPTY_TEXT, class_name="av-research-muted"),
-                            rx.el.div(),
-                        ),
-                    ),
-                ),
-                rx.heading("待确认关系", size="4", margin_top="18px"),
-                rx.cond(
-                    ResearchState.show_extras_loading,
-                    _section_loading(),
-                    rx.cond(
-                        ResearchState.has_pending_candidates,
-                        rx.el.div(
-                            rx.foreach(ResearchState.pending_candidates, _pending_item),
-                            class_name="av-research-side-list",
-                        ),
-                        rx.cond(
-                            ResearchState.show_pending_empty,
-                            rx.text(EMPTY_TEXT, class_name="av-research-muted"),
-                            rx.el.div(),
-                        ),
-                    ),
-                ),
-                rx.cond(
-                    ResearchState.backfill_notice != "",
-                    rx.text(
-                        ResearchState.backfill_notice, class_name="av-research-muted"
-                    ),
-                    rx.el.div(),
-                ),
-                class_name="av-research-side",
-            ),
-            class_name="av-research-layout",
+            class_name="av-research-layout av-stock-research-layout",
         ),
+        _stock_sidebar(),
         class_name="av-research-page",
     )

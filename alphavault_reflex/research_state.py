@@ -12,6 +12,7 @@ from alphavault_reflex.services.research_backfill_actions import (
 from alphavault_reflex.services.research_page_loader import (
     load_sector_page_view,
     load_stock_page_cached_view,
+    load_stock_sidebar_cached_view,
 )
 from alphavault_reflex.services.research_state_utils import (
     DEFAULT_SIGNAL_PAGE_SIZE,
@@ -43,6 +44,8 @@ from alphavault_reflex.services.turso_read import clear_reflex_source_caches
 
 class ResearchState(rx.State):
     loading: bool = False
+    stock_sidebar_open: bool = False
+    stock_sidebar_loaded: bool = False
     extras_loading: bool = False
     signals_ready: bool = False
     extras_ready: bool = False
@@ -102,6 +105,10 @@ class ResearchState(rx.State):
         return bool(self.extras_loading)
 
     @rx.var
+    def stock_sidebar_ready(self) -> bool:
+        return bool(self.entity_type != "stock" or self.stock_sidebar_loaded)
+
+    @rx.var
     def show_signal_empty(self) -> bool:
         return bool(
             self.loaded_once
@@ -115,6 +122,7 @@ class ResearchState(rx.State):
         return bool(
             self.loaded_once
             and (not self.loading)
+            and self.stock_sidebar_ready
             and (str(self.load_error or "").strip() == "")
             and (not self.related_items)
         )
@@ -125,6 +133,7 @@ class ResearchState(rx.State):
             self.loaded_once
             and (not self.loading)
             and (not self.extras_loading)
+            and self.stock_sidebar_ready
             and (str(self.load_error or "").strip() == "")
             and (not self.pending_candidates)
         )
@@ -182,25 +191,26 @@ class ResearchState(rx.State):
         slug = _resolve_route_slug(
             self, explicit_slug=stock_slug, route_key="stock_slug"
         )
-        if self.entity_type != "stock" or _normalize_stock_key(slug) != self.entity_key:
+        is_new_stock = bool(
+            self.entity_type != "stock" or _normalize_stock_key(slug) != self.entity_key
+        )
+        if is_new_stock:
             self.signal_page = 1
             self.related_filter = RELATED_FILTER_ALL
             self.related_limit = DEFAULT_RELATED_LIMIT
+            self._reset_stock_sidebar_state(close_sidebar=True)
+            self.backfill_notice = ""
         stock_key = _normalize_stock_key(slug)
         self.stock_load_request_id = max(int(self.stock_load_request_id), 0) + 1
         self.entity_type = "stock"
         self.entity_key = stock_key
         self.load_error = ""
         self.stock_load_warning = ""
-        self.extras_loading = False
         self.signals_ready = False
-        self.extras_ready = False
-        self.extras_updated_at = ""
         self.worker_status_text = ""
         self.worker_next_run_at = ""
         self.worker_cycle_updated_at = ""
         self.worker_running = False
-        self.pending_candidates = []
         self.backfill_posts = []
         self.related_posts = []
         self.related_total = 0
@@ -211,10 +221,8 @@ class ResearchState(rx.State):
             signal_page_size=normalize_related_limit(self.related_limit),
         )
         self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
-        self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
         self.backfill_posts = _coerce_rows(view.get("backfill_posts"))
         self._refresh_related_posts()
-        self.extras_updated_at = str(view.get("extras_updated_at") or "").strip()
         self.worker_status_text = str(view.get("worker_status_text") or "").strip()
         self.worker_next_run_at = str(view.get("worker_next_run_at") or "").strip()
         self.worker_cycle_updated_at = str(
@@ -230,13 +238,8 @@ class ResearchState(rx.State):
             and (not cache_preparing)
         )
         self.extras_ready = bool(
-            self.loaded_once
-            and (not self.extras_loading)
-            and (
-                self.extras_updated_at != ""
-                or bool(self.pending_candidates)
-                or bool(self.backfill_posts)
-            )
+            self.entity_type != "stock"
+            or (self.stock_sidebar_loaded and (not self.extras_loading))
         )
 
     @rx.event
@@ -251,7 +254,39 @@ class ResearchState(rx.State):
             and stock_key == self.entity_key
         ):
             return
+        self.stock_sidebar_open = False
+        self.stock_sidebar_loaded = False
         return self.load_stock_page(slug)
+
+    @rx.event
+    def close_stock_sidebar(self) -> None:
+        self.stock_sidebar_open = False
+
+    @rx.event
+    def open_stock_sidebar(self):
+        self.stock_sidebar_open = True
+        if (
+            self.entity_type != "stock"
+            or self.stock_sidebar_loaded
+            or self.extras_loading
+        ):
+            return
+        self.extras_loading = True
+        return self.load_stock_sidebar(self.entity_key)
+
+    @rx.event
+    def load_stock_sidebar(self, stock_slug: str | None = None):
+        target = str(stock_slug or self.entity_key or "").strip()
+        if not target:
+            self.extras_loading = False
+            return
+        view = load_stock_sidebar_cached_view(target)
+        self.related_items = _prepare_sector_links(view.get("related_sectors"))
+        self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
+        self.extras_updated_at = str(view.get("extras_updated_at") or "").strip()
+        self.stock_sidebar_loaded = True
+        self.extras_ready = True
+        self.extras_loading = False
 
     def _refresh_related_posts(self) -> None:
         self.related_filter = normalize_related_filter(self.related_filter)
@@ -286,10 +321,19 @@ class ResearchState(rx.State):
         self.signal_page_size = _normalize_signal_page_size(
             view.get("signal_page_size") or self.signal_page_size
         )
-        self.related_items = _prepare_sector_links(view.get("related_sectors"))
         warning = str(view.get("load_warning") or "").strip()
         if warning:
             self.stock_load_warning = warning
+
+    def _reset_stock_sidebar_state(self, *, close_sidebar: bool) -> None:
+        if close_sidebar:
+            self.stock_sidebar_open = False
+        self.stock_sidebar_loaded = False
+        self.extras_loading = False
+        self.extras_ready = False
+        self.extras_updated_at = ""
+        self.related_items = []
+        self.pending_candidates = []
 
     @rx.event
     def prev_signal_page(self):
@@ -440,7 +484,11 @@ class ResearchState(rx.State):
         clear_reflex_source_caches()
         clear_stock_hot_read_caches()
         if self.entity_type == "stock":
-            return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+            self._reset_stock_sidebar_state(close_sidebar=False)
+            self.load_stock_page(self.entity_key.removeprefix("stock:"))
+            if self.stock_sidebar_open:
+                return self.open_stock_sidebar()
+            return
         if self.entity_type == "sector":
             return self.load_sector_page(self.entity_key.removeprefix("cluster:"))
         self.pending_candidates = [

@@ -13,6 +13,7 @@ def test_research_state_starts_in_loading_state() -> None:
     assert state.show_signal_empty is False
     assert state.show_related_empty is False
     assert state.show_pending_empty is False
+    assert state.stock_sidebar_open is False
 
 
 def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
@@ -22,8 +23,6 @@ def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
-            "related_sectors": [{"sector_key": "white_liquor"}],
-            "pending_candidates": [{"candidate_id": "cand-1"}],
             "backfill_posts": [{"post_uid": "weibo:1"}],
             "signal_total": 1,
             "signal_page": 1,
@@ -41,11 +40,11 @@ def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
     assert state.show_signal_empty is False
     assert state.extras_loading is False
     assert state.signals_ready is True
-    assert state.extras_ready is True
+    assert state.extras_ready is False
     assert state.primary_signals[0]["summary"] == "继续加仓"
-    assert state.related_items[0]["sector_key"] == "white_liquor"
+    assert state.related_items == []
     assert state.backfill_posts[0]["post_uid"] == "weibo:1"
-    assert state.pending_candidates[0]["candidate_id"] == "cand-1"
+    assert state.pending_candidates == []
     assert events is None
 
 
@@ -72,8 +71,8 @@ def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
     assert state.loaded_once is True
     assert state.show_loading is False
     assert state.show_signal_empty is True
-    assert state.show_related_empty is True
-    assert state.show_pending_empty is True
+    assert state.show_related_empty is False
+    assert state.show_pending_empty is False
     assert state.show_backfill_empty is True
 
 
@@ -156,6 +155,71 @@ def test_load_stock_page_uses_canonical_entity_key_from_view(monkeypatch) -> Non
 
     assert state.page_title == "紫金矿业 (601899.SH)"
     assert state.entity_key == "stock:601899.SH"
+
+
+def test_load_stock_page_if_needed_resets_stock_sidebar_when_stock_changes(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        lambda stock_slug, **_kwargs: {
+            "entity_key": "stock:601899.SH",
+            "header_title": "紫金矿业 (601899.SH)",
+            "signals": [],
+            "related_sectors": [],
+            "pending_candidates": [],
+            "backfill_posts": [],
+            "signal_total": 0,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
+        },
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "stock"
+    state.entity_key = "stock:000001.SZ"
+    state.stock_sidebar_open = True
+
+    state.load_stock_page_if_needed("紫金")
+
+    assert state.stock_sidebar_open is False
+    assert state.stock_sidebar_loaded is False
+
+
+def test_open_stock_sidebar_loads_sidebar_once(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def _fake_load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
+        calls.append(stock_slug)
+        return {
+            "related_sectors": [{"sector_key": "gold"}],
+            "pending_candidates": [{"candidate_id": "cand-1"}],
+            "extras_updated_at": "2026-04-03 12:00:00",
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_sidebar_cached_view",
+        _fake_load_stock_sidebar_cached_view,
+        raising=False,
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "stock"
+    state.entity_key = "stock:601899.SH"
+
+    state.open_stock_sidebar()
+    assert state.stock_sidebar_open is True
+    assert calls == ["stock:601899.SH"]
+
+    state.open_stock_sidebar()
+    assert calls == ["stock:601899.SH"]
+    assert state.stock_sidebar_loaded is True
+    assert state.related_items[0]["sector_key"] == "gold"
+    assert state.pending_candidates[0]["candidate_id"] == "cand-1"
 
 
 def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:

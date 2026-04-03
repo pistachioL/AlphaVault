@@ -40,6 +40,15 @@ def _empty_stock_page_view(
     }
 
 
+def _empty_stock_sidebar_view(*, load_error: str = "") -> dict[str, object]:
+    return {
+        "related_sectors": [],
+        "pending_candidates": [],
+        "extras_updated_at": "",
+        "load_error": str(load_error or "").strip(),
+    }
+
+
 def load_stock_page_cached_view(
     stock_slug: str,
     *,
@@ -59,6 +68,25 @@ def load_stock_page_cached_view(
             load_error=str(view.get("load_error") or "").strip(),
         )
     return view
+
+
+def load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
+    stock_key = normalize_stock_key(stock_slug)
+    view = load_stock_cached_view_from_env(
+        stock_key,
+        signal_page=1,
+        signal_page_size=1,
+    )
+    if str(view.get("entity_key") or "").strip() == "":
+        return _empty_stock_sidebar_view(
+            load_error=str(view.get("load_error") or "").strip(),
+        )
+    return {
+        "related_sectors": view.get("related_sectors") or [],
+        "pending_candidates": view.get("pending_candidates") or [],
+        "extras_updated_at": str(view.get("extras_updated_at") or "").strip(),
+        "load_error": str(view.get("load_error") or "").strip(),
+    }
 
 
 def load_sector_page_view(sector_slug: str) -> dict[str, object]:
@@ -94,4 +122,5 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
 __all__ = [
     "load_sector_page_view",
     "load_stock_page_cached_view",
+    "load_stock_sidebar_cached_view",
 ]

@@ -89,3 +89,27 @@ def test_stock_research_page_no_longer_uses_full_refreshing_state() -> None:
     cond_states = _collect_cond_states(rendered)
 
     assert not any("full_refreshing_rx_state_" in value for value in cond_states)
+
+
+def test_stock_research_page_renders_relation_sidebar_shell() -> None:
+    rendered = str(stock_research_page().render())
+
+    assert "av-stock-sidebar-toggle" in rendered
+    assert "av-stock-sidebar-panel" in rendered
+    assert "stock_sidebar_open_rx_state_" in rendered
+    assert "show_extras_loading_rx_state_" in rendered
+
+
+def test_stock_research_page_places_relation_button_between_signal_filter_and_refresh() -> (
+    None
+):
+    rendered = str(stock_research_page().render())
+
+    signal_index = rendered.find('set_related_filter", ({ ["value"] : "signal"')
+    relation_index = rendered.find("av-stock-sidebar-toggle")
+    refresh_index = rendered.find("refresh_stock_related")
+
+    assert signal_index != -1
+    assert relation_index != -1
+    assert refresh_index != -1
+    assert signal_index < relation_index < refresh_index
