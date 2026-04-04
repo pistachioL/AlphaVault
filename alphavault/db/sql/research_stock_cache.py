@@ -71,7 +71,6 @@ def create_research_stock_extras_table(table: str) -> str:
     return f"""
 CREATE TABLE IF NOT EXISTS {table} (
     stock_key TEXT PRIMARY KEY,
-    pending_candidates_json TEXT NOT NULL DEFAULT '[]',
     backfill_posts_json TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL
 )
@@ -89,18 +88,15 @@ def upsert_research_stock_extras(table: str) -> str:
     return f"""
 INSERT INTO {table}(
     stock_key,
-    pending_candidates_json,
     backfill_posts_json,
     updated_at
 )
 VALUES(
     :stock_key,
-    :pending_candidates_json,
     :backfill_posts_json,
     :updated_at
 )
 ON CONFLICT(stock_key) DO UPDATE SET
-    pending_candidates_json = excluded.pending_candidates_json,
     backfill_posts_json = excluded.backfill_posts_json,
     updated_at = excluded.updated_at
 """
@@ -109,7 +105,6 @@ ON CONFLICT(stock_key) DO UPDATE SET
 def select_research_stock_extras(table: str) -> str:
     return f"""
 SELECT stock_key,
-       pending_candidates_json,
        backfill_posts_json,
        updated_at
 FROM {table}

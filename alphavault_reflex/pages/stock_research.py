@@ -21,7 +21,6 @@ SIDEBAR_TOGGLE_TEXT = "关系"
 SIDEBAR_TITLE = "关系"
 SIDEBAR_CLOSE_TEXT = "关"
 RELATED_SECTION_TITLE = "相关板块"
-PENDING_SECTION_TITLE = "待确认关系"
 SIDEBAR_READY_TEXT = "关系数据已就绪。"
 SIDEBAR_UPDATED_AT_PREFIX = "扩展数据更新时间："
 
@@ -110,34 +109,6 @@ def _related_link(row: rx.Var[dict[str, str]]) -> rx.Component:
     )
 
 
-def _pending_item(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.el.div(
-        rx.text(row["candidate_key"], class_name="av-research-side-title"),
-        rx.text(row["evidence_summary"], class_name="av-research-muted"),
-        rx.hstack(
-            rx.button(
-                "确认",
-                on_click=lambda: ResearchState.accept_candidate(row["candidate_id"]),
-                class_name="av-btn av-btn-small",
-            ),
-            rx.button(
-                "忽略",
-                on_click=lambda: ResearchState.ignore_candidate(row["candidate_id"]),
-                variant="soft",
-            ),
-            rx.button(
-                "不再推荐",
-                on_click=lambda: ResearchState.block_candidate(row["candidate_id"]),
-                variant="soft",
-                color_scheme="gray",
-            ),
-            spacing="2",
-            margin_top="10px",
-        ),
-        class_name="av-research-side-item",
-    )
-
-
 def _section_loading() -> rx.Component:
     return rx.el.div(
         rx.spinner(size="3"),
@@ -203,19 +174,6 @@ def _stock_sidebar_sections() -> rx.Component:
                     ),
                     rx.cond(
                         ResearchState.show_related_empty,
-                        rx.text(EMPTY_TEXT, class_name="av-research-muted"),
-                        rx.el.div(),
-                    ),
-                ),
-                rx.heading(PENDING_SECTION_TITLE, size="4", margin_top="18px"),
-                rx.cond(
-                    ResearchState.has_pending_candidates,
-                    rx.el.div(
-                        rx.foreach(ResearchState.pending_candidates, _pending_item),
-                        class_name="av-research-side-list",
-                    ),
-                    rx.cond(
-                        ResearchState.show_pending_empty,
                         rx.text(EMPTY_TEXT, class_name="av-research-muted"),
                         rx.el.div(),
                     ),

@@ -239,17 +239,14 @@ def save_stock_extras_snapshot(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     stock_key: str,
-    pending_candidates: list[dict[str, object]] | list[dict[str, str]],
     backfill_posts: list[dict[str, object]] | list[dict[str, str]],
 ) -> None:
     key = str(stock_key or "").strip()
     if not key:
         return
-    pending_rows = _clean_json_rows(pending_candidates)
     backfill_rows = _clean_json_rows(backfill_posts)
     params = {
         "stock_key": key,
-        "pending_candidates_json": _json_dumps(pending_rows),
         "backfill_posts_json": _json_dumps(backfill_rows),
         "updated_at": _now_str(),
     }
@@ -289,7 +286,6 @@ def load_stock_extras_snapshot(
         return {}
     return {
         "stock_key": str(row.get("stock_key") or "").strip(),
-        "pending_candidates": _json_list(row.get("pending_candidates_json")),
         "backfill_posts": _json_list(row.get("backfill_posts_json")),
         "updated_at": str(row.get("updated_at") or "").strip(),
     }

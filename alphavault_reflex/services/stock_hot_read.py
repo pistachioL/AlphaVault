@@ -27,7 +27,7 @@ from alphavault.worker.job_state import (
 )
 
 _STOCK_SIGNAL_CAP = 500
-_EMPTY_EXTRAS = {"pending_candidates": [], "backfill_posts": [], "updated_at": ""}
+_EMPTY_EXTRAS = {"backfill_posts": [], "updated_at": ""}
 
 
 def _normalize_stock_key(value: str) -> str:
@@ -171,24 +171,13 @@ def _merge_related_sectors(hot_rows: list[dict[str, object]]) -> list[dict[str, 
 
 
 def _merge_extras(extras_rows: list[dict[str, object]]) -> dict[str, object]:
-    pending: list[dict[str, str]] = []
     backfill: list[dict[str, str]] = []
-    seen_pending: set[str] = set()
     seen_backfill: set[str] = set()
     updated_at = ""
     for payload in extras_rows:
         current_updated = str(payload.get("updated_at") or "").strip()
         if current_updated > updated_at:
             updated_at = current_updated
-        for row in _dict_rows(payload.get("pending_candidates")):
-            candidate_id = str(row.get("candidate_id") or "").strip()
-            key = candidate_id or str(row)
-            if key in seen_pending:
-                continue
-            seen_pending.add(key)
-            pending.append(
-                {str(k): str(v or "").strip() for k, v in row.items() if str(k).strip()}
-            )
         for row in _dict_rows(payload.get("backfill_posts")):
             post_uid = str(row.get("post_uid") or "").strip()
             key = post_uid or str(row)
@@ -199,7 +188,6 @@ def _merge_extras(extras_rows: list[dict[str, object]]) -> dict[str, object]:
                 {str(k): str(v or "").strip() for k, v in row.items() if str(k).strip()}
             )
     return {
-        "pending_candidates": pending,
         "backfill_posts": backfill,
         "updated_at": updated_at,
     }
@@ -268,7 +256,6 @@ def load_stock_cached_view_from_env(
             "signal_page": 1,
             "signal_page_size": max(int(signal_page_size or 1), 1),
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "extras_updated_at": "",
             "load_error": "",
@@ -289,7 +276,6 @@ def load_stock_cached_view_from_env(
             "signal_page": 1,
             "signal_page_size": max(int(signal_page_size or 1), 1),
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "extras_updated_at": "",
             "load_error": MISSING_TURSO_SOURCES_ERROR,
@@ -399,7 +385,6 @@ def load_stock_cached_view_from_env(
         "signal_page": safe_page,
         "signal_page_size": max(int(signal_page_size or 1), 1),
         "related_sectors": related_sectors,
-        "pending_candidates": merged_extras.get("pending_candidates", []),
         "backfill_posts": merged_extras.get("backfill_posts", []),
         "extras_updated_at": str(merged_extras.get("updated_at") or "").strip(),
         "load_error": "",

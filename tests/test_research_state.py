@@ -12,7 +12,7 @@ def test_research_state_starts_in_loading_state() -> None:
     assert state.show_loading is True
     assert state.show_signal_empty is False
     assert state.show_related_empty is False
-    assert state.show_pending_empty is False
+    assert not hasattr(state, "show_pending_empty")
     assert state.stock_sidebar_open is False
 
 
@@ -44,7 +44,7 @@ def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
     assert state.primary_signals[0]["summary"] == "继续加仓"
     assert state.related_items == []
     assert state.backfill_posts[0]["post_uid"] == "weibo:1"
-    assert state.pending_candidates == []
+    assert not hasattr(state, "pending_candidates")
     assert events is None
 
 
@@ -56,7 +56,6 @@ def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
             "header_title": "000001.SZ",
             "signals": [],
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "signal_total": 0,
             "signal_page": 1,
@@ -72,7 +71,7 @@ def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
     assert state.show_loading is False
     assert state.show_signal_empty is True
     assert state.show_related_empty is False
-    assert state.show_pending_empty is False
+    assert not hasattr(state, "show_pending_empty")
     assert state.show_backfill_empty is True
 
 
@@ -86,7 +85,6 @@ def test_load_stock_page_sets_signals_not_ready_when_cache_preparing(
             "header_title": "000001.SZ",
             "signals": [],
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "signal_total": 0,
             "signal_page": 1,
@@ -110,7 +108,6 @@ def test_load_stock_page_maps_worker_progress_fields(monkeypatch) -> None:
             "header_title": "000001.SZ",
             "signals": [],
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "signal_total": 0,
             "signal_page": 1,
@@ -141,7 +138,6 @@ def test_load_stock_page_uses_canonical_entity_key_from_view(monkeypatch) -> Non
             "header_title": "紫金矿业 (601899.SH)",
             "signals": [{"summary": "继续拿着"}],
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "signal_total": 1,
             "signal_page": 1,
@@ -167,7 +163,6 @@ def test_load_stock_page_if_needed_resets_stock_sidebar_when_stock_changes(
             "header_title": "紫金矿业 (601899.SH)",
             "signals": [],
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "signal_total": 0,
             "signal_page": 1,
@@ -195,7 +190,6 @@ def test_open_stock_sidebar_loads_sidebar_once(monkeypatch) -> None:
         calls.append(stock_slug)
         return {
             "related_sectors": [{"sector_key": "gold"}],
-            "pending_candidates": [{"candidate_id": "cand-1"}],
             "extras_updated_at": "2026-04-03 12:00:00",
             "load_error": "",
         }
@@ -219,7 +213,7 @@ def test_open_stock_sidebar_loads_sidebar_once(monkeypatch) -> None:
     assert calls == ["stock:601899.SH"]
     assert state.stock_sidebar_loaded is True
     assert state.related_items[0]["sector_key"] == "gold"
-    assert state.pending_candidates[0]["candidate_id"] == "cand-1"
+    assert not hasattr(state, "pending_candidates")
 
 
 def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:
@@ -229,7 +223,6 @@ def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:
             "header_title": "white_liquor",
             "signals": [{"summary": "板块继续走强"}],
             "related_stocks": [{"stock_key": "stock:600519.SH"}],
-            "pending_candidates": [{"candidate_key": "consumer"}],
         },
     )
 
@@ -238,7 +231,7 @@ def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:
     assert state.page_title == "white_liquor"
     assert state.primary_signals[0]["summary"] == "板块继续走强"
     assert state.related_items[0]["stock_key"] == "stock:600519.SH"
-    assert state.pending_candidates[0]["candidate_key"] == "consumer"
+    assert not hasattr(state, "pending_candidates")
 
 
 def test_load_stock_page_if_needed_runs_on_first_load(monkeypatch) -> None:
@@ -251,7 +244,6 @@ def test_load_stock_page_if_needed_runs_on_first_load(monkeypatch) -> None:
             "header_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "signal_total": 1,
             "signal_page": 1,
@@ -302,7 +294,6 @@ def test_load_stock_page_if_needed_loads_when_stock_changes(monkeypatch) -> None
             "header_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
             "related_sectors": [],
-            "pending_candidates": [],
             "backfill_posts": [],
             "signal_total": 1,
             "signal_page": 1,
@@ -356,7 +347,6 @@ def test_load_sector_page_if_needed_loads_when_sector_changes(monkeypatch) -> No
             "header_title": "white_liquor",
             "signals": [{"summary": "板块继续走强"}],
             "related_stocks": [{"stock_key": "stock:600519.SH"}],
-            "pending_candidates": [{"candidate_key": "consumer"}],
         }
 
     monkeypatch.setattr(
@@ -375,50 +365,13 @@ def test_load_sector_page_if_needed_loads_when_sector_changes(monkeypatch) -> No
     assert state.entity_key == "cluster:white_liquor"
 
 
-def test_accept_candidate_clears_caches_and_marks_candidate_accepted(
-    monkeypatch,
-) -> None:
-    calls: list[str] = []
-
-    monkeypatch.setattr(
-        "alphavault_reflex.research_state.apply_candidate_action",
-        lambda candidate_row, action: calls.append(
-            f"{action}:{candidate_row['candidate_id']}"
-        ),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.research_state.clear_reflex_source_caches",
-        lambda: calls.append("cleared"),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.research_state.clear_stock_hot_read_caches",
-        lambda: calls.append("cleared_hot"),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.research_state.load_stock_page_cached_view",
-        lambda stock_slug, **_kwargs: {
-            "entity_key": "stock:600519.SH",
-            "header_title": "600519.SH",
-            "signals": [{"summary": "继续加仓"}],
-            "related_sectors": [{"sector_key": "white_liquor"}],
-            "pending_candidates": [],
-            "backfill_posts": [],
-            "signal_total": 1,
-            "signal_page": 1,
-            "signal_page_size": 5,
-            "load_error": "",
-        },
-    )
-
+def test_research_state_does_not_keep_candidate_mutation_api() -> None:
     state = ResearchState()
-    state.entity_type = "stock"
-    state.entity_key = "stock:600519.SH"
-    state.pending_candidates = [{"candidate_id": "cand-1"}]
 
-    state.accept_candidate("cand-1")
-
-    assert calls == ["accept:cand-1", "cleared", "cleared_hot"]
-    assert state.pending_candidates == []
+    assert not hasattr(state, "pending_candidates")
+    assert not hasattr(state, "accept_candidate")
+    assert not hasattr(state, "ignore_candidate")
+    assert not hasattr(state, "block_candidate")
 
 
 def test_queue_backfill_post_marks_notice_and_clears_caches(monkeypatch) -> None:

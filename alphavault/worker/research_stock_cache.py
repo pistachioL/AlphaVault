@@ -19,10 +19,6 @@ from alphavault.research_stock_cache import (
     save_stock_extras_snapshot,
     save_stock_hot_view,
 )
-from alphavault.research_workbench import (
-    ensure_research_workbench_schema,
-    list_pending_candidates_for_left_key,
-)
 from alphavault.worker.job_state import (
     load_worker_job_cursor,
     release_worker_job_lock,
@@ -46,11 +42,8 @@ STOCK_HOT_CACHE_SIGNAL_CAP = 500
 STOCK_EXTRAS_REFRESH_MIN_SECONDS = 900
 
 _EXTRAS_FORCE_REFRESH_REASONS = {
-    "alias_relation",
-    "candidate_action",
-    "queue_backfill",
-    "relation_candidates_cache",
     "backfill_cache",
+    "queue_backfill",
 }
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -203,11 +196,6 @@ def refresh_stock_extras_snapshot_for_key(
         )
     ):
         return False
-    pending = list_pending_candidates_for_left_key(
-        conn,
-        left_key=entity_key,
-        limit=12,
-    )
     backfill = list_stock_backfill_posts(
         conn,
         stock_key=entity_key,
@@ -216,7 +204,6 @@ def refresh_stock_extras_snapshot_for_key(
     save_stock_extras_snapshot(
         conn,
         stock_key=entity_key,
-        pending_candidates=pending,
         backfill_posts=backfill,
     )
     return True
@@ -255,7 +242,6 @@ def sync_stock_hot_cache(
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
-        ensure_research_workbench_schema(engine_or_conn)
         with (
             turso_connect_autocommit(engine_or_conn)
             if isinstance(engine_or_conn, TursoEngine)

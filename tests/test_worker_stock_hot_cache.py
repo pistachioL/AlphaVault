@@ -85,11 +85,6 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "ensure_research_workbench_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
         "list_stock_dirty_entries",
         lambda *_args, **_kwargs: [
             {
@@ -142,7 +137,10 @@ def test_refresh_stock_extras_snapshot_respects_min_interval(monkeypatch) -> Non
     monkeypatch.setattr(
         stock_hot_cache,
         "list_pending_candidates_for_left_key",
-        lambda *_args, **_kwargs: [{"candidate_id": "cand-1"}],
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stock extras 不该再读 pending candidates")
+        ),
+        raising=False,
     )
     monkeypatch.setattr(
         stock_hot_cache,
@@ -174,7 +172,7 @@ def test_refresh_stock_extras_snapshot_respects_min_interval(monkeypatch) -> Non
 
 
 def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> None:
-    saved_args: list[tuple[str, list[dict[str, object]], list[dict[str, object]]]] = []
+    saved_args: list[tuple[str, list[dict[str, object]]]] = []
 
     monkeypatch.setattr(
         stock_hot_cache,
@@ -184,7 +182,10 @@ def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> No
     monkeypatch.setattr(
         stock_hot_cache,
         "list_pending_candidates_for_left_key",
-        lambda *_args, **_kwargs: [{"candidate_id": "cand-2"}],
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stock extras 不该再读 pending candidates")
+        ),
+        raising=False,
     )
     monkeypatch.setattr(
         stock_hot_cache,
@@ -196,10 +197,9 @@ def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> No
         _conn,
         *,
         stock_key: str,
-        pending_candidates: list[dict[str, object]],
         backfill_posts: list[dict[str, object]],
     ) -> None:
-        saved_args.append((stock_key, pending_candidates, backfill_posts))
+        saved_args.append((stock_key, backfill_posts))
 
     monkeypatch.setattr(stock_hot_cache, "save_stock_extras_snapshot", _capture_save)
 
@@ -214,7 +214,6 @@ def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> No
     assert saved_args == [
         (
             "stock:601899.SH",
-            [{"candidate_id": "cand-2"}],
             [{"post_uid": "weibo:2"}],
         )
     ]
@@ -238,11 +237,6 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
     monkeypatch.setattr(
         stock_hot_cache,
         "ensure_research_stock_cache_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_workbench_schema",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -308,11 +302,6 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
     monkeypatch.setattr(
         stock_hot_cache,
         "ensure_research_stock_cache_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_workbench_schema",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(

@@ -40,6 +40,7 @@ def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -
     assert view.signals[0]["summary"] == "继续加仓"
     assert view.signals[0]["tree_text"].endswith("[原帖 ID: p1]")
     assert view.related_sectors[0]["sector_key"] == "white_liquor"
+    assert not hasattr(view, "pending_candidates")
 
 
 def test_build_stock_research_view_aggregates_one_stock_object() -> None:
@@ -277,6 +278,7 @@ def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -
     assert view.header_title == "white_liquor"
     assert view.signals[0]["summary"] == "板块继续走强"
     assert view.related_stocks[0]["stock_key"] == "stock:600519.SH"
+    assert not hasattr(view, "pending_candidates")
 
 
 def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() -> None:

@@ -35,7 +35,6 @@ class StockResearchView:
     signal_page: int
     signal_page_size: int
     related_sectors: list[dict[str, str]]
-    pending_candidates: list[dict[str, str]]
     backfill_posts: list[dict[str, str]]
 
 
@@ -44,7 +43,6 @@ class SectorResearchView:
     header_title: str
     signals: list[dict[str, str]]
     related_stocks: list[dict[str, str]]
-    pending_candidates: list[dict[str, str]]
 
 
 def build_search_index(
@@ -111,7 +109,6 @@ def build_stock_research_view(
             signal_page=1,
             signal_page_size=_clamp_signal_page_size(signal_page_size),
             related_sectors=[],
-            pending_candidates=[],
             backfill_posts=[],
         )
 
@@ -142,7 +139,6 @@ def build_stock_research_view(
         signal_page=signal_page,
         signal_page_size=_clamp_signal_page_size(signal_page_size),
         related_sectors=_build_related_sector_rows(stock_view),
-        pending_candidates=[],
         backfill_posts=[],
     )
 
@@ -159,7 +155,6 @@ def build_sector_research_view(
             header_title=sector_key,
             signals=[],
             related_stocks=[],
-            pending_candidates=[],
         )
 
     sector_view = assertions[_sector_mask(assertions, sector_key)].copy()
@@ -168,7 +163,6 @@ def build_sector_research_view(
         header_title=sector_key,
         signals=_build_signal_rows(sector_view, posts=posts),
         related_stocks=_build_related_stock_rows(sector_view),
-        pending_candidates=[],
     )
 
 

@@ -136,3 +136,41 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     first = signals[0]
     assert isinstance(first, dict)
     assert first.get("created_at") == ""
+
+
+def test_load_stock_cached_view_does_not_expose_pending_candidates(monkeypatch) -> None:
+    _setup_single_source(monkeypatch)
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_hot_view",
+        lambda *_args, **_kwargs: {
+            "entity_key": "stock:600519.SH",
+            "header_title": "600519.SH",
+            "signals": [],
+            "signal_total": 0,
+            "related_sectors": [{"sector_key": "white_liquor"}],
+        },
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_extras_snapshot",
+        lambda *_args, **_kwargs: {
+            "pending_candidates": [{"candidate_id": "cand-1"}],
+            "backfill_posts": [{"post_uid": "p1"}],
+            "updated_at": "2026-04-04 10:00:00",
+        },
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "600519.SH",
+        signal_page=1,
+        signal_page_size=5,
+    )
+
+    assert "pending_candidates" not in payload
+    assert payload["backfill_posts"] == [{"post_uid": "p1"}]

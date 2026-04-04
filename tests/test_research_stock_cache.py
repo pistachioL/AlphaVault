@@ -77,13 +77,11 @@ def test_save_and_load_stock_extras_snapshot() -> None:
         save_stock_extras_snapshot(
             conn,
             stock_key="stock:601899.SH",
-            pending_candidates=[{"candidate_id": "cand-1"}],
             backfill_posts=[{"post_uid": "weibo:9"}],
         )
         loaded = load_stock_extras_snapshot(conn, stock_key="stock:601899.SH")
-        pending_candidates = cast(list[dict[str, str]], loaded["pending_candidates"])
         backfill_posts = cast(list[dict[str, str]], loaded["backfill_posts"])
-        assert pending_candidates[0]["candidate_id"] == "cand-1"
+        assert "pending_candidates" not in loaded
         assert backfill_posts[0]["post_uid"] == "weibo:9"
         assert str(loaded["updated_at"]).strip() != ""
     finally:

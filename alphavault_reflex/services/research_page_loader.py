@@ -2,11 +2,6 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from alphavault.research_workbench import (
-    ensure_research_workbench_schema,
-    get_research_workbench_engine_from_env,
-    list_pending_candidates_for_left_key,
-)
 from alphavault_reflex.services.research_data import build_sector_research_view
 from alphavault_reflex.services.stock_hot_read import load_stock_cached_view_from_env
 from alphavault_reflex.services.turso_read import load_sources_from_env
@@ -16,8 +11,6 @@ from .research_state_utils import (
     normalize_signal_page_size,
     normalize_stock_key,
 )
-
-_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 def _empty_stock_page_view(
@@ -34,7 +27,6 @@ def _empty_stock_page_view(
         "signal_page": 1,
         "signal_page_size": normalize_signal_page_size(signal_page_size),
         "related_sectors": [],
-        "pending_candidates": [],
         "backfill_posts": [],
         "load_error": str(load_error or "").strip(),
     }
@@ -43,7 +35,6 @@ def _empty_stock_page_view(
 def _empty_stock_sidebar_view(*, load_error: str = "") -> dict[str, object]:
     return {
         "related_sectors": [],
-        "pending_candidates": [],
         "extras_updated_at": "",
         "load_error": str(load_error or "").strip(),
     }
@@ -83,7 +74,6 @@ def load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
         )
     return {
         "related_sectors": view.get("related_sectors") or [],
-        "pending_candidates": view.get("pending_candidates") or [],
         "extras_updated_at": str(view.get("extras_updated_at") or "").strip(),
         "load_error": str(view.get("load_error") or "").strip(),
     }
@@ -97,24 +87,10 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
             "header_title": sector_key,
             "signals": [],
             "related_stocks": [],
-            "pending_candidates": [],
             "load_error": err,
         }
     view = build_sector_research_view(posts, assertions, sector_key=sector_key)
     result = asdict(view)
-    left_key = f"cluster:{sector_key}" if sector_key else ""
-    try:
-        engine = get_research_workbench_engine_from_env()
-        ensure_research_workbench_schema(engine)
-        result["pending_candidates"] = list_pending_candidates_for_left_key(
-            engine,
-            left_key=left_key,
-            limit=12,
-        )
-    except BaseException as err:
-        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-            raise
-        result["pending_candidates"] = []
     result["load_error"] = ""
     return result
 
