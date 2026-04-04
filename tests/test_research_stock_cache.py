@@ -5,7 +5,10 @@ from typing import cast
 
 from alphavault.db.turso_db import TursoConnection
 from alphavault.research_stock_cache import (
+    claim_entity_page_dirty_entries,
+    dirty_reason_mask_for,
     ensure_research_stock_cache_schema,
+    fail_entity_page_dirty_claims,
     list_entity_page_dirty_keys,
     load_entity_page_backfill_snapshot,
     load_entity_page_signal_snapshot,
@@ -69,6 +72,44 @@ def test_save_and_load_entity_page_signal_snapshot() -> None:
         assert signals[0]["post_uid"] == "weibo:2"
         assert signals[0]["tree_text"] == "root -> child"
         assert related_sectors[0]["sector_key"] == "gold"
+    finally:
+        conn.close()
+
+
+def test_save_and_load_entity_page_signal_snapshot_for_sector() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_stock_cache_schema(conn)
+        save_entity_page_signal_snapshot(
+            conn,
+            stock_key="cluster:white_liquor",
+            payload={
+                "entity_key": "cluster:white_liquor",
+                "header_title": "white_liquor",
+                "signal_total": 1,
+                "signals": [
+                    {
+                        "post_uid": "weibo:3",
+                        "summary": "板块继续走强",
+                        "action": "trade.buy",
+                        "author": "alice",
+                        "created_at": "2026-03-26 10:00:00",
+                    }
+                ],
+                "related_stocks": [
+                    {"stock_key": "stock:600519.SH", "mention_count": "2"}
+                ],
+            },
+        )
+        loaded = load_entity_page_signal_snapshot(
+            conn,
+            stock_key="cluster:white_liquor",
+        )
+        assert cast(str, loaded["entity_key"]) == "cluster:white_liquor"
+        assert cast(str, loaded["header_title"]) == "white_liquor"
+        assert cast(int, loaded["signal_total"]) == 1
+        related_stocks = cast(list[dict[str, str]], loaded["related_stocks"])
+        assert related_stocks[0]["stock_key"] == "stock:600519.SH"
     finally:
         conn.close()
 
@@ -364,6 +405,188 @@ CREATE TABLE entity_page_snapshot (
         conn.close()
 
 
+def test_ensure_research_stock_cache_schema_adds_related_stocks_column() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        conn.execute(
+            """
+CREATE TABLE entity_page_snapshot (
+    entity_key TEXT PRIMARY KEY,
+    header_title TEXT NOT NULL DEFAULT '',
+    signal_total INTEGER NOT NULL DEFAULT 0,
+    signals_json TEXT NOT NULL DEFAULT '[]',
+    related_sectors_json TEXT NOT NULL DEFAULT '[]',
+    backfill_posts_json TEXT NOT NULL DEFAULT '[]',
+    content_hash TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+)
+"""
+        )
+        ensure_research_stock_cache_schema(conn)
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(entity_page_snapshot)")
+            .mappings()
+            .all()
+        }
+        assert "related_stocks_json" in columns
+    finally:
+        conn.close()
+
+
+def test_ensure_research_stock_cache_schema_upgrades_projection_dirty_columns() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        conn.execute(
+            """
+CREATE TABLE projection_dirty (
+    job_type TEXT NOT NULL,
+    target_key TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(job_type, target_key)
+)
+"""
+        )
+        conn.execute(
+            """
+INSERT INTO projection_dirty(job_type, target_key, reason, updated_at)
+VALUES ('entity_page', 'stock:601899.SH', 'rss', '2026-04-04 09:00:00+08:00')
+"""
+        )
+
+        ensure_research_stock_cache_schema(conn)
+
+        columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(projection_dirty)")
+            .mappings()
+            .all()
+        }
+        assert {
+            "reason_mask",
+            "dirty_since",
+            "last_dirty_at",
+            "claim_until",
+            "attempt_count",
+        }.issubset(columns)
+        row = (
+            conn.execute(
+                """
+SELECT reason_mask, dirty_since, last_dirty_at, claim_until, attempt_count
+FROM projection_dirty
+WHERE job_type = 'entity_page' AND target_key = 'stock:601899.SH'
+"""
+            )
+            .mappings()
+            .fetchone()
+        )
+        assert row is not None
+        assert int(row["reason_mask"] or 0) == dirty_reason_mask_for("rss")
+        assert str(row["dirty_since"]) == "2026-04-04 09:00:00+08:00"
+        assert str(row["last_dirty_at"]) == "2026-04-04 09:00:00+08:00"
+        assert str(row["claim_until"]) == ""
+        assert int(row["attempt_count"] or 0) == 0
+    finally:
+        conn.close()
+
+
+def test_mark_entity_page_dirty_merges_reason_mask_and_keeps_dirty_since(
+    monkeypatch,
+) -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_stock_cache_schema(conn)
+        timestamps = iter(
+            [
+                "2026-04-04 10:00:00+08:00",
+                "2026-04-04 10:05:00+08:00",
+            ]
+        )
+        monkeypatch.setattr(
+            "alphavault.research_stock_cache._now_str",
+            lambda: next(timestamps),
+        )
+
+        mark_entity_page_dirty(conn, stock_key="stock:601899.SH", reason="ai_done")
+        mark_entity_page_dirty(
+            conn,
+            stock_key="stock:601899.SH",
+            reason="backfill_cache",
+        )
+
+        row = (
+            conn.execute(
+                """
+SELECT reason_mask, dirty_since, last_dirty_at, claim_until, attempt_count
+FROM projection_dirty
+WHERE job_type = 'entity_page' AND target_key = 'stock:601899.SH'
+"""
+            )
+            .mappings()
+            .fetchone()
+        )
+        assert row is not None
+        assert int(row["reason_mask"] or 0) == (
+            dirty_reason_mask_for("ai_done") | dirty_reason_mask_for("backfill_cache")
+        )
+        assert str(row["dirty_since"]) == "2026-04-04 10:00:00+08:00"
+        assert str(row["last_dirty_at"]) == "2026-04-04 10:05:00+08:00"
+        assert str(row["claim_until"]) == ""
+        assert int(row["attempt_count"] or 0) == 0
+    finally:
+        conn.close()
+
+
+def test_claim_and_fail_entity_page_dirty_entries_track_attempts() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_stock_cache_schema(conn)
+        mark_entity_page_dirty(conn, stock_key="stock:601899.SH", reason="ai_done")
+
+        claimed = claim_entity_page_dirty_entries(
+            conn,
+            limit=10,
+            claim_ttl_seconds=600,
+        )
+        assert len(claimed) == 1
+        assert str(claimed[0]["stock_key"]) == "stock:601899.SH"
+        assert int(claimed[0]["reason_mask"]) == dirty_reason_mask_for("ai_done")
+        claim_until = str(claimed[0]["claim_until"])
+        assert claim_until != ""
+        assert (
+            claim_entity_page_dirty_entries(
+                conn,
+                limit=10,
+                claim_ttl_seconds=600,
+            )
+            == []
+        )
+
+        failed = fail_entity_page_dirty_claims(
+            conn,
+            stock_keys=["stock:601899.SH"],
+            claim_until=claim_until,
+        )
+        assert failed == 1
+        row = (
+            conn.execute(
+                """
+SELECT attempt_count, claim_until
+FROM projection_dirty
+WHERE job_type = 'entity_page' AND target_key = 'stock:601899.SH'
+"""
+            )
+            .mappings()
+            .fetchone()
+        )
+        assert row is not None
+        assert int(row["attempt_count"] or 0) == 1
+        assert str(row["claim_until"]) == ""
+    finally:
+        conn.close()
+
+
 def test_mark_list_and_remove_entity_page_dirty_keys() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
@@ -403,7 +626,7 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
         rows = (
             conn.execute(
                 """
-SELECT job_type, target_key, reason
+SELECT job_type, target_key, reason_mask, dirty_since, last_dirty_at, claim_until, attempt_count
 FROM projection_dirty
 ORDER BY job_type ASC, target_key ASC
 """
@@ -415,14 +638,20 @@ ORDER BY job_type ASC, target_key ASC
             {
                 "job_type": "entity_page",
                 "target_key": "stock:601899.SH",
-                "reason": "rss",
+                "reason_mask": dirty_reason_mask_for("rss"),
+                "dirty_since": str(rows[0]["dirty_since"]),
+                "last_dirty_at": str(rows[0]["last_dirty_at"]),
+                "claim_until": "",
+                "attempt_count": 0,
             }
         ]
     finally:
         conn.close()
 
 
-def test_mark_entity_page_dirty_from_assertions_reads_stock_entities_only() -> None:
+def test_mark_entity_page_dirty_from_assertions_reads_stock_and_sector_entities() -> (
+    None
+):
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         ensure_research_stock_cache_schema(conn)
@@ -442,18 +671,19 @@ def test_mark_entity_page_dirty_from_assertions_reads_stock_entities_only() -> N
                             "entity_type": "industry",
                         },
                     ],
+                    "cluster_keys_json": '["gold"]',
                 },
                 {
                     "topic_key": "stock:阿紫",
                     "stock_codes_json": "[]",
                     "assertion_entities": [],
                 },
-                {"topic_key": "cluster:gold", "stock_codes_json": '["600519.SH"]'},
+                {"topic_key": "cluster:energy", "stock_codes_json": '["600519.SH"]'},
             ],
             reason="ai",
         )
-        assert marked == 1
+        assert marked == 3
         keys = set(list_entity_page_dirty_keys(conn, limit=10))
-        assert keys == {"stock:601899.SH"}
+        assert keys == {"stock:601899.SH", "cluster:gold", "cluster:energy"}
     finally:
         conn.close()

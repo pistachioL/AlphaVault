@@ -4,9 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TypedDict
 
-from alphavault_reflex.services.research_data import _coerce_signal_timestamp
-from alphavault_reflex.services.research_data import _default_signal_reference_time
-from alphavault_reflex.services.research_data import _format_signal_created_at_line
+from alphavault.research_signal_view import coerce_signal_timestamp
+from alphavault.research_signal_view import default_signal_reference_time
+from alphavault.research_signal_view import format_signal_created_at_line
 from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 
 
@@ -94,7 +94,7 @@ def _ensure_created_at_line(row: Mapping[str, object], *, now) -> str:
     if not source:
         return existing
 
-    filled = _format_signal_created_at_line(source, now=now)
+    filled = format_signal_created_at_line(source, now=now)
     return filled or existing
 
 
@@ -113,7 +113,7 @@ def build_related_feed(
     """
     wanted_filter = normalize_related_filter(related_filter)
     wanted_limit = normalize_related_limit(limit)
-    reference_now = _coerce_signal_timestamp(now) or _default_signal_reference_time()
+    reference_now = coerce_signal_timestamp(now) or default_signal_reference_time()
 
     items: list[StockRelatedPostRow] = []
     seen: set[str] = set()

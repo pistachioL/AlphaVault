@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from alphavault_reflex.services.research_data import build_sector_research_view
+from alphavault_reflex.services.sector_hot_read import load_sector_cached_view_from_env
 from alphavault_reflex.services.stock_hot_read import load_stock_cached_view_from_env
 from alphavault_reflex.services.turso_read import load_sources_from_env
 
@@ -81,6 +82,22 @@ def load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
 
 def load_sector_page_view(sector_slug: str) -> dict[str, object]:
     sector_key = str(sector_slug or "").strip()
+    cached_view = load_sector_cached_view_from_env(sector_key)
+    if bool(cached_view.get("snapshot_hit")):
+        return {
+            "header_title": str(cached_view.get("header_title") or "").strip(),
+            "signals": cached_view.get("signals") or [],
+            "related_stocks": cached_view.get("related_stocks") or [],
+            "load_error": str(cached_view.get("load_error") or "").strip(),
+        }
+    cached_error = str(cached_view.get("load_error") or "").strip()
+    if cached_error:
+        return {
+            "header_title": str(cached_view.get("header_title") or sector_key).strip(),
+            "signals": [],
+            "related_stocks": [],
+            "load_error": cached_error,
+        }
     posts, assertions, err = load_sources_from_env()
     if err:
         return {

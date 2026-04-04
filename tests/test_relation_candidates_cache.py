@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 import threading
 import time
 from typing import cast
@@ -8,6 +9,11 @@ from typing import cast
 from alphavault.db.turso_db import TursoConnection
 from alphavault.rss.utils import RateLimiter
 from alphavault.worker import research_relation_candidates_cache as relation_cache
+from alphavault.worker.local_cache import (
+    ENV_LOCAL_CACHE_DB_PATH,
+    apply_outbox_event_payload,
+    resolve_local_cache_db_path,
+)
 
 
 class _FakeConn:
@@ -196,3 +202,44 @@ def test_collect_candidates_parallel_respects_shared_slot_gate() -> None:
     assert len(calls) == len(keys)
     assert max_active <= 1
     assert gated_inflight == 0
+
+
+def test_load_distinct_trade_stock_keys_reads_local_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(ENV_LOCAL_CACHE_DB_PATH, str(tmp_path / "cache.sqlite3"))
+    db_path = resolve_local_cache_db_path(source_name="")
+    with relation_cache.open_local_cache(db_path=db_path) as cache_conn:
+        apply_outbox_event_payload(
+            cache_conn,
+            payload={
+                "event_type": "ai_done",
+                "post_uid": "p1",
+                "author": "alice",
+                "created_at": "2026-04-04 10:00:00",
+                "assertions": [
+                    {
+                        "topic_key": "stock:601899.SH",
+                        "action": "trade.buy",
+                        "stock_codes": ["601899.SH"],
+                        "stock_names": ["紫金矿业"],
+                    },
+                    {
+                        "topic_key": "cluster:gold",
+                        "action": "trade.buy",
+                        "stock_codes": ["601899.SH"],
+                        "stock_names": ["紫金矿业"],
+                    },
+                    {
+                        "topic_key": "stock:宏观观察",
+                        "action": "macro.watch",
+                        "stock_codes": ["601899.SH"],
+                    },
+                ],
+            },
+        )
+
+    keys = relation_cache._load_distinct_trade_stock_keys(db_path=db_path)
+
+    assert keys == ["stock:601899.SH"]
