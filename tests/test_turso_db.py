@@ -20,6 +20,7 @@ from alphavault.db.turso_db import (
     is_turso_stream_not_found_error,
     turso_savepoint,
 )
+from alphavault.domains.entity_match.resolve import EntityMatchResult
 from alphavault.worker.ingest import _build_raw_text
 
 
@@ -600,6 +601,17 @@ def test_write_assertions_and_mark_done_writes_outbox_event(monkeypatch) -> None
     assert outbox_params["source"] == "weibo"
     assert outbox_params["post_uid"] == "weibo:1"
     assert outbox_params["author"] == "作者A"
+    outbox_index = next(
+        idx
+        for idx, (query, _params) in enumerate(calls)
+        if query.strip() == INSERT_ASSERTION_OUTBOX.strip()
+    )
+    done_index = next(
+        idx
+        for idx, (query, _params) in enumerate(calls)
+        if query.strip() == turso_queue.UPDATE_POST_DONE.strip()
+    )
+    assert outbox_index < done_index
 
 
 def test_write_assertions_and_mark_done_writes_assertion_mentions(
@@ -770,6 +782,189 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
             "confidence": 0.95,
         }
     ]
+
+
+def test_write_assertions_and_mark_done_persists_entity_match_followups_before_done(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    followup_calls: list[EntityMatchResult] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            del params
+            calls.append(str(query).strip())
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    def _fake_persist(_conn, result):  # type: ignore[no-untyped-def]
+        followup_calls.append(result)
+        calls.append("__persist_entity_match_followups__")
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(
+        turso_queue,
+        "persist_entity_match_followups",
+        _fake_persist,
+        raising=False,
+    )
+
+    turso_queue.write_assertions_and_mark_done(
+        cast(Any, object()),
+        post_uid="weibo:4",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-03-28 12:00:01",
+        ai_result_json=None,
+        assertions=[
+            {
+                "topic_key": "stock:600519",
+                "speaker": "作者A",
+                "relation_to_topic": "new",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "他说开始买了。",
+                "evidence": "我今天开始买600519了",
+                "evidence_refs_json": "[]",
+                "confidence": 0.95,
+                "stock_codes_json": '["600519"]',
+                "stock_names_json": '["茅台"]',
+                "industries_json": "[]",
+                "commodities_json": "[]",
+                "indices_json": "[]",
+                "assertion_entities": [
+                    {
+                        "entity_key": "stock:600519.SH",
+                        "entity_type": "stock",
+                        "source_mention_text": "600519",
+                        "source_mention_type": "stock_code",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+        entity_match_results=[
+            EntityMatchResult(
+                entities=[],
+                relation_candidates=[
+                    {
+                        "candidate_id": "stock_alias|stock:600519.SH|stock:茅台|alias_of",
+                        "relation_type": "stock_alias",
+                        "left_key": "stock:600519.SH",
+                        "right_key": "stock:茅台",
+                        "relation_label": "alias_of",
+                        "suggestion_reason": "同条观点里代码和简称一起出现",
+                        "evidence_summary": "同条观点里代码和简称一起出现",
+                        "score": 0.9,
+                        "ai_status": "skipped",
+                    }
+                ],
+                alias_task_keys=[],
+            )
+        ],
+        outbox_source="weibo",
+        outbox_author="作者A",
+        outbox_event_json='{"event_type":"ai_done","post_uid":"weibo:4"}',
+    )
+
+    assert len(followup_calls) == 1
+    assert calls.index(INSERT_ASSERTION_ENTITY.strip()) < calls.index(
+        "__persist_entity_match_followups__"
+    )
+    assert calls.index("__persist_entity_match_followups__") < calls.index(
+        turso_queue.UPDATE_POST_DONE.strip()
+    )
+
+
+def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            del params
+            calls.append(str(query).strip())
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(
+        turso_queue,
+        "persist_entity_match_followups",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        turso_queue.write_assertions_and_mark_done(
+            cast(Any, object()),
+            post_uid="weibo:5",
+            final_status="relevant",
+            invest_score=0.9,
+            processed_at="2026-03-28 12:00:00",
+            model="m",
+            prompt_version="topic-prompt-v4",
+            archived_at="2026-03-28 12:00:01",
+            ai_result_json=None,
+            assertions=[
+                {
+                    "topic_key": "stock:600519",
+                    "speaker": "作者A",
+                    "relation_to_topic": "new",
+                    "action": "trade.buy",
+                    "action_strength": 2,
+                    "summary": "他说开始买了。",
+                    "evidence": "我今天开始买600519了",
+                    "evidence_refs_json": "[]",
+                    "confidence": 0.95,
+                    "stock_codes_json": '["600519"]',
+                    "stock_names_json": '["茅台"]',
+                    "industries_json": "[]",
+                    "commodities_json": "[]",
+                    "indices_json": "[]",
+                }
+            ],
+            entity_match_results=[
+                EntityMatchResult(
+                    entities=[],
+                    relation_candidates=[],
+                    alias_task_keys=["stock:茅台"],
+                )
+            ],
+            outbox_source="weibo",
+            outbox_author="作者A",
+            outbox_event_json='{"event_type":"ai_done","post_uid":"weibo:5"}',
+        )
+
+    assert turso_queue.UPDATE_POST_DONE.strip() not in calls
 
 
 def test_load_assertion_outbox_events_maps_rows(monkeypatch) -> None:

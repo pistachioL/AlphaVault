@@ -27,11 +27,17 @@ from .relation_repo import (
     record_stock_alias_relation,
     record_stock_sector_relation,
 )
+from .security_master_repo import (
+    get_stock_keys_by_official_names,
+    upsert_security_master_stock,
+)
+from .shadow_dict_repo import rebuild_stock_dict_shadow_best_effort
 from .schema import (
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
     RESEARCH_OBJECTS_TABLE,
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_RELATIONS_TABLE,
+    RESEARCH_SECURITY_MASTER_TABLE,
     ensure_research_workbench_schema,
 )
 from .service import get_research_workbench_engine_from_env
@@ -47,12 +53,14 @@ __all__ = [
     "RESEARCH_OBJECTS_TABLE",
     "RESEARCH_RELATION_CANDIDATES_TABLE",
     "RESEARCH_RELATIONS_TABLE",
+    "RESEARCH_SECURITY_MASTER_TABLE",
     "RELATION_LABEL_ALIAS",
     "RELATION_TYPE_STOCK_ALIAS",
     "RELATION_TYPE_STOCK_SECTOR",
     "accept_relation_candidate",
     "block_relation_candidate",
     "ensure_research_workbench_schema",
+    "get_stock_keys_by_official_names",
     "get_alias_resolve_tasks_map",
     "get_research_workbench_engine_from_env",
     "ignore_relation_candidate",
@@ -63,6 +71,8 @@ __all__ = [
     "list_pending_candidates_for_left_key",
     "record_stock_alias_relation",
     "record_stock_sector_relation",
+    "rebuild_stock_dict_shadow_best_effort",
     "set_alias_resolve_task_status",
+    "upsert_security_master_stock",
     "upsert_relation_candidate",
 ]

@@ -24,6 +24,11 @@ from alphavault.db.turso_queue import (
     write_assertions_and_mark_done,
 )
 from alphavault.domains.common.assertion_entities import build_assertion_entities
+from alphavault.domains.entity_match import (
+    EntityMatchResult,
+    load_entity_match_lookup_maps,
+    resolve_assertion_mentions,
+)
 from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.research_backfill_cache import mark_stock_backfill_dirty_from_assertions
 from alphavault.research_stock_cache import mark_stock_dirty_from_assertions
@@ -281,6 +286,62 @@ def map_topic_prompt_assertions_to_rows(
     return out
 
 
+def resolve_rows_entity_matches(
+    engine_or_conn,
+    rows_by_post_uid: dict[str, list[dict[str, object]]],
+) -> dict[str, list[EntityMatchResult]]:
+    stock_name_texts: list[str] = []
+    stock_alias_texts: list[str] = []
+    seen_stock_names: set[str] = set()
+    seen_stock_aliases: set[str] = set()
+    for rows in rows_by_post_uid.values():
+        for row in rows:
+            raw_mentions = row.get("assertion_mentions")
+            assertion_mentions = raw_mentions if isinstance(raw_mentions, list) else []
+            for item in assertion_mentions:
+                if not isinstance(item, dict):
+                    continue
+                mention_text = str(item.get("mention_text") or "").strip()
+                mention_type = str(item.get("mention_type") or "").strip()
+                if not mention_text:
+                    continue
+                if (
+                    mention_type == "stock_name"
+                    and mention_text not in seen_stock_names
+                ):
+                    seen_stock_names.add(mention_text)
+                    stock_name_texts.append(mention_text)
+                    continue
+                if (
+                    mention_type == "stock_alias"
+                    and mention_text not in seen_stock_aliases
+                ):
+                    seen_stock_aliases.add(mention_text)
+                    stock_alias_texts.append(mention_text)
+    stock_name_targets, stock_alias_targets = load_entity_match_lookup_maps(
+        engine_or_conn,
+        stock_name_texts=stock_name_texts,
+        stock_alias_texts=stock_alias_texts,
+    )
+    followups_by_post_uid: dict[str, list[EntityMatchResult]] = {}
+    for post_uid, rows in rows_by_post_uid.items():
+        post_followups: list[EntityMatchResult] = []
+        for row in rows:
+            raw_mentions = row.get("assertion_mentions")
+            assertion_mentions = raw_mentions if isinstance(raw_mentions, list) else []
+            match_result = resolve_assertion_mentions(
+                engine_or_conn,
+                assertion_mentions=assertion_mentions,
+                stock_name_targets=stock_name_targets,
+                stock_alias_targets=stock_alias_targets,
+            )
+            row["assertion_entities"] = match_result.entities
+            if match_result.relation_candidates or match_result.alias_task_keys:
+                post_followups.append(match_result)
+        followups_by_post_uid[post_uid] = post_followups
+    return followups_by_post_uid
+
+
 def process_one_post_uid_topic_prompt_v4(
     *,
     engine: TursoEngine,
@@ -495,6 +556,10 @@ def process_one_post_uid_topic_prompt_v4(
             post_uid_by_platform_post_id=post_uid_by_pid,
             max_assertions_per_post=5,
         )
+        entity_match_results_by_post_uid = resolve_rows_entity_matches(
+            engine,
+            assertions_by_post_uid,
+        )
 
         post_by_uid: dict[str, CloudPost] = {}
         platform_value = str(post.platform or "").strip() or "weibo"
@@ -569,6 +634,7 @@ def process_one_post_uid_topic_prompt_v4(
                     archived_at=archived_at,
                     ai_result_json=None,
                     assertions=rows,
+                    entity_match_results=entity_match_results_by_post_uid.get(uid, []),
                     outbox_source=str(outbox_source or "").strip(),
                     outbox_author=str(post_for_outbox.author or "").strip(),
                     outbox_event_json=json.dumps(outbox_payload, ensure_ascii=False),
@@ -671,4 +737,5 @@ def process_one_post_uid_topic_prompt_v4(
 __all__ = [
     "map_topic_prompt_assertions_to_rows",
     "process_one_post_uid_topic_prompt_v4",
+    "resolve_rows_entity_matches",
 ]

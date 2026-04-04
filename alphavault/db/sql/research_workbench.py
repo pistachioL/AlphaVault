@@ -1,6 +1,20 @@
 from __future__ import annotations
 
 
+def create_research_security_master_table(table: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {table} (
+    stock_key TEXT PRIMARY KEY,
+    market TEXT NOT NULL,
+    code TEXT NOT NULL,
+    official_name TEXT NOT NULL,
+    official_name_norm TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+
 def create_research_objects_table(table: str) -> str:
     return f"""
 CREATE TABLE IF NOT EXISTS {table} (
@@ -67,6 +81,20 @@ ON {table}(status, updated_at)
 """
 
 
+def create_research_security_master_name_index(table: str) -> str:
+    return f"""
+CREATE INDEX IF NOT EXISTS idx_{table}_official_name_norm
+ON {table}(official_name_norm)
+"""
+
+
+def create_research_security_master_code_index(table: str) -> str:
+    return f"""
+CREATE INDEX IF NOT EXISTS idx_{table}_code_market
+ON {table}(code, market)
+"""
+
+
 def create_research_object_index(table: str) -> str:
     return f"CREATE INDEX IF NOT EXISTS idx_{table}_type ON {table}(object_type)"
 
@@ -99,6 +127,35 @@ VALUES (:object_key, :object_type, :display_name, :now, :now)
 ON CONFLICT(object_key) DO UPDATE SET
     object_type = excluded.object_type,
     display_name = excluded.display_name,
+    updated_at = excluded.updated_at
+"""
+
+
+def upsert_security_master_stock(table: str) -> str:
+    return f"""
+INSERT INTO {table}(
+    stock_key,
+    market,
+    code,
+    official_name,
+    official_name_norm,
+    created_at,
+    updated_at
+)
+VALUES (
+    :stock_key,
+    :market,
+    :code,
+    :official_name,
+    :official_name_norm,
+    :now,
+    :now
+)
+ON CONFLICT(stock_key) DO UPDATE SET
+    market = excluded.market,
+    code = excluded.code,
+    official_name = excluded.official_name,
+    official_name_norm = excluded.official_name_norm,
     updated_at = excluded.updated_at
 """
 
@@ -175,6 +232,41 @@ ON CONFLICT(candidate_id) DO UPDATE SET
         ELSE excluded.status
     END,
     updated_at = excluded.updated_at
+"""
+
+
+def select_security_master_by_official_names(table: str, *, name_count: int) -> str:
+    count = max(1, int(name_count or 0))
+    placeholders = ", ".join(["?"] * count)
+    return f"""
+SELECT stock_key, official_name, official_name_norm
+FROM {table}
+WHERE official_name_norm IN ({placeholders})
+"""
+
+
+def select_security_master_by_stock_key(table: str) -> str:
+    return f"""
+SELECT official_name
+FROM {table}
+WHERE stock_key = :stock_key
+LIMIT 1
+"""
+
+
+def select_all_security_master(table: str) -> str:
+    return f"""
+SELECT stock_key, official_name, official_name_norm
+FROM {table}
+"""
+
+
+def select_all_stock_alias_relations(table: str) -> str:
+    return f"""
+SELECT left_key, right_key
+FROM {table}
+WHERE relation_type = 'stock_alias'
+  AND relation_label = 'alias_of'
 """
 
 

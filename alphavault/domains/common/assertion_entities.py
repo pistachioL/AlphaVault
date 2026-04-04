@@ -133,20 +133,6 @@ def build_assertion_entities(
         unique_stock_code_keys[0] if len(unique_stock_code_keys) == 1 else ""
     )
 
-    stock_name_values = [
-        _clean_text(item.get("mention_text"))
-        for item in cleaned_mentions
-        if str(item.get("mention_type") or "").strip() == "stock_name"
-    ]
-    unique_stock_name_values = [
-        value for value in dict.fromkeys(stock_name_values) if str(value or "").strip()
-    ]
-    single_stock_name_key = (
-        f"stock:{unique_stock_name_values[0]}"
-        if len(unique_stock_name_values) == 1
-        else ""
-    )
-
     out: list[dict[str, object]] = []
     seen: set[tuple[str, str, str, str]] = set()
     for item in cleaned_mentions:
@@ -162,11 +148,11 @@ def build_assertion_entities(
             entity_key = coerce_stock_code_entity_key(mention_text)
             entity_type = ASSERTION_ENTITY_TYPE_STOCK if entity_key else ""
         elif mention_type == "stock_name":
-            entity_key = single_stock_code_key or f"stock:{mention_text}"
-            entity_type = ASSERTION_ENTITY_TYPE_STOCK
-        elif mention_type == "stock_alias":
-            entity_key = single_stock_code_key or single_stock_name_key
+            entity_key = single_stock_code_key
             entity_type = ASSERTION_ENTITY_TYPE_STOCK if entity_key else ""
+        elif mention_type == "stock_alias":
+            entity_key = ""
+            entity_type = ""
         elif mention_type in _ENTITY_PREFIX_BY_MENTION_TYPE:
             entity_type = _ENTITY_PREFIX_BY_MENTION_TYPE[mention_type]
             entity_key = f"{entity_type}:{mention_text}"

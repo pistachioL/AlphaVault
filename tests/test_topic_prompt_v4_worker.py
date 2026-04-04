@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
+import libsql
+
+from alphavault.db.turso_db import TursoConnection
+from alphavault.domains.entity_match.resolve import EntityMatchResult
+from alphavault.research_workbench import RESEARCH_RELATION_CANDIDATES_TABLE
 from alphavault.worker.post_processor_topic_prompt_v4 import (
     map_topic_prompt_assertions_to_rows,
+    resolve_rows_entity_matches,
 )
 
 
@@ -109,13 +116,6 @@ def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_topic_ke
             "confidence": 0.95,
         },
         {
-            "entity_key": "stock:600519.SH",
-            "entity_type": "stock",
-            "source_mention_text": "茅台",
-            "source_mention_type": "stock_alias",
-            "confidence": 0.9,
-        },
-        {
             "entity_key": "industry:白酒",
             "entity_type": "industry",
             "source_mention_text": "白酒",
@@ -191,3 +191,151 @@ def test_map_topic_prompt_assertions_to_rows_supports_commodity_layer() -> None:
             "confidence": 0.7,
         },
     ]
+
+
+def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates() -> (
+    None
+):
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        rows_by_post_uid: dict[str, list[dict[str, object]]] = {
+            "weibo:1": [
+                {
+                    "assertion_mentions": cast(
+                        list[dict[str, Any]],
+                        [
+                            {
+                                "mention_text": "600519",
+                                "mention_type": "stock_code",
+                                "confidence": 0.95,
+                            },
+                            {
+                                "mention_text": "茅台",
+                                "mention_type": "stock_alias",
+                                "confidence": 0.9,
+                            },
+                        ],
+                    ),
+                    "assertion_entities": cast(
+                        list[dict[str, Any]],
+                        [
+                            {
+                                "entity_key": "stock:600519.SH",
+                                "entity_type": "stock",
+                                "source_mention_text": "茅台",
+                                "source_mention_type": "stock_alias",
+                                "confidence": 0.9,
+                            }
+                        ],
+                    ),
+                }
+            ]
+        }
+
+        followups_by_post_uid = resolve_rows_entity_matches(conn, rows_by_post_uid)
+
+        assert rows_by_post_uid["weibo:1"][0]["assertion_entities"] == [
+            {
+                "entity_key": "stock:600519.SH",
+                "entity_type": "stock",
+                "source_mention_text": "600519",
+                "source_mention_type": "stock_code",
+                "confidence": 0.95,
+            }
+        ]
+        followups = followups_by_post_uid["weibo:1"]
+        assert len(followups) == 1
+        assert followups[0].relation_candidates == [
+            {
+                "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
+                "relation_type": "stock_alias",
+                "left_key": "stock:600519.SH",
+                "right_key": "stock:茅台",
+                "relation_label": "alias_of",
+                "suggestion_reason": "同条观点里代码和简称一起出现",
+                "evidence_summary": "同条观点里代码和简称一起出现",
+                "score": 0.9,
+                "ai_status": "skipped",
+            }
+        ]
+        assert followups[0].alias_task_keys == []
+        candidate_rows = (
+            conn.execute(
+                f"""
+SELECT left_key, right_key, relation_type
+FROM {RESEARCH_RELATION_CANDIDATES_TABLE}
+ORDER BY candidate_id
+"""
+            )
+            .mappings()
+            .all()
+        )
+        assert candidate_rows == []
+    finally:
+        conn.close()
+
+
+def test_resolve_rows_entity_matches_prefetches_thread_lookups_once(
+    monkeypatch,
+) -> None:
+    from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
+
+    load_calls: list[tuple[list[str], list[str]]] = []
+    resolve_calls: list[tuple[dict[str, str] | None, dict[str, str] | None]] = []
+
+    def _fake_load_entity_match_lookup_maps(
+        _engine_or_conn,
+        *,
+        stock_name_texts: list[str],
+        stock_alias_texts: list[str],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        load_calls.append((list(stock_name_texts), list(stock_alias_texts)))
+        return (
+            {"贵州茅台": "stock:600519.SH"},
+            {"茅台": "stock:600519.SH"},
+        )
+
+    monkeypatch.setattr(
+        worker_module,
+        "load_entity_match_lookup_maps",
+        _fake_load_entity_match_lookup_maps,
+        raising=False,
+    )
+
+    def _fake_resolve(
+        _engine_or_conn,
+        *,
+        assertion_mentions,
+        stock_name_targets=None,
+        stock_alias_targets=None,
+    ) -> EntityMatchResult:
+        del assertion_mentions
+        resolve_calls.append((stock_name_targets, stock_alias_targets))
+        return EntityMatchResult([], [], [])
+
+    monkeypatch.setattr(worker_module, "resolve_assertion_mentions", _fake_resolve)
+
+    rows_by_post_uid: dict[str, list[dict[str, object]]] = {
+        "weibo:1": [
+            {
+                "assertion_mentions": [
+                    {"mention_text": "贵州茅台", "mention_type": "stock_name"},
+                    {"mention_text": "茅台", "mention_type": "stock_alias"},
+                ]
+            },
+            {
+                "assertion_mentions": [
+                    {"mention_text": "茅台", "mention_type": "stock_alias"}
+                ]
+            },
+        ]
+    }
+
+    followups_by_post_uid = resolve_rows_entity_matches(object(), rows_by_post_uid)
+
+    assert load_calls == [(["贵州茅台"], ["茅台"])]
+    assert resolve_calls == [
+        ({"贵州茅台": "stock:600519.SH"}, {"茅台": "stock:600519.SH"}),
+        ({"贵州茅台": "stock:600519.SH"}, {"茅台": "stock:600519.SH"}),
+    ]
+    assert followups_by_post_uid == {"weibo:1": []}

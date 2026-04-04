@@ -6,6 +6,9 @@ from alphavault.db.sql.research_workbench import (
 )
 from alphavault.db.turso_db import TursoConnection, TursoEngine
 from alphavault.db.turso_db import turso_savepoint
+from alphavault.infra.entity_match_redis import (
+    sync_stock_alias_shadow_dict_best_effort,
+)
 from alphavault.timeutil import now_cst_str
 from alphavault.domains.relation.ids import make_relation_id
 
@@ -130,6 +133,13 @@ def record_stock_alias_relation(
                 )
     except BaseException as err:
         handle_turso_error(engine_or_conn, err)
+    try:
+        sync_stock_alias_shadow_dict_best_effort(
+            stock_key=stock_key,
+            alias_key=alias_key,
+        )
+    except Exception:
+        pass
 
 
 __all__ = [

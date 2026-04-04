@@ -9,6 +9,9 @@ from alphavault.db.sql.research_workbench import (
     create_research_alias_resolve_tasks_table,
     create_research_object_index,
     create_research_objects_table,
+    create_research_security_master_code_index,
+    create_research_security_master_name_index,
+    create_research_security_master_table,
     create_research_relation_candidate_index,
     create_research_relation_candidate_left_key_index,
     create_research_relation_candidates_table,
@@ -23,6 +26,7 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
 )
 
+RESEARCH_SECURITY_MASTER_TABLE = "security_master"
 RESEARCH_OBJECTS_TABLE = "research_objects"
 RESEARCH_RELATIONS_TABLE = "research_relations"
 RESEARCH_RELATION_CANDIDATES_TABLE = "research_relation_candidates"
@@ -85,6 +89,9 @@ def handle_turso_error(
 
 def run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
     with use_conn(engine_or_conn) as conn:
+        conn.execute(
+            create_research_security_master_table(RESEARCH_SECURITY_MASTER_TABLE)
+        )
         conn.execute(create_research_objects_table(RESEARCH_OBJECTS_TABLE))
         conn.execute(create_research_relations_table(RESEARCH_RELATIONS_TABLE))
         conn.execute(
@@ -96,6 +103,12 @@ def run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
             create_research_alias_resolve_tasks_table(
                 RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
             )
+        )
+        conn.execute(
+            create_research_security_master_name_index(RESEARCH_SECURITY_MASTER_TABLE)
+        )
+        conn.execute(
+            create_research_security_master_code_index(RESEARCH_SECURITY_MASTER_TABLE)
         )
         conn.execute(create_research_object_index(RESEARCH_OBJECTS_TABLE))
         conn.execute(create_research_relation_index(RESEARCH_RELATIONS_TABLE))
@@ -159,6 +172,7 @@ __all__ = [
     "RESEARCH_OBJECTS_TABLE",
     "RESEARCH_RELATION_CANDIDATES_TABLE",
     "RESEARCH_RELATIONS_TABLE",
+    "RESEARCH_SECURITY_MASTER_TABLE",
     "clear_schema_ready",
     "ensure_research_workbench_schema",
     "handle_turso_error",

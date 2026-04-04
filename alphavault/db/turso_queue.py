@@ -10,7 +10,7 @@ This module treats Turso (libsql) as the single source of truth for:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional
 
 from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
@@ -52,6 +52,9 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
     turso_savepoint,
 )
+
+if TYPE_CHECKING:
+    from alphavault.domains.entity_match.resolve import EntityMatchResult
 
 
 AI_STATUS_PENDING = "pending"
@@ -95,6 +98,16 @@ class AssertionOutboxEvent:
     author: str
     event_json: str
     created_at: str
+
+
+def persist_entity_match_followups(
+    conn: TursoConnection, result: "EntityMatchResult"
+) -> None:
+    from alphavault.domains.entity_match.resolve import (
+        persist_entity_match_followups as persist_followups,
+    )
+
+    persist_followups(conn, result)
 
 
 def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
@@ -423,6 +436,7 @@ def write_assertions_and_mark_done(
     archived_at: str,
     ai_result_json: Optional[str],
     assertions: Iterable[Dict[str, Any]],
+    entity_match_results: Iterable["EntityMatchResult"] | None = None,
     outbox_source: str = "",
     outbox_author: str = "",
     outbox_event_json: Optional[str] = None,
@@ -430,8 +444,10 @@ def write_assertions_and_mark_done(
     """
     Commit AI outputs in a single atomic unit, without DBAPI commit/rollback.
     - overwrite assertions for post_uid
+    - persist entity-match followups
     - mark posts row as done
     """
+    resolved_entity_match_results = list(entity_match_results or [])
     with turso_connect_autocommit(engine) as conn:
         with turso_savepoint(conn):
             conn.execute(DELETE_ASSERTION_ENTITIES_BY_POST_UID, {"post_uid": post_uid})
@@ -516,7 +532,21 @@ def write_assertions_and_mark_done(
                 conn.execute(INSERT_ASSERTION_MENTION, mention_payloads)
             if entity_payloads:
                 conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
+            for match_result in resolved_entity_match_results:
+                persist_entity_match_followups(conn, match_result)
 
+            resolved_event_json = str(outbox_event_json or "").strip()
+            if resolved_event_json:
+                conn.execute(
+                    INSERT_ASSERTION_OUTBOX,
+                    {
+                        "source": str(outbox_source or "").strip(),
+                        "post_uid": str(post_uid or "").strip(),
+                        "author": str(outbox_author or "").strip(),
+                        "event_json": resolved_event_json,
+                        "created_at": str(processed_at or "").strip(),
+                    },
+                )
             conn.execute(
                 UPDATE_POST_DONE,
                 {
@@ -530,18 +560,6 @@ def write_assertions_and_mark_done(
                     "ai_result_json": ai_result_json,
                 },
             )
-            resolved_event_json = str(outbox_event_json or "").strip()
-            if resolved_event_json:
-                conn.execute(
-                    INSERT_ASSERTION_OUTBOX,
-                    {
-                        "source": str(outbox_source or "").strip(),
-                        "post_uid": str(post_uid or "").strip(),
-                        "author": str(outbox_author or "").strip(),
-                        "event_json": resolved_event_json,
-                        "created_at": str(processed_at or "").strip(),
-                    },
-                )
 
 
 def mark_ai_error(
