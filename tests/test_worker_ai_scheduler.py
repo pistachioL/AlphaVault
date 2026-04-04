@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 
 from alphavault.worker import ai_processor as ai_processor_module
-from alphavault.worker import assertion_outbox as assertion_outbox_module
 from alphavault.worker import periodic_jobs as periodic_jobs_module
 from alphavault.worker import runtime_cache as runtime_cache_module
 from alphavault.worker import scheduler as scheduler_module
@@ -279,107 +278,18 @@ def test_schedule_ai_prefers_redis_queue_when_available(tmp_path) -> None:
     assert called["spool_dir"] == tmp_path
 
 
-def test_pump_assertion_outbox_skips_turso_read_when_queue_is_nearly_full(
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "redis_assertion_get_cursor",
-        lambda *_args, **_kwargs: 7,
-    )
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "redis_assertion_event_count",
-        lambda *_args, **_kwargs: 80,
-    )
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "resolve_redis_assertion_queue_maxlen",
-        lambda: 100,
-    )
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "load_assertion_outbox_events",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("queue is sufficiently full, should skip turso read")
-        ),
-    )
-
-    pushed, has_error = assertion_outbox_module.pump_assertion_outbox_to_redis(
-        engine=object(),  # type: ignore[arg-type]
-        redis_client=object(),
-        redis_queue_key="queue",
-        verbose=False,
-    )
-
-    assert has_error is False
-    assert pushed == 0
-
-
-def test_pump_assertion_outbox_reads_turso_when_queue_not_full(monkeypatch) -> None:
-    cursor_state = {"saved": 0}
-
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "redis_assertion_get_cursor",
-        lambda *_args, **_kwargs: 7,
-    )
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "redis_assertion_event_count",
-        lambda *_args, **_kwargs: 79,
-    )
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "resolve_redis_assertion_queue_maxlen",
-        lambda: 100,
-    )
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "load_assertion_outbox_events",
-        lambda *_args, **_kwargs: [
-            SimpleNamespace(
-                id=9,
-                post_uid="weibo:9",
-                author="作者C",
-                event_json='{"event_type":"ai_done","post_uid":"weibo:9"}',
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        assertion_outbox_module,
-        "redis_assertion_push_event",
-        lambda *_args, **_kwargs: True,
-    )
-
-    def _save_cursor(_client, _key: str, *, cursor: int) -> None:  # type: ignore[no-untyped-def]
-        cursor_state["saved"] = int(cursor)
-
-    monkeypatch.setattr(
-        assertion_outbox_module, "redis_assertion_set_cursor", _save_cursor
-    )
-
-    pushed, has_error = assertion_outbox_module.pump_assertion_outbox_to_redis(
-        engine=object(),  # type: ignore[arg-type]
-        redis_client=object(),
-        redis_queue_key="queue",
-        verbose=False,
-    )
-
-    assert has_error is False
-    assert pushed == 1
-    assert cursor_state["saved"] == 9
-
-
-def test_process_one_redis_payload_skips_turso_recent_load_on_cache_hit(
+def test_process_one_redis_payload_skips_turso_recent_load_on_local_cache_hit(
     tmp_path,
 ) -> None:
     load_calls: list[str] = []
     ack_calls: list[str] = []
     cache = AuthorRecentLocalCache()
-
-    def _load_state(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        return ([{"post_uid": "weibo:hist"}], False)
+    cache.set(
+        queue_key="queue",
+        author="作者A",
+        rows=[{"post_uid": "weibo:hist"}],
+        marked_empty=False,
+    )
 
     def _should_not_load_recent_posts(*_args, **_kwargs) -> list[dict[str, object]]:
         load_calls.append("called")
@@ -412,13 +322,9 @@ def test_process_one_redis_payload_skips_turso_recent_load_on_cache_hit(
         ),
         author_recent_local_cache_get_fn=cache.get,
         author_recent_local_cache_set_fn=cache.set,
-        redis_author_recent_load_state_fn=_load_state,
         load_recent_posts_by_author_fn=_should_not_load_recent_posts,
-        redis_author_recent_push_many_fn=lambda *_args, **_kwargs: 0,
-        redis_author_recent_mark_empty_fn=lambda *_args, **_kwargs: True,
         try_mark_ai_running_fn=lambda *_args, **_kwargs: True,
         process_one_post_uid_fn=lambda **_kwargs: True,
-        redis_author_recent_push_fn=lambda *_args, **_kwargs: True,
         redis_ai_ack_and_cleanup_fn=_ack_and_cleanup,
         redis_ai_push_delayed_fn=lambda *_args, **_kwargs: None,
         redis_ai_ack_processing_fn=lambda *_args, **_kwargs: None,
@@ -434,15 +340,16 @@ def test_process_one_redis_payload_skips_turso_recent_load_on_cache_hit(
     assert ack_calls == ["acked"]
 
 
-def test_process_one_redis_payload_marks_empty_author_cache_on_first_miss(
+def test_process_one_redis_payload_marks_empty_local_cache_on_first_miss(
     tmp_path,
 ) -> None:
-    empty_mark_calls: list[str] = []
+    load_calls: list[str] = []
+    ack_calls: list[str] = []
     cache = AuthorRecentLocalCache()
 
-    def _mark_empty(*_args, **kwargs) -> bool:  # type: ignore[no-untyped-def]
-        empty_mark_calls.append(str(kwargs.get("author") or ""))
-        return True
+    def _load_recent_posts(*_args, **kwargs) -> list[dict[str, object]]:
+        load_calls.append(str(kwargs.get("author") or ""))
+        return []
 
     ai_processor_module.process_one_redis_payload(
         engine=object(),
@@ -467,16 +374,12 @@ def test_process_one_redis_payload_marks_empty_author_cache_on_first_miss(
         ),
         author_recent_local_cache_get_fn=cache.get,
         author_recent_local_cache_set_fn=cache.set,
-        redis_author_recent_load_state_fn=lambda *_args, **_kwargs: ([], False),
-        load_recent_posts_by_author_fn=lambda *_args, **_kwargs: [],
-        redis_author_recent_push_many_fn=lambda *_args, **_kwargs: 0,
-        redis_author_recent_mark_empty_fn=_mark_empty,
-        try_mark_ai_running_fn=lambda *_args, **_kwargs: True,
+        load_recent_posts_by_author_fn=_load_recent_posts,
+        try_mark_ai_running_fn=lambda *_args, **_kwargs: False,
         process_one_post_uid_fn=lambda **_kwargs: True,
-        redis_author_recent_push_fn=lambda *_args, **_kwargs: True,
         redis_ai_ack_and_cleanup_fn=lambda *_args, **_kwargs: True,
         redis_ai_push_delayed_fn=lambda *_args, **_kwargs: None,
-        redis_ai_ack_processing_fn=lambda *_args, **_kwargs: None,
+        redis_ai_ack_processing_fn=lambda *_args, **_kwargs: ack_calls.append("ack"),
         payload_retry_count_fn=lambda _payload: 0,
         build_author_recent_payload_fn=ai_processor_module.build_author_recent_payload,
         backoff_seconds_fn=lambda _count: 1,
@@ -485,20 +388,18 @@ def test_process_one_redis_payload_marks_empty_author_cache_on_first_miss(
         author_recent_context_limit=200,
     )
 
-    assert empty_mark_calls == ["作者B"]
+    rows, marked_empty, hit = cache.get(queue_key="queue", author="作者B")
+    assert load_calls == ["作者B"]
+    assert ack_calls == ["ack"]
+    assert rows == []
+    assert marked_empty is True
+    assert hit is True
 
 
-def test_process_one_redis_payload_only_writes_final_author_cache_status(
+def test_process_one_redis_payload_only_keeps_final_author_cache_status(
     tmp_path,
 ) -> None:
-    pushed_statuses: list[str] = []
     cache = AuthorRecentLocalCache()
-
-    def _push_author_recent(*_args, **kwargs) -> bool:  # type: ignore[no-untyped-def]
-        payload = kwargs.get("payload")
-        if isinstance(payload, dict):
-            pushed_statuses.append(str(payload.get("ai_status") or ""))
-        return True
 
     ai_processor_module.process_one_redis_payload(
         engine=object(),
@@ -523,16 +424,11 @@ def test_process_one_redis_payload_only_writes_final_author_cache_status(
         ),
         author_recent_local_cache_get_fn=cache.get,
         author_recent_local_cache_set_fn=cache.set,
-        redis_author_recent_load_state_fn=lambda *_args, **_kwargs: (
-            [{"post_uid": "weibo:hist"}],
-            False,
-        ),
-        load_recent_posts_by_author_fn=lambda *_args, **_kwargs: [],
-        redis_author_recent_push_many_fn=lambda *_args, **_kwargs: 0,
-        redis_author_recent_mark_empty_fn=lambda *_args, **_kwargs: True,
+        load_recent_posts_by_author_fn=lambda *_args, **_kwargs: [
+            {"post_uid": "weibo:hist", "author": "作者C"}
+        ],
         try_mark_ai_running_fn=lambda *_args, **_kwargs: True,
         process_one_post_uid_fn=lambda **_kwargs: True,
-        redis_author_recent_push_fn=_push_author_recent,
         redis_ai_ack_and_cleanup_fn=lambda *_args, **_kwargs: True,
         redis_ai_push_delayed_fn=lambda *_args, **_kwargs: None,
         redis_ai_ack_processing_fn=lambda *_args, **_kwargs: None,
@@ -544,19 +440,24 @@ def test_process_one_redis_payload_only_writes_final_author_cache_status(
         author_recent_context_limit=200,
     )
 
-    assert pushed_statuses == ["done"]
+    rows, marked_empty, hit = cache.get(queue_key="queue", author="作者C")
+    assert hit is True
+    assert marked_empty is False
+    assert len(rows) == 1
+    assert rows[0]["post_uid"] == "weibo:3"
+    assert rows[0]["ai_status"] == "done"
 
 
-def test_process_one_redis_payload_reuses_local_author_cache_to_skip_redis_load(
+def test_process_one_redis_payload_reuses_local_author_cache_to_skip_turso_load(
     tmp_path,
 ) -> None:
-    load_state_calls: list[str] = []
+    load_recent_calls: list[str] = []
     ack_calls: list[str] = []
     cache = AuthorRecentLocalCache()
 
-    def _load_state(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        load_state_calls.append("load")
-        return ([{"post_uid": "weibo:hist"}], False)
+    def _load_recent_posts(*_args, **_kwargs) -> list[dict[str, object]]:
+        load_recent_calls.append("load")
+        return [{"post_uid": "weibo:hist"}]
 
     def _ack_and_cleanup(*_args, **_kwargs) -> bool:  # type: ignore[no-untyped-def]
         ack_calls.append("acked")
@@ -586,13 +487,9 @@ def test_process_one_redis_payload_reuses_local_author_cache_to_skip_redis_load(
             ),
             author_recent_local_cache_get_fn=cache.get,
             author_recent_local_cache_set_fn=cache.set,
-            redis_author_recent_load_state_fn=_load_state,
-            load_recent_posts_by_author_fn=lambda *_args, **_kwargs: [],
-            redis_author_recent_push_many_fn=lambda *_args, **_kwargs: 0,
-            redis_author_recent_mark_empty_fn=lambda *_args, **_kwargs: True,
+            load_recent_posts_by_author_fn=_load_recent_posts,
             try_mark_ai_running_fn=lambda *_args, **_kwargs: True,
             process_one_post_uid_fn=lambda **_kwargs: True,
-            redis_author_recent_push_fn=lambda *_args, **_kwargs: True,
             redis_ai_ack_and_cleanup_fn=_ack_and_cleanup,
             redis_ai_push_delayed_fn=lambda *_args, **_kwargs: None,
             redis_ai_ack_processing_fn=lambda *_args, **_kwargs: None,
@@ -607,5 +504,5 @@ def test_process_one_redis_payload_reuses_local_author_cache_to_skip_redis_load(
     _run_once(msg="msg-4a")
     _run_once(msg="msg-4b")
 
-    assert load_state_calls == ["load"]
+    assert load_recent_calls == ["load"]
     assert ack_calls == ["acked", "acked"]

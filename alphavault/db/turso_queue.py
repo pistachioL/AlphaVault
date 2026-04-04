@@ -31,12 +31,15 @@ from alphavault.db.sql.turso_queue import (
     RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM,
     RECOVER_STUCK_AI_TASKS,
     RECOVER_STUCK_AI_TASKS_BY_PLATFORM,
+    SELECT_POST_PROCESSED_AT,
     RESET_AI_RESULTS_ALL,
     SELECT_CLOUD_POST,
     SELECT_ASSERTION_OUTBOX_AFTER_ID,
     SELECT_DUE_POST_UIDS,
     SELECT_DUE_POST_UIDS_BY_PLATFORM,
     SELECT_RECENT_POSTS_BY_AUTHOR,
+    SELECT_UNPROCESSED_POST_QUEUE_ROWS,
+    SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM,
     TRY_MARK_AI_RUNNING,
     UPDATE_POST_DONE,
     UPSERT_PENDING_POST,
@@ -299,6 +302,20 @@ def load_cloud_post(engine: TursoEngine, post_uid: str) -> CloudPost:
         )
 
 
+def load_post_processed_at(conn: TursoConnection, *, post_uid: str) -> str | None:
+    row = (
+        conn.execute(
+            SELECT_POST_PROCESSED_AT,
+            {"post_uid": str(post_uid or "").strip()},
+        )
+        .mappings()
+        .fetchone()
+    )
+    if not row:
+        return None
+    return str(row.get("processed_at") or "")
+
+
 def load_recent_posts_by_author(
     engine: TursoEngine,
     *,
@@ -324,6 +341,26 @@ def load_recent_posts_by_author(
             .mappings()
             .fetchall()
         )
+        return [dict(r) for r in rows if r]
+
+
+def load_unprocessed_post_queue_rows(
+    engine: TursoEngine,
+    *,
+    limit: int,
+    platform: Optional[str] = None,
+) -> list[dict[str, object]]:
+    resolved_platform = str(platform or "").strip().lower() or None
+    query = (
+        SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM
+        if resolved_platform
+        else SELECT_UNPROCESSED_POST_QUEUE_ROWS
+    )
+    params: dict[str, object] = {"limit": max(0, int(limit))}
+    if resolved_platform:
+        params["platform"] = resolved_platform
+    with turso_connect_autocommit(engine) as conn:
+        rows = conn.execute(query, params).mappings().fetchall()
         return [dict(r) for r in rows if r]
 
 

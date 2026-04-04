@@ -91,6 +91,51 @@ def test_record_stock_sector_relation_and_pending_candidates() -> None:
         conn.close()
 
 
+def test_workbench_schema_uses_target_tables_without_objects() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+        table_names = {
+            str(row["name"])
+            for row in conn.execute(
+                """
+SELECT name
+FROM sqlite_schema
+WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+"""
+            )
+            .mappings()
+            .all()
+        }
+
+        assert table_names == {
+            "alias_resolve_tasks",
+            "relation_candidates",
+            "relations",
+            "security_master",
+        }
+
+        record_stock_sector_relation(
+            conn,
+            stock_key="stock:600519.SH",
+            sector_key="cluster:white_liquor",
+            source="manual",
+        )
+        relation_rows = (
+            conn.execute(f"SELECT left_key, right_key FROM {RESEARCH_RELATIONS_TABLE}")
+            .mappings()
+            .all()
+        )
+        assert relation_rows == [
+            {
+                "left_key": "stock:600519.SH",
+                "right_key": "cluster:white_liquor",
+            }
+        ]
+    finally:
+        conn.close()
+
+
 def test_record_stock_alias_relation_writes_alias_of_relation() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:

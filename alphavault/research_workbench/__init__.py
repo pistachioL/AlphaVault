@@ -34,7 +34,6 @@ from .security_master_repo import (
 from .shadow_dict_repo import rebuild_stock_dict_shadow_best_effort
 from .schema import (
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
-    RESEARCH_OBJECTS_TABLE,
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
@@ -50,7 +49,6 @@ __all__ = [
     "ALIAS_TASK_STATUS_RESOLVED",
     "AliasResolveTaskInfo",
     "RESEARCH_ALIAS_RESOLVE_TASKS_TABLE",
-    "RESEARCH_OBJECTS_TABLE",
     "RESEARCH_RELATION_CANDIDATES_TABLE",
     "RESEARCH_RELATIONS_TABLE",
     "RESEARCH_SECURITY_MASTER_TABLE",

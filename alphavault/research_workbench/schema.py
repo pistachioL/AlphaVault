@@ -7,8 +7,6 @@ from typing import Iterator
 from alphavault.db.sql.research_workbench import (
     create_research_alias_resolve_tasks_index,
     create_research_alias_resolve_tasks_table,
-    create_research_object_index,
-    create_research_objects_table,
     create_research_security_master_code_index,
     create_research_security_master_name_index,
     create_research_security_master_table,
@@ -27,10 +25,9 @@ from alphavault.db.turso_db import (
 )
 
 RESEARCH_SECURITY_MASTER_TABLE = "security_master"
-RESEARCH_OBJECTS_TABLE = "research_objects"
-RESEARCH_RELATIONS_TABLE = "research_relations"
-RESEARCH_RELATION_CANDIDATES_TABLE = "research_relation_candidates"
-RESEARCH_ALIAS_RESOLVE_TASKS_TABLE = "research_alias_resolve_tasks"
+RESEARCH_RELATIONS_TABLE = "relations"
+RESEARCH_RELATION_CANDIDATES_TABLE = "relation_candidates"
+RESEARCH_ALIAS_RESOLVE_TASKS_TABLE = "alias_resolve_tasks"
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _SCHEMA_READY_LOCK = threading.RLock()
@@ -92,7 +89,6 @@ def run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
         conn.execute(
             create_research_security_master_table(RESEARCH_SECURITY_MASTER_TABLE)
         )
-        conn.execute(create_research_objects_table(RESEARCH_OBJECTS_TABLE))
         conn.execute(create_research_relations_table(RESEARCH_RELATIONS_TABLE))
         conn.execute(
             create_research_relation_candidates_table(
@@ -110,7 +106,6 @@ def run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
         conn.execute(
             create_research_security_master_code_index(RESEARCH_SECURITY_MASTER_TABLE)
         )
-        conn.execute(create_research_object_index(RESEARCH_OBJECTS_TABLE))
         conn.execute(create_research_relation_index(RESEARCH_RELATIONS_TABLE))
         conn.execute(
             create_research_relation_candidate_index(RESEARCH_RELATION_CANDIDATES_TABLE)
@@ -169,7 +164,6 @@ def ensure_research_workbench_schema(
 
 __all__ = [
     "RESEARCH_ALIAS_RESOLVE_TASKS_TABLE",
-    "RESEARCH_OBJECTS_TABLE",
     "RESEARCH_RELATION_CANDIDATES_TABLE",
     "RESEARCH_RELATIONS_TABLE",
     "RESEARCH_SECURITY_MASTER_TABLE",

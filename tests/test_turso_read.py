@@ -3,7 +3,9 @@ from __future__ import annotations
 import pandas as pd
 
 from alphavault.db.turso_env import TursoSource
+from alphavault.homework_trade_feed import HOMEWORK_DEFAULT_VIEW_KEY
 from alphavault_reflex.services import trade_board_loader
+from alphavault_reflex.services import turso_read
 
 
 def test_resolve_homework_source_workers_uses_default_when_env_missing(
@@ -237,3 +239,64 @@ def test_load_homework_board_payload_from_env_serial_parallel_same(
         str(item).strip()
         for item in parallel_relations.get("source", pd.Series(dtype=str)).tolist()
     }
+
+
+def test_load_homework_trade_feed_from_env_uses_workbench_engine(monkeypatch) -> None:
+    fake_engine = object()
+    seen: list[object] = []
+
+    def _fake_load_homework_trade_feed(engine, *, view_key):  # type: ignore[no-untyped-def]
+        seen.extend([engine, view_key])
+        return {"rows": [{"topic": "stock:600519.SH"}]}
+
+    monkeypatch.setattr(
+        turso_read,
+        "get_research_workbench_engine_from_env",
+        lambda: fake_engine,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        turso_read,
+        "load_homework_trade_feed",
+        _fake_load_homework_trade_feed,
+        raising=False,
+    )
+
+    payload = turso_read.load_homework_trade_feed_from_env()
+
+    assert payload == {"rows": [{"topic": "stock:600519.SH"}]}
+    assert seen == [fake_engine, HOMEWORK_DEFAULT_VIEW_KEY]
+
+
+def test_save_homework_trade_feed_from_env_uses_workbench_engine(monkeypatch) -> None:
+    fake_engine = object()
+    seen: list[object] = []
+
+    monkeypatch.setattr(
+        turso_read,
+        "get_research_workbench_engine_from_env",
+        lambda: fake_engine,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        turso_read,
+        "save_homework_trade_feed",
+        lambda engine, **kwargs: seen.extend([engine, kwargs]),
+        raising=False,
+    )
+
+    turso_read.save_homework_trade_feed_from_env(
+        caption="窗口：最近 3 天",
+        used_window_days=3,
+        rows=[{"topic": "stock:600519.SH"}],
+    )
+
+    assert seen == [
+        fake_engine,
+        {
+            "view_key": HOMEWORK_DEFAULT_VIEW_KEY,
+            "caption": "窗口：最近 3 天",
+            "used_window_days": 3,
+            "rows": [{"topic": "stock:600519.SH"}],
+        },
+    ]

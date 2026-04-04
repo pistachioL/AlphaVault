@@ -73,13 +73,9 @@ def process_one_redis_payload(
         ..., tuple[list[dict[str, Any]], bool, bool]
     ],
     author_recent_local_cache_set_fn: Callable[..., None],
-    redis_author_recent_load_state_fn: Callable[..., tuple[list[dict[str, Any]], bool]],
     load_recent_posts_by_author_fn: Callable[..., list[dict[str, Any]]],
-    redis_author_recent_push_many_fn: Callable[..., int],
-    redis_author_recent_mark_empty_fn: Callable[..., bool],
     try_mark_ai_running_fn: Callable[..., bool],
     process_one_post_uid_fn: Callable[..., bool],
-    redis_author_recent_push_fn: Callable[..., bool],
     redis_ai_ack_and_cleanup_fn: Callable[..., bool],
     redis_ai_push_delayed_fn: Callable[..., None],
     redis_ai_ack_processing_fn: Callable[..., None],
@@ -108,27 +104,6 @@ def process_one_redis_payload(
     if local_hit:
         prefetched_recent = list(local_rows)
         has_recent_cache = bool(prefetched_recent) or bool(local_marked_empty)
-    else:
-        try:
-            cached_rows, marked_empty = redis_author_recent_load_state_fn(
-                redis_client,
-                redis_queue_key,
-                author=resolved_author,
-                limit=int(author_recent_context_limit),
-            )
-            prefetched_recent = [row for row in cached_rows if isinstance(row, dict)]
-            has_recent_cache = bool(prefetched_recent) or bool(marked_empty)
-            author_recent_local_cache_set_fn(
-                queue_key=str(redis_queue_key or "").strip(),
-                author=resolved_author,
-                rows=list(prefetched_recent),
-                marked_empty=bool(marked_empty),
-            )
-        except BaseException as err:
-            if isinstance(err, fatal_exceptions):
-                raise
-            prefetched_recent = []
-            has_recent_cache = False
     if not has_recent_cache:
         try:
             prefetched_recent = load_recent_posts_by_author_fn(
@@ -136,31 +111,12 @@ def process_one_redis_payload(
                 author=resolved_author,
                 limit=int(author_recent_context_limit),
             )
-            if prefetched_recent:
-                redis_author_recent_push_many_fn(
-                    redis_client,
-                    redis_queue_key,
-                    author=resolved_author,
-                    rows=list(prefetched_recent),
-                )
-                author_recent_local_cache_set_fn(
-                    queue_key=str(redis_queue_key or "").strip(),
-                    author=resolved_author,
-                    rows=list(prefetched_recent),
-                    marked_empty=False,
-                )
-            else:
-                redis_author_recent_mark_empty_fn(
-                    redis_client,
-                    redis_queue_key,
-                    author=resolved_author,
-                )
-                author_recent_local_cache_set_fn(
-                    queue_key=str(redis_queue_key or "").strip(),
-                    author=resolved_author,
-                    rows=[],
-                    marked_empty=True,
-                )
+            author_recent_local_cache_set_fn(
+                queue_key=str(redis_queue_key or "").strip(),
+                author=resolved_author,
+                rows=list(prefetched_recent),
+                marked_empty=not bool(prefetched_recent),
+            )
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
@@ -196,11 +152,6 @@ def process_one_redis_payload(
                 max(1, int(getattr(cloud_post, "ai_retry_count", 1) or 1))
             ),
         )
-        redis_author_recent_push_fn(
-            redis_client,
-            redis_queue_key,
-            payload=done_payload,
-        )
         author_recent_local_cache_set_fn(
             queue_key=str(redis_queue_key or "").strip(),
             author=resolved_author,
@@ -226,11 +177,6 @@ def process_one_redis_payload(
         post=cloud_post,
         ai_status="error",
         ai_retry_count=int(retry_count),
-    )
-    redis_author_recent_push_fn(
-        redis_client,
-        redis_queue_key,
-        payload=error_payload,
     )
     author_recent_local_cache_set_fn(
         queue_key=str(redis_queue_key or "").strip(),

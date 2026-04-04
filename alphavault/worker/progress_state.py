@@ -13,7 +13,6 @@ from alphavault.worker.job_state import (
 )
 from alphavault.worker.redis_queue import (
     redis_ai_due_count,
-    redis_assertion_event_count,
 )
 from alphavault.worker.turso_runtime import (
     maybe_dispose_turso_engine_on_transient_error,
@@ -116,29 +115,7 @@ def has_due_ai_posts(
         return False
 
 
-def has_pending_assertion_events(
-    *,
-    redis_client,
-    redis_queue_key: str,
-    verbose: bool,
-) -> bool:
-    if not redis_client or not str(redis_queue_key or "").strip():
-        return False
-    try:
-        return bool(redis_assertion_event_count(redis_client, redis_queue_key))
-    except BaseException as err:
-        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-            raise
-        if verbose:
-            print(
-                f"[assertion_evt] count_error {type(err).__name__}: {err}",
-                flush=True,
-            )
-        return False
-
-
 __all__ = [
     "has_due_ai_posts",
-    "has_pending_assertion_events",
     "save_worker_progress_state",
 ]

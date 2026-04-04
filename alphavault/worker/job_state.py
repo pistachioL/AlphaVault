@@ -20,8 +20,8 @@ _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 ENV_WORKER_JOB_STATE_ASSUME_SCHEMA_READY = "WORKER_JOB_STATE_ASSUME_SCHEMA_READY"
 
 
-WORKER_STATE_TABLE = "research_worker_state"
-WORKER_LOCKS_TABLE = "research_worker_locks"
+WORKER_STATE_TABLE = "worker_cursor"
+WORKER_LOCKS_TABLE = "worker_locks"
 WORKER_PROGRESS_STATE_PREFIX = "worker.progress"
 WORKER_PROGRESS_STAGE_CYCLE = "cycle"
 WORKER_PROGRESS_STAGE_AI = "ai"

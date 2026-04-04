@@ -1,7 +1,32 @@
 from __future__ import annotations
 
+import libsql
+
+from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_db import TursoEngine
 from alphavault.worker import job_state
+
+
+def test_ensure_worker_job_state_schema_uses_target_tables() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        job_state.ensure_worker_job_state_schema(conn)
+        table_names = {
+            str(row["name"])
+            for row in conn.execute(
+                """
+SELECT name
+FROM sqlite_schema
+WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+"""
+            )
+            .mappings()
+            .all()
+        }
+    finally:
+        conn.close()
+
+    assert table_names == {"worker_cursor", "worker_locks"}
 
 
 def test_ensure_schema_once_runs_once_per_process(monkeypatch) -> None:

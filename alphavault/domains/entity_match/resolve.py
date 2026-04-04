@@ -14,6 +14,7 @@ from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
     ALIAS_TASK_STATUS_PENDING,
     ALIAS_TASK_STATUS_RESOLVED,
+    RESEARCH_RELATIONS_TABLE,
     ensure_research_workbench_schema,
     get_stock_keys_by_official_names,
     get_alias_resolve_tasks_map,
@@ -160,7 +161,7 @@ def _load_confirmed_alias_targets(
     placeholders = ", ".join(["?"] * len(cleaned))
     sql = f"""
 SELECT right_key, left_key
-FROM research_relations
+FROM {RESEARCH_RELATIONS_TABLE}
 WHERE relation_type = '{_STOCK_ALIAS_RELATION_TYPE}'
   AND relation_label = '{_STOCK_ALIAS_RELATION_LABEL}'
   AND right_key IN ({placeholders})

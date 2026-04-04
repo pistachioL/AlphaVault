@@ -30,7 +30,7 @@ def submit_spool_flush_job(
         verbose=bool(verbose),
         redis_client=redis_client,
         redis_queue_key=redis_queue_key,
-        delete_spool_on_redis_push=True,
+        delete_spool_on_redis_push=False,
     )
     has_more = bool(
         (not has_error) and int(flushed) >= int(SPOOL_FLUSH_MAX_ITEMS_PER_RUN)

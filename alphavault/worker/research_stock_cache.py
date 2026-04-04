@@ -10,7 +10,7 @@ from alphavault.db.turso_db import (
 )
 from alphavault.research_backfill_cache import list_stock_backfill_posts
 from alphavault.research_stock_cache import (
-    RESEARCH_STOCK_HOT_TABLE,
+    ENTITY_PAGE_SNAPSHOT_TABLE,
     ensure_research_stock_cache_schema,
     list_stock_dirty_entries,
     list_stock_dirty_keys,
@@ -103,8 +103,8 @@ WHERE a.action LIKE 'trade.%'
   {cursor_sql}
   AND NOT EXISTS (
     SELECT 1
-    FROM {RESEARCH_STOCK_HOT_TABLE} hot
-    WHERE hot.stock_key = ae.entity_key
+    FROM {ENTITY_PAGE_SNAPSHOT_TABLE} hot
+    WHERE hot.entity_key = ae.entity_key
   )
 ORDER BY ae.entity_key ASC
 LIMIT :limit

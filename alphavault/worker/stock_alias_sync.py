@@ -22,6 +22,7 @@ from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_BLOCKED,
     ALIAS_TASK_STATUS_MANUAL,
     ALIAS_TASK_STATUS_RESOLVED,
+    RESEARCH_RELATIONS_TABLE,
     ensure_research_workbench_schema,
     get_alias_resolve_tasks_map,
     increment_alias_resolve_attempts,
@@ -47,9 +48,9 @@ ALIAS_SYNC_SOURCE = "ai_worker"
 ALIAS_SYNC_MAX_KEYS_PER_RUN = 8
 ALIAS_SYNC_UNKNOWN_REMAINING = -1
 
-STOCK_ALIAS_RELATIONS_SQL = """
+STOCK_ALIAS_RELATIONS_SQL = f"""
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
-FROM research_relations
+FROM {RESEARCH_RELATIONS_TABLE}
 WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 """
 

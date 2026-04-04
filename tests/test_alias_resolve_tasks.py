@@ -5,6 +5,7 @@ import libsql
 from alphavault.db.turso_db import TursoConnection
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
+    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
     ensure_research_workbench_schema,
     get_alias_resolve_tasks_map,
     increment_alias_resolve_attempts,
@@ -32,7 +33,7 @@ def test_ensure_schema_creates_alias_resolve_tasks_table() -> None:
     try:
         ensure_research_workbench_schema(conn)
         conn.execute(
-            "SELECT alias_key, status, attempt_count FROM research_alias_resolve_tasks"
+            f"SELECT alias_key, status, attempt_count FROM {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE}"
         ).fetchall()
     finally:
         conn.close()

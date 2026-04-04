@@ -148,6 +148,13 @@ WHERE post_uid = :post_uid
 LIMIT 1
 """
 
+SELECT_POST_PROCESSED_AT = """
+SELECT processed_at
+FROM posts
+WHERE post_uid = :post_uid
+LIMIT 1
+"""
+
 SELECT_RECENT_POSTS_BY_AUTHOR = """
 SELECT post_uid, platform_post_id, author, created_at, url, raw_text,
        COALESCE(display_md, '') AS display_md,
@@ -155,6 +162,27 @@ SELECT post_uid, platform_post_id, author, created_at, url, raw_text,
 FROM posts
 WHERE author = :author
 ORDER BY created_at DESC
+LIMIT :limit
+"""
+
+SELECT_UNPROCESSED_POST_QUEUE_ROWS = """
+SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+       COALESCE(display_md, '') AS display_md,
+       COALESCE(ai_retry_count, 0) AS ai_retry_count
+FROM posts
+WHERE processed_at IS NULL OR TRIM(processed_at) = ''
+ORDER BY ingested_at DESC, post_uid DESC
+LIMIT :limit
+"""
+
+SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM = """
+SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+       COALESCE(display_md, '') AS display_md,
+       COALESCE(ai_retry_count, 0) AS ai_retry_count
+FROM posts
+WHERE platform = :platform
+  AND (processed_at IS NULL OR TRIM(processed_at) = '')
+ORDER BY ingested_at DESC, post_uid DESC
 LIMIT :limit
 """
 

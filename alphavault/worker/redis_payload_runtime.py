@@ -18,10 +18,6 @@ from alphavault.worker.redis_queue import (
     redis_ai_ack_and_cleanup,
     redis_ai_ack_processing,
     redis_ai_push_delayed,
-    redis_author_recent_load_state,
-    redis_author_recent_mark_empty,
-    redis_author_recent_push,
-    redis_author_recent_push_many,
 )
 from alphavault.worker.runtime_cache import AuthorRecentLocalCache
 from alphavault.worker.runtime_models import (
@@ -80,13 +76,9 @@ def process_one_redis_payload(
         payload_to_cloud_post_fn=_payload_to_cloud_post,
         author_recent_local_cache_get_fn=_author_recent_local_cache.get,
         author_recent_local_cache_set_fn=_author_recent_local_cache.set,
-        redis_author_recent_load_state_fn=redis_author_recent_load_state,
         load_recent_posts_by_author_fn=load_recent_posts_by_author,
-        redis_author_recent_push_many_fn=redis_author_recent_push_many,
-        redis_author_recent_mark_empty_fn=redis_author_recent_mark_empty,
         try_mark_ai_running_fn=try_mark_ai_running,
         process_one_post_uid_fn=process_one_post_uid,
-        redis_author_recent_push_fn=redis_author_recent_push,
         redis_ai_ack_and_cleanup_fn=redis_ai_ack_and_cleanup,
         redis_ai_push_delayed_fn=redis_ai_push_delayed,
         redis_ai_ack_processing_fn=redis_ai_ack_processing,

@@ -4,12 +4,17 @@ import time
 
 from alphavault.db.turso_db import TursoEngine
 from alphavault.db.turso_queue import (
+    load_unprocessed_post_queue_rows,
     recover_done_without_processed_at,
     recover_stuck_ai_tasks,
 )
 from alphavault.worker import maintenance
-from alphavault.worker.assertion_outbox import pump_assertion_outbox_to_redis
-from alphavault.worker.redis_queue import redis_ai_requeue_processing
+from alphavault.worker.redis_queue import (
+    redis_ai_requeue_processing,
+    redis_try_push_ai_dedup_status,
+    resolve_redis_dedup_ttl_seconds,
+)
+from alphavault.worker.spool import recover_spool_to_turso_and_redis
 from alphavault.worker.turso_runtime import (
     maybe_dispose_turso_engine_on_transient_error,
 )
@@ -47,11 +52,14 @@ def run_maintenance_if_due(
         verbose=ctx.verbose,
         do_recovery=bool(do_recovery),
         now_fn=time.time,
+        recover_spool_to_turso_and_redis_fn=recover_spool_to_turso_and_redis,
         recover_stuck_ai_tasks_fn=recover_stuck_ai_tasks,
         recover_done_without_processed_at_fn=recover_done_without_processed_at,
+        load_unprocessed_posts_for_requeue_fn=load_unprocessed_post_queue_rows,
+        redis_try_push_ai_dedup_status_fn=redis_try_push_ai_dedup_status,
+        resolve_redis_dedup_ttl_seconds_fn=resolve_redis_dedup_ttl_seconds,
         maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
         redis_ai_requeue_processing_fn=redis_ai_requeue_processing,
-        pump_assertion_outbox_to_redis_fn=pump_assertion_outbox_to_redis,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
         redis_ai_requeue_max_items=int(REDIS_AI_REQUEUE_MAX_ITEMS),
     )

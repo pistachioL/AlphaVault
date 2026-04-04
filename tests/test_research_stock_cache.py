@@ -88,6 +88,69 @@ def test_save_and_load_stock_extras_snapshot() -> None:
         conn.close()
 
 
+def test_stock_page_snapshot_uses_single_entity_page_snapshot_table() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_stock_cache_schema(conn)
+        save_stock_hot_view(
+            conn,
+            stock_key="stock:601899.SH",
+            payload={
+                "entity_key": "stock:601899.SH",
+                "header_title": "紫金矿业 (601899.SH)",
+                "signal_total": 1,
+                "signals": [{"post_uid": "weibo:1"}],
+                "related_sectors": [{"sector_key": "gold"}],
+            },
+        )
+        save_stock_extras_snapshot(
+            conn,
+            stock_key="stock:601899.SH",
+            backfill_posts=[{"post_uid": "weibo:9"}],
+        )
+
+        table_names = {
+            str(row["name"])
+            for row in conn.execute(
+                """
+SELECT name
+FROM sqlite_schema
+WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+"""
+            )
+            .mappings()
+            .all()
+        }
+        assert "entity_page_snapshot" in table_names
+        assert "research_stock_signals_hot" not in table_names
+        assert "research_stock_extras_snapshot" not in table_names
+
+        rows = (
+            conn.execute(
+                """
+SELECT entity_key, signal_total, backfill_posts_json
+FROM entity_page_snapshot
+ORDER BY entity_key ASC
+"""
+            )
+            .mappings()
+            .all()
+        )
+        assert len(rows) == 1
+        assert rows[0]["entity_key"] == "stock:601899.SH"
+        assert rows[0]["signal_total"] == 1
+
+        hot = load_stock_hot_view(conn, stock_key="stock:601899.SH")
+        extras = load_stock_extras_snapshot(conn, stock_key="stock:601899.SH")
+        assert cast(int, hot["signal_total"]) == 1
+        assert cast(list[dict[str, str]], hot["signals"])[0]["post_uid"] == "weibo:1"
+        assert cast(list[dict[str, str]], extras["backfill_posts"])[0]["post_uid"] == (
+            "weibo:9"
+        )
+    finally:
+        conn.close()
+
+
 def test_mark_list_and_remove_dirty_keys() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
@@ -99,6 +162,49 @@ def test_mark_list_and_remove_dirty_keys() -> None:
         remove_stock_dirty_keys(conn, stock_keys=["stock:601899.SH"])
         keys_after = list_stock_dirty_keys(conn, limit=10)
         assert keys_after == ["stock:600519.SH"]
+    finally:
+        conn.close()
+
+
+def test_stock_dirty_uses_projection_dirty_table() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_stock_cache_schema(conn)
+        mark_stock_dirty(conn, stock_key="stock:601899.SH", reason="rss")
+
+        table_names = {
+            str(row["name"])
+            for row in conn.execute(
+                """
+SELECT name
+FROM sqlite_schema
+WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+"""
+            )
+            .mappings()
+            .all()
+        }
+        assert "projection_dirty" in table_names
+        assert "research_stock_dirty_keys" not in table_names
+
+        rows = (
+            conn.execute(
+                """
+SELECT job_type, target_key, reason
+FROM projection_dirty
+ORDER BY job_type ASC, target_key ASC
+"""
+            )
+            .mappings()
+            .all()
+        )
+        assert rows == [
+            {
+                "job_type": "entity_page",
+                "target_key": "stock:601899.SH",
+                "reason": "rss",
+            }
+        ]
     finally:
         conn.close()
 

@@ -15,6 +15,7 @@ from alphavault.domains.stock.object_index import (
     filter_assertions_for_stock_object,
 )
 from alphavault.domains.thread_tree.service import build_post_tree_map
+from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
 
 
 WANTED_ASSERTION_COLUMNS = [
@@ -41,9 +42,9 @@ WANTED_POST_COLUMNS = [
     "display_md",
 ]
 
-STOCK_ALIAS_RELATIONS_SQL = """
+STOCK_ALIAS_RELATIONS_SQL = f"""
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
-FROM research_relations
+FROM {RESEARCH_RELATIONS_TABLE}
 WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 """
 

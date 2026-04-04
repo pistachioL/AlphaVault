@@ -8,18 +8,15 @@ from typing import Iterator
 from alphavault.domains.common.assertion_entities import extract_stock_entity_keys
 from alphavault.timeutil import now_cst_str
 from alphavault.db.sql.research_stock_cache import (
+    create_entity_page_snapshot_index,
+    create_entity_page_snapshot_table,
     create_research_stock_dirty_keys_index,
     create_research_stock_dirty_keys_table,
-    create_research_stock_extras_index,
-    create_research_stock_extras_table,
-    create_research_stock_hot_index,
-    create_research_stock_hot_table,
+    select_entity_page_snapshot,
     select_research_stock_dirty_keys,
-    select_research_stock_extras,
-    select_research_stock_hot,
+    upsert_entity_page_snapshot_extras,
+    upsert_entity_page_snapshot_hot,
     upsert_research_stock_dirty_key,
-    upsert_research_stock_extras,
-    upsert_research_stock_hot,
 )
 from alphavault.db.turso_db import (
     TursoConnection,
@@ -30,9 +27,9 @@ from alphavault.db.turso_db import (
     turso_savepoint,
 )
 
-RESEARCH_STOCK_HOT_TABLE = "research_stock_signals_hot"
-RESEARCH_STOCK_EXTRAS_TABLE = "research_stock_extras_snapshot"
-RESEARCH_STOCK_DIRTY_TABLE = "research_stock_dirty_keys"
+ENTITY_PAGE_SNAPSHOT_TABLE = "entity_page_snapshot"
+PROJECTION_DIRTY_TABLE = "projection_dirty"
+PROJECTION_JOB_TYPE_ENTITY_PAGE = "entity_page"
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _SCHEMA_READY_LOCK = threading.RLock()
@@ -97,12 +94,10 @@ def _handle_turso_error(
 
 def _run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
     with _use_conn(engine_or_conn) as conn:
-        conn.execute(create_research_stock_hot_table(RESEARCH_STOCK_HOT_TABLE))
-        conn.execute(create_research_stock_hot_index(RESEARCH_STOCK_HOT_TABLE))
-        conn.execute(create_research_stock_extras_table(RESEARCH_STOCK_EXTRAS_TABLE))
-        conn.execute(create_research_stock_extras_index(RESEARCH_STOCK_EXTRAS_TABLE))
-        conn.execute(create_research_stock_dirty_keys_table(RESEARCH_STOCK_DIRTY_TABLE))
-        conn.execute(create_research_stock_dirty_keys_index(RESEARCH_STOCK_DIRTY_TABLE))
+        conn.execute(create_entity_page_snapshot_table(ENTITY_PAGE_SNAPSHOT_TABLE))
+        conn.execute(create_entity_page_snapshot_index(ENTITY_PAGE_SNAPSHOT_TABLE))
+        conn.execute(create_research_stock_dirty_keys_table(PROJECTION_DIRTY_TABLE))
+        conn.execute(create_research_stock_dirty_keys_index(PROJECTION_DIRTY_TABLE))
 
 
 def ensure_research_stock_cache_schema(
@@ -181,9 +176,9 @@ def save_stock_hot_view(
         return
     signals = _clean_json_rows(payload.get("signals"))
     related_sectors = _clean_json_rows(payload.get("related_sectors"))
+    entity_key = str(payload.get("entity_key") or key).strip() or key
     params = {
-        "stock_key": key,
-        "entity_key": str(payload.get("entity_key") or key).strip(),
+        "entity_key": entity_key,
         "header_title": str(payload.get("header_title") or "").strip(),
         "signal_total": _coerce_non_negative_int(
             payload.get("signal_total"),
@@ -196,7 +191,10 @@ def save_stock_hot_view(
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
-            conn.execute(upsert_research_stock_hot(RESEARCH_STOCK_HOT_TABLE), params)
+            conn.execute(
+                upsert_entity_page_snapshot_hot(ENTITY_PAGE_SNAPSHOT_TABLE),
+                params,
+            )
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
 
@@ -214,8 +212,8 @@ def load_stock_hot_view(
         with _use_conn(engine_or_conn) as conn:
             row = (
                 conn.execute(
-                    select_research_stock_hot(RESEARCH_STOCK_HOT_TABLE),
-                    {"stock_key": key},
+                    select_entity_page_snapshot(ENTITY_PAGE_SNAPSHOT_TABLE),
+                    {"entity_key": key},
                 )
                 .mappings()
                 .fetchone()
@@ -225,7 +223,6 @@ def load_stock_hot_view(
     if not row:
         return {}
     return {
-        "stock_key": str(row.get("stock_key") or "").strip(),
         "entity_key": str(row.get("entity_key") or "").strip(),
         "header_title": str(row.get("header_title") or "").strip(),
         "signal_total": _coerce_non_negative_int(row.get("signal_total"), default=0),
@@ -246,7 +243,7 @@ def save_stock_extras_snapshot(
         return
     backfill_rows = _clean_json_rows(backfill_posts)
     params = {
-        "stock_key": key,
+        "entity_key": key,
         "backfill_posts_json": _json_dumps(backfill_rows),
         "updated_at": _now_str(),
     }
@@ -254,7 +251,7 @@ def save_stock_extras_snapshot(
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             conn.execute(
-                upsert_research_stock_extras(RESEARCH_STOCK_EXTRAS_TABLE),
+                upsert_entity_page_snapshot_extras(ENTITY_PAGE_SNAPSHOT_TABLE),
                 params,
             )
     except BaseException as err:
@@ -274,8 +271,8 @@ def load_stock_extras_snapshot(
         with _use_conn(engine_or_conn) as conn:
             row = (
                 conn.execute(
-                    select_research_stock_extras(RESEARCH_STOCK_EXTRAS_TABLE),
-                    {"stock_key": key},
+                    select_entity_page_snapshot(ENTITY_PAGE_SNAPSHOT_TABLE),
+                    {"entity_key": key},
                 )
                 .mappings()
                 .fetchone()
@@ -285,7 +282,7 @@ def load_stock_extras_snapshot(
     if not row:
         return {}
     return {
-        "stock_key": str(row.get("stock_key") or "").strip(),
+        "stock_key": str(row.get("entity_key") or "").strip(),
         "backfill_posts": _json_list(row.get("backfill_posts_json")),
         "updated_at": str(row.get("updated_at") or "").strip(),
     }
@@ -304,9 +301,10 @@ def mark_stock_dirty(
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             conn.execute(
-                upsert_research_stock_dirty_key(RESEARCH_STOCK_DIRTY_TABLE),
+                upsert_research_stock_dirty_key(PROJECTION_DIRTY_TABLE),
                 {
-                    "stock_key": key,
+                    "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
+                    "target_key": key,
                     "reason": str(reason or "").strip(),
                     "updated_at": _now_str(),
                 },
@@ -328,8 +326,11 @@ def list_stock_dirty_keys(
         with _use_conn(engine_or_conn) as conn:
             rows = (
                 conn.execute(
-                    select_research_stock_dirty_keys(RESEARCH_STOCK_DIRTY_TABLE),
-                    {"limit": n},
+                    select_research_stock_dirty_keys(PROJECTION_DIRTY_TABLE),
+                    {
+                        "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
+                        "limit": n,
+                    },
                 )
                 .mappings()
                 .all()
@@ -337,9 +338,9 @@ def list_stock_dirty_keys(
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
     return [
-        str(row.get("stock_key") or "").strip()
+        str(row.get("target_key") or "").strip()
         for row in rows
-        if str(row.get("stock_key") or "").strip()
+        if str(row.get("target_key") or "").strip()
     ]
 
 
@@ -356,8 +357,11 @@ def list_stock_dirty_entries(
         with _use_conn(engine_or_conn) as conn:
             rows = (
                 conn.execute(
-                    select_research_stock_dirty_keys(RESEARCH_STOCK_DIRTY_TABLE),
-                    {"limit": n},
+                    select_research_stock_dirty_keys(PROJECTION_DIRTY_TABLE),
+                    {
+                        "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
+                        "limit": n,
+                    },
                 )
                 .mappings()
                 .all()
@@ -366,7 +370,7 @@ def list_stock_dirty_entries(
         _handle_turso_error(engine_or_conn, err)
     out: list[dict[str, str]] = []
     for row in rows:
-        stock_key = str(row.get("stock_key") or "").strip()
+        stock_key = str(row.get("target_key") or "").strip()
         if not stock_key:
             continue
         out.append(
@@ -388,14 +392,19 @@ def remove_stock_dirty_keys(
     if not keys:
         return 0
     placeholders = ", ".join(["?"] * len(keys))
-    sql = (
-        f"DELETE FROM {RESEARCH_STOCK_DIRTY_TABLE} WHERE stock_key IN ({placeholders})"
-    )
+    sql = f"""
+DELETE FROM {PROJECTION_DIRTY_TABLE}
+WHERE job_type = ?
+  AND target_key IN ({placeholders})
+"""
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             with turso_savepoint(conn):
-                res = conn.execute(sql, keys)
+                res = conn.execute(
+                    sql,
+                    [PROJECTION_JOB_TYPE_ENTITY_PAGE, *keys],
+                )
                 return int(res.rowcount or 0)
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
@@ -427,9 +436,9 @@ def mark_stock_dirty_from_assertions(
 
 
 __all__ = [
-    "RESEARCH_STOCK_DIRTY_TABLE",
-    "RESEARCH_STOCK_EXTRAS_TABLE",
-    "RESEARCH_STOCK_HOT_TABLE",
+    "ENTITY_PAGE_SNAPSHOT_TABLE",
+    "PROJECTION_DIRTY_TABLE",
+    "PROJECTION_JOB_TYPE_ENTITY_PAGE",
     "ensure_research_stock_cache_schema",
     "list_stock_dirty_entries",
     "list_stock_dirty_keys",

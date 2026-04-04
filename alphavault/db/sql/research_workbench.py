@@ -15,18 +15,6 @@ CREATE TABLE IF NOT EXISTS {table} (
 """
 
 
-def create_research_objects_table(table: str) -> str:
-    return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    object_key TEXT PRIMARY KEY,
-    object_type TEXT NOT NULL,
-    display_name TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-)
-"""
-
-
 def create_research_relations_table(table: str) -> str:
     return f"""
 CREATE TABLE IF NOT EXISTS {table} (
@@ -95,10 +83,6 @@ ON {table}(code, market)
 """
 
 
-def create_research_object_index(table: str) -> str:
-    return f"CREATE INDEX IF NOT EXISTS idx_{table}_type ON {table}(object_type)"
-
-
 def create_research_relation_index(table: str) -> str:
     return f"""
 CREATE INDEX IF NOT EXISTS idx_{table}_lookup
@@ -117,17 +101,6 @@ def create_research_relation_candidate_left_key_index(table: str) -> str:
     return f"""
 CREATE INDEX IF NOT EXISTS idx_{table}_left_key_pending
 ON {table}(left_key, status, score, updated_at)
-"""
-
-
-def upsert_research_object(table: str) -> str:
-    return f"""
-INSERT INTO {table}(object_key, object_type, display_name, created_at, updated_at)
-VALUES (:object_key, :object_type, :display_name, :now, :now)
-ON CONFLICT(object_key) DO UPDATE SET
-    object_type = excluded.object_type,
-    display_name = excluded.display_name,
-    updated_at = excluded.updated_at
 """
 
 
