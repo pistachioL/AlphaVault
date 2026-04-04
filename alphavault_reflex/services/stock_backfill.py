@@ -156,6 +156,20 @@ quoted_text:
                 "industries_json": "[]",
                 "commodities_json": "[]",
                 "indices_json": "[]",
+                "keywords_json": "[]",
+                "assertion_entities": [
+                    {
+                        "entity_key": stock_key,
+                        "entity_type": "stock",
+                        "source_mention_text": target_name or stock_code,
+                        "source_mention_type": (
+                            "stock_name" if target_name else "stock_code"
+                        ),
+                        "confidence": clamp_float(
+                            item.get("confidence", 0.5), 0.0, 1.0, 0.5
+                        ),
+                    }
+                ],
                 "source_type": "commentary",
             }
         )

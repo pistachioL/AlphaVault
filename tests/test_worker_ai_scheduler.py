@@ -12,7 +12,7 @@ from alphavault.worker import runtime_cache as runtime_cache_module
 from alphavault.worker import scheduler as scheduler_module
 from alphavault.worker.runtime_cache import AuthorRecentLocalCache
 from alphavault.worker.runtime_models import LLMConfig
-from alphavault.worker.topic_prompt_v3 import build_topic_prompt_v3_llm_log_line
+from alphavault.worker.topic_prompt_v4 import build_topic_prompt_v4_llm_log_line
 
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -150,8 +150,8 @@ def test_low_priority_slot_gate_respects_dynamic_cap() -> None:
     assert gate.try_acquire() is True
 
 
-def test_build_topic_prompt_v3_llm_log_line_call_contains_id_and_author() -> None:
-    line = build_topic_prompt_v3_llm_log_line(
+def test_build_topic_prompt_v4_llm_log_line_call_contains_id_and_author() -> None:
+    line = build_topic_prompt_v4_llm_log_line(
         event="call",
         root_key="root:123",
         post_uid="weibo:1",
@@ -159,13 +159,13 @@ def test_build_topic_prompt_v3_llm_log_line_call_contains_id_and_author() -> Non
         locked_count=0,
     )
 
-    assert "[llm] call topic_prompt_v3" in line
+    assert "[llm] call topic_prompt_v4" in line
     assert "post_uid=weibo:1" in line
     assert "author=博主A" in line
 
 
-def test_build_topic_prompt_v3_llm_log_line_done_contains_cost() -> None:
-    line = build_topic_prompt_v3_llm_log_line(
+def test_build_topic_prompt_v4_llm_log_line_done_contains_cost() -> None:
+    line = build_topic_prompt_v4_llm_log_line(
         event="done",
         root_key="root:123",
         post_uid="weibo:1",
@@ -174,7 +174,7 @@ def test_build_topic_prompt_v3_llm_log_line_done_contains_cost() -> None:
         cost_seconds=12.3,
     )
 
-    assert "[llm] done topic_prompt_v3" in line
+    assert "[llm] done topic_prompt_v4" in line
     assert "post_uid=weibo:1" in line
     assert "author=博主A" in line
     assert "locked=3" in line

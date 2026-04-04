@@ -97,20 +97,23 @@ def _list_missing_hot_cache_stock_keys(
     cursor_sql = ""
     params: dict[str, object] = {"limit": max(1, int(limit))}
     if cursor:
-        cursor_sql = "AND a.topic_key > :after_stock_key"
+        cursor_sql = "AND ae.entity_key > :after_stock_key"
         params["after_stock_key"] = cursor
     sql = f"""
-SELECT DISTINCT a.topic_key
+SELECT DISTINCT ae.entity_key
 FROM assertions a
+JOIN assertion_entities ae
+  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
 WHERE a.action LIKE 'trade.%'
-  AND a.topic_key LIKE 'stock:%'
+  AND ae.entity_type = 'stock'
+  AND ae.entity_key LIKE 'stock:%'
   {cursor_sql}
   AND NOT EXISTS (
     SELECT 1
     FROM {RESEARCH_STOCK_HOT_TABLE} hot
-    WHERE hot.stock_key = a.topic_key
+    WHERE hot.stock_key = ae.entity_key
   )
-ORDER BY a.topic_key ASC
+ORDER BY ae.entity_key ASC
 LIMIT :limit
 """
     rows = conn.execute(sql, params).fetchall()

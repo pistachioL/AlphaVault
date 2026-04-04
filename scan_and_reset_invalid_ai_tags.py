@@ -25,7 +25,7 @@ def parse_args() -> argparse.Namespace:
         "--prompt-version",
         type=str,
         default="",
-        help="只扫描这个 prompt_version（默认扫全部；可选：topic-prompt-v3 / weibo_assertions_v1）",
+        help="只扫描这个 prompt_version（默认扫全部；可选：topic-prompt-v4 / weibo_assertions_v1）",
     )
     parser.add_argument(
         "--limit", type=int, default=0, help="最多 reset 多少个 post（0=不限）"

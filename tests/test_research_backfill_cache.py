@@ -78,23 +78,36 @@ def test_mark_list_and_remove_backfill_dirty_keys() -> None:
         marked = mark_stock_backfill_dirty_from_assertions(
             conn,
             assertions=[
-                {"topic_key": "stock:601899.SH", "stock_codes_json": "[]"},
-                {"topic_key": "stock:紫金", "stock_codes_json": '["601899.SH"]'},
-                {"topic_key": "cluster:gold", "stock_codes_json": "[]"},
+                {
+                    "topic_key": "stock:紫金",
+                    "stock_codes_json": '["601899.SH"]',
+                    "assertion_entities": [
+                        {
+                            "entity_key": "stock:601899.SH",
+                            "entity_type": "stock",
+                        }
+                    ],
+                },
+                {
+                    "topic_key": "stock:阿紫",
+                    "stock_codes_json": "[]",
+                    "assertion_entities": [],
+                },
+                {"topic_key": "cluster:gold", "stock_codes_json": '["600519.SH"]'},
             ],
             reason="ai_done",
         )
-        assert marked == 2
+        assert marked == 1
 
         keys = list_stock_backfill_dirty_keys(conn, limit=10)
-        assert set(keys) == {"stock:601899.SH", "stock:紫金"}
+        assert set(keys) == {"stock:601899.SH"}
 
         removed = remove_stock_backfill_dirty_keys(
             conn,
             stock_keys=["stock:601899.SH"],
         )
         assert removed == 1
-        assert list_stock_backfill_dirty_keys(conn, limit=10) == ["stock:紫金"]
+        assert list_stock_backfill_dirty_keys(conn, limit=10) == []
     finally:
         conn.close()
 

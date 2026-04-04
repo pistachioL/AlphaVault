@@ -294,6 +294,7 @@ def ensure_stock_columns(assertions: pd.DataFrame) -> pd.DataFrame:
     if "match_keys" not in out.columns:
         out["match_keys"] = out.apply(
             lambda row: _build_stock_match_keys(
+                resolved_entity_key=row.get("resolved_entity_key"),
                 topic_key=row.get("topic_key"),
                 stock_codes=row.get("stock_codes"),
             ),
@@ -302,8 +303,13 @@ def ensure_stock_columns(assertions: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _build_stock_match_keys(*, topic_key: object, stock_codes: object) -> list[str]:
+def _build_stock_match_keys(
+    *, resolved_entity_key: object, topic_key: object, stock_codes: object
+) -> list[str]:
     keys: list[str] = []
+    resolved_key = normalize_stock_key(str(resolved_entity_key or "").strip())
+    if resolved_key:
+        keys.append(resolved_key)
     topic = normalize_stock_key(str(topic_key or "").strip())
     if topic:
         keys.append(topic)

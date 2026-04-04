@@ -17,7 +17,7 @@ from alphavault.constants import (
 from alphavault.ai._client import _call_ai_with_litellm
 from alphavault.ai._errors import extract_llm_error_details, format_llm_error_one_line
 from alphavault.ai._text import clean_text, clamp_float, clamp_int, parse_json_text
-from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION
+from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
 
 # NOTE: This module is extracted from the old CSV/local-sqlite scripts.
 # It is the public API for AI call + output normalization.

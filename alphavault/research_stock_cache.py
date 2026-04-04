@@ -5,6 +5,7 @@ import json
 import threading
 from typing import Iterator
 
+from alphavault.domains.common.assertion_entities import extract_stock_entity_keys
 from alphavault.timeutil import now_cst_str
 from alphavault.db.sql.research_stock_cache import (
     create_research_stock_dirty_keys_index,
@@ -417,39 +418,16 @@ def pop_stock_dirty_keys(
     return keys
 
 
-def _parse_json_str_list(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [str(item or "").strip() for item in value if str(item or "").strip()]
-    text = str(value or "").strip()
-    if not text:
-        return []
-    try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [str(item or "").strip() for item in parsed if str(item or "").strip()]
-
-
 def mark_stock_dirty_from_assertions(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     assertions: list[dict[str, object]],
     reason: str,
 ) -> int:
-    keys: set[str] = set()
-    for row in assertions:
-        if not isinstance(row, dict):
-            continue
-        topic_key = str(row.get("topic_key") or "").strip()
-        if topic_key.startswith("stock:"):
-            keys.add(topic_key)
-        for raw_code in _parse_json_str_list(row.get("stock_codes_json")):
-            keys.add(f"stock:{raw_code}")
-    for key in sorted(keys):
+    keys = extract_stock_entity_keys(assertions)
+    for key in keys:
         mark_stock_dirty(engine_or_conn, stock_key=key, reason=reason)
-    return int(len(keys))
+    return len(keys)
 
 
 __all__ = [

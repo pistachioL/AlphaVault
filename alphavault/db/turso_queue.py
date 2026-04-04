@@ -18,8 +18,12 @@ from alphavault.db.sql.turso_queue import (
     CREATE_ASSERTION_OUTBOX_TABLE,
     CREATE_IDX_ASSERTION_OUTBOX_CREATED_AT,
     CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT,
+    DELETE_ASSERTION_ENTITIES_BY_POST_UID,
+    DELETE_ASSERTION_MENTIONS_BY_POST_UID,
     DELETE_ASSERTIONS_BY_POST_UID,
     INSERT_ASSERTION,
+    INSERT_ASSERTION_ENTITY,
+    INSERT_ASSERTION_MENTION,
     INSERT_ASSERTION_OUTBOX,
     MARK_AI_ERROR,
     QUEUE_EXTRA_COLUMNS,
@@ -430,28 +434,88 @@ def write_assertions_and_mark_done(
     """
     with turso_connect_autocommit(engine) as conn:
         with turso_savepoint(conn):
+            conn.execute(DELETE_ASSERTION_ENTITIES_BY_POST_UID, {"post_uid": post_uid})
+            conn.execute(DELETE_ASSERTION_MENTIONS_BY_POST_UID, {"post_uid": post_uid})
             conn.execute(DELETE_ASSERTIONS_BY_POST_UID, {"post_uid": post_uid})
             assertion_payloads: list[dict[str, object]] = []
+            mention_payloads: list[dict[str, object]] = []
+            entity_payloads: list[dict[str, object]] = []
             for idx, a in enumerate(assertions, start=1):
                 assertion_payloads.append(
                     {
                         "post_uid": post_uid,
                         "idx": int(idx),
+                        "speaker": str(a.get("speaker") or "").strip(),
+                        "relation_to_topic": str(
+                            a.get("relation_to_topic") or "new"
+                        ).strip()
+                        or "new",
                         "topic_key": a["topic_key"],
                         "action": a["action"],
                         "action_strength": int(a["action_strength"]),
                         "summary": a["summary"],
                         "evidence": a["evidence"],
+                        "evidence_refs_json": a.get("evidence_refs_json", "[]"),
                         "confidence": float(a["confidence"]),
                         "stock_codes_json": a.get("stock_codes_json", "[]"),
                         "stock_names_json": a.get("stock_names_json", "[]"),
                         "industries_json": a.get("industries_json", "[]"),
                         "commodities_json": a.get("commodities_json", "[]"),
                         "indices_json": a.get("indices_json", "[]"),
+                        "keywords_json": a.get("keywords_json", "[]"),
                     }
                 )
+                raw_mentions = a.get("assertion_mentions")
+                mentions = raw_mentions if isinstance(raw_mentions, list) else []
+                for mention_idx, raw_mention in enumerate(mentions, start=1):
+                    if not isinstance(raw_mention, dict):
+                        continue
+                    mention_payloads.append(
+                        {
+                            "post_uid": post_uid,
+                            "assertion_idx": int(idx),
+                            "mention_idx": int(mention_idx),
+                            "mention_text": str(
+                                raw_mention.get("mention_text") or ""
+                            ).strip(),
+                            "mention_type": str(
+                                raw_mention.get("mention_type") or ""
+                            ).strip(),
+                            "evidence": str(raw_mention.get("evidence") or "").strip(),
+                            "confidence": float(raw_mention.get("confidence") or 0.0),
+                        }
+                    )
+                raw_entities = a.get("assertion_entities")
+                entities = raw_entities if isinstance(raw_entities, list) else []
+                for entity_idx, raw_entity in enumerate(entities, start=1):
+                    if not isinstance(raw_entity, dict):
+                        continue
+                    entity_payloads.append(
+                        {
+                            "post_uid": post_uid,
+                            "assertion_idx": int(idx),
+                            "entity_idx": int(entity_idx),
+                            "entity_key": str(
+                                raw_entity.get("entity_key") or ""
+                            ).strip(),
+                            "entity_type": str(
+                                raw_entity.get("entity_type") or ""
+                            ).strip(),
+                            "source_mention_text": str(
+                                raw_entity.get("source_mention_text") or ""
+                            ).strip(),
+                            "source_mention_type": str(
+                                raw_entity.get("source_mention_type") or ""
+                            ).strip(),
+                            "confidence": float(raw_entity.get("confidence") or 0.0),
+                        }
+                    )
             if assertion_payloads:
                 conn.execute(INSERT_ASSERTION, assertion_payloads)
+            if mention_payloads:
+                conn.execute(INSERT_ASSERTION_MENTION, mention_payloads)
+            if entity_payloads:
+                conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
 
             conn.execute(
                 UPDATE_POST_DONE,

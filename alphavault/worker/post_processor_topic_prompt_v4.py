@@ -13,7 +13,7 @@ from alphavault.ai.analyze import (
     format_llm_error_one_line,
     normalize_action,
 )
-from alphavault.ai.tag_validate import validate_topic_prompt_v3_ai_result
+from alphavault.ai.tag_validate import validate_topic_prompt_v4_ai_result
 from alphavault.db.turso_db import TursoEngine
 from alphavault.db.turso_queue import (
     CloudPost,
@@ -23,6 +23,7 @@ from alphavault.db.turso_queue import (
     try_mark_ai_running,
     write_assertions_and_mark_done,
 )
+from alphavault.domains.common.assertion_entities import build_assertion_entities
 from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.research_backfill_cache import mark_stock_backfill_dirty_from_assertions
 from alphavault.research_stock_cache import mark_stock_dirty_from_assertions
@@ -32,26 +33,150 @@ from alphavault.weibo.topic_prompt_tree import (
     thread_root_info_for_post,
 )
 from alphavault.worker.backoff import backoff_seconds
-from alphavault.worker.post_processor_utils import (
-    as_str_list,
-    build_assertion_outbox_event_payload,
-    ensure_prefetched_post_persisted,
-    score_from_assertions,
-)
 from alphavault.worker.local_cache import (
     apply_outbox_event_payload,
     open_local_cache,
     resolve_local_cache_db_path,
 )
+from alphavault.worker.post_processor_utils import (
+    build_assertion_outbox_event_payload,
+    ensure_prefetched_post_persisted,
+    score_from_assertions,
+)
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
-from alphavault.worker.topic_prompt_v3 import (
-    build_topic_prompt_v3_llm_log_line,
-    build_topic_prompt_v3_with_prompt_chars_limit,
+from alphavault.worker.topic_prompt_v4 import (
+    build_topic_prompt_v4_llm_log_line,
+    build_topic_prompt_v4_with_prompt_chars_limit,
     to_one_line_tail,
 )
 
+_TOPIC_KEY_PRIORITY = [
+    "stock_code",
+    "stock_name",
+    "stock_alias",
+    "industry_name",
+    "commodity_name",
+    "index_name",
+    "keyword",
+]
 
-def map_topic_prompt_items_to_assertions(
+_STOCK_NAME_TYPES = {"stock_name", "stock_alias"}
+
+
+def _unique_in_order(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _build_top_level_mentions_lookup(
+    ai_result: dict[str, object],
+) -> dict[str, dict[str, object]]:
+    mentions = ai_result.get("mentions")
+    if not isinstance(mentions, list):
+        raise RuntimeError("ai_topic_mentions_missing")
+    out: dict[str, dict[str, object]] = {}
+    for raw_mention in mentions:
+        if not isinstance(raw_mention, dict):
+            continue
+        mention_text = str(raw_mention.get("mention_text") or "").strip()
+        if not mention_text or mention_text in out:
+            continue
+        out[mention_text] = {
+            "mention_text": mention_text,
+            "mention_type": str(raw_mention.get("mention_type") or "").strip(),
+            "evidence": str(raw_mention.get("evidence") or "").strip(),
+            "confidence": _clamp_float(raw_mention.get("confidence"), 0.0, 1.0, 0.0),
+        }
+    return out
+
+
+def _pick_topic_key(assertion_mentions: list[dict[str, object]]) -> str:
+    for target_type in _TOPIC_KEY_PRIORITY:
+        for mention in assertion_mentions:
+            mention_type = str(mention.get("mention_type") or "").strip()
+            mention_text = str(mention.get("mention_text") or "").strip()
+            if mention_type != target_type or not mention_text:
+                continue
+            if mention_type in {"stock_code", "stock_name", "stock_alias"}:
+                return f"stock:{mention_text}"
+            if mention_type == "industry_name":
+                return f"industry:{mention_text}"
+            if mention_type == "commodity_name":
+                return f"commodity:{mention_text}"
+            if mention_type == "index_name":
+                return f"index:{mention_text}"
+            if mention_type == "keyword":
+                return f"keyword:{mention_text}"
+    return ""
+
+
+def _bucket_mentions(
+    assertion_mentions: list[dict[str, object]],
+) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
+    stock_codes = _unique_in_order(
+        [
+            str(item.get("mention_text") or "").strip()
+            for item in assertion_mentions
+            if str(item.get("mention_type") or "").strip() == "stock_code"
+        ]
+    )
+    stock_names = _unique_in_order(
+        [
+            str(item.get("mention_text") or "").strip()
+            for item in assertion_mentions
+            if str(item.get("mention_type") or "").strip() in _STOCK_NAME_TYPES
+        ]
+    )
+    industries = _unique_in_order(
+        [
+            str(item.get("mention_text") or "").strip()
+            for item in assertion_mentions
+            if str(item.get("mention_type") or "").strip() == "industry_name"
+        ]
+    )
+    commodities = _unique_in_order(
+        [
+            str(item.get("mention_text") or "").strip()
+            for item in assertion_mentions
+            if str(item.get("mention_type") or "").strip() == "commodity_name"
+        ]
+    )
+    indices = _unique_in_order(
+        [
+            str(item.get("mention_text") or "").strip()
+            for item in assertion_mentions
+            if str(item.get("mention_type") or "").strip() == "index_name"
+        ]
+    )
+    keywords = _unique_in_order(
+        [
+            str(item.get("mention_text") or "").strip()
+            for item in assertion_mentions
+            if str(item.get("mention_type") or "").strip() == "keyword"
+        ]
+    )
+    return stock_codes, stock_names, industries, commodities, indices, keywords
+
+
+def _confidence_from_mentions(assertion_mentions: list[dict[str, object]]) -> float:
+    values = [
+        _clamp_float(item.get("confidence"), 0.0, 1.0, 0.0)
+        for item in assertion_mentions
+        if isinstance(item, dict)
+    ]
+    if not values:
+        return 0.5
+    return max(values)
+
+
+def map_topic_prompt_assertions_to_rows(
     *,
     ai_result: dict[str, object],
     focus_username: str,
@@ -60,24 +185,21 @@ def map_topic_prompt_items_to_assertions(
     max_assertions_per_post: int = 5,
 ) -> dict[str, list[dict[str, object]]]:
     focus = str(focus_username or "").strip()
-    items = ai_result.get("items")
-    if not isinstance(items, list):
-        raise RuntimeError("ai_topic_items_missing")
+    assertions = ai_result.get("assertions")
+    if not isinstance(assertions, list):
+        raise RuntimeError("ai_topic_assertions_missing")
 
+    mention_lookup = _build_top_level_mentions_lookup(ai_result)
     out: dict[str, list[dict[str, object]]] = {}
-    for raw_item in items:
-        if not isinstance(raw_item, dict):
+    for raw_assertion in assertions:
+        if not isinstance(raw_assertion, dict):
             continue
 
-        speaker = str(raw_item.get("speaker") or "").strip()
+        speaker = str(raw_assertion.get("speaker") or "").strip()
         if focus and speaker != focus:
             continue
 
-        topic_key = str(raw_item.get("topic_key") or "").strip()
-        if not topic_key:
-            continue
-
-        evidence_refs = raw_item.get("evidence_refs")
+        evidence_refs = raw_assertion.get("evidence_refs")
         refs = evidence_refs if isinstance(evidence_refs, list) else []
         first_ref = refs[0] if refs and isinstance(refs[0], dict) else {}
         source_kind = str(first_ref.get("source_kind") or "").strip()
@@ -104,35 +226,53 @@ def map_topic_prompt_items_to_assertions(
         if not evidence:
             continue
 
-        summary = str(raw_item.get("summary") or "").strip() or "未提供摘要"
-        confidence = _clamp_float(raw_item.get("confidence"), 0.0, 1.0, 0.5)
-        action_strength = _clamp_int(raw_item.get("action_strength"), 0, 3, 1)
-        action = normalize_action(
-            str(raw_item.get("action") or "").strip() or "trade.watch"
-        )
+        mention_texts = raw_assertion.get("mentions")
+        mention_refs = mention_texts if isinstance(mention_texts, list) else []
+        assertion_mentions = [
+            dict(mention_lookup[mention_text])
+            for mention_text in mention_refs
+            if str(mention_text or "").strip() in mention_lookup
+        ]
+        if not assertion_mentions:
+            continue
+
+        topic_key = _pick_topic_key(assertion_mentions)
+        if not topic_key:
+            continue
+        (
+            stock_codes,
+            stock_names,
+            industries,
+            commodities,
+            indices,
+            keywords,
+        ) = _bucket_mentions(assertion_mentions)
 
         row = {
+            "speaker": speaker,
+            "relation_to_topic": str(
+                raw_assertion.get("relation_to_topic") or "new"
+            ).strip()
+            or "new",
             "topic_key": topic_key,
-            "action": action,
-            "action_strength": action_strength,
-            "summary": summary,
+            "action": normalize_action(
+                str(raw_assertion.get("action") or "").strip() or "trade.watch"
+            ),
+            "action_strength": _clamp_int(
+                raw_assertion.get("action_strength"), 0, 3, 1
+            ),
+            "summary": str(raw_assertion.get("summary") or "").strip() or "未提供摘要",
             "evidence": evidence,
-            "confidence": confidence,
-            "stock_codes_json": json.dumps(
-                as_str_list(raw_item.get("stock_codes")), ensure_ascii=False
-            ),
-            "stock_names_json": json.dumps(
-                as_str_list(raw_item.get("stock_names")), ensure_ascii=False
-            ),
-            "industries_json": json.dumps(
-                as_str_list(raw_item.get("industries")), ensure_ascii=False
-            ),
-            "commodities_json": json.dumps(
-                as_str_list(raw_item.get("commodities")), ensure_ascii=False
-            ),
-            "indices_json": json.dumps(
-                as_str_list(raw_item.get("indices")), ensure_ascii=False
-            ),
+            "evidence_refs_json": json.dumps(refs, ensure_ascii=False),
+            "confidence": _confidence_from_mentions(assertion_mentions),
+            "stock_codes_json": json.dumps(stock_codes, ensure_ascii=False),
+            "stock_names_json": json.dumps(stock_names, ensure_ascii=False),
+            "industries_json": json.dumps(industries, ensure_ascii=False),
+            "commodities_json": json.dumps(commodities, ensure_ascii=False),
+            "indices_json": json.dumps(indices, ensure_ascii=False),
+            "keywords_json": json.dumps(keywords, ensure_ascii=False),
+            "assertion_mentions": assertion_mentions,
+            "assertion_entities": build_assertion_entities(assertion_mentions),
         }
         bucket = out.setdefault(post_uid, [])
         if len(bucket) < max(0, int(max_assertions_per_post)):
@@ -141,7 +281,7 @@ def map_topic_prompt_items_to_assertions(
     return out
 
 
-def process_one_post_uid_topic_prompt_v3(
+def process_one_post_uid_topic_prompt_v4(
     *,
     engine: TursoEngine,
     post_uid: str,
@@ -240,7 +380,7 @@ def process_one_post_uid_topic_prompt_v3(
         node_chars,
         compact_json,
         include_comments,
-    ) = build_topic_prompt_v3_with_prompt_chars_limit(
+    ) = build_topic_prompt_v4_with_prompt_chars_limit(
         root_key=root_key,
         root_segment=root_segment,
         root_content_key=root_content_key,
@@ -278,7 +418,7 @@ def process_one_post_uid_topic_prompt_v3(
 
     if config.verbose:
         print(
-            build_topic_prompt_v3_llm_log_line(
+            build_topic_prompt_v4_llm_log_line(
                 event="call_api",
                 root_key=root_key,
                 post_uid=str(post.post_uid or ""),
@@ -317,13 +457,13 @@ def process_one_post_uid_topic_prompt_v3(
             ),
             trace_out=config.trace_out,
             trace_label=trace_label,
-            validator=validate_topic_prompt_v3_ai_result,
+            validator=validate_topic_prompt_v4_ai_result,
         )
 
         if config.verbose:
             cost = time.time() - start_ts
             print(
-                build_topic_prompt_v3_llm_log_line(
+                build_topic_prompt_v4_llm_log_line(
                     event="done",
                     root_key=root_key,
                     post_uid=str(post.post_uid or ""),
@@ -348,7 +488,7 @@ def process_one_post_uid_topic_prompt_v3(
             for row in kept
             if str(row.get("post_uid") or "").strip() in locked_set
         }
-        assertions_by_post_uid = map_topic_prompt_items_to_assertions(
+        assertions_by_post_uid = map_topic_prompt_assertions_to_rows(
             ai_result=parsed,
             focus_username=focus,
             message_lookup=message_lookup,  # type: ignore[arg-type]
@@ -515,7 +655,7 @@ def process_one_post_uid_topic_prompt_v3(
             except Exception:
                 continue
         print(
-            build_topic_prompt_v3_llm_log_line(
+            build_topic_prompt_v4_llm_log_line(
                 event="error",
                 root_key=root_key,
                 post_uid=str(post.post_uid or ""),
@@ -529,6 +669,6 @@ def process_one_post_uid_topic_prompt_v3(
 
 
 __all__ = [
-    "map_topic_prompt_items_to_assertions",
-    "process_one_post_uid_topic_prompt_v3",
+    "map_topic_prompt_assertions_to_rows",
+    "process_one_post_uid_topic_prompt_v4",
 ]

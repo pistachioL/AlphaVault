@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from alphavault.ai.topic_prompt_v3 import build_topic_prompt
+from alphavault.ai.topic_prompt_v4 import build_topic_prompt
 from alphavault.weibo.topic_prompt_tree import build_topic_runtime_context
 
 
 LLM_LOG_PREFIX = "[llm]"
-TOPIC_PROMPT_V3_LABEL = "topic_prompt_v3"
+TOPIC_PROMPT_V4_LABEL = "topic_prompt_v4"
 LOG_EMPTY_VALUE = "(empty)"
 
 
@@ -24,7 +24,7 @@ def clean_log_value(value: object) -> str:
     return text if text else LOG_EMPTY_VALUE
 
 
-def build_topic_prompt_v3_llm_log_line(
+def build_topic_prompt_v4_llm_log_line(
     *,
     event: str,
     root_key: str,
@@ -35,7 +35,7 @@ def build_topic_prompt_v3_llm_log_line(
     message: str = "",
 ) -> str:
     parts = [
-        f"{LLM_LOG_PREFIX} {event} {TOPIC_PROMPT_V3_LABEL}",
+        f"{LLM_LOG_PREFIX} {event} {TOPIC_PROMPT_V4_LABEL}",
         f"root_key={clean_log_value(root_key)}",
         f"post_uid={clean_log_value(post_uid)}",
         f"author={clean_log_value(author)}",
@@ -59,7 +59,7 @@ def max_message_tree_text_len(node: object) -> int:
     return max_len
 
 
-def build_topic_prompt_v3_with_prompt_chars_limit(
+def build_topic_prompt_v4_with_prompt_chars_limit(
     *,
     root_key: str,
     root_segment: str,
@@ -69,7 +69,7 @@ def build_topic_prompt_v3_with_prompt_chars_limit(
     max_prompt_chars: int,
 ) -> tuple[dict[str, object], int, str, int, int, bool, bool]:
     """
-    Build a topic-prompt-v3 prompt with a hard prompt chars budget.
+    Build a topic-prompt-v4 prompt with a hard prompt chars budget.
 
     Returns:
       (runtime_context, truncated_nodes, prompt, prompt_chars, node_chars_limit, compact_json, include_comments)
@@ -212,9 +212,9 @@ def build_topic_prompt_v3_with_prompt_chars_limit(
 __all__ = [
     "LLM_LOG_PREFIX",
     "LOG_EMPTY_VALUE",
-    "TOPIC_PROMPT_V3_LABEL",
-    "build_topic_prompt_v3_llm_log_line",
-    "build_topic_prompt_v3_with_prompt_chars_limit",
+    "TOPIC_PROMPT_V4_LABEL",
+    "build_topic_prompt_v4_llm_log_line",
+    "build_topic_prompt_v4_with_prompt_chars_limit",
     "clean_log_value",
     "max_message_tree_text_len",
     "to_one_line_tail",

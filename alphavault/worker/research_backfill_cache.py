@@ -184,9 +184,12 @@ def _select_asserted_post_uids(
     rows = conn.execute(
         """
 SELECT DISTINCT post_uid
-FROM assertions
-WHERE topic_key = :stock_key
-  AND action LIKE 'trade.%'
+FROM assertions a
+JOIN assertion_entities ae
+  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
+WHERE ae.entity_key = :stock_key
+  AND ae.entity_type = 'stock'
+  AND a.action LIKE 'trade.%'
 """,
         {"stock_key": key},
     ).fetchall()

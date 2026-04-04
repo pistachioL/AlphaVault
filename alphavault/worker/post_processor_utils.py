@@ -77,10 +77,13 @@ def build_assertion_outbox_event_payload(
                 "action": str(row.get("action") or "").strip(),
                 "action_strength": _clamp_int(row.get("action_strength"), 0, 3, 0),
                 "confidence": _clamp_float(row.get("confidence"), 0.0, 1.0, 0.0),
+                "speaker": str(row.get("speaker") or "").strip(),
+                "relation_to_topic": str(row.get("relation_to_topic") or "").strip(),
                 "stock_codes": json_to_str_list(row.get("stock_codes_json")),
                 "stock_names": json_to_str_list(row.get("stock_names_json")),
                 "industries": json_to_str_list(row.get("industries_json")),
                 "indices": json_to_str_list(row.get("indices_json")),
+                "keywords": json_to_str_list(row.get("keywords_json")),
             }
         )
     payload: dict[str, object] = {

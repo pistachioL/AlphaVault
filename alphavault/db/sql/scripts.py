@@ -98,7 +98,8 @@ SELECT
     a.stock_names_json AS stock_names_json,
     a.industries_json AS industries_json,
     a.commodities_json AS commodities_json,
-    a.indices_json AS indices_json
+    a.indices_json AS indices_json,
+    COALESCE(a.keywords_json, '[]') AS keywords_json
 FROM posts p
 JOIN assertions a
   ON a.post_uid = p.post_uid

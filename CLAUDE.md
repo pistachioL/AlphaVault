@@ -43,7 +43,7 @@ The main loop runs two parallel tracks:
 ### AI layer (`alphavault/ai/`)
 - `analyze.py`: public API — `analyze_with_litellm` calls the LLM, parses JSON output, normalizes assertion `action` values (via `ALLOWED_ACTIONS` + `LEGACY_ACTION_MAP`), and validates results.
 - `_client.py` / `_litellm.py`: low-level LLM call with rate limiting (`RateLimiter`), streaming, and retries.
-- `topic_prompt_v3.py` + `topic_prompt_v3_header.txt`: prompt construction. The prompt asks the model to return structured `assertions` (with `topic_key`, `action`, `stock_codes_json`, `stock_names_json`, etc.).
+- `topic_prompt_v4.py` + `topic_prompt_v4_header.txt`: prompt construction. The prompt asks the model to return `assertions + mentions`，由系统自己再落 `topic_key` 和原词分桶字段。
 - `tag_validate.py`: post-hoc validation of AI output tags.
 
 ### Stock object / alias layer (`alphavault/domains/stock` + `alphavault/infra/ai`)

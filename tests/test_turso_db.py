@@ -8,6 +8,8 @@ import pytest
 
 from alphavault.db import turso_queue
 from alphavault.db.sql.turso_queue import (
+    INSERT_ASSERTION_ENTITY,
+    INSERT_ASSERTION_MENTION,
     INSERT_ASSERTION_OUTBOX,
     RECOVER_DONE_WITHOUT_PROCESSED_AT,
     RECOVER_STUCK_AI_TASKS,
@@ -598,6 +600,176 @@ def test_write_assertions_and_mark_done_writes_outbox_event(monkeypatch) -> None
     assert outbox_params["source"] == "weibo"
     assert outbox_params["post_uid"] == "weibo:1"
     assert outbox_params["author"] == "作者A"
+
+
+def test_write_assertions_and_mark_done_writes_assertion_mentions(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            calls.append((str(query), params))
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+
+    turso_queue.write_assertions_and_mark_done(
+        cast(Any, object()),
+        post_uid="weibo:2",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-03-28 12:00:01",
+        ai_result_json=None,
+        assertions=[
+            {
+                "topic_key": "stock:600519",
+                "speaker": "作者A",
+                "relation_to_topic": "new",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "他说开始买了。",
+                "evidence": "我今天开始买600519了",
+                "evidence_refs_json": "[]",
+                "confidence": 0.95,
+                "stock_codes_json": '["600519"]',
+                "stock_names_json": '["茅台"]',
+                "industries_json": "[]",
+                "commodities_json": "[]",
+                "indices_json": "[]",
+                "assertion_mentions": [
+                    {
+                        "mention_text": "600519",
+                        "mention_type": "stock_code",
+                        "evidence": "我今天开始买600519了",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+        outbox_source="weibo",
+        outbox_author="作者A",
+        outbox_event_json='{"event_type":"ai_done","post_uid":"weibo:2"}',
+    )
+
+    mention_calls = [
+        item for item in calls if item[0].strip() == INSERT_ASSERTION_MENTION.strip()
+    ]
+    assert len(mention_calls) == 1
+    mention_params = cast(list[dict[str, object]], mention_calls[0][1])
+    assert mention_params == [
+        {
+            "post_uid": "weibo:2",
+            "assertion_idx": 1,
+            "mention_idx": 1,
+            "mention_text": "600519",
+            "mention_type": "stock_code",
+            "evidence": "我今天开始买600519了",
+            "confidence": 0.95,
+        }
+    ]
+
+
+def test_write_assertions_and_mark_done_writes_assertion_entities(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            calls.append((str(query), params))
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+
+    turso_queue.write_assertions_and_mark_done(
+        cast(Any, object()),
+        post_uid="weibo:3",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-03-28 12:00:01",
+        ai_result_json=None,
+        assertions=[
+            {
+                "topic_key": "stock:600519",
+                "speaker": "作者A",
+                "relation_to_topic": "new",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "他说开始买了。",
+                "evidence": "我今天开始买600519了",
+                "evidence_refs_json": "[]",
+                "confidence": 0.95,
+                "stock_codes_json": '["600519"]',
+                "stock_names_json": '["茅台"]',
+                "industries_json": "[]",
+                "commodities_json": "[]",
+                "indices_json": "[]",
+                "assertion_entities": [
+                    {
+                        "entity_key": "stock:600519.SH",
+                        "entity_type": "stock",
+                        "source_mention_text": "600519",
+                        "source_mention_type": "stock_code",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+        outbox_source="weibo",
+        outbox_author="作者A",
+        outbox_event_json='{"event_type":"ai_done","post_uid":"weibo:3"}',
+    )
+
+    entity_calls = [
+        item for item in calls if item[0].strip() == INSERT_ASSERTION_ENTITY.strip()
+    ]
+    assert len(entity_calls) == 1
+    entity_params = cast(list[dict[str, object]], entity_calls[0][1])
+    assert entity_params == [
+        {
+            "post_uid": "weibo:3",
+            "assertion_idx": 1,
+            "entity_idx": 1,
+            "entity_key": "stock:600519.SH",
+            "entity_type": "stock",
+            "source_mention_text": "600519",
+            "source_mention_type": "stock_code",
+            "confidence": 0.95,
+        }
+    ]
 
 
 def test_load_assertion_outbox_events_maps_rows(monkeypatch) -> None:

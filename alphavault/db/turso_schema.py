@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from alphavault.db.sql.common import pragma_table_info
 from alphavault.db.sql.turso_db import (
+    CREATE_ASSERTION_MENTIONS_TABLE,
+    CREATE_ASSERTION_ENTITIES_TABLE,
     CLOUD_SCHEMA_INDEX_STATEMENTS,
     CREATE_ASSERTIONS_TABLE,
     CREATE_POSTS_TABLE,
@@ -107,6 +109,8 @@ def init_cloud_schema(engine: TursoEngine) -> None:
     with turso_connect_autocommit(engine) as conn:
         conn.execute(CREATE_POSTS_TABLE)
         conn.execute(CREATE_ASSERTIONS_TABLE)
+        conn.execute(CREATE_ASSERTION_MENTIONS_TABLE)
+        conn.execute(CREATE_ASSERTION_ENTITIES_TABLE)
         for stmt in CLOUD_SCHEMA_INDEX_STATEMENTS:
             conn.execute(stmt)
 

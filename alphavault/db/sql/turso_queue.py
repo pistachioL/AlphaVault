@@ -187,14 +187,41 @@ WHERE post_uid IN ({placeholders})
 
 
 DELETE_ASSERTIONS_BY_POST_UID = "DELETE FROM assertions WHERE post_uid = :post_uid"
+DELETE_ASSERTION_MENTIONS_BY_POST_UID = (
+    "DELETE FROM assertion_mentions WHERE post_uid = :post_uid"
+)
+DELETE_ASSERTION_ENTITIES_BY_POST_UID = (
+    "DELETE FROM assertion_entities WHERE post_uid = :post_uid"
+)
 
 INSERT_ASSERTION = """
 INSERT INTO assertions (
-    post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence,
-    stock_codes_json, stock_names_json, industries_json, commodities_json, indices_json
+    post_uid, idx, speaker, relation_to_topic, topic_key, action, action_strength,
+    summary, evidence, evidence_refs_json, confidence, stock_codes_json,
+    stock_names_json, industries_json, commodities_json, indices_json, keywords_json
 ) VALUES (
-    :post_uid, :idx, :topic_key, :action, :action_strength, :summary, :evidence, :confidence,
-    :stock_codes_json, :stock_names_json, :industries_json, :commodities_json, :indices_json
+    :post_uid, :idx, :speaker, :relation_to_topic, :topic_key, :action,
+    :action_strength, :summary, :evidence, :evidence_refs_json, :confidence,
+    :stock_codes_json, :stock_names_json, :industries_json, :commodities_json,
+    :indices_json, :keywords_json
+)
+"""
+
+INSERT_ASSERTION_MENTION = """
+INSERT INTO assertion_mentions (
+    post_uid, assertion_idx, mention_idx, mention_text, mention_type, evidence, confidence
+) VALUES (
+    :post_uid, :assertion_idx, :mention_idx, :mention_text, :mention_type, :evidence, :confidence
+)
+"""
+
+INSERT_ASSERTION_ENTITY = """
+INSERT INTO assertion_entities (
+    post_uid, assertion_idx, entity_idx, entity_key, entity_type,
+    source_mention_text, source_mention_type, confidence
+) VALUES (
+    :post_uid, :assertion_idx, :entity_idx, :entity_key, :entity_type,
+    :source_mention_text, :source_mention_type, :confidence
 )
 """
 

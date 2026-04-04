@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import libsql
 from typing import cast
 
 from alphavault.db.turso_db import TursoConnection
+from alphavault.research_stock_cache import ensure_research_stock_cache_schema
 from alphavault.worker import research_stock_cache as stock_hot_cache
 
 
@@ -12,6 +14,51 @@ class _FakeConn:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+def test_list_missing_hot_cache_stock_keys_reads_assertion_entities() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_stock_cache_schema(conn)
+        conn.execute(
+            """
+            CREATE TABLE assertions(
+                post_uid TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                topic_key TEXT NOT NULL,
+                action TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE assertion_entities(
+                post_uid TEXT NOT NULL,
+                assertion_idx INTEGER NOT NULL,
+                entity_idx INTEGER NOT NULL,
+                entity_key TEXT NOT NULL,
+                entity_type TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO assertions(post_uid, idx, topic_key, action)
+            VALUES ('weibo:1', 1, 'stock:紫金', 'trade.buy')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO assertion_entities(post_uid, assertion_idx, entity_idx, entity_key, entity_type)
+            VALUES ('weibo:1', 1, 1, 'stock:601899.SH', 'stock')
+            """
+        )
+
+        keys = stock_hot_cache._list_missing_hot_cache_stock_keys(conn, limit=10)
+
+        assert keys == ["stock:601899.SH"]
+    finally:
+        conn.close()
 
 
 def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:

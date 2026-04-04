@@ -5,148 +5,184 @@ import pytest
 from alphavault.ai.tag_validate import (
     AiTagValidationError,
     validate_assertion_row,
-    validate_topic_prompt_v3_ai_result,
+    validate_topic_prompt_v4_ai_result,
 )
-from alphavault.ai.topic_prompt_v3 import TOPIC_PROMPT_VERSION
+from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
 
 
-def test_topic_prompt_v3_ok_stock_code() -> None:
+def test_topic_prompt_v4_ok_mentions_and_assertions() -> None:
     parsed = {
-        "items": [
+        "topic_status_id": "status-1",
+        "topic_summary": "他主要在说茅台现在先看，不急着追。",
+        "assertions": [
             {
-                "topic_key": "stock:600519.SH",
+                "speaker": "老王",
+                "relation_to_topic": "new",
                 "action": "trade.buy",
                 "action_strength": 2,
+                "summary": "他说已经开始买了茅台。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "status",
+                        "source_id": "1001",
+                        "quote": "我今天开始买600519了",
+                    }
+                ],
+                "mentions": ["600519", "茅台"],
+            }
+        ],
+        "mentions": [
+            {
+                "mention_text": "600519",
+                "mention_type": "stock_code",
+                "evidence": "我今天开始买600519了",
+                "confidence": 0.95,
+            },
+            {
+                "mention_text": "茅台",
+                "mention_type": "stock_alias",
+                "evidence": "我今天开始买600519了，先看茅台",
+                "confidence": 0.9,
+            },
+        ],
+    }
+    validate_topic_prompt_v4_ai_result(parsed)
+
+
+def test_topic_prompt_v4_ok_keyword_topic_and_follow_relation() -> None:
+    parsed = {
+        "topic_status_id": "status-2",
+        "topic_summary": "他是在接着前面的话继续看汇率。",
+        "assertions": [
+            {
+                "speaker": "老王",
+                "relation_to_topic": "follow",
+                "action": "trade.watch",
+                "action_strength": 1,
+                "summary": "他觉得汇率这事还得再看。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "comment",
+                        "source_id": "2002",
+                        "quote": "汇率这事先看看",
+                    }
+                ],
+                "mentions": ["汇率"],
+            }
+        ],
+        "mentions": [
+            {
+                "mention_text": "汇率",
+                "mention_type": "keyword",
+                "evidence": "汇率这事先看看",
                 "confidence": 0.8,
-                "stock_codes": ["600519.SH"],
-                "stock_names": ["贵州茅台"],
-                "industries": ["白酒"],
-                "commodities": [],
-                "indices": [],
             }
-        ]
+        ],
     }
-    validate_topic_prompt_v3_ai_result(parsed)
+    validate_topic_prompt_v4_ai_result(parsed)
 
 
-def test_topic_prompt_v3_ok_stock_code_hk() -> None:
+def test_topic_prompt_v4_ok_commodity_mention() -> None:
     parsed = {
-        "items": [
+        "topic_status_id": "status-commodity-1",
+        "topic_summary": "他主要在说黄金还可以继续看。",
+        "assertions": [
             {
-                "topic_key": "stock:0700.HK",
-                "action": "trade.watch",
-                "action_strength": 1,
-                "confidence": 0.6,
-                "stock_codes": ["0700.HK"],
-            }
-        ]
-    }
-    validate_topic_prompt_v3_ai_result(parsed)
-
-
-def test_topic_prompt_v3_ok_stock_code_us() -> None:
-    parsed = {
-        "items": [
-            {
-                "topic_key": "stock:AMZN.US",
-                "action": "trade.watch",
-                "action_strength": 1,
-                "confidence": 0.6,
-                "stock_codes": ["AMZN.US"],
-            }
-        ]
-    }
-    validate_topic_prompt_v3_ai_result(parsed)
-
-
-def test_topic_prompt_v3_ok_stock_name_without_codes() -> None:
-    parsed = {
-        "items": [
-            {
-                "topic_key": "stock:长电",
-                "action": "trade.watch",
-                "action_strength": 1,
-                "confidence": 0.6,
-                # stock_codes missing -> treated as []
-                "stock_names": ["长电"],
-                "industries": [],
-                "commodities": [],
-                "indices": [],
-            }
-        ]
-    }
-    validate_topic_prompt_v3_ai_result(parsed)
-
-
-def test_topic_prompt_v3_reject_stock_name_with_codes() -> None:
-    parsed = {
-        "items": [
-            {
-                "topic_key": "stock:长电",
-                "action": "trade.watch",
-                "action_strength": 1,
-                "confidence": 0.6,
-                "stock_codes": ["600519.SH"],
-            }
-        ]
-    }
-    with pytest.raises(AiTagValidationError):
-        validate_topic_prompt_v3_ai_result(parsed)
-
-
-def test_topic_prompt_v3_reject_stock_multiple_values() -> None:
-    parsed = {
-        "items": [
-            {
-                "topic_key": "stock:长电,紫金",
-                "action": "trade.watch",
-                "action_strength": 1,
-                "confidence": 0.6,
-            }
-        ]
-    }
-    with pytest.raises(AiTagValidationError):
-        validate_topic_prompt_v3_ai_result(parsed)
-
-
-def test_topic_prompt_v3_reject_stock_code_without_suffix() -> None:
-    parsed = {
-        "items": [
-            {
-                "topic_key": "stock:600519",
-                "action": "trade.watch",
-                "action_strength": 1,
-                "confidence": 0.6,
-            }
-        ]
-    }
-    with pytest.raises(AiTagValidationError):
-        validate_topic_prompt_v3_ai_result(parsed)
-
-
-def test_topic_prompt_v3_reject_list_value_with_comma() -> None:
-    parsed = {
-        "items": [
-            {
-                "topic_key": "industry:电力",
+                "speaker": "老王",
+                "relation_to_topic": "new",
                 "action": "view.bullish",
                 "action_strength": 1,
-                "confidence": 0.6,
-                "industries": ["电力,黄金"],
+                "summary": "他说黄金还行。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "status",
+                        "source_id": "5005",
+                        "quote": "黄金我继续看",
+                    }
+                ],
+                "mentions": ["黄金"],
             }
-        ]
+        ],
+        "mentions": [
+            {
+                "mention_text": "黄金",
+                "mention_type": "commodity_name",
+                "evidence": "黄金我继续看",
+                "confidence": 0.88,
+            }
+        ],
+    }
+    validate_topic_prompt_v4_ai_result(parsed)
+
+
+def test_topic_prompt_v4_reject_assertion_mention_not_defined() -> None:
+    parsed = {
+        "topic_status_id": "status-3",
+        "topic_summary": "他提了一只票。",
+        "assertions": [
+            {
+                "speaker": "老王",
+                "relation_to_topic": "new",
+                "action": "trade.watch",
+                "action_strength": 1,
+                "summary": "他说先看着。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "status",
+                        "source_id": "3003",
+                        "quote": "长电先看着",
+                    }
+                ],
+                "mentions": ["长电"],
+            }
+        ],
+        "mentions": [],
     }
     with pytest.raises(AiTagValidationError):
-        validate_topic_prompt_v3_ai_result(parsed)
+        validate_topic_prompt_v4_ai_result(parsed)
 
 
-def test_db_row_ok_stock_name_empty_codes() -> None:
+def test_topic_prompt_v4_reject_bad_mention_type() -> None:
+    parsed = {
+        "topic_status_id": "status-4",
+        "topic_summary": "他说了一句。",
+        "assertions": [
+            {
+                "speaker": "老王",
+                "relation_to_topic": "new",
+                "action": "trade.watch",
+                "action_strength": 1,
+                "summary": "他说先别动。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "status",
+                        "source_id": "4004",
+                        "quote": "先别动",
+                    }
+                ],
+                "mentions": ["长电"],
+            }
+        ],
+        "mentions": [
+            {
+                "mention_text": "长电",
+                "mention_type": "company_name",
+                "evidence": "先别动",
+                "confidence": 0.9,
+            }
+        ],
+    }
+    with pytest.raises(AiTagValidationError):
+        validate_topic_prompt_v4_ai_result(parsed)
+
+
+def test_db_row_ok_v4_stock_alias_with_raw_code_bucket() -> None:
     row = {
         "topic_key": "stock:长电",
         "action": "trade.watch",
         "action_strength": 1,
         "confidence": 0.6,
-        "stock_codes_json": "[]",
+        "stock_codes_json": '["600519"]',
         "stock_names_json": '["长电"]',
         "industries_json": "[]",
         "commodities_json": "[]",
@@ -155,17 +191,33 @@ def test_db_row_ok_stock_name_empty_codes() -> None:
     validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)
 
 
-def test_db_row_reject_stock_name_with_codes() -> None:
+def test_db_row_ok_v4_keyword_topic() -> None:
     row = {
-        "topic_key": "stock:长电",
-        "action": "trade.watch",
+        "topic_key": "keyword:黄金",
+        "action": "view.bullish",
         "action_strength": 1,
         "confidence": 0.6,
-        "stock_codes_json": '["600519.SH"]',
+        "stock_codes_json": "[]",
         "stock_names_json": "[]",
         "industries_json": "[]",
         "commodities_json": "[]",
         "indices_json": "[]",
+        "keywords_json": '["黄金"]',
     }
-    with pytest.raises(AiTagValidationError):
-        validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)
+    validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)
+
+
+def test_db_row_ok_v4_commodity_topic() -> None:
+    row = {
+        "topic_key": "commodity:黄金",
+        "action": "view.bullish",
+        "action_strength": 1,
+        "confidence": 0.6,
+        "stock_codes_json": "[]",
+        "stock_names_json": "[]",
+        "industries_json": "[]",
+        "commodities_json": '["黄金"]',
+        "indices_json": "[]",
+        "keywords_json": "[]",
+    }
+    validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)

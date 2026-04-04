@@ -105,21 +105,38 @@ def test_mark_list_and_remove_dirty_keys() -> None:
         conn.close()
 
 
-def test_mark_stock_dirty_from_assertions_extracts_stock_code_json() -> None:
+def test_mark_stock_dirty_from_assertions_reads_stock_entities_only() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         ensure_research_stock_cache_schema(conn)
-        mark_stock_dirty_from_assertions(
+        marked = mark_stock_dirty_from_assertions(
             conn,
             assertions=[
-                {"topic_key": "stock:601899.SH", "stock_codes_json": "[]"},
-                {"topic_key": "stock:紫金", "stock_codes_json": '["601899.SH"]'},
-                {"topic_key": "cluster:gold", "stock_codes_json": "[]"},
+                {
+                    "topic_key": "stock:紫金",
+                    "stock_codes_json": '["601899.SH"]',
+                    "assertion_entities": [
+                        {
+                            "entity_key": "stock:601899.SH",
+                            "entity_type": "stock",
+                        },
+                        {
+                            "entity_key": "industry:黄金",
+                            "entity_type": "industry",
+                        },
+                    ],
+                },
+                {
+                    "topic_key": "stock:阿紫",
+                    "stock_codes_json": "[]",
+                    "assertion_entities": [],
+                },
+                {"topic_key": "cluster:gold", "stock_codes_json": '["600519.SH"]'},
             ],
             reason="ai",
         )
+        assert marked == 1
         keys = set(list_stock_dirty_keys(conn, limit=10))
-        assert "stock:601899.SH" in keys
-        assert "stock:紫金" in keys
+        assert keys == {"stock:601899.SH"}
     finally:
         conn.close()

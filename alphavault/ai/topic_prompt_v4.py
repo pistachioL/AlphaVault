@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
-TOPIC_PROMPT_VERSION = "topic-prompt-v3"
+TOPIC_PROMPT_VERSION = "topic-prompt-v4"
 PROMPT_FOCUS_USERNAME_PLACEHOLDER = "__FOCUS_USERNAME__"
 
-_HEADER_TEMPLATE_PATH = Path(__file__).with_name("topic_prompt_v3_header.txt")
+_HEADER_TEMPLATE_PATH = Path(__file__).with_name("topic_prompt_v4_header.txt")
 
 
 @lru_cache(maxsize=1)
@@ -24,7 +24,7 @@ def build_prompt_header(*, focus_username: str) -> str:
 
 
 def build_topic_prompt(
-    *, ai_topic_package: Dict[str, Any], compact_json: bool = False
+    *, ai_topic_package: dict[str, Any], compact_json: bool = False
 ) -> str:
     focus_username = str(ai_topic_package.get("focus_username") or "").strip()
     header = build_prompt_header(focus_username=focus_username)
@@ -53,7 +53,7 @@ def build_topic_prompt(
     )
 
 
-def build_topic_prompt_compact(*, ai_topic_package: Dict[str, Any]) -> str:
+def build_topic_prompt_compact(*, ai_topic_package: dict[str, Any]) -> str:
     return build_topic_prompt(ai_topic_package=ai_topic_package, compact_json=True)
 
 

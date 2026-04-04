@@ -4,7 +4,11 @@ import os
 from datetime import datetime
 
 from alphavault.constants import DATETIME_FMT, ENV_AI_MODEL
-from alphavault.db.sql.turso_db import SELECT_ASSERTIONS_FOR_POST_UID
+from alphavault.db.sql.turso_db import (
+    SELECT_ASSERTION_ENTITIES_FOR_POST_UID,
+    SELECT_ASSERTION_MENTIONS_FOR_POST_UID,
+    SELECT_ASSERTIONS_FOR_POST_UID,
+)
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import (
     infer_platform_from_post_uid,
@@ -112,9 +116,25 @@ def load_assertions_for_post(engine, *, post_uid: str) -> list[dict[str, object]
         return []
     try:
         with turso_connect_autocommit(engine) as conn:
-            rows = (
+            assertion_rows = (
                 conn.execute(
                     SELECT_ASSERTIONS_FOR_POST_UID,
+                    {"post_uid": target},
+                )
+                .mappings()
+                .all()
+            )
+            mention_rows = (
+                conn.execute(
+                    SELECT_ASSERTION_MENTIONS_FOR_POST_UID,
+                    {"post_uid": target},
+                )
+                .mappings()
+                .all()
+            )
+            entity_rows = (
+                conn.execute(
+                    SELECT_ASSERTION_ENTITIES_FOR_POST_UID,
                     {"post_uid": target},
                 )
                 .mappings()
@@ -124,22 +144,63 @@ def load_assertions_for_post(engine, *, post_uid: str) -> list[dict[str, object]
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
         return []
-    return [
-        {
-            "topic_key": str(row.get("topic_key") or "").strip(),
-            "action": str(row.get("action") or "").strip(),
-            "action_strength": int(row.get("action_strength") or 0),
-            "summary": str(row.get("summary") or "").strip(),
-            "evidence": str(row.get("evidence") or "").strip(),
-            "confidence": float(row.get("confidence") or 0),
-            "stock_codes_json": str(row.get("stock_codes_json") or "[]"),
-            "stock_names_json": str(row.get("stock_names_json") or "[]"),
-            "industries_json": str(row.get("industries_json") or "[]"),
-            "commodities_json": str(row.get("commodities_json") or "[]"),
-            "indices_json": str(row.get("indices_json") or "[]"),
-        }
-        for row in rows
-    ]
+    mentions_by_idx: dict[int, list[dict[str, object]]] = {}
+    for row in mention_rows:
+        idx = int(row.get("assertion_idx") or 0)
+        if idx <= 0:
+            continue
+        mentions_by_idx.setdefault(idx, []).append(
+            {
+                "mention_text": str(row.get("mention_text") or "").strip(),
+                "mention_type": str(row.get("mention_type") or "").strip(),
+                "evidence": str(row.get("evidence") or "").strip(),
+                "confidence": float(row.get("confidence") or 0),
+            }
+        )
+    entities_by_idx: dict[int, list[dict[str, object]]] = {}
+    for row in entity_rows:
+        idx = int(row.get("assertion_idx") or 0)
+        if idx <= 0:
+            continue
+        entities_by_idx.setdefault(idx, []).append(
+            {
+                "entity_key": str(row.get("entity_key") or "").strip(),
+                "entity_type": str(row.get("entity_type") or "").strip(),
+                "source_mention_text": str(
+                    row.get("source_mention_text") or ""
+                ).strip(),
+                "source_mention_type": str(
+                    row.get("source_mention_type") or ""
+                ).strip(),
+                "confidence": float(row.get("confidence") or 0),
+            }
+        )
+    out: list[dict[str, object]] = []
+    for row in assertion_rows:
+        idx = int(row.get("idx") or 0)
+        out.append(
+            {
+                "speaker": str(row.get("speaker") or "").strip(),
+                "relation_to_topic": str(row.get("relation_to_topic") or "new").strip()
+                or "new",
+                "topic_key": str(row.get("topic_key") or "").strip(),
+                "action": str(row.get("action") or "").strip(),
+                "action_strength": int(row.get("action_strength") or 0),
+                "summary": str(row.get("summary") or "").strip(),
+                "evidence": str(row.get("evidence") or "").strip(),
+                "evidence_refs_json": str(row.get("evidence_refs_json") or "[]"),
+                "confidence": float(row.get("confidence") or 0),
+                "stock_codes_json": str(row.get("stock_codes_json") or "[]"),
+                "stock_names_json": str(row.get("stock_names_json") or "[]"),
+                "industries_json": str(row.get("industries_json") or "[]"),
+                "commodities_json": str(row.get("commodities_json") or "[]"),
+                "indices_json": str(row.get("indices_json") or "[]"),
+                "keywords_json": str(row.get("keywords_json") or "[]"),
+                "assertion_mentions": list(mentions_by_idx.get(idx) or []),
+                "assertion_entities": list(entities_by_idx.get(idx) or []),
+            }
+        )
+    return out
 
 
 __all__ = [

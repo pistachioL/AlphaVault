@@ -408,3 +408,9 @@ def build_row_meta(
     if bid:
         row["bid"] = bid
     return row
+
+
+__all__ = [
+    "build_analysis_context",
+    "build_row_meta",
+]

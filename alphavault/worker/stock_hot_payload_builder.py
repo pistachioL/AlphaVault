@@ -7,11 +7,9 @@ import pandas as pd
 
 from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.domains.common.json_list import parse_json_list
-from alphavault.domains.stock.key_match import is_stock_code_value
 from alphavault.domains.stock.object_index import (
     build_stock_object_index,
     filter_assertions_for_stock_object,
@@ -63,14 +61,6 @@ def _window_cutoff_str(days: int) -> str:
     return cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _stock_code_from_key(stock_key: str) -> str:
-    key = normalize_stock_key(stock_key)
-    if not key.startswith("stock:"):
-        return ""
-    code = str(key[len("stock:") :].strip()).upper()
-    return code if is_stock_code_value(code) else ""
-
-
 def _load_stock_alias_relations(conn: TursoConnection) -> pd.DataFrame:
     try:
         return turso_read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
@@ -114,7 +104,6 @@ def _load_stock_assertions(
     ]
     if not selected_cols:
         return pd.DataFrame()
-    query = build_assertions_query(selected_cols)
     params: dict[str, Any] = {
         "stock_key": str(stock_key or "").strip(),
         "cutoff": _window_cutoff_str(window_days),
@@ -126,24 +115,31 @@ def _load_stock_assertions(
         stock_key=stock_key,
     )
     keys = [key for key in keys if key]
-    key_clause = "topic_key = :stock_key"
+    key_clause = "ae.entity_key = :stock_key"
     if len(keys) > 1:
         key_values = keys[1:]
         key_placeholders = make_in_placeholders(prefix="k", count=len(key_values))
         params.update(make_in_params(prefix="k", values=key_values))
-        key_clause = f"(topic_key = :stock_key OR topic_key IN ({key_placeholders}))"
+        key_clause = (
+            f"(ae.entity_key = :stock_key OR ae.entity_key IN ({key_placeholders}))"
+        )
 
-    code = _stock_code_from_key(stock_key)
-    if code and "stock_codes_json" in assertion_cols:
-        params["stock_code_like"] = f"%{code}%"
-        key_clause = f"({key_clause} OR stock_codes_json LIKE :stock_code_like)"
-
-    query += "\nWHERE action LIKE 'trade.%'"
+    select_expr = ", ".join(
+        [*(f"a.{col}" for col in selected_cols), "ae.entity_key AS resolved_entity_key"]
+    )
+    query = f"""
+SELECT {select_expr}
+FROM assertions a
+JOIN assertion_entities ae
+  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
+WHERE a.action LIKE 'trade.%'
+  AND ae.entity_type = 'stock'
+  AND {key_clause}
+"""
     if "created_at" in assertion_cols:
         query += "\n  AND created_at >= :cutoff"
-    query += f"\n  AND {key_clause}"
     if "created_at" in assertion_cols:
-        query += "\nORDER BY created_at DESC"
+        query += "\nORDER BY a.created_at DESC"
     query += "\nLIMIT :limit"
 
     assertions = turso_read_sql_df(conn, query, params=params)
