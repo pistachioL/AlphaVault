@@ -3,7 +3,7 @@ from __future__ import annotations
 import reflex as rx
 from reflex import constants as rx_constants
 
-from alphavault.research_stock_cache import mark_stock_dirty
+from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault_reflex.services.research_backfill_actions import (
     get_turso_engine_for_post_uid as _get_turso_engine_for_post_uid,
     queue_post_for_ai_backfill,
@@ -425,7 +425,7 @@ class ResearchState(rx.State):
         if self.entity_key.startswith("stock:"):
             try:
                 engine = _get_turso_engine_for_post_uid(target)
-                mark_stock_dirty(
+                mark_entity_page_dirty(
                     engine,
                     stock_key=self.entity_key,
                     reason="queue_backfill",

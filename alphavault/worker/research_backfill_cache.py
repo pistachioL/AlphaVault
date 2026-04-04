@@ -21,7 +21,7 @@ from alphavault.research_backfill_cache import (
     replace_stock_backfill_posts,
     save_stock_backfill_meta,
 )
-from alphavault.research_stock_cache import mark_stock_dirty
+from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault.worker.job_state import (
     release_worker_job_lock,
     try_acquire_worker_job_lock,
@@ -481,7 +481,11 @@ def sync_stock_backfill_cache(
                         changed = True
 
                 if changed:
-                    mark_stock_dirty(conn, stock_key=stock_key, reason="backfill_cache")
+                    mark_entity_page_dirty(
+                        conn,
+                        stock_key=stock_key,
+                        reason="backfill_cache",
+                    )
 
                 _log_backfill_sync(
                     verbose=verbose,

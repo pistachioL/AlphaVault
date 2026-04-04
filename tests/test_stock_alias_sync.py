@@ -144,7 +144,7 @@ def test_sync_stock_alias_relations_marks_dirty_for_changed_pairs(
         ),
     )
     monkeypatch.setattr(
-        "alphavault.worker.stock_alias_sync.mark_stock_dirty",
+        "alphavault.worker.stock_alias_sync.mark_entity_page_dirty",
         lambda _conn, *, stock_key, reason: marked.append(stock_key),
     )
 

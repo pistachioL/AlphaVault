@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS {table} (
     header_json TEXT NOT NULL DEFAULT '{{}}',
     items_json TEXT NOT NULL DEFAULT '[]',
     counters_json TEXT NOT NULL DEFAULT '{{}}',
+    content_hash TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 )
 """
@@ -27,6 +28,7 @@ INSERT INTO {table}(
     header_json,
     items_json,
     counters_json,
+    content_hash,
     updated_at
 )
 VALUES(
@@ -34,12 +36,14 @@ VALUES(
     :header_json,
     :items_json,
     :counters_json,
+    :content_hash,
     :updated_at
 )
 ON CONFLICT(view_key) DO UPDATE SET
     header_json = excluded.header_json,
     items_json = excluded.items_json,
     counters_json = excluded.counters_json,
+    content_hash = excluded.content_hash,
     updated_at = excluded.updated_at
 """
 
@@ -50,6 +54,7 @@ SELECT view_key,
        header_json,
        items_json,
        counters_json,
+       content_hash,
        updated_at
 FROM {table}
 WHERE view_key = :view_key

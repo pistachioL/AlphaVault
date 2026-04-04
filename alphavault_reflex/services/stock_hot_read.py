@@ -10,8 +10,8 @@ from alphavault.db.turso_db import ensure_turso_engine
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_stock_cache import (
-    load_stock_extras_snapshot,
-    load_stock_hot_view,
+    load_entity_page_backfill_snapshot,
+    load_entity_page_signal_snapshot,
 )
 from alphavault_reflex.services.turso_read import (
     MISSING_TURSO_SOURCES_ERROR,
@@ -45,8 +45,8 @@ def _load_stock_hot_payload_cached(
     stock_key: str,
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     engine = ensure_turso_engine(db_url, auth_token)
-    hot = load_stock_hot_view(engine, stock_key=stock_key)
-    extras = load_stock_extras_snapshot(engine, stock_key=stock_key)
+    hot = load_entity_page_signal_snapshot(engine, stock_key=stock_key)
+    extras = load_entity_page_backfill_snapshot(engine, stock_key=stock_key)
     progress: dict[str, object] = {}
     cycle_state_key = worker_progress_state_key(
         source_name=source_name,

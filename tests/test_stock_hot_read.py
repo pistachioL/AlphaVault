@@ -29,11 +29,13 @@ def test_load_stock_cached_view_without_running_worker_has_no_processing_warning
 ) -> None:
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
-        stock_hot_read, "load_stock_hot_view", lambda *_args, **_kwargs: {}
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_extras_snapshot",
+        "load_entity_page_backfill_snapshot",
         lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
@@ -57,11 +59,13 @@ def test_load_stock_cached_view_with_running_worker_includes_status(
 ) -> None:
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
-        stock_hot_read, "load_stock_hot_view", lambda *_args, **_kwargs: {}
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_extras_snapshot",
+        "load_entity_page_backfill_snapshot",
         lambda *_args, **_kwargs: {},
     )
 
@@ -95,7 +99,7 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_hot_view",
+        "load_entity_page_signal_snapshot",
         lambda *_args, **_kwargs: {
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
@@ -115,7 +119,7 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_extras_snapshot",
+        "load_entity_page_backfill_snapshot",
         lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
@@ -142,7 +146,7 @@ def test_load_stock_cached_view_does_not_expose_pending_candidates(monkeypatch) 
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_hot_view",
+        "load_entity_page_signal_snapshot",
         lambda *_args, **_kwargs: {
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
@@ -153,7 +157,7 @@ def test_load_stock_cached_view_does_not_expose_pending_candidates(monkeypatch) 
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_extras_snapshot",
+        "load_entity_page_backfill_snapshot",
         lambda *_args, **_kwargs: {
             "pending_candidates": [{"candidate_id": "cand-1"}],
             "backfill_posts": [{"post_uid": "p1"}],

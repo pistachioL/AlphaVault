@@ -78,7 +78,7 @@ def test_sync_stock_backfill_cache_yields_to_rss_after_current_stock(
     )
     monkeypatch.setattr(
         backfill_cache,
-        "mark_stock_dirty",
+        "mark_entity_page_dirty",
         lambda *_args, **_kwargs: None,
     )
 
@@ -154,7 +154,7 @@ def test_sync_stock_backfill_cache_keeps_existing_rows_when_scan_truncated(
     )
     monkeypatch.setattr(
         backfill_cache,
-        "mark_stock_dirty",
+        "mark_entity_page_dirty",
         lambda *_args, stock_key, **_kwargs: mark_dirty_calls.append(
             str(stock_key or "")
         ),
@@ -239,7 +239,7 @@ def test_sync_stock_backfill_cache_skips_write_when_signature_unchanged(
     )
     monkeypatch.setattr(
         backfill_cache,
-        "mark_stock_dirty",
+        "mark_entity_page_dirty",
         lambda *_args, stock_key, **_kwargs: mark_dirty_calls.append(
             str(stock_key or "")
         ),

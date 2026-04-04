@@ -5,6 +5,8 @@ import json
 import threading
 from typing import Iterator
 
+from alphavault.content_hash import build_content_hash
+from alphavault.db.introspect import table_columns
 from alphavault.db.sql.homework_trade_feed import (
     create_homework_trade_feed_index,
     create_homework_trade_feed_table,
@@ -87,6 +89,7 @@ def _handle_turso_error(
 def _run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
     with _use_conn(engine_or_conn) as conn:
         conn.execute(create_homework_trade_feed_table(HOMEWORK_TRADE_FEED_TABLE))
+        _ensure_homework_trade_feed_columns(conn)
         conn.execute(create_homework_trade_feed_index(HOMEWORK_TRADE_FEED_TABLE))
 
 
@@ -175,6 +178,67 @@ def _coerce_non_negative_int(value: object, *, default: int) -> int:
     return max(0, parsed)
 
 
+def _ensure_homework_trade_feed_columns(conn: TursoConnection) -> None:
+    cols = table_columns(conn, HOMEWORK_TRADE_FEED_TABLE)
+    if "content_hash" not in cols:
+        conn.execute(
+            f"ALTER TABLE {HOMEWORK_TRADE_FEED_TABLE} "
+            "ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+        )
+
+
+def _select_homework_trade_feed_row(
+    conn: TursoConnection,
+    *,
+    view_key: str,
+) -> dict[str, object]:
+    row = (
+        conn.execute(
+            select_homework_trade_feed(HOMEWORK_TRADE_FEED_TABLE),
+            {"view_key": view_key},
+        )
+        .mappings()
+        .fetchone()
+    )
+    return dict(row) if row else {}
+
+
+def _homework_trade_feed_content_hash(
+    *,
+    view_key: str,
+    header: dict[str, object],
+    rows: list[dict[str, str]],
+    counters: dict[str, int],
+) -> str:
+    return build_content_hash(
+        {
+            "view_key": _clean_text(view_key),
+            "header": dict(header),
+            "items": _clean_rows(rows),
+            "counters": dict(counters),
+        }
+    )
+
+
+def _homework_trade_feed_row_hash(row: dict[str, object]) -> str:
+    if not row:
+        return ""
+    stored_hash = _clean_text(row.get("content_hash"))
+    if stored_hash:
+        return stored_hash
+    return _homework_trade_feed_content_hash(
+        view_key=_clean_text(row.get("view_key")),
+        header=_json_load_dict(row.get("header_json")),
+        rows=_json_load_rows(row.get("items_json")),
+        counters={
+            "row_count": _coerce_non_negative_int(
+                _json_load_dict(row.get("counters_json")).get("row_count"),
+                default=len(_json_load_rows(row.get("items_json"))),
+            )
+        },
+    )
+
+
 def save_homework_trade_feed(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
@@ -187,29 +251,40 @@ def save_homework_trade_feed(
     if not key:
         return
     cleaned_rows = _clean_rows(rows)
-    params = {
-        "view_key": key,
-        "header_json": json.dumps(
-            {
-                "caption": _clean_text(caption),
-                "used_window_days": _coerce_positive_int(
-                    used_window_days,
-                    default=1,
-                ),
-            },
-            ensure_ascii=False,
+    header = {
+        "caption": _clean_text(caption),
+        "used_window_days": _coerce_positive_int(
+            used_window_days,
+            default=1,
         ),
-        "items_json": json.dumps(cleaned_rows, ensure_ascii=False),
-        "counters_json": json.dumps(
-            {"row_count": len(cleaned_rows)},
-            ensure_ascii=False,
-        ),
-        "updated_at": _now_str(),
     }
+    counters = {"row_count": len(cleaned_rows)}
     try:
         ensure_homework_trade_feed_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
-            conn.execute(upsert_homework_trade_feed(HOMEWORK_TRADE_FEED_TABLE), params)
+            existing_row = _select_homework_trade_feed_row(conn, view_key=key)
+            content_hash = _homework_trade_feed_content_hash(
+                view_key=key,
+                header=header,
+                rows=cleaned_rows,
+                counters=counters,
+            )
+            if (
+                existing_row
+                and _homework_trade_feed_row_hash(existing_row) == content_hash
+            ):
+                return
+            conn.execute(
+                upsert_homework_trade_feed(HOMEWORK_TRADE_FEED_TABLE),
+                {
+                    "view_key": key,
+                    "header_json": json.dumps(header, ensure_ascii=False),
+                    "items_json": json.dumps(cleaned_rows, ensure_ascii=False),
+                    "counters_json": json.dumps(counters, ensure_ascii=False),
+                    "content_hash": content_hash,
+                    "updated_at": _now_str(),
+                },
+            )
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
 
@@ -225,14 +300,7 @@ def load_homework_trade_feed(
     try:
         ensure_homework_trade_feed_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
-            row = (
-                conn.execute(
-                    select_homework_trade_feed(HOMEWORK_TRADE_FEED_TABLE),
-                    {"view_key": key},
-                )
-                .mappings()
-                .fetchone()
-            )
+            row = _select_homework_trade_feed_row(conn, view_key=key)
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
     if not row:

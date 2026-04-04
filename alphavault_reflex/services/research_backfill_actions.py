@@ -21,7 +21,7 @@ from alphavault.db.turso_queue import (
 )
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_backfill_cache import mark_stock_backfill_dirty_from_assertions
-from alphavault.research_stock_cache import mark_stock_dirty
+from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault_reflex.services.stock_backfill import (
     BACKFILL_PROMPT_VERSION,
     merge_post_assertions,
@@ -97,7 +97,7 @@ def run_direct_stock_backfill(post_uid: str, stock_key: str, display_name: str) 
         ai_result_json=None,
         assertions=merged,
     )
-    mark_stock_dirty(
+    mark_entity_page_dirty(
         engine,
         stock_key=target_stock_key,
         reason="direct_backfill",

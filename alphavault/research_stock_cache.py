@@ -5,6 +5,8 @@ import json
 import threading
 from typing import Iterator
 
+from alphavault.content_hash import build_content_hash
+from alphavault.db.introspect import table_columns
 from alphavault.domains.common.assertion_entities import extract_stock_entity_keys
 from alphavault.timeutil import now_cst_str
 from alphavault.db.sql.research_stock_cache import (
@@ -95,6 +97,7 @@ def _handle_turso_error(
 def _run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
     with _use_conn(engine_or_conn) as conn:
         conn.execute(create_entity_page_snapshot_table(ENTITY_PAGE_SNAPSHOT_TABLE))
+        _ensure_entity_page_snapshot_schema(conn)
         conn.execute(create_entity_page_snapshot_index(ENTITY_PAGE_SNAPSHOT_TABLE))
         conn.execute(create_research_stock_dirty_keys_table(PROJECTION_DIRTY_TABLE))
         conn.execute(create_research_stock_dirty_keys_index(PROJECTION_DIRTY_TABLE))
@@ -165,7 +168,66 @@ def _coerce_non_negative_int(value: object, *, default: int) -> int:
     return max(parsed, 0)
 
 
-def save_stock_hot_view(
+def _ensure_entity_page_snapshot_schema(conn: TursoConnection) -> None:
+    cols = table_columns(conn, ENTITY_PAGE_SNAPSHOT_TABLE)
+    if "content_hash" not in cols:
+        conn.execute(
+            f"ALTER TABLE {ENTITY_PAGE_SNAPSHOT_TABLE} "
+            "ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
+        )
+
+
+def _select_entity_page_snapshot_row(
+    conn: TursoConnection,
+    *,
+    entity_key: str,
+) -> dict[str, object]:
+    row = (
+        conn.execute(
+            select_entity_page_snapshot(ENTITY_PAGE_SNAPSHOT_TABLE),
+            {"entity_key": entity_key},
+        )
+        .mappings()
+        .fetchone()
+    )
+    return dict(row) if row else {}
+
+
+def _entity_page_snapshot_content_hash(
+    *,
+    header_title: str,
+    signal_total: int,
+    signals: list[dict[str, str]],
+    related_sectors: list[dict[str, str]],
+    backfill_posts: list[dict[str, str]],
+) -> str:
+    return build_content_hash(
+        {
+            "header_title": str(header_title or "").strip(),
+            "signal_total": max(0, int(signal_total)),
+            "signals": _clean_json_rows(signals),
+            "related_sectors": _clean_json_rows(related_sectors),
+            "backfill_posts": _clean_json_rows(backfill_posts),
+        }
+    )
+
+
+def _entity_page_snapshot_row_hash(row: dict[str, object]) -> str:
+    if not row:
+        return ""
+    stored_hash = str(row.get("content_hash") or "").strip()
+    if stored_hash:
+        return stored_hash
+    return _entity_page_snapshot_content_hash(
+        header_title=str(row.get("header_title") or "").strip(),
+        signal_total=_coerce_non_negative_int(row.get("signal_total"), default=0),
+        signals=_json_list(row.get("signals_json")),
+        related_sectors=_json_list(row.get("related_sectors_json")),
+        backfill_posts=_json_list(row.get("backfill_posts_json")),
+    )
+
+
+def save_entity_page_signal_snapshot(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     stock_key: str,
@@ -177,29 +239,44 @@ def save_stock_hot_view(
     signals = _clean_json_rows(payload.get("signals"))
     related_sectors = _clean_json_rows(payload.get("related_sectors"))
     entity_key = str(payload.get("entity_key") or key).strip() or key
-    params = {
-        "entity_key": entity_key,
-        "header_title": str(payload.get("header_title") or "").strip(),
-        "signal_total": _coerce_non_negative_int(
-            payload.get("signal_total"),
-            default=len(signals),
-        ),
-        "signals_json": _json_dumps(signals),
-        "related_sectors_json": _json_dumps(related_sectors),
-        "updated_at": _now_str(),
-    }
+    header_title = str(payload.get("header_title") or "").strip()
+    signal_total = _coerce_non_negative_int(
+        payload.get("signal_total"),
+        default=len(signals),
+    )
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
+            existing_row = _select_entity_page_snapshot_row(conn, entity_key=entity_key)
+            content_hash = _entity_page_snapshot_content_hash(
+                header_title=header_title,
+                signal_total=signal_total,
+                signals=signals,
+                related_sectors=related_sectors,
+                backfill_posts=_json_list(existing_row.get("backfill_posts_json")),
+            )
+            if (
+                existing_row
+                and _entity_page_snapshot_row_hash(existing_row) == content_hash
+            ):
+                return
             conn.execute(
                 upsert_entity_page_snapshot_hot(ENTITY_PAGE_SNAPSHOT_TABLE),
-                params,
+                {
+                    "entity_key": entity_key,
+                    "header_title": header_title,
+                    "signal_total": signal_total,
+                    "signals_json": _json_dumps(signals),
+                    "related_sectors_json": _json_dumps(related_sectors),
+                    "content_hash": content_hash,
+                    "updated_at": _now_str(),
+                },
             )
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
 
 
-def load_stock_hot_view(
+def load_entity_page_signal_snapshot(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     stock_key: str,
@@ -210,14 +287,7 @@ def load_stock_hot_view(
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
-            row = (
-                conn.execute(
-                    select_entity_page_snapshot(ENTITY_PAGE_SNAPSHOT_TABLE),
-                    {"entity_key": key},
-                )
-                .mappings()
-                .fetchone()
-            )
+            row = _select_entity_page_snapshot_row(conn, entity_key=key)
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
     if not row:
@@ -232,7 +302,7 @@ def load_stock_hot_view(
     }
 
 
-def save_stock_extras_snapshot(
+def save_entity_page_backfill_snapshot(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     stock_key: str,
@@ -242,23 +312,39 @@ def save_stock_extras_snapshot(
     if not key:
         return
     backfill_rows = _clean_json_rows(backfill_posts)
-    params = {
-        "entity_key": key,
-        "backfill_posts_json": _json_dumps(backfill_rows),
-        "updated_at": _now_str(),
-    }
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
+            existing_row = _select_entity_page_snapshot_row(conn, entity_key=key)
+            content_hash = _entity_page_snapshot_content_hash(
+                header_title=str(existing_row.get("header_title") or "").strip(),
+                signal_total=_coerce_non_negative_int(
+                    existing_row.get("signal_total"),
+                    default=0,
+                ),
+                signals=_json_list(existing_row.get("signals_json")),
+                related_sectors=_json_list(existing_row.get("related_sectors_json")),
+                backfill_posts=backfill_rows,
+            )
+            if (
+                existing_row
+                and _entity_page_snapshot_row_hash(existing_row) == content_hash
+            ):
+                return
             conn.execute(
                 upsert_entity_page_snapshot_extras(ENTITY_PAGE_SNAPSHOT_TABLE),
-                params,
+                {
+                    "entity_key": key,
+                    "backfill_posts_json": _json_dumps(backfill_rows),
+                    "content_hash": content_hash,
+                    "updated_at": _now_str(),
+                },
             )
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
 
 
-def load_stock_extras_snapshot(
+def load_entity_page_backfill_snapshot(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     stock_key: str,
@@ -269,14 +355,7 @@ def load_stock_extras_snapshot(
     try:
         ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
-            row = (
-                conn.execute(
-                    select_entity_page_snapshot(ENTITY_PAGE_SNAPSHOT_TABLE),
-                    {"entity_key": key},
-                )
-                .mappings()
-                .fetchone()
-            )
+            row = _select_entity_page_snapshot_row(conn, entity_key=key)
     except BaseException as err:
         _handle_turso_error(engine_or_conn, err)
     if not row:
@@ -288,7 +367,7 @@ def load_stock_extras_snapshot(
     }
 
 
-def mark_stock_dirty(
+def mark_entity_page_dirty(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     stock_key: str,
@@ -313,7 +392,7 @@ def mark_stock_dirty(
         _handle_turso_error(engine_or_conn, err)
 
 
-def list_stock_dirty_keys(
+def list_entity_page_dirty_keys(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     limit: int,
@@ -344,7 +423,7 @@ def list_stock_dirty_keys(
     ]
 
 
-def list_stock_dirty_entries(
+def list_entity_page_dirty_entries(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     limit: int,
@@ -383,7 +462,7 @@ def list_stock_dirty_entries(
     return out
 
 
-def remove_stock_dirty_keys(
+def remove_entity_page_dirty_keys(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     stock_keys: list[str],
@@ -411,19 +490,19 @@ WHERE job_type = ?
     return 0
 
 
-def pop_stock_dirty_keys(
+def pop_entity_page_dirty_keys(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     limit: int,
 ) -> list[str]:
-    keys = list_stock_dirty_keys(engine_or_conn, limit=limit)
+    keys = list_entity_page_dirty_keys(engine_or_conn, limit=limit)
     if not keys:
         return []
-    remove_stock_dirty_keys(engine_or_conn, stock_keys=keys)
+    remove_entity_page_dirty_keys(engine_or_conn, stock_keys=keys)
     return keys
 
 
-def mark_stock_dirty_from_assertions(
+def mark_entity_page_dirty_from_assertions(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
     assertions: list[dict[str, object]],
@@ -431,7 +510,7 @@ def mark_stock_dirty_from_assertions(
 ) -> int:
     keys = extract_stock_entity_keys(assertions)
     for key in keys:
-        mark_stock_dirty(engine_or_conn, stock_key=key, reason=reason)
+        mark_entity_page_dirty(engine_or_conn, stock_key=key, reason=reason)
     return len(keys)
 
 
@@ -440,14 +519,14 @@ __all__ = [
     "PROJECTION_DIRTY_TABLE",
     "PROJECTION_JOB_TYPE_ENTITY_PAGE",
     "ensure_research_stock_cache_schema",
-    "list_stock_dirty_entries",
-    "list_stock_dirty_keys",
-    "load_stock_extras_snapshot",
-    "load_stock_hot_view",
-    "mark_stock_dirty",
-    "mark_stock_dirty_from_assertions",
-    "pop_stock_dirty_keys",
-    "remove_stock_dirty_keys",
-    "save_stock_extras_snapshot",
-    "save_stock_hot_view",
+    "list_entity_page_dirty_entries",
+    "list_entity_page_dirty_keys",
+    "load_entity_page_backfill_snapshot",
+    "load_entity_page_signal_snapshot",
+    "mark_entity_page_dirty",
+    "mark_entity_page_dirty_from_assertions",
+    "pop_entity_page_dirty_keys",
+    "remove_entity_page_dirty_keys",
+    "save_entity_page_backfill_snapshot",
+    "save_entity_page_signal_snapshot",
 ]

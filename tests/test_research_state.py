@@ -393,7 +393,7 @@ def test_queue_backfill_post_marks_notice_and_clears_caches(monkeypatch) -> None
         lambda: calls.append("cleared_hot"),
     )
     monkeypatch.setattr(
-        "alphavault_reflex.research_state.mark_stock_dirty",
+        "alphavault_reflex.research_state.mark_entity_page_dirty",
         lambda _engine, **_kwargs: calls.append("dirty"),
     )
     monkeypatch.setattr(

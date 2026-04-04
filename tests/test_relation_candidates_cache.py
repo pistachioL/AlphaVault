@@ -69,7 +69,7 @@ def _patch_common(monkeypatch, *, stock_keys: list[str]) -> None:
     )
     monkeypatch.setattr(
         relation_cache,
-        "mark_stock_dirty",
+        "mark_entity_page_dirty",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(relation_cache, "turso_savepoint", _fake_savepoint)

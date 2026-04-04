@@ -64,7 +64,7 @@ def test_list_missing_hot_cache_stock_keys_reads_assertion_entities() -> None:
 def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     removed: list[str] = []
 
-    def _remove_stock_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
+    def _remove_entity_page_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
         removed.extend(stock_keys)
         return len(stock_keys)
 
@@ -85,7 +85,7 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_entries",
+        "list_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [
             {
                 "stock_key": "stock:601899.SH",
@@ -106,12 +106,12 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "remove_stock_dirty_keys",
-        _remove_stock_dirty_keys,
+        "remove_entity_page_dirty_keys",
+        _remove_entity_page_dirty_keys,
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_keys",
+        "list_entity_page_dirty_keys",
         lambda *_args, **_kwargs: [],
     )
 
@@ -131,7 +131,7 @@ def test_refresh_stock_extras_snapshot_respects_min_interval(monkeypatch) -> Non
 
     monkeypatch.setattr(
         stock_hot_cache,
-        "load_stock_extras_snapshot",
+        "load_entity_page_backfill_snapshot",
         lambda *_args, **_kwargs: {"updated_at": "2099-01-01 00:00:00"},
     )
     monkeypatch.setattr(
@@ -149,7 +149,7 @@ def test_refresh_stock_extras_snapshot_respects_min_interval(monkeypatch) -> Non
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "save_stock_extras_snapshot",
+        "save_entity_page_backfill_snapshot",
         lambda _conn, *, stock_key, **_kwargs: saved.append(stock_key),
     )
 
@@ -176,7 +176,7 @@ def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> No
 
     monkeypatch.setattr(
         stock_hot_cache,
-        "load_stock_extras_snapshot",
+        "load_entity_page_backfill_snapshot",
         lambda *_args, **_kwargs: {"updated_at": ""},
     )
     monkeypatch.setattr(
@@ -201,7 +201,11 @@ def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> No
     ) -> None:
         saved_args.append((stock_key, backfill_posts))
 
-    monkeypatch.setattr(stock_hot_cache, "save_stock_extras_snapshot", _capture_save)
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "save_entity_page_backfill_snapshot",
+        _capture_save,
+    )
 
     refreshed = stock_hot_cache.refresh_stock_extras_snapshot_for_key(
         cast(TursoConnection, _FakeConn()),
@@ -241,7 +245,7 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_entries",
+        "list_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(
@@ -260,18 +264,18 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
         lambda *_args, **_kwargs: True,
     )
 
-    def _remove_stock_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
+    def _remove_entity_page_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
         removed.extend(stock_keys)
         return len(stock_keys)
 
     monkeypatch.setattr(
         stock_hot_cache,
-        "remove_stock_dirty_keys",
-        _remove_stock_dirty_keys,
+        "remove_entity_page_dirty_keys",
+        _remove_entity_page_dirty_keys,
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_keys",
+        "list_entity_page_dirty_keys",
         lambda *_args, **_kwargs: [],
     )
 
@@ -306,7 +310,7 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_entries",
+        "list_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [
             {"stock_key": "stock:1", "reason": "ai_done", "updated_at": "2026-03-27"},
             {"stock_key": "stock:2", "reason": "ai_done", "updated_at": "2026-03-27"},
@@ -323,18 +327,18 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
         lambda *_args, **_kwargs: False,
     )
 
-    def _remove_stock_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
+    def _remove_entity_page_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
         removed.extend(stock_keys)
         return len(stock_keys)
 
     monkeypatch.setattr(
         stock_hot_cache,
-        "remove_stock_dirty_keys",
-        _remove_stock_dirty_keys,
+        "remove_entity_page_dirty_keys",
+        _remove_entity_page_dirty_keys,
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_keys",
+        "list_entity_page_dirty_keys",
         lambda *_args, **_kwargs: ["stock:2"],
     )
 

@@ -14,7 +14,7 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
     turso_savepoint,
 )
-from alphavault.research_stock_cache import mark_stock_dirty
+from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault.research_workbench import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     ensure_research_workbench_schema,
@@ -553,7 +553,7 @@ def sync_relation_candidates_cache(
                         int(batch_upserted) > 0 or int(batch_deleted) > 0
                     )
                 if changed_for_stock and left_key_for_stock.startswith("stock:"):
-                    mark_stock_dirty(
+                    mark_entity_page_dirty(
                         conn,
                         stock_key=left_key_for_stock,
                         reason="relation_candidates_cache",

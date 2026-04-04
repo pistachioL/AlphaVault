@@ -31,7 +31,7 @@ from alphavault.domains.entity_match import (
 )
 from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.research_backfill_cache import mark_stock_backfill_dirty_from_assertions
-from alphavault.research_stock_cache import mark_stock_dirty_from_assertions
+from alphavault.research_stock_cache import mark_entity_page_dirty_from_assertions
 from alphavault.weibo.topic_prompt_tree import (
     MAX_THREAD_POSTS,
     MAX_TOPIC_PROMPT_CHARS,
@@ -652,7 +652,7 @@ def process_one_post_uid_topic_prompt_v4(
 
                 if rows:
                     try:
-                        mark_stock_dirty_from_assertions(
+                        mark_entity_page_dirty_from_assertions(
                             engine,
                             assertions=rows,
                             reason="ai_done",

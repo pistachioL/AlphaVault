@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS {table} (
     signals_json TEXT NOT NULL DEFAULT '[]',
     related_sectors_json TEXT NOT NULL DEFAULT '[]',
     backfill_posts_json TEXT NOT NULL DEFAULT '[]',
+    content_hash TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 )
 """
@@ -30,6 +31,7 @@ INSERT INTO {table}(
     signal_total,
     signals_json,
     related_sectors_json,
+    content_hash,
     updated_at
 )
 VALUES(
@@ -38,6 +40,7 @@ VALUES(
     :signal_total,
     :signals_json,
     :related_sectors_json,
+    :content_hash,
     :updated_at
 )
 ON CONFLICT(entity_key) DO UPDATE SET
@@ -46,6 +49,7 @@ ON CONFLICT(entity_key) DO UPDATE SET
     signal_total = excluded.signal_total,
     signals_json = excluded.signals_json,
     related_sectors_json = excluded.related_sectors_json,
+    content_hash = excluded.content_hash,
     updated_at = excluded.updated_at
 """
 
@@ -55,15 +59,18 @@ def upsert_entity_page_snapshot_extras(table: str) -> str:
 INSERT INTO {table}(
     entity_key,
     backfill_posts_json,
+    content_hash,
     updated_at
 )
 VALUES(
     :entity_key,
     :backfill_posts_json,
+    :content_hash,
     :updated_at
 )
 ON CONFLICT(entity_key) DO UPDATE SET
     backfill_posts_json = excluded.backfill_posts_json,
+    content_hash = excluded.content_hash,
     updated_at = excluded.updated_at
 """
 
@@ -76,6 +83,7 @@ SELECT entity_key,
        signals_json,
        related_sectors_json,
        backfill_posts_json,
+       content_hash,
        updated_at
 FROM {table}
 WHERE entity_key = :entity_key

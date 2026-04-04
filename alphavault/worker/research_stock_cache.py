@@ -12,12 +12,12 @@ from alphavault.research_backfill_cache import list_stock_backfill_posts
 from alphavault.research_stock_cache import (
     ENTITY_PAGE_SNAPSHOT_TABLE,
     ensure_research_stock_cache_schema,
-    list_stock_dirty_entries,
-    list_stock_dirty_keys,
-    load_stock_extras_snapshot,
-    remove_stock_dirty_keys,
-    save_stock_extras_snapshot,
-    save_stock_hot_view,
+    list_entity_page_dirty_entries,
+    list_entity_page_dirty_keys,
+    load_entity_page_backfill_snapshot,
+    remove_entity_page_dirty_keys,
+    save_entity_page_backfill_snapshot,
+    save_entity_page_signal_snapshot,
 )
 from alphavault.worker.job_state import (
     load_worker_job_cursor,
@@ -150,7 +150,7 @@ def _is_extras_snapshot_stale(
     stock_key: str,
     min_refresh_seconds: int,
 ) -> bool:
-    snapshot = load_stock_extras_snapshot(conn, stock_key=stock_key)
+    snapshot = load_entity_page_backfill_snapshot(conn, stock_key=stock_key)
     updated_at = _parse_naive_datetime(snapshot.get("updated_at"))
     if updated_at is None:
         return True
@@ -174,7 +174,7 @@ def refresh_stock_hot_for_key(
     entity_key = (
         str(payload.get("entity_key") or stock_key).strip() or str(stock_key).strip()
     )
-    save_stock_hot_view(conn, stock_key=entity_key, payload=payload)
+    save_entity_page_signal_snapshot(conn, stock_key=entity_key, payload=payload)
     return entity_key
 
 
@@ -201,7 +201,7 @@ def refresh_stock_extras_snapshot_for_key(
         stock_key=entity_key,
         limit=12,
     )
-    save_stock_extras_snapshot(
+    save_entity_page_backfill_snapshot(
         conn,
         stock_key=entity_key,
         backfill_posts=backfill,
@@ -248,7 +248,7 @@ def sync_stock_hot_cache(
             else engine_or_conn
         ) as conn:
             bootstrap_keys: list[str] = []
-            dirty_entries = list_stock_dirty_entries(
+            dirty_entries = list_entity_page_dirty_entries(
                 conn,
                 limit=max(1, max(int(max_stocks_per_run), int(dirty_limit))),
             )
@@ -307,9 +307,9 @@ def sync_stock_hot_cache(
                 )
                 if did_refresh_extras:
                     extras_written += 1
-                remove_stock_dirty_keys(conn, stock_keys=[stock_key])
+                remove_entity_page_dirty_keys(conn, stock_keys=[stock_key])
                 if entity_key != stock_key and entity_key.startswith("stock:"):
-                    remove_stock_dirty_keys(conn, stock_keys=[entity_key])
+                    remove_entity_page_dirty_keys(conn, stock_keys=[entity_key])
                 if reason == "bootstrap_missing_hot":
                     _save_bootstrap_cursor(conn, stock_key)
                 processed_keys.append(stock_key)
@@ -337,7 +337,7 @@ def sync_stock_hot_cache(
                     )
                     break
 
-            remaining = list_stock_dirty_keys(conn, limit=1)
+            remaining = list_entity_page_dirty_keys(conn, limit=1)
             has_more = bool(remaining)
             if (not has_more) and bootstrap_keys:
                 has_more = _has_missing_hot_cache_stock_keys(
