@@ -20,6 +20,7 @@ from alphavault.worker.worker_loop_models import (
     SourceTickExecutors,
     SourceTickState,
 )
+from alphavault.worker.worker_loop_redis_enqueue import maybe_schedule_redis_enqueue
 from alphavault.worker.worker_loop_rss import maybe_schedule_rss_ingest
 from alphavault.worker.worker_loop_spool import maybe_schedule_spool_flush
 from alphavault.worker.worker_loop_turso import ensure_source_turso_ready
@@ -69,6 +70,12 @@ def _schedule_rss_and_spool(
         active_engine=active_engine,
         ctx=ctx,
         spool_executor=execs.spool_executor,
+        wakeup_event=state.wakeup_event,
+    )
+    maybe_schedule_redis_enqueue(
+        source=source,
+        ctx=ctx,
+        redis_enqueue_executor=execs.redis_enqueue_executor,
         wakeup_event=state.wakeup_event,
     )
 
@@ -202,6 +209,9 @@ def _any_inflight(*, source, state: SourceTickState) -> bool:
             any_stock_hot_inflight=bool(
                 getattr(source, "stock_hot_cache_future", None) is not None
             ),
+            any_redis_enqueue_inflight=bool(
+                getattr(source, "redis_enqueue_future", None) is not None
+            ),
             any_rss_inflight=bool(
                 getattr(source, "rss_ingest_future", None) is not None
             ),
@@ -241,7 +251,7 @@ def _save_cycle_progress(
             "running": bool(any_inflight),
             "next_run_at": next_run_at,
             "turso_error": bool(source_turso_error),
-            "rss_error": bool(rss_enqueue_error),
+            "rss_error": bool(rss_enqueue_error or errors["redis_enqueue_error"]),
         },
         verbose=ctx.verbose,
     )

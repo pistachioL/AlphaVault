@@ -6,7 +6,6 @@ from typing import Any
 
 from alphavault.db.turso_queue import (
     CloudPost,
-    load_recent_posts_by_author,
 )
 from alphavault.db.turso_db import TursoEngine
 from alphavault.rss.utils import RateLimiter, now_str
@@ -20,7 +19,6 @@ from alphavault.worker.redis_queue import (
     redis_ai_release_lease,
     redis_ai_try_claim_lease,
 )
-from alphavault.worker.runtime_cache import AuthorRecentLocalCache
 from alphavault.worker.runtime_models import (
     LLMConfig,
     _parse_int_or_default,
@@ -28,9 +26,6 @@ from alphavault.worker.runtime_models import (
 
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-AUTHOR_RECENT_CONTEXT_LIMIT = 200
-
-_author_recent_local_cache = AuthorRecentLocalCache()
 
 
 def process_one_redis_payload(
@@ -76,9 +71,6 @@ def process_one_redis_payload(
         limiter=limiter,
         verbose=bool(verbose),
         payload_to_cloud_post_fn=_payload_to_cloud_post,
-        author_recent_local_cache_get_fn=_author_recent_local_cache.get,
-        author_recent_local_cache_set_fn=_author_recent_local_cache.set,
-        load_recent_posts_by_author_fn=load_recent_posts_by_author,
         redis_ai_try_claim_lease_fn=redis_ai_try_claim_lease,
         process_one_post_uid_fn=process_one_post_uid,
         redis_ai_release_lease_fn=redis_ai_release_lease,
@@ -86,16 +78,13 @@ def process_one_redis_payload(
         redis_ai_push_delayed_fn=redis_ai_push_delayed,
         redis_ai_ack_processing_fn=redis_ai_ack_processing,
         payload_retry_count_fn=_payload_retry_count,
-        build_author_recent_payload_fn=ai_processor.build_author_recent_payload,
         backoff_seconds_fn=backoff_seconds,
         now_epoch_fn=lambda: int(time.time()),
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
-        author_recent_context_limit=int(AUTHOR_RECENT_CONTEXT_LIMIT),
         lease_seconds=max(1, int(lease_seconds)),
     )
 
 
 __all__ = [
-    "AUTHOR_RECENT_CONTEXT_LIMIT",
     "process_one_redis_payload",
 ]

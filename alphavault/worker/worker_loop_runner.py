@@ -73,6 +73,9 @@ def _open_executors(*, ai_cap: int, source_count: int) -> Iterator[SourceTickExe
         stock_hot_executor = stack.enter_context(
             ThreadPoolExecutor(max_workers=int(max_source_workers))
         )
+        redis_enqueue_executor = stack.enter_context(
+            ThreadPoolExecutor(max_workers=int(max_source_workers))
+        )
         spool_executor = stack.enter_context(
             ThreadPoolExecutor(max_workers=int(max_source_workers))
         )
@@ -85,6 +88,7 @@ def _open_executors(*, ai_cap: int, source_count: int) -> Iterator[SourceTickExe
             relation_executor=relation_executor,
             backfill_executor=backfill_executor,
             stock_hot_executor=stock_hot_executor,
+            redis_enqueue_executor=redis_enqueue_executor,
             spool_executor=spool_executor,
             rss_executor=rss_executor,
         )

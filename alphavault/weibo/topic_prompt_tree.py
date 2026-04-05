@@ -265,9 +265,6 @@ def build_topic_runtime_context(
             speaker = extract_speaker_name(seg).strip()
             if not speaker:
                 continue
-            if focus and speaker == focus:
-                # Avoid creating "virtual" focus-username nodes (hard to map back to a post).
-                continue
 
             node_text = strip_leading_speaker(seg, author_hint=speaker) or ""
             node_text, node_truncated = _truncate_text(
@@ -276,9 +273,13 @@ def build_topic_runtime_context(
             if node_truncated:
                 truncated_nodes += 1
 
+            source_kind = "comment"
+            if focus and speaker == focus:
+                source_kind = "talk_reply"
+
             path_payloads.append(
                 {
-                    "source_kind": "comment",
+                    "source_kind": source_kind,
                     "source_id": make_synthetic_source_id(seg),
                     "speaker": speaker,
                     "created_at": created_at,

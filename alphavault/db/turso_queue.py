@@ -29,7 +29,6 @@ from alphavault.db.sql.turso_queue import (
     SELECT_POST_COUNT_ALL,
     SELECT_CLOUD_POST,
     SELECT_ASSERTION_OUTBOX_AFTER_ID,
-    SELECT_RECENT_POSTS_BY_AUTHOR,
     SELECT_UNPROCESSED_POST_QUEUE_ROWS,
     SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM,
     UPDATE_POST_DONE,
@@ -236,34 +235,6 @@ def load_post_processed_at(conn: TursoConnection, *, post_uid: str) -> str | Non
     if not row:
         return None
     return str(row.get("processed_at") or "")
-
-
-def load_recent_posts_by_author(
-    engine: TursoEngine,
-    *,
-    author: str,
-    limit: int,
-) -> list[dict[str, object]]:
-    """
-    Load recent posts (both processed and unprocessed) for building a thread context.
-
-    Returns mappings with keys:
-    - post_uid, platform_post_id, author, created_at, url, raw_text
-    - processed_at
-    """
-    resolved_author = str(author or "").strip()
-    if not resolved_author:
-        return []
-    with turso_connect_autocommit(engine) as conn:
-        rows = (
-            conn.execute(
-                SELECT_RECENT_POSTS_BY_AUTHOR,
-                {"author": resolved_author, "limit": max(0, int(limit))},
-            )
-            .mappings()
-            .fetchall()
-        )
-        return [dict(r) for r in rows if r]
 
 
 def load_unprocessed_post_queue_rows(

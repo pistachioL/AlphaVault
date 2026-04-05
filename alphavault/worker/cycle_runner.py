@@ -113,6 +113,7 @@ def should_wait_with_event(
     any_backfill_inflight: bool,
     any_relation_inflight: bool,
     any_stock_hot_inflight: bool,
+    any_redis_enqueue_inflight: bool,
     any_rss_inflight: bool,
     any_spool_flush_inflight: bool,
 ) -> bool:
@@ -122,6 +123,7 @@ def should_wait_with_event(
         or any_backfill_inflight
         or any_relation_inflight
         or any_stock_hot_inflight
+        or any_redis_enqueue_inflight
         or any_rss_inflight
         or any_spool_flush_inflight
     )

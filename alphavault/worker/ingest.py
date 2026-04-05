@@ -278,6 +278,7 @@ def ingest_rss_many_once(
     rss_retries: int,
     verbose: bool,
     rss_feed_sleep_seconds: float = 0.0,
+    enqueue_spooled_payload: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_item_ingested: Optional[Callable[[], None]] = None,
 ) -> Tuple[int, bool]:
     accepted = 0
@@ -507,6 +508,21 @@ def ingest_rss_many_once(
                     if enqueued:
                         seen_post_uids.add(post_uid)
                         seen_urls.add(link)
+                    continue
+
+                if enqueue_spooled_payload is not None:
+                    try:
+                        enqueue_spooled_payload(payload)
+                    except Exception as err:
+                        enqueue_error = True
+                        if verbose:
+                            print(
+                                f"[redis] enqueue_buffer_error post_uid={post_uid} "
+                                f"{type(err).__name__}: {err}",
+                                flush=True,
+                            )
+                    seen_post_uids.add(post_uid)
+                    seen_urls.add(link)
                     continue
 
                 redis_status = _try_push_to_redis_status(

@@ -4,7 +4,11 @@ from types import SimpleNamespace
 from typing import cast
 
 from alphavault.worker import worker_loop_source_tick
-from alphavault.worker.worker_loop_models import SourceTickContext
+from alphavault.worker.worker_loop_models import (
+    SourceTickContext,
+    SourceTickExecutors,
+    SourceTickState,
+)
 
 
 def test_ensure_local_cache_ready_rebuilds_from_outbox_on_success(monkeypatch) -> None:
@@ -67,3 +71,47 @@ def test_ensure_local_cache_ready_sets_retry_when_rebuild_fails(monkeypatch) -> 
 
     assert source.local_cache_ready is False
     assert source.local_cache_rebuild_next_at == 400.0
+
+
+def test_schedule_rss_and_spool_also_schedules_redis_enqueue(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        worker_loop_source_tick,
+        "maybe_schedule_rss_ingest",
+        lambda **_kwargs: calls.append("rss"),
+    )
+    monkeypatch.setattr(
+        worker_loop_source_tick,
+        "maybe_schedule_spool_flush",
+        lambda **_kwargs: calls.append("spool"),
+    )
+    monkeypatch.setattr(
+        worker_loop_source_tick,
+        "maybe_schedule_redis_enqueue",
+        lambda **_kwargs: calls.append("redis"),
+    )
+
+    worker_loop_source_tick._schedule_rss_and_spool(
+        source=SimpleNamespace(config=SimpleNamespace(platform="weibo")),
+        active_engine=object(),
+        ctx=cast(SourceTickContext, SimpleNamespace()),
+        execs=cast(
+            SourceTickExecutors,
+            SimpleNamespace(
+                rss_executor=object(),
+                spool_executor=object(),
+                redis_enqueue_executor=object(),
+            ),
+        ),
+        state=cast(
+            SourceTickState,
+            SimpleNamespace(
+                wakeup_event=object(),
+                inflight_futures=set(),
+                inflight_owner_by_future={},
+            ),
+        ),
+    )
+
+    assert calls == ["rss", "spool", "redis"]

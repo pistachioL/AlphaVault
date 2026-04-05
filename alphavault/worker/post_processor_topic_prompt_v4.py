@@ -18,7 +18,6 @@ from alphavault.db.turso_db import TursoEngine
 from alphavault.db.turso_queue import (
     CloudPost,
     load_cloud_post,
-    load_recent_posts_by_author,
     write_assertions_and_mark_done,
 )
 from alphavault.domains.common.assertion_entities import build_assertion_entities
@@ -31,7 +30,6 @@ from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.research_backfill_cache import mark_stock_backfill_dirty_from_assertions
 from alphavault.research_stock_cache import mark_entity_page_dirty_from_assertions
 from alphavault.weibo.topic_prompt_tree import (
-    MAX_THREAD_POSTS,
     MAX_TOPIC_PROMPT_CHARS,
     thread_root_info_for_post,
 )
@@ -184,6 +182,7 @@ def map_topic_prompt_assertions_to_rows(
     focus_username: str,
     message_lookup: dict[tuple[str, str], dict[str, object]],
     post_uid_by_platform_post_id: dict[str, str],
+    fallback_post_uid: str = "",
     max_assertions_per_post: int = 5,
 ) -> dict[str, list[dict[str, object]]]:
     focus = str(focus_username or "").strip()
@@ -210,14 +209,20 @@ def map_topic_prompt_assertions_to_rows(
         if not source_id:
             continue
 
-        post_uid = post_uid_by_platform_post_id.get(source_id)
-        if not post_uid:
-            continue
-
         lookup_key = (source_kind, source_id)
         node = message_lookup.get(lookup_key)
         if node is None and source_id:
             node = message_lookup.get(("status", source_id))
+        if node is None:
+            continue
+
+        post_uid = post_uid_by_platform_post_id.get(source_id)
+        if not post_uid:
+            allow_fallback = source_kind in {"talk_reply", "topic_post"}
+            if allow_fallback and str(fallback_post_uid or "").strip():
+                post_uid = str(fallback_post_uid or "").strip()
+            else:
+                continue
         node_text = str((node or {}).get("text") or "")
 
         evidence = (
@@ -360,12 +365,6 @@ def process_one_post_uid_topic_prompt_v4(
         raw_text=post.raw_text or "",
         author=focus,
     )
-
-    recent = (
-        list(prefetched_recent or [])
-        if prefetched_recent is not None
-        else load_recent_posts_by_author(engine, author=focus, limit=200)
-    )
     current_row = {
         "post_uid": post.post_uid,
         "platform_post_id": post.platform_post_id,
@@ -378,32 +377,9 @@ def process_one_post_uid_topic_prompt_v4(
         "ai_retry_count": int(post.ai_retry_count or 0),
     }
 
-    thread_rows: list[dict[str, object]] = []
-    seen_uids: set[str] = set()
-    for row in [current_row, *recent]:
-        uid = str(row.get("post_uid") or "").strip()
-        if not uid or uid in seen_uids:
-            continue
-        seen_uids.add(uid)
-
-        rk, _seg, _ck = thread_root_info_for_post(
-            raw_text=str(row.get("raw_text") or ""),
-            author=str(row.get("author") or "").strip(),
-        )
-        if rk != root_key:
-            continue
-        thread_rows.append(row)
-
-    post_count = len(thread_rows)
-    thread_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
-    kept = (
-        thread_rows[:MAX_THREAD_POSTS] if post_count > MAX_THREAD_POSTS else thread_rows
-    )
-    if str(post.post_uid or "").strip() not in {
-        str(r.get("post_uid") or "").strip() for r in kept
-    }:
-        kept = [current_row, *kept[: max(0, MAX_THREAD_POSTS - 1)]]
-    trimmed_count = max(0, post_count - len(kept))
+    kept = [current_row]
+    post_count = 1
+    trimmed_count = 0
 
     locked_post_uids: list[str] = [post.post_uid]
 
@@ -437,7 +413,7 @@ def process_one_post_uid_topic_prompt_v4(
                     f"root_key={root_key}",
                     f"post_count={post_count}",
                     f"trimmed_count={trimmed_count}",
-                    f"max_nodes={MAX_THREAD_POSTS}",
+                    "max_nodes=1",
                     f"prompt_chars={prompt_chars}",
                     f"max_prompt_chars={MAX_TOPIC_PROMPT_CHARS}",
                     f"compact_json={1 if compact_json else 0}",
@@ -513,6 +489,7 @@ def process_one_post_uid_topic_prompt_v4(
             focus_username=focus,
             message_lookup=message_lookup,  # type: ignore[arg-type]
             post_uid_by_platform_post_id=post_uid_by_pid,
+            fallback_post_uid=str(post.post_uid or "").strip(),
             max_assertions_per_post=5,
         )
         entity_match_results_by_post_uid = resolve_rows_entity_matches(

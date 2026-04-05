@@ -126,6 +126,53 @@ def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_topic_ke
     ]
 
 
+def test_map_topic_prompt_assertions_to_rows_falls_back_to_current_post_uid_for_talk_reply() -> (
+    None
+):
+    ai_result: dict[str, object] = {
+        "topic_status_id": "status-2",
+        "topic_summary": "他说可以买。",
+        "assertions": [
+            {
+                "speaker": "老王",
+                "relation_to_topic": "new",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "他说可以买。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "talk_reply",
+                        "source_id": "src:virtual",
+                        "quote": "我觉得可以买",
+                    }
+                ],
+                "mentions": ["茅台"],
+            }
+        ],
+        "mentions": [
+            {
+                "mention_text": "茅台",
+                "mention_type": "stock_alias",
+                "evidence": "茅台我觉得可以买",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+    rows_by_post_uid = map_topic_prompt_assertions_to_rows(
+        ai_result=ai_result,
+        focus_username="老王",
+        message_lookup={
+            ("talk_reply", "src:virtual"): {"text": "茅台我觉得可以买"},
+        },
+        post_uid_by_platform_post_id={},
+        fallback_post_uid="weibo:300",
+    )
+
+    assert "weibo:300" in rows_by_post_uid
+    assert len(rows_by_post_uid["weibo:300"]) == 1
+
+
 def test_map_topic_prompt_assertions_to_rows_supports_commodity_layer() -> None:
     ai_result: dict[str, object] = {
         "topic_status_id": "status-commodity-2",

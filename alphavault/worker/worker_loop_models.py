@@ -40,6 +40,7 @@ class SourceTickExecutors:
     relation_executor: ThreadPoolExecutor
     backfill_executor: ThreadPoolExecutor
     stock_hot_executor: ThreadPoolExecutor
+    redis_enqueue_executor: ThreadPoolExecutor
     spool_executor: ThreadPoolExecutor
     rss_executor: ThreadPoolExecutor
 

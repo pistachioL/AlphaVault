@@ -85,14 +85,6 @@ WHERE post_uid = :post_uid
 LIMIT 1
 """
 
-SELECT_RECENT_POSTS_BY_AUTHOR = """
-SELECT post_uid, platform_post_id, author, created_at, url, raw_text, processed_at
-FROM posts
-WHERE author = :author
-ORDER BY created_at DESC
-LIMIT :limit
-"""
-
 SELECT_UNPROCESSED_POST_QUEUE_ROWS = """
 SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text
 FROM posts

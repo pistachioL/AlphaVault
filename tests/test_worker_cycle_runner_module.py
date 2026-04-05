@@ -79,8 +79,22 @@ def test_cycle_runner_helper_functions_keep_boolean_logic() -> None:
             any_backfill_inflight=False,
             any_relation_inflight=False,
             any_stock_hot_inflight=False,
+            any_redis_enqueue_inflight=False,
             any_rss_inflight=False,
             any_spool_flush_inflight=False,
         )
         is False
+    )
+    assert (
+        cycle_runner_module.should_wait_with_event(
+            ai_inflight=False,
+            any_alias_inflight=False,
+            any_backfill_inflight=False,
+            any_relation_inflight=False,
+            any_stock_hot_inflight=False,
+            any_redis_enqueue_inflight=True,
+            any_rss_inflight=False,
+            any_spool_flush_inflight=False,
+        )
+        is True
     )

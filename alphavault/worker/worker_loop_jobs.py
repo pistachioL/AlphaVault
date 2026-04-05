@@ -84,6 +84,55 @@ def _collect_spool_flush(
     return bool(has_error)
 
 
+def _collect_redis_enqueue(
+    *,
+    source,
+    source_name: str,
+    now: float,
+    verbose: bool,
+) -> bool:
+    (
+        source.redis_enqueue_future,
+        redis_stats,
+        redis_finished,
+        redis_exception_error,
+    ) = cycle_runner.collect_periodic_job_result(
+        job_name=f"redis_enqueue:{source_name}",
+        future=getattr(source, "redis_enqueue_future", None),
+        engine=source.engine,
+        verbose=verbose,
+        maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
+        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
+    )
+    if not redis_finished:
+        return False
+
+    attempted = int(redis_stats.get("attempted", 0) or 0)
+    pushed = int(redis_stats.get("pushed", 0) or 0)
+    duplicates = int(redis_stats.get("duplicates", 0) or 0)
+    has_more = bool(redis_stats.get("has_more", False))
+    has_error = bool(redis_stats.get("has_error", False)) or bool(redis_exception_error)
+    periodic_jobs.mark_redis_enqueue_retry(
+        source=source,
+        has_more=has_more,
+        has_error=has_error,
+    )
+    if cycle_runner.should_fast_retry_for_periodic_job(
+        has_more=has_more,
+        attempted=attempted,
+    ):
+        source.redis_enqueue_next_at = float(now)
+    if verbose and (attempted > 0 or has_error):
+        print(
+            f"[redis:{source_name}] enqueue_done attempted={attempted} "
+            f"pushed={pushed} duplicates={duplicates} "
+            f"has_more={1 if has_more else 0} "
+            f"ok={0 if has_error else 1}",
+            flush=True,
+        )
+    return bool(has_error)
+
+
 def _collect_periodic_job(
     *,
     job_name: str,
@@ -127,6 +176,7 @@ def collect_finished_jobs(
 ) -> tuple[dict[str, bool], bool]:
     errors = {
         "maintenance_error": False,
+        "redis_enqueue_error": False,
         "spool_flush_error": False,
         "schedule_error": False,
         "alias_sync_error": False,
@@ -143,6 +193,12 @@ def collect_finished_jobs(
         rss_interval_seconds=float(rss_interval_seconds),
     )
     errors["spool_flush_error"] = _collect_spool_flush(
+        source=source,
+        source_name=source_name,
+        now=float(now),
+        verbose=bool(verbose),
+    )
+    errors["redis_enqueue_error"] = _collect_redis_enqueue(
         source=source,
         source_name=source_name,
         now=float(now),
