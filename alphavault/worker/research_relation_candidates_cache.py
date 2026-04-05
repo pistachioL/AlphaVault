@@ -17,7 +17,6 @@ from alphavault.db.turso_db import (
 from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault.research_workbench import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
-    ensure_research_workbench_schema,
     upsert_relation_candidate,
 )
 from alphavault.rss.utils import RateLimiter
@@ -468,7 +467,6 @@ def sync_relation_candidates_cache(
             "locked": True,
         }
     try:
-        ensure_research_workbench_schema(engine_or_conn)
         stock_cursor = load_worker_job_cursor(
             engine_or_conn, state_key=RELATION_CANDIDATES_STOCK_CURSOR_KEY
         )

@@ -23,7 +23,6 @@ from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
     ALIAS_TASK_STATUS_RESOLVED,
     RESEARCH_RELATIONS_TABLE,
-    ensure_research_workbench_schema,
     get_alias_resolve_tasks_map,
     increment_alias_resolve_attempts,
     record_stock_alias_relation,
@@ -297,7 +296,6 @@ def sync_stock_alias_relations(
                 release_low_priority_slot()
             except Exception:
                 pass
-    ensure_research_workbench_schema(engine_or_conn)
     with _use_conn(engine_or_conn) as conn:
         stock_relations = _load_stock_alias_relations(conn)
     db_path = resolve_local_cache_db_path(source_name=str(source_name or ""))
@@ -411,7 +409,6 @@ def sync_stock_alias_relations(
     inserted = 0
     if new_pairs:
         with _use_conn(engine_or_conn) as conn:
-            ensure_research_workbench_schema(conn)
             for stock_key, alias_key in new_pairs:
                 record_stock_alias_relation(
                     conn,

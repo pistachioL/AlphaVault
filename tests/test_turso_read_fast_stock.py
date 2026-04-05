@@ -105,10 +105,15 @@ CREATE TABLE assertions(
   action TEXT NOT NULL,
   action_strength INTEGER NOT NULL,
   summary TEXT NOT NULL,
+  evidence TEXT NOT NULL DEFAULT '',
+  confidence REAL NOT NULL DEFAULT 0,
   author TEXT NOT NULL,
   created_at TEXT NOT NULL,
   stock_codes_json TEXT NOT NULL DEFAULT '[]',
-  stock_names_json TEXT NOT NULL DEFAULT '[]'
+  stock_names_json TEXT NOT NULL DEFAULT '[]',
+  industries_json TEXT NOT NULL DEFAULT '[]',
+  commodities_json TEXT NOT NULL DEFAULT '[]',
+  indices_json TEXT NOT NULL DEFAULT '[]'
 )
 """
         )

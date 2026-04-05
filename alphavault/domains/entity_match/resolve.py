@@ -15,7 +15,6 @@ from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_PENDING,
     ALIAS_TASK_STATUS_RESOLVED,
     RESEARCH_RELATIONS_TABLE,
-    ensure_research_workbench_schema,
     get_stock_keys_by_official_names,
     get_alias_resolve_tasks_map,
     set_alias_resolve_task_status,
@@ -276,7 +275,6 @@ def resolve_assertion_mentions(
     stock_name_targets: dict[str, str] | None = None,
     stock_alias_targets: dict[str, str] | None = None,
 ) -> EntityMatchResult:
-    ensure_research_workbench_schema(engine_or_conn)
     cleaned_mentions = _clean_mentions(assertion_mentions)
     if not cleaned_mentions:
         return EntityMatchResult([], [], [])
@@ -390,7 +388,6 @@ def resolve_assertion_mentions(
 
 
 def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) -> None:
-    ensure_research_workbench_schema(engine_or_conn)
     for item in result.relation_candidates:
         upsert_relation_candidate(
             engine_or_conn,

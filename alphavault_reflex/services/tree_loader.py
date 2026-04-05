@@ -4,7 +4,6 @@ from functools import lru_cache
 
 import pandas as pd
 
-from alphavault.db.introspect import table_columns
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import (
     infer_platform_from_post_uid,
@@ -43,14 +42,8 @@ def load_single_post_for_tree_cached(
 
     engine = ensure_turso_engine(db_url, auth_token)
     with turso_connect_autocommit(engine) as conn:
-        post_cols = table_columns(conn, "posts")
-        display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
-        selected_post_cols = [
-            col for col in WANTED_POST_COLUMNS_FOR_TREE if col in post_cols
-        ]
-        post_select_expr = ", ".join(selected_post_cols + [display_expr])
         sql = f"""
-SELECT {post_select_expr}
+SELECT {", ".join(WANTED_POST_COLUMNS_FOR_TREE)}
 FROM posts
 WHERE processed_at IS NOT NULL AND post_uid = ?
 """

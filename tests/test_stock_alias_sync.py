@@ -114,10 +114,6 @@ def test_sync_stock_alias_relations_marks_dirty_for_changed_pairs(
         _fake_conn_ctx,
     )
     monkeypatch.setattr(
-        "alphavault.worker.stock_alias_sync.ensure_research_workbench_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
         "alphavault.worker.stock_alias_sync._load_stock_alias_relations",
         lambda _conn: pd.DataFrame(),
     )
@@ -167,10 +163,6 @@ def test_sync_stock_alias_relations_returns_early_when_low_priority_slot_busy(
     monkeypatch.setattr(
         "alphavault.worker.stock_alias_sync._use_conn",
         _fake_conn_ctx,
-    )
-    monkeypatch.setattr(
-        "alphavault.worker.stock_alias_sync.ensure_research_workbench_schema",
-        lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
         "alphavault.worker.stock_alias_sync._load_stock_alias_relations",

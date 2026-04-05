@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import libsql
 
-from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault.db.cloud_schema import (
+    apply_cloud_schema as ensure_research_backfill_cache_schema,
+)
+from alphavault.db.turso_db import TursoConnection
 from alphavault.research_backfill_cache import (
-    ensure_research_backfill_cache_schema,
     list_stock_backfill_dirty_keys,
     list_stock_backfill_posts,
     load_stock_backfill_meta,
@@ -49,26 +51,6 @@ def test_replace_and_list_stock_backfill_posts() -> None:
         assert "紫金矿业" in str(rows[0]["matched_terms"])
     finally:
         conn.close()
-
-
-def test_ensure_research_backfill_cache_schema_runs_once_per_engine(
-    monkeypatch,
-) -> None:
-    from alphavault import research_backfill_cache as module
-
-    calls: list[str] = []
-    monkeypatch.setattr(module, "_SCHEMA_READY_KEYS", set())
-    monkeypatch.setattr(
-        module,
-        "_run_schema_ddl",
-        lambda engine_or_conn: calls.append(str(engine_or_conn.remote_url)),
-    )
-
-    engine = TursoEngine(remote_url="libsql://unit.test", auth_token="token")
-    module.ensure_research_backfill_cache_schema(engine)
-    module.ensure_research_backfill_cache_schema(engine)
-
-    assert calls == ["libsql://unit.test"]
 
 
 def test_mark_list_and_remove_backfill_dirty_keys() -> None:

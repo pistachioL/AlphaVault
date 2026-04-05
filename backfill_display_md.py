@@ -20,7 +20,6 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
     turso_savepoint,
 )
-from alphavault.db.turso_queue import ensure_cloud_queue_schema
 from alphavault.weibo.display import format_weibo_display_md
 
 
@@ -275,8 +274,6 @@ def main() -> None:
     load_dotenv_if_present()
     args = parse_args()
     engine = get_turso_engine_from_env()
-
-    ensure_cloud_queue_schema(engine, verbose=bool(args.verbose))
 
     post_uids = _parse_post_uids(getattr(args, "post_uids", ""))
     if post_uids:

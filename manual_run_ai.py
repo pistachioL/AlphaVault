@@ -33,7 +33,7 @@ from alphavault.constants import (
     ENV_AI_TRACE_OUT,
 )
 from alphavault.db.turso_db import get_turso_engine_from_env
-from alphavault.db.turso_queue import ensure_cloud_queue_schema, try_mark_ai_running
+from alphavault.db.turso_queue import try_mark_ai_running
 from alphavault.rss.utils import RateLimiter, env_bool, env_float, env_int
 from alphavault.worker.post_processor import process_one_post_uid
 from alphavault.worker.runtime_models import LLMConfig
@@ -185,7 +185,6 @@ def main() -> None:
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
     engine = get_turso_engine_from_env()
-    ensure_cloud_queue_schema(engine, verbose=bool(config.verbose))
 
     now_epoch = int(time.time())
     ok = 0

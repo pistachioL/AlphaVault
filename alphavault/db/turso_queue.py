@@ -12,12 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional
 
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.turso_queue import (
-    CREATE_ASSERTION_OUTBOX_TABLE,
-    CREATE_IDX_ASSERTION_OUTBOX_CREATED_AT,
-    CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT,
     DELETE_ASSERTION_ENTITIES_BY_POST_UID,
     DELETE_ASSERTION_MENTIONS_BY_POST_UID,
     DELETE_ASSERTIONS_BY_POST_UID,
@@ -26,7 +22,6 @@ from alphavault.db.sql.turso_queue import (
     INSERT_ASSERTION_MENTION,
     INSERT_ASSERTION_OUTBOX,
     MARK_AI_ERROR,
-    QUEUE_EXTRA_COLUMNS,
     RECOVER_DONE_WITHOUT_PROCESSED_AT,
     RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM,
     RECOVER_STUCK_AI_TASKS,
@@ -43,10 +38,8 @@ from alphavault.db.sql.turso_queue import (
     TRY_MARK_AI_RUNNING,
     UPDATE_POST_DONE,
     UPSERT_PENDING_POST,
-    alter_posts_add_column,
     build_reset_ai_results_for_post_uids,
 )
-from alphavault.db.turso_schema import init_cloud_schema
 from alphavault.db.turso_db import (
     TursoConnection,
     TursoEngine,
@@ -65,19 +58,6 @@ AI_STATUS_PENDING = "pending"
 
 class TursoWriteError(RuntimeError):
     """Raised when Turso write fails with a non-fatal BaseException."""
-
-
-BASE_POSTS_EXTRA_COLUMNS: list[tuple[str, str]] = [
-    (
-        "final_status",
-        "final_status TEXT NOT NULL DEFAULT 'irrelevant' CHECK (final_status IN ('relevant','irrelevant'))",
-    ),
-    ("invest_score", "invest_score REAL"),
-    ("processed_at", "processed_at TEXT"),
-    ("model", "model TEXT"),
-    ("prompt_version", "prompt_version TEXT"),
-    ("archived_at", "archived_at TEXT NOT NULL DEFAULT ''"),
-]
 
 
 @dataclass(frozen=True)
@@ -111,36 +91,6 @@ def persist_entity_match_followups(
     )
 
     persist_followups(conn, result)
-
-
-def ensure_cloud_queue_schema(engine: TursoEngine, *, verbose: bool) -> None:
-    """
-    Ensure base schema exists (posts/assertions), then add queue columns to posts.
-    """
-    init_cloud_schema(engine)
-
-    # Note: keep DDL (ALTER TABLE) outside the atomic write block on libsql/Turso.
-    # Some builds may auto-break transactional state around DDL.
-    with turso_connect_autocommit(engine) as conn:
-        cols = table_columns(conn, "posts")
-        for col_name, col_def in BASE_POSTS_EXTRA_COLUMNS:
-            if col_name in cols:
-                continue
-            conn.execute(alter_posts_add_column(col_def))
-            cols.add(col_name)
-            if verbose:
-                print(f"[turso] schema add_column posts.{col_name}", flush=True)
-        for col_name, col_def in QUEUE_EXTRA_COLUMNS:
-            if col_name in cols:
-                continue
-            conn.execute(alter_posts_add_column(col_def))
-            cols.add(col_name)
-            if verbose:
-                print(f"[turso] schema add_column posts.{col_name}", flush=True)
-
-        conn.execute(CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT)
-        conn.execute(CREATE_ASSERTION_OUTBOX_TABLE)
-        conn.execute(CREATE_IDX_ASSERTION_OUTBOX_CREATED_AT)
 
 
 def _execute_upsert_pending_post(
@@ -516,6 +466,9 @@ def write_assertions_and_mark_done(
                         "commodities_json": a.get("commodities_json", "[]"),
                         "indices_json": a.get("indices_json", "[]"),
                         "keywords_json": a.get("keywords_json", "[]"),
+                        "cluster_keys_json": a.get("cluster_keys_json", "[]"),
+                        "author": str(a.get("author") or "").strip(),
+                        "created_at": str(a.get("created_at") or "").strip(),
                     }
                 )
                 raw_mentions = a.get("assertion_mentions")

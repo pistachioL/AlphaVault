@@ -5,6 +5,7 @@ from typing import Any, cast
 
 import libsql
 
+from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.turso_db import TursoConnection
 from alphavault.domains.entity_match.resolve import EntityMatchResult
 from alphavault.research_workbench import RESEARCH_RELATION_CANDIDATES_TABLE
@@ -198,6 +199,7 @@ def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates
 ):
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
+        apply_cloud_schema(conn)
         rows_by_post_uid: dict[str, list[dict[str, object]]] = {
             "weibo:1": [
                 {

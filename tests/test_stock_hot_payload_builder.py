@@ -9,6 +9,7 @@ from alphavault.worker.stock_hot_payload_builder import build_stock_hot_payload
 CREATE_POSTS_TABLE_SQL = """
 CREATE TABLE posts(
   post_uid TEXT PRIMARY KEY,
+  platform_post_id TEXT NOT NULL,
   author TEXT NOT NULL,
   created_at TEXT NOT NULL,
   url TEXT NOT NULL,
@@ -28,7 +29,8 @@ CREATE TABLE assertions(
   author TEXT NOT NULL,
   created_at TEXT NOT NULL,
   stock_codes_json TEXT NOT NULL DEFAULT '[]',
-  stock_names_json TEXT NOT NULL DEFAULT '[]'
+  stock_names_json TEXT NOT NULL DEFAULT '[]',
+  cluster_keys_json TEXT NOT NULL DEFAULT '[]'
 )
 """
 CREATE_ASSERTION_ENTITIES_TABLE_SQL = """
@@ -41,8 +43,12 @@ CREATE TABLE assertion_entities(
 )
 """
 INSERT_POST_SQL = """
-INSERT INTO posts(post_uid, author, created_at, url, raw_text, display_md, processed_at)
-VALUES (:post_uid, :author, :created_at, :url, :raw_text, :display_md, :processed_at)
+INSERT INTO posts(
+  post_uid, platform_post_id, author, created_at, url, raw_text, display_md, processed_at
+)
+VALUES (
+  :post_uid, :platform_post_id, :author, :created_at, :url, :raw_text, :display_md, :processed_at
+)
 """
 INSERT_ASSERTION_SQL = """
 INSERT INTO assertions(
@@ -74,6 +80,7 @@ def test_build_stock_hot_payload_includes_url_from_posts() -> None:
             INSERT_POST_SQL,
             {
                 "post_uid": "weibo:1",
+                "platform_post_id": "1",
                 "author": "alice",
                 "created_at": "2099-01-01 00:00:00",
                 "url": "https://example.com/weibo/1",
@@ -134,6 +141,7 @@ def test_build_stock_hot_payload_fills_missing_created_at_from_posts() -> None:
             INSERT_POST_SQL,
             {
                 "post_uid": "weibo:1",
+                "platform_post_id": "1",
                 "author": "alice",
                 "created_at": "2099-01-01 00:00:00",
                 "url": "https://example.com/weibo/1",
@@ -194,6 +202,7 @@ def test_build_stock_hot_payload_reads_stock_entity_key_instead_of_topic_key() -
             INSERT_POST_SQL,
             {
                 "post_uid": "weibo:2",
+                "platform_post_id": "2",
                 "author": "alice",
                 "created_at": "2099-01-02 00:00:00",
                 "url": "https://example.com/weibo/2",

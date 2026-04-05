@@ -1,29 +1,6 @@
 from __future__ import annotations
 
 
-def create_entity_page_snapshot_table(table: str) -> str:
-    return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    entity_key TEXT PRIMARY KEY,
-    header_title TEXT NOT NULL DEFAULT '',
-    signal_total INTEGER NOT NULL DEFAULT 0,
-    signals_json TEXT NOT NULL DEFAULT '[]',
-    related_sectors_json TEXT NOT NULL DEFAULT '[]',
-    related_stocks_json TEXT NOT NULL DEFAULT '[]',
-    backfill_posts_json TEXT NOT NULL DEFAULT '[]',
-    content_hash TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-)
-"""
-
-
-def create_entity_page_snapshot_index(table: str) -> str:
-    return f"""
-CREATE INDEX IF NOT EXISTS idx_{table}_updated
-ON {table}(updated_at)
-"""
-
-
 def upsert_entity_page_snapshot_hot(table: str) -> str:
     return f"""
 INSERT INTO {table}(
@@ -93,29 +70,6 @@ SELECT entity_key,
 FROM {table}
 WHERE entity_key = :entity_key
 LIMIT 1
-"""
-
-
-def create_research_stock_dirty_keys_table(table: str) -> str:
-    return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    job_type TEXT NOT NULL,
-    target_key TEXT NOT NULL,
-    reason_mask INTEGER NOT NULL DEFAULT 0,
-    dirty_since TEXT NOT NULL DEFAULT '',
-    last_dirty_at TEXT NOT NULL DEFAULT '',
-    claim_until TEXT NOT NULL DEFAULT '',
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY(job_type, target_key)
-)
-"""
-
-
-def create_research_stock_dirty_keys_index(table: str) -> str:
-    return f"""
-CREATE INDEX IF NOT EXISTS idx_{table}_claimable
-ON {table}(job_type, claim_until, dirty_since, last_dirty_at, target_key)
 """
 
 

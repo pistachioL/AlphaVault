@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import libsql
 
+from alphavault.db.cloud_schema import (
+    apply_cloud_schema as ensure_research_workbench_schema,
+)
 from alphavault.db.turso_db import TursoConnection
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
-    ensure_research_workbench_schema,
     get_alias_resolve_tasks_map,
     increment_alias_resolve_attempts,
     list_manual_alias_resolve_tasks,

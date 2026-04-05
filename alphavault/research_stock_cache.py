@@ -3,19 +3,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import json
-import threading
 from typing import Iterator, TypedDict
 
 from alphavault.content_hash import build_content_hash
-from alphavault.db.introspect import table_columns
 from alphavault.domains.common.assertion_entities import extract_stock_entity_keys
 from alphavault.domains.common.json_list import parse_json_list
 from alphavault.timeutil import CST, format_cst_datetime, now_cst_str
 from alphavault.db.sql.research_stock_cache import (
-    create_entity_page_snapshot_index,
-    create_entity_page_snapshot_table,
-    create_research_stock_dirty_keys_index,
-    create_research_stock_dirty_keys_table,
     select_claimable_research_stock_dirty_keys,
     select_entity_page_snapshot,
     select_research_stock_dirty_keys,
@@ -58,8 +52,6 @@ _DIRTY_REASON_MASKS = {
 }
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-_SCHEMA_READY_LOCK = threading.RLock()
-_SCHEMA_READY_KEYS: set[str] = set()
 
 
 EntityPageDirtyEntry = TypedDict(
@@ -91,75 +83,21 @@ def _use_conn(
         yield conn
 
 
-def _resolve_engine(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> TursoEngine | None:
-    return (
-        engine_or_conn._engine
-        if isinstance(engine_or_conn, TursoConnection)
-        else engine_or_conn
-    )
-
-
-def _schema_cache_key(engine_or_conn: TursoEngine | TursoConnection) -> str:
-    engine = _resolve_engine(engine_or_conn)
-    if engine is None:
-        return ""
-    return (
-        f"{str(engine.remote_url or '').strip()}|{str(engine.auth_token or '').strip()}"
-    )
-
-
-def _clear_schema_ready(engine_or_conn: TursoEngine | TursoConnection) -> None:
-    cache_key = _schema_cache_key(engine_or_conn)
-    if not cache_key:
-        return
-    with _SCHEMA_READY_LOCK:
-        _SCHEMA_READY_KEYS.discard(cache_key)
-
-
 def _handle_turso_error(
     engine_or_conn: TursoEngine | TursoConnection, err: BaseException
 ) -> None:
     if isinstance(err, _FATAL_BASE_EXCEPTIONS):
         raise err
-    engine = _resolve_engine(engine_or_conn)
+    engine = (
+        engine_or_conn._engine
+        if isinstance(engine_or_conn, TursoConnection)
+        else engine_or_conn
+    )
     if engine is not None and (
         is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)
     ):
-        _clear_schema_ready(engine_or_conn)
         engine.dispose()
     raise err
-
-
-def _run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
-    with _use_conn(engine_or_conn) as conn:
-        conn.execute(create_entity_page_snapshot_table(ENTITY_PAGE_SNAPSHOT_TABLE))
-        _ensure_entity_page_snapshot_schema(conn)
-        conn.execute(create_entity_page_snapshot_index(ENTITY_PAGE_SNAPSHOT_TABLE))
-        conn.execute(create_research_stock_dirty_keys_table(PROJECTION_DIRTY_TABLE))
-        _ensure_projection_dirty_schema(conn)
-        conn.execute(create_research_stock_dirty_keys_index(PROJECTION_DIRTY_TABLE))
-
-
-def ensure_research_stock_cache_schema(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> None:
-    cache_key = _schema_cache_key(engine_or_conn)
-    if cache_key:
-        with _SCHEMA_READY_LOCK:
-            if cache_key in _SCHEMA_READY_KEYS:
-                return
-            try:
-                _run_schema_ddl(engine_or_conn)
-            except BaseException as err:
-                _handle_turso_error(engine_or_conn, err)
-            _SCHEMA_READY_KEYS.add(cache_key)
-        return
-    try:
-        _run_schema_ddl(engine_or_conn)
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
 
 
 def _clean_json_rows(value: object) -> list[dict[str, str]]:
@@ -212,98 +150,6 @@ def dirty_reason_mask_for(reason: str) -> int:
     if not text:
         return 0
     return int(_DIRTY_REASON_MASKS.get(text, DIRTY_REASON_MASK_OTHER))
-
-
-def _ensure_entity_page_snapshot_schema(conn: TursoConnection) -> None:
-    cols = table_columns(conn, ENTITY_PAGE_SNAPSHOT_TABLE)
-    if "content_hash" not in cols:
-        conn.execute(
-            f"ALTER TABLE {ENTITY_PAGE_SNAPSHOT_TABLE} "
-            "ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
-        )
-    if "related_stocks_json" not in cols:
-        conn.execute(
-            f"ALTER TABLE {ENTITY_PAGE_SNAPSHOT_TABLE} "
-            "ADD COLUMN related_stocks_json TEXT NOT NULL DEFAULT '[]'"
-        )
-
-
-def _projection_dirty_reason_case_sql(column: str) -> str:
-    return (
-        "CASE "
-        f"WHEN {column} = 'rss' THEN {DIRTY_REASON_MASK_RSS} "
-        f"WHEN {column} = 'ai' THEN {DIRTY_REASON_MASK_AI} "
-        f"WHEN {column} = 'ai_done' THEN {DIRTY_REASON_MASK_AI_DONE} "
-        f"WHEN {column} = 'alias_relation' THEN {DIRTY_REASON_MASK_ALIAS_RELATION} "
-        f"WHEN {column} = 'relation_candidates_cache' THEN "
-        f"{DIRTY_REASON_MASK_RELATION_CANDIDATES_CACHE} "
-        f"WHEN {column} = 'backfill_cache' THEN {DIRTY_REASON_MASK_BACKFILL_CACHE} "
-        f"WHEN {column} = 'queue_backfill' THEN {DIRTY_REASON_MASK_QUEUE_BACKFILL} "
-        f"WHEN {column} = 'bootstrap_missing_hot' THEN "
-        f"{DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT} "
-        f"WHEN TRIM(COALESCE({column}, '')) = '' THEN 0 "
-        f"ELSE {DIRTY_REASON_MASK_OTHER} END"
-    )
-
-
-def _ensure_projection_dirty_schema(conn: TursoConnection) -> None:
-    cols = table_columns(conn, PROJECTION_DIRTY_TABLE)
-    if "reason_mask" not in cols:
-        conn.execute(
-            f"ALTER TABLE {PROJECTION_DIRTY_TABLE} "
-            "ADD COLUMN reason_mask INTEGER NOT NULL DEFAULT 0"
-        )
-        if "reason" in cols:
-            conn.execute(
-                f"""
-UPDATE {PROJECTION_DIRTY_TABLE}
-SET reason_mask = {_projection_dirty_reason_case_sql("reason")}
-WHERE reason_mask = 0
-"""
-            )
-    elif "reason" in cols:
-        conn.execute(
-            f"""
-UPDATE {PROJECTION_DIRTY_TABLE}
-SET reason_mask = {_projection_dirty_reason_case_sql("reason")}
-WHERE reason_mask = 0
-  AND TRIM(COALESCE(reason, '')) <> ''
-"""
-        )
-    if "dirty_since" not in cols:
-        conn.execute(
-            f"ALTER TABLE {PROJECTION_DIRTY_TABLE} "
-            "ADD COLUMN dirty_since TEXT NOT NULL DEFAULT ''"
-        )
-        conn.execute(
-            f"""
-UPDATE {PROJECTION_DIRTY_TABLE}
-SET dirty_since = updated_at
-WHERE dirty_since = ''
-"""
-        )
-    if "last_dirty_at" not in cols:
-        conn.execute(
-            f"ALTER TABLE {PROJECTION_DIRTY_TABLE} "
-            "ADD COLUMN last_dirty_at TEXT NOT NULL DEFAULT ''"
-        )
-        conn.execute(
-            f"""
-UPDATE {PROJECTION_DIRTY_TABLE}
-SET last_dirty_at = updated_at
-WHERE last_dirty_at = ''
-"""
-        )
-    if "claim_until" not in cols:
-        conn.execute(
-            f"ALTER TABLE {PROJECTION_DIRTY_TABLE} "
-            "ADD COLUMN claim_until TEXT NOT NULL DEFAULT ''"
-        )
-    if "attempt_count" not in cols:
-        conn.execute(
-            f"ALTER TABLE {PROJECTION_DIRTY_TABLE} "
-            "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"
-        )
 
 
 def _select_entity_page_snapshot_row(
@@ -378,7 +224,6 @@ def save_entity_page_signal_snapshot(
         default=len(signals),
     )
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             existing_row = _select_entity_page_snapshot_row(conn, entity_key=entity_key)
             content_hash = _entity_page_snapshot_content_hash(
@@ -420,7 +265,6 @@ def load_entity_page_signal_snapshot(
     if not key:
         return {}
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             row = _select_entity_page_snapshot_row(conn, entity_key=key)
     except BaseException as err:
@@ -449,7 +293,6 @@ def save_entity_page_backfill_snapshot(
         return
     backfill_rows = _clean_json_rows(backfill_posts)
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             existing_row = _select_entity_page_snapshot_row(conn, entity_key=key)
             content_hash = _entity_page_snapshot_content_hash(
@@ -490,7 +333,6 @@ def load_entity_page_backfill_snapshot(
     if not key:
         return {}
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             row = _select_entity_page_snapshot_row(conn, entity_key=key)
     except BaseException as err:
@@ -559,7 +401,6 @@ def mark_entity_page_dirty(
         return
     now_str = _now_str()
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             conn.execute(
                 upsert_research_stock_dirty_key(PROJECTION_DIRTY_TABLE),
@@ -585,7 +426,6 @@ def list_entity_page_dirty_keys(
     if n <= 0:
         return []
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             rows = (
                 conn.execute(
@@ -616,7 +456,6 @@ def list_entity_page_dirty_entries(
     if n <= 0:
         return []
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             rows = (
                 conn.execute(
@@ -661,7 +500,6 @@ WHERE job_type = ?
         sql += "\n  AND claim_until = ?"
         params.append(claim_token)
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             with turso_savepoint(conn):
                 res = conn.execute(
@@ -686,7 +524,6 @@ def claim_entity_page_dirty_entries(
     now_str = _now_str()
     claim_until = _claim_until_str(now_str, claim_ttl_seconds)
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             with turso_savepoint(conn):
                 rows = (
@@ -758,7 +595,6 @@ WHERE job_type = ?
   AND claim_until = ?
 """
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             with turso_savepoint(conn):
                 res = conn.execute(
@@ -798,7 +634,6 @@ WHERE job_type = ?
   AND claim_until = ?
 """
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             with turso_savepoint(conn):
                 res = conn.execute(
@@ -863,7 +698,6 @@ __all__ = [
     "PROJECTION_JOB_TYPE_ENTITY_PAGE",
     "claim_entity_page_dirty_entries",
     "dirty_reason_mask_for",
-    "ensure_research_stock_cache_schema",
     "fail_entity_page_dirty_claims",
     "list_entity_page_dirty_entries",
     "list_entity_page_dirty_keys",

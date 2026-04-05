@@ -1,37 +1,5 @@
 from __future__ import annotations
 
-QUEUE_EXTRA_COLUMNS: list[tuple[str, str]] = [
-    ("display_md", "display_md TEXT"),
-    ("ai_status", "ai_status TEXT NOT NULL DEFAULT 'done'"),
-    ("ai_retry_count", "ai_retry_count INTEGER NOT NULL DEFAULT 0"),
-    ("ai_next_retry_at", "ai_next_retry_at INTEGER"),
-    ("ai_running_at", "ai_running_at INTEGER"),
-    ("ai_last_error", "ai_last_error TEXT"),
-    ("ai_result_json", "ai_result_json TEXT"),
-    ("ingested_at", "ingested_at INTEGER NOT NULL DEFAULT 0"),
-]
-
-CREATE_IDX_POSTS_AI_STATUS_NEXT_RETRY_AT = """
-CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
-    ON posts(ai_status, ai_next_retry_at);
-"""
-
-CREATE_ASSERTION_OUTBOX_TABLE = """
-CREATE TABLE IF NOT EXISTS research_assertion_outbox (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL DEFAULT '',
-    post_uid TEXT NOT NULL,
-    author TEXT NOT NULL DEFAULT '',
-    event_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-)
-"""
-
-CREATE_IDX_ASSERTION_OUTBOX_CREATED_AT = """
-CREATE INDEX IF NOT EXISTS idx_research_assertion_outbox_created_at
-    ON research_assertion_outbox(created_at)
-"""
-
 INSERT_ASSERTION_OUTBOX = """
 INSERT INTO research_assertion_outbox(source, post_uid, author, event_json, created_at)
 VALUES (:source, :post_uid, :author, :event_json, :created_at)
@@ -226,12 +194,13 @@ INSERT_ASSERTION = """
 INSERT INTO assertions (
     post_uid, idx, speaker, relation_to_topic, topic_key, action, action_strength,
     summary, evidence, evidence_refs_json, confidence, stock_codes_json,
-    stock_names_json, industries_json, commodities_json, indices_json, keywords_json
+    stock_names_json, industries_json, commodities_json, indices_json, keywords_json,
+    cluster_keys_json, author, created_at
 ) VALUES (
     :post_uid, :idx, :speaker, :relation_to_topic, :topic_key, :action,
     :action_strength, :summary, :evidence, :evidence_refs_json, :confidence,
     :stock_codes_json, :stock_names_json, :industries_json, :commodities_json,
-    :indices_json, :keywords_json
+    :indices_json, :keywords_json, :cluster_keys_json, :author, :created_at
 )
 """
 
@@ -322,7 +291,3 @@ WHERE platform = :platform
   AND ai_status='done'
   AND (processed_at IS NULL OR TRIM(processed_at) = '')
 """
-
-
-def alter_posts_add_column(column_def: str) -> str:
-    return f"ALTER TABLE posts ADD COLUMN {column_def}"

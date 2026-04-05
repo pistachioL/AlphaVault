@@ -42,11 +42,6 @@ def _patch_common(monkeypatch, *, stock_keys: list[str]) -> None:
     )
     monkeypatch.setattr(
         relation_cache,
-        "ensure_research_workbench_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        relation_cache,
         "load_worker_job_cursor",
         lambda *_args, **_kwargs: "",
     )

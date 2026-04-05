@@ -27,9 +27,6 @@ def test_run_manual_ingest_for_source_flushes_spool_to_turso(
         trigger, "ensure_turso_engine", lambda *_args, **_kwargs: object()
     )
     monkeypatch.setattr(
-        trigger, "ensure_cloud_queue_schema", lambda *_args, **_kwargs: None
-    )
-    monkeypatch.setattr(
         trigger,
         "ingest_rss_many_once",
         lambda **_kwargs: (2, False),

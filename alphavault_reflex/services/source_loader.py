@@ -8,7 +8,6 @@ from alphavault.constants import (
     ENV_WEIBO_TURSO_DATABASE_URL,
     ENV_XUEQIU_TURSO_DATABASE_URL,
 )
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
@@ -52,6 +51,7 @@ WANTED_POST_COLUMNS_FOR_TREE = [
     "created_at",
     "url",
     "raw_text",
+    "display_md",
 ]
 
 
@@ -162,23 +162,12 @@ def load_trade_sources_cached(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     engine = ensure_turso_engine(db_url, auth_token)
     with turso_connect_autocommit(engine) as conn:
-        post_cols = table_columns(conn, "posts")
-        display_expr = "display_md" if "display_md" in post_cols else "'' AS display_md"
-        selected_post_cols = [
-            col for col in WANTED_POST_COLUMNS_FOR_TREE if col in post_cols
-        ]
-        post_select_expr = ", ".join(selected_post_cols + [display_expr])
         posts_query = f"""
-SELECT {post_select_expr}
+SELECT {", ".join(WANTED_POST_COLUMNS_FOR_TREE)}
 FROM posts
 WHERE processed_at IS NOT NULL
 """
-
-        assertion_cols = table_columns(conn, "assertions")
-        selected_assertion_cols = [
-            col for col in WANTED_TRADE_ASSERTION_COLUMNS if col in assertion_cols
-        ]
-        base_query = build_assertions_query(selected_assertion_cols)
+        base_query = build_assertions_query(WANTED_TRADE_ASSERTION_COLUMNS)
         trade_query = f"{base_query} WHERE action LIKE 'trade.%'"
 
         posts = turso_read_sql_df(conn, posts_query)

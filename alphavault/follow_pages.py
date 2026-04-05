@@ -15,12 +15,8 @@ import json
 import pandas as pd
 
 from alphavault.timeutil import now_cst_str
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.follow_pages import (
     FOLLOW_KEYS_JSON_COLUMN,
-    add_follow_keys_json_column,
-    create_follow_pages_index,
-    create_follow_pages_table,
     delete_follow_page as delete_follow_page_sql,
     select_follow_pages,
     upsert_follow_page as upsert_follow_page_sql,
@@ -52,24 +48,6 @@ def make_page_key(*, follow_type: str, follow_key: str) -> str:
     if not t or not k:
         return ""
     return f"{t}:{k}"
-
-
-def init_follow_pages_schema(engine: TursoEngine) -> None:
-    """
-    Create optional follow_pages table.
-
-    Intentionally additive (CREATE TABLE IF NOT EXISTS).
-    """
-    with turso_connect_autocommit(engine) as conn:
-        conn.execute(create_follow_pages_table(FOLLOW_PAGES_TABLE))
-        conn.execute(create_follow_pages_index(FOLLOW_PAGES_TABLE))
-        cols = table_columns(conn, FOLLOW_PAGES_TABLE)
-        if FOLLOW_KEYS_JSON_COLUMN not in cols:
-            conn.execute(add_follow_keys_json_column(FOLLOW_PAGES_TABLE))
-
-
-def ensure_follow_pages_schema(engine: TursoEngine) -> None:
-    init_follow_pages_schema(engine)
 
 
 def try_load_follow_pages(engine: TursoEngine) -> tuple[pd.DataFrame, str]:
@@ -162,8 +140,6 @@ __all__ = [
     "FOLLOW_TYPE_CLUSTER",
     "FOLLOW_TYPE_TOPIC",
     "delete_follow_page",
-    "ensure_follow_pages_schema",
-    "init_follow_pages_schema",
     "make_page_key",
     "normalize_follow_type",
     "try_load_follow_pages",

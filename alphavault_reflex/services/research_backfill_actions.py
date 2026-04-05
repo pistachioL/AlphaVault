@@ -15,7 +15,6 @@ from alphavault.db.turso_env import (
     require_turso_source_from_env,
 )
 from alphavault.db.turso_queue import (
-    ensure_cloud_queue_schema,
     reset_ai_results_for_post_uids,
     write_assertions_and_mark_done,
 )
@@ -46,7 +45,6 @@ def queue_post_for_ai_backfill(post_uid: str) -> None:
     if not target:
         return
     engine = get_turso_engine_for_post_uid(target)
-    ensure_cloud_queue_schema(engine, verbose=False)
     archived_at = datetime.now().strftime(DATETIME_FMT)
     reset_ai_results_for_post_uids(
         engine,
@@ -81,7 +79,6 @@ def run_direct_stock_backfill(post_uid: str, stock_key: str, display_name: str) 
     if not new_assertions:
         return 0
     engine = get_turso_engine_for_post_uid(target_post_uid)
-    ensure_cloud_queue_schema(engine, verbose=False)
     existing_assertions = load_assertions_for_post(engine, post_uid=target_post_uid)
     merged = merge_post_assertions(existing_assertions, new_assertions)
     archived_at = datetime.now().strftime(DATETIME_FMT)

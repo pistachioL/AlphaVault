@@ -10,6 +10,7 @@ from alphavault.worker.sector_hot_payload_builder import build_sector_hot_payloa
 CREATE_POSTS_TABLE_SQL = """
 CREATE TABLE posts(
   post_uid TEXT PRIMARY KEY,
+  platform_post_id TEXT NOT NULL,
   author TEXT NOT NULL,
   created_at TEXT NOT NULL,
   url TEXT NOT NULL,
@@ -32,8 +33,12 @@ CREATE TABLE assertions(
 )
 """
 INSERT_POST_SQL = """
-INSERT INTO posts(post_uid, author, created_at, url, raw_text, display_md, processed_at)
-VALUES (:post_uid, :author, :created_at, :url, :raw_text, :display_md, :processed_at)
+INSERT INTO posts(
+  post_uid, platform_post_id, author, created_at, url, raw_text, display_md, processed_at
+)
+VALUES (
+  :post_uid, :platform_post_id, :author, :created_at, :url, :raw_text, :display_md, :processed_at
+)
 """
 INSERT_ASSERTION_SQL = """
 INSERT INTO assertions(
@@ -58,6 +63,7 @@ def test_build_sector_hot_payload_groups_signals_and_related_stocks() -> None:
             INSERT_POST_SQL,
             {
                 "post_uid": "weibo:1",
+                "platform_post_id": "1",
                 "author": "alice",
                 "created_at": "2099-01-01 00:00:00",
                 "url": "https://example.com/weibo/1",

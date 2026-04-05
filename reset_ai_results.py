@@ -13,7 +13,6 @@ from alphavault.env import load_dotenv_if_present
 
 from alphavault.db.turso_db import get_turso_engine_from_env, turso_connect_autocommit
 from alphavault.db.turso_queue import (
-    ensure_cloud_queue_schema,
     reset_ai_results_all,
     reset_ai_results_for_post_uids,
 )
@@ -88,7 +87,6 @@ def main() -> None:
         raise SystemExit("全量重置太危险：请加 --yes 确认")
 
     engine = get_turso_engine_from_env()
-    ensure_cloud_queue_schema(engine, verbose=bool(args.verbose))
     archived_at = now_str()
 
     if args.all:

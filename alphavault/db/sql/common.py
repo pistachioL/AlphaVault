@@ -3,10 +3,6 @@ from __future__ import annotations
 from typing import Iterable
 
 
-def pragma_table_info(table: str) -> str:
-    return f"PRAGMA table_info({table})"
-
-
 def make_in_placeholders(*, prefix: str, count: int) -> str:
     n = max(0, int(count))
     if n <= 0:

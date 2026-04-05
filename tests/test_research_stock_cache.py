@@ -3,11 +3,13 @@ from __future__ import annotations
 import libsql
 from typing import cast
 
+from alphavault.db.cloud_schema import (
+    apply_cloud_schema as ensure_research_stock_cache_schema,
+)
 from alphavault.db.turso_db import TursoConnection
 from alphavault.research_stock_cache import (
     claim_entity_page_dirty_entries,
     dirty_reason_mask_for,
-    ensure_research_stock_cache_schema,
     fail_entity_page_dirty_claims,
     list_entity_page_dirty_keys,
     load_entity_page_backfill_snapshot,
@@ -373,120 +375,6 @@ ORDER BY entity_key ASC
         assert cast(list[dict[str, str]], extras["backfill_posts"])[0]["post_uid"] == (
             "weibo:9"
         )
-    finally:
-        conn.close()
-
-
-def test_ensure_research_stock_cache_schema_adds_content_hash_column() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            """
-CREATE TABLE entity_page_snapshot (
-    entity_key TEXT PRIMARY KEY,
-    header_title TEXT NOT NULL DEFAULT '',
-    signal_total INTEGER NOT NULL DEFAULT 0,
-    signals_json TEXT NOT NULL DEFAULT '[]',
-    related_sectors_json TEXT NOT NULL DEFAULT '[]',
-    backfill_posts_json TEXT NOT NULL DEFAULT '[]',
-    updated_at TEXT NOT NULL
-)
-"""
-        )
-        ensure_research_stock_cache_schema(conn)
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(entity_page_snapshot)")
-            .mappings()
-            .all()
-        }
-        assert "content_hash" in columns
-    finally:
-        conn.close()
-
-
-def test_ensure_research_stock_cache_schema_adds_related_stocks_column() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            """
-CREATE TABLE entity_page_snapshot (
-    entity_key TEXT PRIMARY KEY,
-    header_title TEXT NOT NULL DEFAULT '',
-    signal_total INTEGER NOT NULL DEFAULT 0,
-    signals_json TEXT NOT NULL DEFAULT '[]',
-    related_sectors_json TEXT NOT NULL DEFAULT '[]',
-    backfill_posts_json TEXT NOT NULL DEFAULT '[]',
-    content_hash TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-)
-"""
-        )
-        ensure_research_stock_cache_schema(conn)
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(entity_page_snapshot)")
-            .mappings()
-            .all()
-        }
-        assert "related_stocks_json" in columns
-    finally:
-        conn.close()
-
-
-def test_ensure_research_stock_cache_schema_upgrades_projection_dirty_columns() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            """
-CREATE TABLE projection_dirty (
-    job_type TEXT NOT NULL,
-    target_key TEXT NOT NULL,
-    reason TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY(job_type, target_key)
-)
-"""
-        )
-        conn.execute(
-            """
-INSERT INTO projection_dirty(job_type, target_key, reason, updated_at)
-VALUES ('entity_page', 'stock:601899.SH', 'rss', '2026-04-04 09:00:00+08:00')
-"""
-        )
-
-        ensure_research_stock_cache_schema(conn)
-
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(projection_dirty)")
-            .mappings()
-            .all()
-        }
-        assert {
-            "reason_mask",
-            "dirty_since",
-            "last_dirty_at",
-            "claim_until",
-            "attempt_count",
-        }.issubset(columns)
-        row = (
-            conn.execute(
-                """
-SELECT reason_mask, dirty_since, last_dirty_at, claim_until, attempt_count
-FROM projection_dirty
-WHERE job_type = 'entity_page' AND target_key = 'stock:601899.SH'
-"""
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert row is not None
-        assert int(row["reason_mask"] or 0) == dirty_reason_mask_for("rss")
-        assert str(row["dirty_since"]) == "2026-04-04 09:00:00+08:00"
-        assert str(row["last_dirty_at"]) == "2026-04-04 09:00:00+08:00"
-        assert str(row["claim_until"]) == ""
-        assert int(row["attempt_count"] or 0) == 0
     finally:
         conn.close()
 

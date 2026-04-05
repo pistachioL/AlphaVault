@@ -13,7 +13,6 @@ from alphavault.infra.entity_match_redis import (
 from .schema import (
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
-    ensure_research_workbench_schema,
     handle_turso_error,
     use_conn,
 )
@@ -45,7 +44,6 @@ def _select_unique_mapping(rows: list[tuple[str, str]]) -> dict[str, str]:
 def rebuild_stock_dict_shadow_best_effort(
     engine_or_conn: TursoEngine | TursoConnection,
 ) -> bool:
-    ensure_research_workbench_schema(engine_or_conn)
     try:
         with use_conn(engine_or_conn) as conn:
             security_master_rows = conn.execute(

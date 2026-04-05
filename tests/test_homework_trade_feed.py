@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import libsql
 
+from alphavault.db.cloud_schema import (
+    apply_cloud_schema as ensure_homework_trade_feed_schema,
+)
 from alphavault.db.turso_db import TursoConnection
 from alphavault.homework_trade_feed import (
     HOMEWORK_DEFAULT_VIEW_KEY,
     HOMEWORK_TRADE_FEED_TABLE,
-    ensure_homework_trade_feed_schema,
     load_homework_trade_feed,
     save_homework_trade_feed,
 )
@@ -72,32 +74,6 @@ WHERE view_key = :view_key
             }
         ]
         assert str(payload["updated_at"]).strip() != ""
-    finally:
-        conn.close()
-
-
-def test_ensure_homework_trade_feed_schema_adds_content_hash_column() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            """
-CREATE TABLE homework_trade_feed (
-    view_key TEXT PRIMARY KEY,
-    header_json TEXT NOT NULL DEFAULT '{}',
-    items_json TEXT NOT NULL DEFAULT '[]',
-    counters_json TEXT NOT NULL DEFAULT '{}',
-    updated_at TEXT NOT NULL
-)
-"""
-        )
-        ensure_homework_trade_feed_schema(conn)
-        columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(homework_trade_feed)")
-            .mappings()
-            .all()
-        }
-        assert "content_hash" in columns
     finally:
         conn.close()
 

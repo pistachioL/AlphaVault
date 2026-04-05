@@ -5,7 +5,6 @@ from typing import Any
 
 import pandas as pd
 
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
@@ -29,7 +28,6 @@ WANTED_ASSERTION_COLUMNS = [
     "stock_codes_json",
     "stock_names_json",
     "cluster_keys_json",
-    "cluster_key",
 ]
 
 WANTED_POST_COLUMNS = [
@@ -99,12 +97,6 @@ def _load_stock_assertions(
     window_days: int,
     max_rows: int,
 ) -> pd.DataFrame:
-    assertion_cols = table_columns(conn, "assertions")
-    selected_cols = [
-        col for col in WANTED_ASSERTION_COLUMNS if col in set(assertion_cols)
-    ]
-    if not selected_cols:
-        return pd.DataFrame()
     params: dict[str, Any] = {
         "stock_key": str(stock_key or "").strip(),
         "cutoff": _window_cutoff_str(window_days),
@@ -126,7 +118,10 @@ def _load_stock_assertions(
         )
 
     select_expr = ", ".join(
-        [*(f"a.{col}" for col in selected_cols), "ae.entity_key AS resolved_entity_key"]
+        [
+            *(f"a.{col}" for col in WANTED_ASSERTION_COLUMNS),
+            "ae.entity_key AS resolved_entity_key",
+        ]
     )
     query = f"""
 SELECT {select_expr}
@@ -136,12 +131,10 @@ JOIN assertion_entities ae
 WHERE a.action LIKE 'trade.%'
   AND ae.entity_type = 'stock'
   AND {key_clause}
+  AND a.created_at >= :cutoff
+ORDER BY a.created_at DESC
+LIMIT :limit
 """
-    if "created_at" in assertion_cols:
-        query += "\n  AND created_at >= :cutoff"
-    if "created_at" in assertion_cols:
-        query += "\nORDER BY a.created_at DESC"
-    query += "\nLIMIT :limit"
 
     assertions = turso_read_sql_df(conn, query, params=params)
     if assertions.empty:
@@ -156,14 +149,8 @@ WHERE a.action LIKE 'trade.%'
         out["stock_names_json"] = "[]"
     out["stock_codes_json"] = out["stock_codes_json"].fillna("[]").astype(str)
     out["stock_names_json"] = out["stock_names_json"].fillna("[]").astype(str)
-    if "cluster_keys_json" in out.columns:
-        out["cluster_keys"] = out["cluster_keys_json"].apply(parse_json_list)
-    elif "cluster_key" in out.columns:
-        out["cluster_keys"] = out["cluster_key"].apply(
-            lambda item: [str(item).strip()] if str(item or "").strip() else []
-        )
-    else:
-        out["cluster_keys"] = [[] for _ in range(len(out))]
+    out["cluster_keys"] = out["cluster_keys_json"].fillna("[]").astype(str)
+    out["cluster_keys"] = out["cluster_keys"].apply(parse_json_list)
     return out
 
 
@@ -176,13 +163,8 @@ def _load_posts_for_assertions(
     if not cleaned:
         return pd.DataFrame()
     placeholders = ", ".join(["?"] * len(cleaned))
-    post_cols = table_columns(conn, "posts")
-    selected_cols = [col for col in WANTED_POST_COLUMNS if col in set(post_cols)]
-    if "display_md" not in selected_cols:
-        selected_cols.append("'' AS display_md")
-    post_select_expr = ", ".join(selected_cols)
     sql = f"""
-SELECT {post_select_expr}
+SELECT {", ".join(WANTED_POST_COLUMNS)}
 FROM posts
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})

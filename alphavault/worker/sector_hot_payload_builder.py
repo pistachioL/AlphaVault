@@ -5,7 +5,6 @@ from typing import Any
 
 import pandas as pd
 
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
@@ -22,7 +21,6 @@ WANTED_ASSERTION_COLUMNS = [
     "author",
     "created_at",
     "cluster_keys_json",
-    "cluster_key",
 ]
 
 WANTED_POST_COLUMNS = [
@@ -56,34 +54,20 @@ def _load_sector_assertions(
     window_days: int,
     max_rows: int,
 ) -> pd.DataFrame:
-    assertion_cols = set(table_columns(conn, "assertions"))
-    selected_cols = [col for col in WANTED_ASSERTION_COLUMNS if col in assertion_cols]
-    if not selected_cols:
-        return pd.DataFrame()
-
     params: dict[str, Any] = {
-        "sector_key": str(sector_slug or "").strip(),
         "cluster_like": f'%"{str(sector_slug or "").strip()}"%',
         "cutoff": _window_cutoff_str(window_days),
         "limit": max(1, int(max_rows)),
     }
-    where_parts: list[str] = []
-    if "cluster_keys_json" in assertion_cols:
-        where_parts.append("cluster_keys_json LIKE :cluster_like")
-    if "cluster_key" in assertion_cols:
-        where_parts.append("cluster_key = :sector_key")
-    if not where_parts:
-        return pd.DataFrame()
 
     query = f"""
-SELECT {", ".join(selected_cols)}
+SELECT {", ".join(WANTED_ASSERTION_COLUMNS)}
 FROM assertions
-WHERE ({" OR ".join(where_parts)})
+WHERE cluster_keys_json LIKE :cluster_like
+  AND created_at >= :cutoff
+ORDER BY created_at DESC
+LIMIT :limit
 """
-    if "created_at" in assertion_cols:
-        query += "\n  AND created_at >= :cutoff"
-        query += "\nORDER BY created_at DESC"
-    query += "\nLIMIT :limit"
 
     assertions = turso_read_sql_df(conn, query, params=params)
     if assertions.empty:
@@ -92,14 +76,8 @@ WHERE ({" OR ".join(where_parts)})
     for col in ["post_uid", "topic_key", "summary", "author", "action"]:
         if col in out.columns:
             out[col] = out[col].fillna("").astype(str)
-    if "cluster_keys_json" in out.columns:
-        out["cluster_keys"] = out["cluster_keys_json"].apply(parse_json_list)
-    elif "cluster_key" in out.columns:
-        out["cluster_keys"] = out["cluster_key"].apply(
-            lambda item: [str(item).strip()] if str(item or "").strip() else []
-        )
-    else:
-        out["cluster_keys"] = [[] for _ in range(len(out))]
+    out["cluster_keys"] = out["cluster_keys_json"].fillna("[]").astype(str)
+    out["cluster_keys"] = out["cluster_keys"].apply(parse_json_list)
     return out
 
 
@@ -111,14 +89,10 @@ def _load_posts_for_assertions(
     cleaned = [str(uid or "").strip() for uid in post_uids if str(uid or "").strip()]
     if not cleaned:
         return pd.DataFrame()
-    post_cols = set(table_columns(conn, "posts"))
-    selected_cols = [col for col in WANTED_POST_COLUMNS if col in post_cols]
-    if not selected_cols:
-        return pd.DataFrame()
     placeholders = make_in_placeholders(prefix="p", count=len(cleaned))
     params = make_in_params(prefix="p", values=cleaned)
     query = f"""
-SELECT {", ".join(selected_cols)}
+SELECT {", ".join(WANTED_POST_COLUMNS)}
 FROM posts
 WHERE post_uid IN ({placeholders})
 """
@@ -126,7 +100,7 @@ WHERE post_uid IN ({placeholders})
     if posts.empty:
         return posts
     out = posts.copy()
-    for col in selected_cols:
+    for col in WANTED_POST_COLUMNS:
         out[col] = out[col].fillna("").astype(str)
     return out
 

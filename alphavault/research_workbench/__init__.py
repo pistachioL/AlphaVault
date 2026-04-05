@@ -37,7 +37,6 @@ from .schema import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
-    ensure_research_workbench_schema,
 )
 from .service import get_research_workbench_engine_from_env
 
@@ -57,7 +56,6 @@ __all__ = [
     "RELATION_TYPE_STOCK_SECTOR",
     "accept_relation_candidate",
     "block_relation_candidate",
-    "ensure_research_workbench_schema",
     "get_stock_keys_by_official_names",
     "get_alias_resolve_tasks_map",
     "get_research_workbench_engine_from_env",

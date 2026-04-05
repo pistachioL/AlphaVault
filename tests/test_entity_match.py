@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import libsql
 
+from alphavault.db.cloud_schema import (
+    apply_cloud_schema as ensure_research_workbench_schema,
+)
 from alphavault.db.turso_db import TursoConnection
 from alphavault.domains.entity_match.resolve import (
     load_entity_match_lookup_maps,
@@ -11,40 +14,9 @@ from alphavault.domains.entity_match.resolve import (
 from alphavault.research_workbench import (
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
     RESEARCH_RELATION_CANDIDATES_TABLE,
-    ensure_research_workbench_schema,
     record_stock_alias_relation,
     upsert_security_master_stock,
 )
-
-
-def _create_assertion_link_tables(conn: TursoConnection) -> None:
-    conn.execute(
-        """
-CREATE TABLE assertion_mentions(
-  post_uid TEXT NOT NULL,
-  assertion_idx INTEGER NOT NULL,
-  mention_idx INTEGER NOT NULL,
-  mention_text TEXT NOT NULL,
-  mention_type TEXT NOT NULL,
-  evidence TEXT NOT NULL DEFAULT '',
-  confidence REAL NOT NULL DEFAULT 0
-)
-"""
-    )
-    conn.execute(
-        """
-CREATE TABLE assertion_entities(
-  post_uid TEXT NOT NULL,
-  assertion_idx INTEGER NOT NULL,
-  entity_idx INTEGER NOT NULL,
-  entity_key TEXT NOT NULL,
-  entity_type TEXT NOT NULL,
-  source_mention_text TEXT NOT NULL DEFAULT '',
-  source_mention_type TEXT NOT NULL DEFAULT '',
-  confidence REAL NOT NULL DEFAULT 0
-)
-"""
-    )
 
 
 def test_resolve_assertion_mentions_creates_candidate_for_unconfirmed_alias() -> None:
@@ -207,7 +179,6 @@ def test_resolve_assertion_mentions_does_not_use_historical_stock_name_mapping()
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         ensure_research_workbench_schema(conn)
-        _create_assertion_link_tables(conn)
         conn.execute(
             """
 INSERT INTO assertion_mentions(

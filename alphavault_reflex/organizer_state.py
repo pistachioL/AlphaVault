@@ -6,7 +6,6 @@ import pandas as pd
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_BLOCKED,
     ALIAS_TASK_STATUS_RESOLVED,
-    ensure_research_workbench_schema,
     get_research_workbench_engine_from_env,
     list_candidate_status_map,
     list_manual_alias_resolve_tasks,
@@ -138,7 +137,6 @@ class OrganizerState(rx.State):
             return
         try:
             engine = get_research_workbench_engine_from_env()
-            ensure_research_workbench_schema(engine)
             record_stock_alias_relation(
                 engine,
                 stock_key=target_key,
@@ -166,7 +164,6 @@ class OrganizerState(rx.State):
             return
         try:
             engine = get_research_workbench_engine_from_env()
-            ensure_research_workbench_schema(engine)
             set_alias_resolve_task_status(
                 engine,
                 alias_key=alias_key,
@@ -224,7 +221,6 @@ def load_pending_rows(section: str) -> tuple[list[dict[str, str]], str]:
     if section_key == SECTION_ALIAS_MANUAL:
         try:
             engine = get_research_workbench_engine_from_env()
-            ensure_research_workbench_schema(engine)
             task_rows = list_manual_alias_resolve_tasks(engine)
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
@@ -331,7 +327,6 @@ def _filter_known_candidate_statuses(
         return []
     try:
         engine = get_research_workbench_engine_from_env()
-        ensure_research_workbench_schema(engine)
         status_map = list_candidate_status_map(
             engine,
             [str(row.get("candidate_id") or "").strip() for row in rows],

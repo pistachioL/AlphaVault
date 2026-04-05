@@ -4,7 +4,6 @@ from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault.research_workbench import (
     accept_relation_candidate,
     block_relation_candidate,
-    ensure_research_workbench_schema,
     get_research_workbench_engine_from_env,
     ignore_relation_candidate,
     upsert_relation_candidate,
@@ -13,7 +12,6 @@ from alphavault.research_workbench import (
 
 def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
     engine = get_research_workbench_engine_from_env()
-    ensure_research_workbench_schema(engine)
     left_key = str(candidate_row.get("left_key") or "").strip()
     upsert_relation_candidate(
         engine,

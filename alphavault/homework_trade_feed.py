@@ -2,14 +2,10 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-import threading
 from typing import Iterator
 
 from alphavault.content_hash import build_content_hash
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.homework_trade_feed import (
-    create_homework_trade_feed_index,
-    create_homework_trade_feed_table,
     select_homework_trade_feed,
     upsert_homework_trade_feed,
 )
@@ -26,8 +22,6 @@ HOMEWORK_TRADE_FEED_TABLE = "homework_trade_feed"
 HOMEWORK_DEFAULT_VIEW_KEY = "default"
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-_SCHEMA_READY_LOCK = threading.RLock()
-_SCHEMA_READY_KEYS: set[str] = set()
 
 
 def _now_str() -> str:
@@ -45,72 +39,21 @@ def _use_conn(
         yield conn
 
 
-def _resolve_engine(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> TursoEngine | None:
-    return (
-        engine_or_conn._engine
-        if isinstance(engine_or_conn, TursoConnection)
-        else engine_or_conn
-    )
-
-
-def _schema_cache_key(engine_or_conn: TursoEngine | TursoConnection) -> str:
-    engine = _resolve_engine(engine_or_conn)
-    if engine is None:
-        return ""
-    return (
-        f"{str(engine.remote_url or '').strip()}|{str(engine.auth_token or '').strip()}"
-    )
-
-
-def _clear_schema_ready(engine_or_conn: TursoEngine | TursoConnection) -> None:
-    cache_key = _schema_cache_key(engine_or_conn)
-    if not cache_key:
-        return
-    with _SCHEMA_READY_LOCK:
-        _SCHEMA_READY_KEYS.discard(cache_key)
-
-
 def _handle_turso_error(
     engine_or_conn: TursoEngine | TursoConnection, err: BaseException
 ) -> None:
     if isinstance(err, _FATAL_BASE_EXCEPTIONS):
         raise err
-    engine = _resolve_engine(engine_or_conn)
+    engine = (
+        engine_or_conn._engine
+        if isinstance(engine_or_conn, TursoConnection)
+        else engine_or_conn
+    )
     if engine is not None and (
         is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)
     ):
-        _clear_schema_ready(engine_or_conn)
         engine.dispose()
     raise err
-
-
-def _run_schema_ddl(engine_or_conn: TursoEngine | TursoConnection) -> None:
-    with _use_conn(engine_or_conn) as conn:
-        conn.execute(create_homework_trade_feed_table(HOMEWORK_TRADE_FEED_TABLE))
-        _ensure_homework_trade_feed_columns(conn)
-        conn.execute(create_homework_trade_feed_index(HOMEWORK_TRADE_FEED_TABLE))
-
-
-def ensure_homework_trade_feed_schema(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> None:
-    cache_key = _schema_cache_key(engine_or_conn)
-    if cache_key:
-        with _SCHEMA_READY_LOCK:
-            if cache_key in _SCHEMA_READY_KEYS:
-                return
-            try:
-                _run_schema_ddl(engine_or_conn)
-            except BaseException as err:
-                _handle_turso_error(engine_or_conn, err)
-            _SCHEMA_READY_KEYS.add(cache_key)
-        return
-    try:
-        _run_schema_ddl(engine_or_conn)
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
 
 
 def _clean_text(value: object) -> str:
@@ -176,15 +119,6 @@ def _coerce_non_negative_int(value: object, *, default: int) -> int:
     except (TypeError, ValueError):
         return max(0, int(default))
     return max(0, parsed)
-
-
-def _ensure_homework_trade_feed_columns(conn: TursoConnection) -> None:
-    cols = table_columns(conn, HOMEWORK_TRADE_FEED_TABLE)
-    if "content_hash" not in cols:
-        conn.execute(
-            f"ALTER TABLE {HOMEWORK_TRADE_FEED_TABLE} "
-            "ADD COLUMN content_hash TEXT NOT NULL DEFAULT ''"
-        )
 
 
 def _select_homework_trade_feed_row(
@@ -260,7 +194,6 @@ def save_homework_trade_feed(
     }
     counters = {"row_count": len(cleaned_rows)}
     try:
-        ensure_homework_trade_feed_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             existing_row = _select_homework_trade_feed_row(conn, view_key=key)
             content_hash = _homework_trade_feed_content_hash(
@@ -298,7 +231,6 @@ def load_homework_trade_feed(
     if not key:
         return {}
     try:
-        ensure_homework_trade_feed_schema(engine_or_conn)
         with _use_conn(engine_or_conn) as conn:
             row = _select_homework_trade_feed_row(conn, view_key=key)
     except BaseException as err:
@@ -330,7 +262,6 @@ def load_homework_trade_feed(
 __all__ = [
     "HOMEWORK_DEFAULT_VIEW_KEY",
     "HOMEWORK_TRADE_FEED_TABLE",
-    "ensure_homework_trade_feed_schema",
     "load_homework_trade_feed",
     "save_homework_trade_feed",
 ]

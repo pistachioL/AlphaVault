@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import libsql
 
-from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault.db.cloud_schema import (
+    apply_cloud_schema as ensure_research_workbench_schema,
+)
+from alphavault.db.turso_db import TursoConnection
 from alphavault.research_workbench import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
     accept_relation_candidate,
     block_relation_candidate,
-    ensure_research_workbench_schema,
     ignore_relation_candidate,
     get_stock_keys_by_official_names,
     list_pending_candidates,
@@ -108,12 +110,12 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             .all()
         }
 
-        assert table_names == {
+        assert {
             "alias_resolve_tasks",
             "relation_candidates",
             "relations",
             "security_master",
-        }
+        }.issubset(table_names)
 
         record_stock_sector_relation(
             conn,
@@ -703,31 +705,3 @@ def test_list_pending_candidates_for_left_key_includes_candidate_key() -> None:
         assert rows[1]["candidate_key"] == "stock:贵州茅台"
     finally:
         conn.close()
-
-
-def test_research_workbench_exports_schema_ensure_function() -> None:
-    from alphavault import research_workbench as module
-    from alphavault.research_workbench import schema as schema_module
-
-    assert (
-        module.ensure_research_workbench_schema
-        is schema_module.ensure_research_workbench_schema
-    )
-
-
-def test_ensure_research_workbench_schema_runs_once_per_engine(monkeypatch) -> None:
-    from alphavault.research_workbench import schema as schema_module
-
-    calls: list[str] = []
-    monkeypatch.setattr(schema_module, "_SCHEMA_READY_KEYS", set())
-    monkeypatch.setattr(
-        schema_module,
-        "run_schema_ddl",
-        lambda engine_or_conn: calls.append(str(engine_or_conn.remote_url)),
-    )
-
-    engine = TursoEngine(remote_url="libsql://unit.test", auth_token="token")
-    schema_module.ensure_research_workbench_schema(engine)
-    schema_module.ensure_research_workbench_schema(engine)
-
-    assert calls == ["libsql://unit.test"]

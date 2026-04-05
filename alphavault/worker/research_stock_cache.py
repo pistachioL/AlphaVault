@@ -16,7 +16,6 @@ from alphavault.research_stock_cache import (
     EntityPageDirtyEntry,
     ENTITY_PAGE_SNAPSHOT_TABLE,
     claim_entity_page_dirty_entries,
-    ensure_research_stock_cache_schema,
     fail_entity_page_dirty_claims,
     list_entity_page_dirty_keys,
     load_entity_page_backfill_snapshot,
@@ -289,7 +288,6 @@ def sync_stock_hot_cache(
         _log_stock_hot_cache(verbose=verbose, message="lock_busy skip=1")
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
         with (
             turso_connect_autocommit(engine_or_conn)
             if isinstance(engine_or_conn, TursoEngine)

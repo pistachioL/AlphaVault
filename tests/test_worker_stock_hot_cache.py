@@ -5,10 +5,10 @@ from typing import cast
 
 import pytest
 
+from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.turso_db import TursoConnection
 from alphavault.research_stock_cache import (
     dirty_reason_mask_for,
-    ensure_research_stock_cache_schema,
 )
 from alphavault.worker import research_stock_cache as stock_hot_cache
 
@@ -24,38 +24,23 @@ class _FakeConn:
 def test_list_missing_hot_cache_stock_keys_reads_assertion_entities() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
-        ensure_research_stock_cache_schema(conn)
+        apply_cloud_schema(conn)
         conn.execute(
             """
-            CREATE TABLE assertions(
-                post_uid TEXT NOT NULL,
-                idx INTEGER NOT NULL,
-                topic_key TEXT NOT NULL,
-                action TEXT NOT NULL
+            INSERT INTO assertions(
+                post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence
+            )
+            VALUES (
+                'weibo:1', 1, 'stock:紫金', 'trade.buy', 1, '小仓试错', '原文', 0.9
             )
             """
         )
         conn.execute(
             """
-            CREATE TABLE assertion_entities(
-                post_uid TEXT NOT NULL,
-                assertion_idx INTEGER NOT NULL,
-                entity_idx INTEGER NOT NULL,
-                entity_key TEXT NOT NULL,
-                entity_type TEXT NOT NULL
+            INSERT INTO assertion_entities(
+                post_uid, assertion_idx, entity_idx, entity_key, entity_type, confidence
             )
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO assertions(post_uid, idx, topic_key, action)
-            VALUES ('weibo:1', 1, 'stock:紫金', 'trade.buy')
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO assertion_entities(post_uid, assertion_idx, entity_idx, entity_key, entity_type)
-            VALUES ('weibo:1', 1, 1, 'stock:601899.SH', 'stock')
+            VALUES ('weibo:1', 1, 1, 'stock:601899.SH', 'stock', 0.9)
             """
         )
 
@@ -86,11 +71,6 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     monkeypatch.setattr(
         stock_hot_cache,
         "release_worker_job_lock",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_stock_cache_schema",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -251,11 +231,6 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "ensure_research_stock_cache_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
         "claim_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [],
     )
@@ -318,11 +293,6 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
     monkeypatch.setattr(
         stock_hot_cache,
         "release_worker_job_lock",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_stock_cache_schema",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -419,11 +389,6 @@ def test_sync_stock_hot_cache_skips_extras_for_sector_keys(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "ensure_research_stock_cache_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
         "claim_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [
             {
@@ -504,11 +469,6 @@ def test_sync_stock_hot_cache_marks_claim_failed_when_refresh_raises(
     monkeypatch.setattr(
         stock_hot_cache,
         "release_worker_job_lock",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_stock_cache_schema",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
