@@ -18,12 +18,6 @@ CREATE TABLE IF NOT EXISTS posts (
     model TEXT,
     prompt_version TEXT,
     archived_at TEXT NOT NULL DEFAULT '',
-    ai_status TEXT NOT NULL DEFAULT 'done',
-    ai_retry_count INTEGER NOT NULL DEFAULT 0,
-    ai_next_retry_at INTEGER,
-    ai_running_at INTEGER,
-    ai_last_error TEXT,
-    ai_result_json TEXT,
     ingested_at INTEGER NOT NULL DEFAULT 0
 );
 
@@ -246,9 +240,6 @@ CREATE INDEX IF NOT EXISTS idx_posts_created_at_post_uid
 
 CREATE INDEX IF NOT EXISTS idx_posts_platform_post_id
     ON posts(platform_post_id);
-
-CREATE INDEX IF NOT EXISTS idx_posts_ai_status_next_retry_at
-    ON posts(ai_status, ai_next_retry_at);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_topic_key
     ON assertions(topic_key);

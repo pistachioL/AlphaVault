@@ -91,7 +91,6 @@ def run_direct_stock_backfill(post_uid: str, stock_key: str, display_name: str) 
         model=os.getenv(ENV_AI_MODEL, "").strip() or "targeted-stock-backfill",
         prompt_version=BACKFILL_PROMPT_VERSION,
         archived_at=archived_at,
-        ai_result_json=None,
         assertions=merged,
     )
     mark_entity_page_dirty(

@@ -189,18 +189,15 @@ def run_turso_maintenance(
     spool_dir: Path | str,
     redis_client: Any,
     redis_queue_key: str,
-    stuck_seconds: int,
     verbose: bool,
     do_recovery: bool,
     now_fn: Callable[[], float],
     recover_spool_to_turso_and_redis_fn: Callable[..., tuple[int, int, int, bool]],
-    recover_stuck_ai_tasks_fn: Callable[..., int],
-    recover_done_without_processed_at_fn: Callable[..., int],
     load_unprocessed_posts_for_requeue_fn: Callable[..., list[dict[str, object]]],
     redis_try_push_ai_dedup_status_fn: Callable[..., str],
     resolve_redis_dedup_ttl_seconds_fn: Callable[[], int],
     maybe_dispose_turso_engine_on_transient_error_fn: Callable[..., None],
-    redis_ai_requeue_processing_fn: Callable[..., int],
+    redis_ai_requeue_processing_without_lease_fn: Callable[..., int],
     fatal_exceptions: tuple[type[BaseException], ...],
     redis_ai_requeue_max_items: int,
 ) -> tuple[int, int, bool]:
@@ -230,18 +227,6 @@ def run_turso_maintenance(
             recovered += int(restored_posts) + int(deleted_done_spool)
             flushed_redis += int(spool_queued)
             turso_error = bool(turso_error or spool_error)
-            recovered = recover_stuck_ai_tasks_fn(
-                engine,
-                now_epoch=int(now_fn()),
-                stuck_seconds=max(60, int(stuck_seconds)),
-                platform=platform_name,
-                verbose=bool(verbose),
-            ) + int(recovered)
-            recovered += recover_done_without_processed_at_fn(
-                engine,
-                platform=platform_name,
-                verbose=bool(verbose),
-            )
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
@@ -258,7 +243,7 @@ def run_turso_maintenance(
     if redis_client and str(redis_queue_key or "").strip():
         try:
             flushed_redis += int(
-                redis_ai_requeue_processing_fn(
+                redis_ai_requeue_processing_without_lease_fn(
                     redis_client,
                     redis_queue_key,
                     max_items=int(redis_ai_requeue_max_items),

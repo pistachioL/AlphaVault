@@ -19,8 +19,6 @@ from alphavault.db.turso_queue import (
     CloudPost,
     load_cloud_post,
     load_recent_posts_by_author,
-    mark_ai_error,
-    try_mark_ai_running,
     write_assertions_and_mark_done,
 )
 from alphavault.domains.common.assertion_entities import build_assertion_entities
@@ -37,7 +35,6 @@ from alphavault.weibo.topic_prompt_tree import (
     MAX_TOPIC_PROMPT_CHARS,
     thread_root_info_for_post,
 )
-from alphavault.worker.backoff import backoff_seconds
 from alphavault.worker.local_cache import (
     apply_outbox_event_payload,
     open_local_cache,
@@ -391,11 +388,6 @@ def process_one_post_uid_topic_prompt_v4(
             continue
         seen_uids.add(uid)
 
-        is_current = uid == str(post.post_uid or "").strip()
-        ai_status = str(row.get("ai_status") or "").strip().lower()
-        if not is_current and ai_status not in {"pending", "error"}:
-            continue
-
         rk, _seg, _ck = thread_root_info_for_post(
             raw_text=str(row.get("raw_text") or ""),
             display_md=str(row.get("display_md") or ""),
@@ -417,21 +409,6 @@ def process_one_post_uid_topic_prompt_v4(
     trimmed_count = max(0, post_count - len(kept))
 
     locked_post_uids: list[str] = [post.post_uid]
-    locked_set: set[str] = {post.post_uid}
-    now_epoch = int(time.time())
-    for row in kept:
-        uid = str(row.get("post_uid") or "").strip()
-        if not uid or uid in locked_set:
-            continue
-        ai_status = str(row.get("ai_status") or "").strip().lower()
-        if ai_status not in {"pending", "error"}:
-            continue
-        try:
-            if try_mark_ai_running(engine, post_uid=uid, now_epoch=now_epoch):
-                locked_post_uids.append(uid)
-                locked_set.add(uid)
-        except Exception:
-            continue
 
     (
         runtime_context,
@@ -489,17 +466,6 @@ def process_one_post_uid_topic_prompt_v4(
             flush=True,
         )
 
-    retry_count_by_uid = {
-        str(row.get("post_uid") or "").strip(): _clamp_int(
-            row.get("ai_retry_count"),
-            1,
-            1000,
-            1,
-        )
-        for row in kept
-        if str(row.get("post_uid") or "").strip()
-    }
-
     try:
         limiter.wait()
         start_ts = time.time()
@@ -543,11 +509,7 @@ def process_one_post_uid_topic_prompt_v4(
             raise RuntimeError("ai_topic_message_lookup_invalid")
 
         post_uid_by_pid = {
-            str(row.get("platform_post_id") or "").strip(): str(
-                row.get("post_uid") or ""
-            ).strip()
-            for row in kept
-            if str(row.get("post_uid") or "").strip() in locked_set
+            str(post.platform_post_id or "").strip(): str(post.post_uid or "").strip()
         }
         assertions_by_post_uid = map_topic_prompt_assertions_to_rows(
             ai_result=parsed,
@@ -560,29 +522,6 @@ def process_one_post_uid_topic_prompt_v4(
             engine,
             assertions_by_post_uid,
         )
-
-        post_by_uid: dict[str, CloudPost] = {}
-        platform_value = str(post.platform or "").strip() or "weibo"
-        for row in kept:
-            uid = str(row.get("post_uid") or "").strip()
-            if not uid:
-                continue
-            post_by_uid[uid] = CloudPost(
-                post_uid=uid,
-                platform=platform_value,
-                platform_post_id=str(row.get("platform_post_id") or "").strip(),
-                author=str(row.get("author") or "").strip(),
-                created_at=str(row.get("created_at") or "").strip(),
-                url=str(row.get("url") or "").strip(),
-                raw_text=str(row.get("raw_text") or ""),
-                display_md=str(row.get("display_md") or ""),
-                ai_retry_count=_clamp_int(
-                    row.get("ai_retry_count"),
-                    0,
-                    1_000_000,
-                    0,
-                ),
-            )
 
         with ExitStack() as stack:
             cache_conn = None
@@ -607,7 +546,7 @@ def process_one_post_uid_topic_prompt_v4(
                 invest_score = score_from_assertions(rows)
                 processed_at = now_str()
                 archived_at = now_str()
-                post_for_outbox = post_by_uid.get(uid) or post
+                post_for_outbox = post
                 outbox_payload = build_assertion_outbox_event_payload(
                     post=post_for_outbox,
                     final_status=final_status,
@@ -632,7 +571,6 @@ def process_one_post_uid_topic_prompt_v4(
                     model=config.model,
                     prompt_version=config.prompt_version,
                     archived_at=archived_at,
-                    ai_result_json=None,
                     assertions=rows,
                     entity_match_results=entity_match_results_by_post_uid.get(uid, []),
                     outbox_source=str(outbox_source or "").strip(),
@@ -706,20 +644,6 @@ def process_one_post_uid_topic_prompt_v4(
             f" prompt_version={config.prompt_version}"
         )
         msg = f"ai:{format_llm_error_one_line(err, limit=700)}{ctx}"
-        now_epoch = int(time.time())
-        for uid in locked_post_uids:
-            retry_count = retry_count_by_uid.get(uid, 1)
-            next_retry = now_epoch + backoff_seconds(retry_count)
-            try:
-                mark_ai_error(
-                    engine,
-                    post_uid=uid,
-                    error=msg,
-                    next_retry_at=next_retry,
-                    archived_at=now_str(),
-                )
-            except Exception:
-                continue
         print(
             build_topic_prompt_v4_llm_log_line(
                 event="error",

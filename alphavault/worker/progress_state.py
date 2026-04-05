@@ -5,7 +5,6 @@ import time
 from typing import Any
 
 from alphavault.db.turso_db import TursoConnection, TursoEngine
-from alphavault.db.turso_queue import select_due_post_uids
 from alphavault.rss.utils import now_str
 from alphavault.worker.job_state import (
     save_worker_job_cursor,
@@ -78,40 +77,22 @@ def has_due_ai_posts(
     redis_client=None,
     redis_queue_key: str = "",
 ) -> bool:
-    if redis_client and str(redis_queue_key or "").strip():
-        try:
-            return bool(
-                redis_ai_due_count(
-                    redis_client,
-                    str(redis_queue_key),
-                    now_epoch=int(time.time()),
-                )
-            )
-        except BaseException as err:
-            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-                raise
-            if verbose:
-                print(
-                    f"[ai] redis_due_check_error platform={platform} {type(err).__name__}: {err}",
-                    flush=True,
-                )
-            return False
-    if engine is None:
+    del engine, platform
+    if not redis_client or not str(redis_queue_key or "").strip():
         return False
     try:
-        due = select_due_post_uids(
-            engine,
-            now_epoch=int(time.time()),
-            limit=1,
-            platform=str(platform or "").strip().lower() or None,
+        return bool(
+            redis_ai_due_count(
+                redis_client,
+                str(redis_queue_key),
+                now_epoch=int(time.time()),
+            )
         )
-        return bool(due)
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
-        maybe_dispose_turso_engine_on_transient_error(
-            engine=engine, err=err, verbose=bool(verbose)
-        )
+        if verbose:
+            print(f"[ai] redis_due_check_error {type(err).__name__}: {err}", flush=True)
         return False
 
 

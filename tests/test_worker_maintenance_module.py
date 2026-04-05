@@ -29,19 +29,12 @@ def test_run_turso_maintenance_skips_recovery_and_uses_injected_redis_steps() ->
         spool_dir="unused",
         redis_client=object(),
         redis_queue_key="queue",
-        stuck_seconds=3600,
         verbose=False,
         do_recovery=False,
         now_fn=lambda: 100.0,
         recover_spool_to_turso_and_redis_fn=lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("recovery should be skipped")
         ),
-        recover_stuck_ai_tasks_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("recovery should be skipped")
-        ),
-        recover_done_without_processed_at_fn=lambda *_args, **_kwargs: (
-            _ for _ in ()
-        ).throw(AssertionError("recovery should be skipped")),
         load_unprocessed_posts_for_requeue_fn=lambda *_args, **_kwargs: (
             _ for _ in ()
         ).throw(AssertionError("recovery should be skipped")),
@@ -50,7 +43,7 @@ def test_run_turso_maintenance_skips_recovery_and_uses_injected_redis_steps() ->
         ).throw(AssertionError("recovery should be skipped")),
         resolve_redis_dedup_ttl_seconds_fn=lambda: 123,
         maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: None,
-        redis_ai_requeue_processing_fn=lambda *_args, **_kwargs: 1,
+        redis_ai_requeue_processing_without_lease_fn=lambda *_args, **_kwargs: 1,
         fatal_exceptions=(KeyboardInterrupt, SystemExit, GeneratorExit),
         redis_ai_requeue_max_items=200,
     )
@@ -66,14 +59,6 @@ def test_run_turso_maintenance_recovers_spool_before_requeueing_posts() -> None:
     def _fake_recover_spool(**_kwargs):
         call_order.append("spool")
         return 1, 1, 0, False
-
-    def _fake_recover_running(*_args, **_kwargs) -> int:
-        call_order.append("recover_running")
-        return 2
-
-    def _fake_recover_done(*_args, **_kwargs) -> int:
-        call_order.append("recover_done")
-        return 3
 
     def _fake_load_posts(*_args, **_kwargs) -> list[dict[str, object]]:
         call_order.append("load_posts")
@@ -105,32 +90,65 @@ def test_run_turso_maintenance_recovers_spool_before_requeueing_posts() -> None:
         spool_dir="unused",
         redis_client=object(),
         redis_queue_key="queue",
-        stuck_seconds=3600,
         verbose=False,
         do_recovery=True,
         now_fn=lambda: 100.0,
         recover_spool_to_turso_and_redis_fn=_fake_recover_spool,
-        recover_stuck_ai_tasks_fn=_fake_recover_running,
-        recover_done_without_processed_at_fn=_fake_recover_done,
         load_unprocessed_posts_for_requeue_fn=_fake_load_posts,
         redis_try_push_ai_dedup_status_fn=_fake_push_posts,
         resolve_redis_dedup_ttl_seconds_fn=lambda: 123,
         maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: None,
-        redis_ai_requeue_processing_fn=_fake_requeue_processing,
+        redis_ai_requeue_processing_without_lease_fn=_fake_requeue_processing,
         fatal_exceptions=(KeyboardInterrupt, SystemExit, GeneratorExit),
         redis_ai_requeue_max_items=200,
     )
 
     assert call_order == [
         "spool",
-        "recover_running",
-        "recover_done",
         "requeue_processing",
         "load_posts",
         "push_posts",
     ]
-    assert recovered == 6
+    assert recovered == 1
     assert flushed_redis == 6
+    assert has_error is False
+
+
+def test_run_turso_maintenance_no_longer_uses_turso_ai_state_recovery() -> None:
+    call_order: list[str] = []
+
+    def _fake_recover_spool(**_kwargs):
+        call_order.append("spool")
+        return 1, 0, 0, False
+
+    def _fake_load_posts(*_args, **_kwargs) -> list[dict[str, object]]:
+        call_order.append("load_posts")
+        return []
+
+    recovered, flushed_redis, has_error = maintenance_module.run_turso_maintenance(
+        engine=object(),
+        platform="weibo",
+        spool_dir="unused",
+        redis_client=object(),
+        redis_queue_key="queue",
+        verbose=False,
+        do_recovery=True,
+        now_fn=lambda: 100.0,
+        recover_spool_to_turso_and_redis_fn=_fake_recover_spool,
+        load_unprocessed_posts_for_requeue_fn=_fake_load_posts,
+        redis_try_push_ai_dedup_status_fn=lambda *_args, **_kwargs: (
+            redis_queue_module.REDIS_PUSH_STATUS_DUPLICATE
+        ),
+        resolve_redis_dedup_ttl_seconds_fn=lambda: 123,
+        maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: None,
+        redis_ai_requeue_processing_without_lease_fn=lambda *_args, **_kwargs: 0,
+        fatal_exceptions=(KeyboardInterrupt, SystemExit, GeneratorExit),
+        redis_ai_requeue_max_items=200,
+    )
+
+    assert call_order == ["spool", "load_posts"]
+    assert recovered == 1
+    assert flushed_redis == 0
     assert has_error is False
 
 

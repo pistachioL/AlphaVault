@@ -106,3 +106,48 @@ def test_cloud_schema_sql_has_no_alter_table() -> None:
     sql_text = load_cloud_schema_sql().upper()
 
     assert "ALTER TABLE" not in sql_text
+
+
+def test_apply_cloud_schema_posts_table_has_no_ai_runtime_columns() -> None:
+    from alphavault.db.cloud_schema import apply_cloud_schema
+
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        apply_cloud_schema(conn)
+        post_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(posts)").mappings().all()
+        }
+        assert {
+            "post_uid",
+            "platform",
+            "platform_post_id",
+            "author",
+            "created_at",
+            "url",
+            "raw_text",
+            "display_md",
+            "final_status",
+            "invest_score",
+            "processed_at",
+            "model",
+            "prompt_version",
+            "archived_at",
+            "ingested_at",
+        } == post_columns
+
+        index_names = {
+            str(row["name"])
+            for row in conn.execute(
+                """
+SELECT name
+FROM sqlite_schema
+WHERE type = 'index'
+"""
+            )
+            .mappings()
+            .all()
+        }
+        assert "idx_posts_ai_status_next_retry_at" not in index_names
+    finally:
+        conn.close()

@@ -13,16 +13,26 @@ ORDER BY id ASC
 LIMIT :limit
 """
 
+SELECT_POST_COUNT_ALL = "SELECT COUNT(*) FROM posts"
+SELECT_ASSERTION_COUNT_ALL = "SELECT COUNT(*) FROM assertions"
+
+
+def select_post_count_by_post_uids(placeholders: str) -> str:
+    return f"SELECT COUNT(*) FROM posts WHERE post_uid IN ({placeholders})"
+
+
+def select_assertion_count_by_post_uids(placeholders: str) -> str:
+    return f"SELECT COUNT(*) FROM assertions WHERE post_uid IN ({placeholders})"
+
+
 UPSERT_PENDING_POST = """
 INSERT INTO posts (
     post_uid, platform, platform_post_id, author, created_at, url, raw_text, display_md,
     final_status, invest_score, processed_at, model, prompt_version, archived_at,
-    ai_status, ai_retry_count, ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
     ingested_at
 ) VALUES (
     :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text, :display_md,
     :final_status, NULL, NULL, NULL, NULL, :archived_at,
-    :ai_status, 0, NULL, NULL, NULL, NULL,
     :ingested_at
 )
 ON CONFLICT(post_uid) DO UPDATE SET
@@ -64,53 +74,10 @@ ON CONFLICT(post_uid) DO UPDATE SET
     END
 """
 
-SELECT_DUE_POST_UIDS = """
-SELECT post_uid
-FROM posts
-WHERE ai_status IN ('pending', 'error')
-  AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
-ORDER BY
-    CASE
-        WHEN processed_at IS NULL OR TRIM(processed_at) = '' THEN 0
-        ELSE 1
-    END ASC,
-    COALESCE(ai_next_retry_at, 0) ASC,
-    ingested_at DESC
-LIMIT :limit
-"""
-
-SELECT_DUE_POST_UIDS_BY_PLATFORM = """
-SELECT post_uid
-FROM posts
-WHERE platform = :platform
-  AND ai_status IN ('pending', 'error')
-  AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
-ORDER BY
-    CASE
-        WHEN processed_at IS NULL OR TRIM(processed_at) = '' THEN 0
-        ELSE 1
-    END ASC,
-    COALESCE(ai_next_retry_at, 0) ASC,
-    ingested_at DESC
-LIMIT :limit
-"""
-
-TRY_MARK_AI_RUNNING = """
-UPDATE posts
-SET ai_status='running',
-    ai_running_at=:now,
-    ai_retry_count=COALESCE(ai_retry_count, 0) + 1,
-    ai_last_error=NULL,
-    ai_next_retry_at=NULL
-WHERE post_uid=:post_uid
-  AND ai_status IN ('pending', 'error')
-  AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= :now)
-"""
-
 SELECT_CLOUD_POST = """
 SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
        COALESCE(display_md, '') AS display_md,
-       ai_retry_count
+       0 AS ai_retry_count
 FROM posts
 WHERE post_uid = :post_uid
 LIMIT 1
@@ -126,7 +93,7 @@ LIMIT 1
 SELECT_RECENT_POSTS_BY_AUTHOR = """
 SELECT post_uid, platform_post_id, author, created_at, url, raw_text,
        COALESCE(display_md, '') AS display_md,
-       processed_at, ai_status, COALESCE(ai_retry_count, 0) AS ai_retry_count
+       processed_at
 FROM posts
 WHERE author = :author
 ORDER BY created_at DESC
@@ -135,8 +102,7 @@ LIMIT :limit
 
 SELECT_UNPROCESSED_POST_QUEUE_ROWS = """
 SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-       COALESCE(display_md, '') AS display_md,
-       COALESCE(ai_retry_count, 0) AS ai_retry_count
+       COALESCE(display_md, '') AS display_md
 FROM posts
 WHERE processed_at IS NULL OR TRIM(processed_at) = ''
 ORDER BY ingested_at DESC, post_uid DESC
@@ -145,40 +111,12 @@ LIMIT :limit
 
 SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM = """
 SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-       COALESCE(display_md, '') AS display_md,
-       COALESCE(ai_retry_count, 0) AS ai_retry_count
+       COALESCE(display_md, '') AS display_md
 FROM posts
 WHERE platform = :platform
   AND (processed_at IS NULL OR TRIM(processed_at) = '')
 ORDER BY ingested_at DESC, post_uid DESC
 LIMIT :limit
-"""
-
-RESET_AI_RESULTS_ALL = """
-UPDATE posts
-SET ai_status=:ai_status,
-    ai_retry_count=0,
-    ai_next_retry_at=NULL,
-    ai_running_at=NULL,
-    ai_last_error=NULL,
-    ai_result_json=NULL,
-    archived_at=:archived_at
-WHERE ai_status != 'running'
-"""
-
-
-def build_reset_ai_results_for_post_uids(placeholders: str) -> str:
-    return f"""
-UPDATE posts
-SET ai_status=:ai_status,
-    ai_retry_count=0,
-    ai_next_retry_at=NULL,
-    ai_running_at=NULL,
-    ai_last_error=NULL,
-    ai_result_json=NULL,
-    archived_at=:archived_at
-WHERE post_uid IN ({placeholders})
-  AND ai_status != 'running'
 """
 
 
@@ -189,6 +127,22 @@ DELETE_ASSERTION_MENTIONS_BY_POST_UID = (
 DELETE_ASSERTION_ENTITIES_BY_POST_UID = (
     "DELETE FROM assertion_entities WHERE post_uid = :post_uid"
 )
+DELETE_ASSERTIONS_ALL = "DELETE FROM assertions"
+DELETE_ASSERTION_MENTIONS_ALL = "DELETE FROM assertion_mentions"
+DELETE_ASSERTION_ENTITIES_ALL = "DELETE FROM assertion_entities"
+
+
+def delete_assertions_by_post_uids(placeholders: str) -> str:
+    return f"DELETE FROM assertions WHERE post_uid IN ({placeholders})"
+
+
+def delete_assertion_mentions_by_post_uids(placeholders: str) -> str:
+    return f"DELETE FROM assertion_mentions WHERE post_uid IN ({placeholders})"
+
+
+def delete_assertion_entities_by_post_uids(placeholders: str) -> str:
+    return f"DELETE FROM assertion_entities WHERE post_uid IN ({placeholders})"
+
 
 INSERT_ASSERTION = """
 INSERT INTO assertions (
@@ -229,65 +183,29 @@ SET final_status=:final_status,
     processed_at=:processed_at,
     model=:model,
     prompt_version=:prompt_version,
-    archived_at=:archived_at,
-    ai_status='done',
-    ai_running_at=NULL,
-    ai_next_retry_at=NULL,
-    ai_last_error=NULL,
-    ai_result_json=:ai_result_json
-WHERE post_uid=:post_uid
-"""
-
-MARK_AI_ERROR = """
-UPDATE posts
-SET ai_status='error',
-    ai_running_at=NULL,
-    ai_last_error=:error,
-    ai_next_retry_at=:next_retry_at,
     archived_at=:archived_at
 WHERE post_uid=:post_uid
 """
 
-RECOVER_STUCK_AI_TASKS = """
+RESET_ALL_POSTS_TO_PENDING = """
 UPDATE posts
-SET ai_status='error',
-    ai_running_at=NULL,
-    ai_last_error='ai::recovered_after_restart',
-    ai_next_retry_at=:next_retry_at
-WHERE ai_status='running'
-  AND ai_running_at IS NOT NULL
-  AND ai_running_at <= :threshold
+SET final_status='irrelevant',
+    invest_score=NULL,
+    processed_at=NULL,
+    model=NULL,
+    prompt_version=NULL,
+    archived_at=:archived_at
 """
 
-RECOVER_STUCK_AI_TASKS_BY_PLATFORM = """
-UPDATE posts
-SET ai_status='error',
-    ai_running_at=NULL,
-    ai_last_error='ai::recovered_after_restart',
-    ai_next_retry_at=:next_retry_at
-WHERE platform = :platform
-  AND ai_status='running'
-  AND ai_running_at IS NOT NULL
-  AND ai_running_at <= :threshold
-"""
 
-RECOVER_DONE_WITHOUT_PROCESSED_AT = """
+def reset_posts_to_pending_by_post_uids(placeholders: str) -> str:
+    return f"""
 UPDATE posts
-SET ai_status='pending',
-    ai_running_at=NULL,
-    ai_next_retry_at=NULL,
-    ai_last_error='ai::recovered_done_without_processed_at'
-WHERE ai_status='done'
-  AND (processed_at IS NULL OR TRIM(processed_at) = '')
-"""
-
-RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM = """
-UPDATE posts
-SET ai_status='pending',
-    ai_running_at=NULL,
-    ai_next_retry_at=NULL,
-    ai_last_error='ai::recovered_done_without_processed_at'
-WHERE platform = :platform
-  AND ai_status='done'
-  AND (processed_at IS NULL OR TRIM(processed_at) = '')
+SET final_status='irrelevant',
+    invest_score=NULL,
+    processed_at=NULL,
+    model=NULL,
+    prompt_version=NULL,
+    archived_at=:archived_at
+WHERE post_uid IN ({placeholders})
 """

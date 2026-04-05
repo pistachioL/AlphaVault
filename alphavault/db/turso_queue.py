@@ -3,8 +3,7 @@ Turso queue helpers.
 
 This module treats Turso (libsql) as the single source of truth for:
 - RSS items (raw_text)
-- AI processing state (ai_status / retry fields)
-- AI outputs (assertions)
+- Final AI outputs (assertions + processed posts)
 """
 
 from __future__ import annotations
@@ -14,31 +13,33 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional
 
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.turso_queue import (
+    DELETE_ASSERTION_ENTITIES_ALL,
+    DELETE_ASSERTION_MENTIONS_ALL,
+    DELETE_ASSERTIONS_ALL,
     DELETE_ASSERTION_ENTITIES_BY_POST_UID,
     DELETE_ASSERTION_MENTIONS_BY_POST_UID,
     DELETE_ASSERTIONS_BY_POST_UID,
     INSERT_ASSERTION,
     INSERT_ASSERTION_ENTITY,
+    RESET_ALL_POSTS_TO_PENDING,
     INSERT_ASSERTION_MENTION,
     INSERT_ASSERTION_OUTBOX,
-    MARK_AI_ERROR,
-    RECOVER_DONE_WITHOUT_PROCESSED_AT,
-    RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM,
-    RECOVER_STUCK_AI_TASKS,
-    RECOVER_STUCK_AI_TASKS_BY_PLATFORM,
+    SELECT_ASSERTION_COUNT_ALL,
     SELECT_POST_PROCESSED_AT,
-    RESET_AI_RESULTS_ALL,
+    SELECT_POST_COUNT_ALL,
     SELECT_CLOUD_POST,
     SELECT_ASSERTION_OUTBOX_AFTER_ID,
-    SELECT_DUE_POST_UIDS,
-    SELECT_DUE_POST_UIDS_BY_PLATFORM,
     SELECT_RECENT_POSTS_BY_AUTHOR,
     SELECT_UNPROCESSED_POST_QUEUE_ROWS,
     SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM,
-    TRY_MARK_AI_RUNNING,
     UPDATE_POST_DONE,
     UPSERT_PENDING_POST,
-    build_reset_ai_results_for_post_uids,
+    delete_assertion_entities_by_post_uids,
+    delete_assertion_mentions_by_post_uids,
+    delete_assertions_by_post_uids,
+    reset_posts_to_pending_by_post_uids,
+    select_assertion_count_by_post_uids,
+    select_post_count_by_post_uids,
 )
 from alphavault.db.turso_db import (
     TursoConnection,
@@ -51,9 +52,6 @@ from alphavault.db.turso_db import (
 
 if TYPE_CHECKING:
     from alphavault.domains.entity_match.resolve import EntityMatchResult
-
-
-AI_STATUS_PENDING = "pending"
 
 
 class TursoWriteError(RuntimeError):
@@ -81,6 +79,23 @@ class AssertionOutboxEvent:
     author: str
     event_json: str
     created_at: str
+
+
+def _chunk_post_uids(post_uids: Iterable[str], *, chunk_size: int) -> list[list[str]]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw_uid in post_uids:
+        post_uid = str(raw_uid or "").strip()
+        if not post_uid or post_uid in seen:
+            continue
+        seen.add(post_uid)
+        cleaned.append(post_uid)
+    if not cleaned:
+        return []
+    batch_size = max(1, int(chunk_size))
+    return [
+        cleaned[idx : idx + batch_size] for idx in range(0, len(cleaned), batch_size)
+    ]
 
 
 def persist_entity_match_followups(
@@ -126,7 +141,6 @@ def _execute_upsert_pending_post(
             "display_md": display_md,
             "final_status": "irrelevant",
             "archived_at": archived_at,
-            "ai_status": AI_STATUS_PENDING,
             "ingested_at": int(ingested_at),
         },
     )
@@ -192,41 +206,6 @@ def upsert_pending_post(
         raise TursoWriteError("upsert_pending_post_failed") from err
 
 
-def select_due_post_uids(
-    engine: TursoEngine, *, now_epoch: int, limit: int, platform: Optional[str] = None
-) -> list[str]:
-    resolved_platform = str(platform or "").strip().lower() or None
-    query = (
-        SELECT_DUE_POST_UIDS_BY_PLATFORM if resolved_platform else SELECT_DUE_POST_UIDS
-    )
-    params: dict[str, object] = {
-        "now": int(now_epoch),
-        "limit": max(0, int(limit)),
-    }
-    if resolved_platform:
-        params["platform"] = resolved_platform
-    with turso_connect_autocommit(engine) as conn:
-        rows = conn.execute(
-            query,
-            params,
-        ).fetchall()
-        return [str(r[0]) for r in rows if r and r[0]]
-
-
-def try_mark_ai_running(
-    engine: TursoEngine,
-    *,
-    post_uid: str,
-    now_epoch: int,
-) -> bool:
-    with turso_connect_autocommit(engine) as conn:
-        res = conn.execute(
-            TRY_MARK_AI_RUNNING,
-            {"post_uid": post_uid, "now": int(now_epoch)},
-        )
-        return int(res.rowcount or 0) > 0
-
-
 def load_cloud_post(engine: TursoEngine, post_uid: str) -> CloudPost:
     with turso_connect_autocommit(engine) as conn:
         row = (
@@ -277,7 +256,7 @@ def load_recent_posts_by_author(
 
     Returns mappings with keys:
     - post_uid, platform_post_id, author, created_at, url, raw_text, display_md
-    - processed_at, ai_status, ai_retry_count
+    - processed_at
     """
     resolved_author = str(author or "").strip()
     if not resolved_author:
@@ -351,20 +330,18 @@ def reset_ai_results_all(
     *,
     archived_at: str,
 ) -> tuple[int, int]:
-    """
-    Reset all posts back to "pending" (do NOT delete assertions).
-
-    Returns: (deleted_assertions, updated_posts)
-    """
     with turso_connect_autocommit(engine) as conn:
-        updated = conn.execute(
-            RESET_AI_RESULTS_ALL,
-            {
-                "ai_status": AI_STATUS_PENDING,
-                "archived_at": str(archived_at or "").strip(),
-            },
-        )
-        return 0, int(updated.rowcount or 0)
+        with turso_savepoint(conn):
+            deleted = int(conn.execute(SELECT_ASSERTION_COUNT_ALL).scalar() or 0)
+            updated = int(conn.execute(SELECT_POST_COUNT_ALL).scalar() or 0)
+            conn.execute(DELETE_ASSERTION_ENTITIES_ALL)
+            conn.execute(DELETE_ASSERTION_MENTIONS_ALL)
+            conn.execute(DELETE_ASSERTIONS_ALL)
+            conn.execute(
+                RESET_ALL_POSTS_TO_PENDING,
+                {"archived_at": str(archived_at or "").strip()},
+            )
+    return deleted, updated
 
 
 def reset_ai_results_for_post_uids(
@@ -372,42 +349,47 @@ def reset_ai_results_for_post_uids(
     *,
     post_uids: Iterable[str],
     archived_at: str,
-    chunk_size: int = 200,
+    chunk_size: int,
 ) -> tuple[int, int]:
-    """
-    Reset specific posts back to "pending" (do NOT delete assertions).
-
-    Returns: (deleted_assertions, updated_posts)
-    """
-    resolved = []
-    seen: set[str] = set()
-    for uid in post_uids:
-        s = str(uid or "").strip()
-        if not s or s in seen:
-            continue
-        seen.add(s)
-        resolved.append(s)
-    if not resolved:
+    chunks = _chunk_post_uids(post_uids, chunk_size=max(1, int(chunk_size)))
+    if not chunks:
         return 0, 0
-
     deleted_total = 0
     updated_total = 0
-    n = max(1, int(chunk_size))
-    for start in range(0, len(resolved), n):
-        chunk = resolved[start : start + n]
-        placeholders = make_in_placeholders(prefix="uid", count=len(chunk))
-        params = make_in_params(prefix="uid", values=chunk)
-        params["ai_status"] = AI_STATUS_PENDING
-        params["archived_at"] = str(archived_at or "").strip()
-
-        with turso_connect_autocommit(engine) as conn:
-            upd_res = conn.execute(
-                build_reset_ai_results_for_post_uids(placeholders),
-                params,
-            )
-
-        updated_total += int(upd_res.rowcount or 0)
-
+    resolved_archived_at = str(archived_at or "").strip()
+    with turso_connect_autocommit(engine) as conn:
+        with turso_savepoint(conn):
+            for chunk in chunks:
+                placeholders = make_in_placeholders(prefix="uid", count=len(chunk))
+                params = make_in_params(prefix="uid", values=chunk)
+                deleted_total += int(
+                    conn.execute(
+                        select_assertion_count_by_post_uids(placeholders),
+                        params,
+                    ).scalar()
+                    or 0
+                )
+                updated_total += int(
+                    conn.execute(
+                        select_post_count_by_post_uids(placeholders),
+                        params,
+                    ).scalar()
+                    or 0
+                )
+                conn.execute(
+                    delete_assertion_entities_by_post_uids(placeholders), params
+                )
+                conn.execute(
+                    delete_assertion_mentions_by_post_uids(placeholders), params
+                )
+                conn.execute(delete_assertions_by_post_uids(placeholders), params)
+                conn.execute(
+                    reset_posts_to_pending_by_post_uids(placeholders),
+                    {
+                        **params,
+                        "archived_at": resolved_archived_at,
+                    },
+                )
     return deleted_total, updated_total
 
 
@@ -421,7 +403,6 @@ def write_assertions_and_mark_done(
     model: str,
     prompt_version: str,
     archived_at: str,
-    ai_result_json: Optional[str],
     assertions: Iterable[Dict[str, Any]],
     entity_match_results: Iterable["EntityMatchResult"] | None = None,
     outbox_source: str = "",
@@ -547,95 +528,5 @@ def write_assertions_and_mark_done(
                     "model": model,
                     "prompt_version": prompt_version,
                     "archived_at": archived_at,
-                    "ai_result_json": ai_result_json,
                 },
             )
-
-
-def mark_ai_error(
-    engine: TursoEngine,
-    *,
-    post_uid: str,
-    error: str,
-    next_retry_at: int,
-    archived_at: str,
-) -> None:
-    msg = (error or "")[:1000]
-    with turso_connect_autocommit(engine) as conn:
-        conn.execute(
-            MARK_AI_ERROR,
-            {
-                "post_uid": post_uid,
-                "error": msg,
-                "next_retry_at": int(next_retry_at),
-                "archived_at": archived_at,
-            },
-        )
-
-
-def recover_stuck_ai_tasks(
-    engine: TursoEngine,
-    *,
-    now_epoch: int,
-    stuck_seconds: int,
-    platform: Optional[str] = None,
-    verbose: bool,
-) -> int:
-    threshold = int(now_epoch) - max(0, int(stuck_seconds))
-    resolved_platform = str(platform or "").strip().lower() or None
-    query = (
-        RECOVER_STUCK_AI_TASKS_BY_PLATFORM
-        if resolved_platform
-        else RECOVER_STUCK_AI_TASKS
-    )
-    params: dict[str, object] = {
-        "threshold": threshold,
-        "next_retry_at": int(now_epoch) + 60,
-    }
-    if resolved_platform:
-        params["platform"] = resolved_platform
-    with turso_connect_autocommit(engine) as conn:
-        res = conn.execute(
-            query,
-            params,
-        )
-        recovered = int(res.rowcount or 0)
-        if recovered and verbose:
-            if resolved_platform:
-                print(
-                    f"[ai] recovered_running={recovered} platform={resolved_platform}",
-                    flush=True,
-                )
-            else:
-                print(f"[ai] recovered_running={recovered}", flush=True)
-        return recovered
-
-
-def recover_done_without_processed_at(
-    engine: TursoEngine, *, platform: Optional[str] = None, verbose: bool
-) -> int:
-    """
-    Fix inconsistent rows:
-    - ai_status='done' but processed_at is NULL/blank
-
-    Such rows will never be picked by the AI scheduler, so we reset them to pending.
-    """
-    resolved_platform = str(platform or "").strip().lower() or None
-    query = (
-        RECOVER_DONE_WITHOUT_PROCESSED_AT_BY_PLATFORM
-        if resolved_platform
-        else RECOVER_DONE_WITHOUT_PROCESSED_AT
-    )
-    params = {"platform": resolved_platform} if resolved_platform else {}
-    with turso_connect_autocommit(engine) as conn:
-        res = conn.execute(query, params)
-        fixed = int(res.rowcount or 0)
-        if fixed and verbose:
-            if resolved_platform:
-                print(
-                    f"[ai] recovered_done_without_processed_at={fixed} platform={resolved_platform}",
-                    flush=True,
-                )
-            else:
-                print(f"[ai] recovered_done_without_processed_at={fixed}", flush=True)
-        return fixed

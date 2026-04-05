@@ -32,12 +32,6 @@ def test_process_one_post_uid_forces_topic_prompt_v4(monkeypatch) -> None:
     seen: dict[str, object] = {}
     config = _build_config(prompt_version="legacy-v3")
 
-    monkeypatch.setattr(
-        post_processor,
-        "mark_ai_error",
-        lambda *_args, **_kwargs: None,
-    )
-
     def _fake_v4(**kwargs):  # type: ignore[no-untyped-def]
         seen["post_uid"] = kwargs["post_uid"]
         seen["config"] = kwargs["config"]
@@ -61,3 +55,26 @@ def test_process_one_post_uid_forces_topic_prompt_v4(monkeypatch) -> None:
     assert isinstance(seen["config"], LLMConfig)
     assert seen["config"].prompt_version == TOPIC_PROMPT_VERSION
     assert config.prompt_version == "legacy-v3"
+
+
+def test_process_one_post_uid_does_not_write_turso_error_on_failure(
+    monkeypatch,
+) -> None:
+    def _raise_failure(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        post_processor,
+        "process_one_post_uid_topic_prompt_v4",
+        _raise_failure,
+    )
+
+    ok = post_processor.process_one_post_uid(
+        engine=cast(TursoEngine, object()),
+        post_uid="weibo:2",
+        config=_build_config(prompt_version=TOPIC_PROMPT_VERSION),
+        limiter=RateLimiter(0),
+    )
+
+    assert ok is False
+    assert hasattr(post_processor, "mark_ai_error") is False

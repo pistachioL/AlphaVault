@@ -11,8 +11,6 @@ from alphavault.db.sql.turso_queue import (
     INSERT_ASSERTION_ENTITY,
     INSERT_ASSERTION_MENTION,
     INSERT_ASSERTION_OUTBOX,
-    RECOVER_DONE_WITHOUT_PROCESSED_AT,
-    RECOVER_STUCK_AI_TASKS,
     UPSERT_PENDING_POST,
 )
 from alphavault.db.turso_db import (
@@ -118,88 +116,6 @@ def test_turso_savepoint_commit_and_rollback() -> None:
         conn.close()
 
 
-def test_named_params_support_escaped_colon_literal() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            "CREATE TABLE posts(post_uid TEXT PRIMARY KEY, ai_status TEXT, ai_running_at INTEGER, ai_last_error TEXT, ai_next_retry_at INTEGER)"
-        )
-        conn.execute(
-            "INSERT INTO posts(post_uid, ai_status, ai_running_at) VALUES (:post_uid, :ai_status, :ai_running_at)",
-            {"post_uid": "p1", "ai_status": "running", "ai_running_at": 10},
-        )
-
-        res = conn.execute(
-            RECOVER_STUCK_AI_TASKS,
-            {"threshold": 10, "next_retry_at": 999},
-        )
-        assert int(res.rowcount or 0) == 1
-
-        row = (
-            conn.execute(
-                "SELECT ai_status, ai_last_error, ai_next_retry_at FROM posts WHERE post_uid = :post_uid",
-                {"post_uid": "p1"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert row == {
-            "ai_status": "error",
-            "ai_last_error": "ai:recovered_after_restart",
-            "ai_next_retry_at": 999,
-        }
-    finally:
-        conn.close()
-
-
-def test_named_params_support_escaped_colon_literal_in_recover_done_without_processed_at() -> (
-    None
-):
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            "CREATE TABLE posts(post_uid TEXT PRIMARY KEY, ai_status TEXT, processed_at TEXT, ai_last_error TEXT, ai_running_at INTEGER, ai_next_retry_at INTEGER)"
-        )
-        conn.execute(
-            "INSERT INTO posts(post_uid, ai_status, processed_at) VALUES (:post_uid, :ai_status, :processed_at)",
-            {"post_uid": "p1", "ai_status": "done", "processed_at": ""},
-        )
-        conn.execute(
-            "INSERT INTO posts(post_uid, ai_status, processed_at) VALUES (:post_uid, :ai_status, :processed_at)",
-            {"post_uid": "p2", "ai_status": "done", "processed_at": "2025-01-01"},
-        )
-
-        # NOTE: the worker uses an empty dict params object here, which previously
-        # triggered sqlparams interpreting ":recovered_done_without_processed_at"
-        # inside the SQL string literal as a named param.
-        res = conn.execute(RECOVER_DONE_WITHOUT_PROCESSED_AT, {})
-        assert int(res.rowcount or 0) == 1
-
-        row1 = (
-            conn.execute(
-                "SELECT ai_status, ai_last_error FROM posts WHERE post_uid = :post_uid",
-                {"post_uid": "p1"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        row2 = (
-            conn.execute(
-                "SELECT ai_status, ai_last_error FROM posts WHERE post_uid = :post_uid",
-                {"post_uid": "p2"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert row1 == {
-            "ai_status": "pending",
-            "ai_last_error": "ai:recovered_done_without_processed_at",
-        }
-        assert row2 == {"ai_status": "done", "ai_last_error": None}
-    finally:
-        conn.close()
-
-
 def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
@@ -220,12 +136,6 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 model TEXT,
                 prompt_version TEXT,
                 archived_at TEXT,
-                ai_status TEXT NOT NULL DEFAULT 'done',
-                ai_retry_count INTEGER NOT NULL DEFAULT 0,
-                ai_next_retry_at INTEGER,
-                ai_running_at INTEGER,
-                ai_last_error TEXT,
-                ai_result_json TEXT,
                 ingested_at INTEGER NOT NULL DEFAULT 0
             )
             """
@@ -235,15 +145,11 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
             INSERT INTO posts(
                 post_uid, platform, platform_post_id, author, created_at, url, raw_text,
                 display_md, final_status, invest_score, processed_at, model,
-                prompt_version, archived_at, ai_status, ai_retry_count,
-                ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
-                ingested_at
+                prompt_version, archived_at, ingested_at
             ) VALUES (
                 :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
                 :display_md, :final_status, :invest_score, :processed_at, :model,
-                :prompt_version, :archived_at, :ai_status, :ai_retry_count,
-                :ai_next_retry_at, :ai_running_at, :ai_last_error, :ai_result_json,
-                :ingested_at
+                :prompt_version, :archived_at, :ingested_at
             )
             """,
             {
@@ -261,12 +167,6 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 "model": "gpt",
                 "prompt_version": "v1",
                 "archived_at": "2025-01-01 10:06:00",
-                "ai_status": "done",
-                "ai_retry_count": 0,
-                "ai_next_retry_at": None,
-                "ai_running_at": None,
-                "ai_last_error": None,
-                "ai_result_json": "{}",
                 "ingested_at": 100,
             },
         )
@@ -284,7 +184,6 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 "display_md": "new md",
                 "final_status": "irrelevant",
                 "archived_at": "2025-01-02 10:06:00+08:00",
-                "ai_status": "pending",
                 "ingested_at": 200,
             },
         )
@@ -333,12 +232,6 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 model TEXT,
                 prompt_version TEXT,
                 archived_at TEXT,
-                ai_status TEXT NOT NULL DEFAULT 'done',
-                ai_retry_count INTEGER NOT NULL DEFAULT 0,
-                ai_next_retry_at INTEGER,
-                ai_running_at INTEGER,
-                ai_last_error TEXT,
-                ai_result_json TEXT,
                 ingested_at INTEGER NOT NULL DEFAULT 0
             )
             """
@@ -348,15 +241,11 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
             INSERT INTO posts(
                 post_uid, platform, platform_post_id, author, created_at, url, raw_text,
                 display_md, final_status, invest_score, processed_at, model,
-                prompt_version, archived_at, ai_status, ai_retry_count,
-                ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
-                ingested_at
+                prompt_version, archived_at, ingested_at
             ) VALUES (
                 :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
                 :display_md, :final_status, :invest_score, :processed_at, :model,
-                :prompt_version, :archived_at, :ai_status, :ai_retry_count,
-                :ai_next_retry_at, :ai_running_at, :ai_last_error, :ai_result_json,
-                :ingested_at
+                :prompt_version, :archived_at, :ingested_at
             )
             """,
             {
@@ -374,12 +263,6 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 "model": "gpt",
                 "prompt_version": "v1",
                 "archived_at": "2025-01-01 10:06:00",
-                "ai_status": "done",
-                "ai_retry_count": 0,
-                "ai_next_retry_at": None,
-                "ai_running_at": None,
-                "ai_last_error": None,
-                "ai_result_json": "{}",
                 "ingested_at": 100,
             },
         )
@@ -397,7 +280,6 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 "display_md": "new md",
                 "final_status": "irrelevant",
                 "archived_at": "2025-01-02 10:06:00",
-                "ai_status": "pending",
                 "ingested_at": 200,
             },
         )
@@ -586,7 +468,6 @@ def test_write_assertions_and_mark_done_writes_outbox_event(monkeypatch) -> None
         model="m",
         prompt_version="p",
         archived_at="2026-03-28 12:00:01",
-        ai_result_json=None,
         assertions=[],
         outbox_source="weibo",
         outbox_author="作者A",
@@ -648,7 +529,6 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
         model="m",
         prompt_version="topic-prompt-v4",
         archived_at="2026-03-28 12:00:01",
-        ai_result_json=None,
         assertions=[
             {
                 "topic_key": "stock:600519",
@@ -732,7 +612,6 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
         model="m",
         prompt_version="topic-prompt-v4",
         archived_at="2026-03-28 12:00:01",
-        ai_result_json=None,
         assertions=[
             {
                 "topic_key": "stock:600519",
@@ -830,7 +709,6 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
         model="m",
         prompt_version="topic-prompt-v4",
         archived_at="2026-03-28 12:00:01",
-        ai_result_json=None,
         assertions=[
             {
                 "topic_key": "stock:600519",
@@ -933,7 +811,6 @@ def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
             model="m",
             prompt_version="topic-prompt-v4",
             archived_at="2026-03-28 12:00:01",
-            ai_result_json=None,
             assertions=[
                 {
                     "topic_key": "stock:600519",

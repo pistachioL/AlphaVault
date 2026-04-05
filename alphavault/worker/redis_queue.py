@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import time
 from typing import Any, Dict, Optional
 
 from alphavault.constants import (
@@ -20,6 +21,13 @@ DEFAULT_REDIS_QUEUE_KEY = "alphavault:rss_spool"
 REDIS_PUSH_STATUS_PUSHED = "pushed"
 REDIS_PUSH_STATUS_DUPLICATE = "duplicate"
 REDIS_PUSH_STATUS_ERROR = "error"
+REDIS_AI_REQUEUE_SCAN_BATCH_SIZE = 200
+_REDIS_AI_RELEASE_LEASE_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+end
+return 0
+"""
 
 
 def try_get_redis():
@@ -55,6 +63,10 @@ def redis_ai_processing_key(queue_key: str) -> str:
 
 def redis_ai_delayed_key(queue_key: str) -> str:
     return f"{queue_key}:ai:delayed"
+
+
+def redis_ai_lease_key(queue_key: str, post_uid: str) -> str:
+    return f"{queue_key}:lease:ai:{post_uid}"
 
 
 def _env_int_or_default(name: str, default: int, *, minimum: int = 1) -> int:
@@ -207,7 +219,84 @@ def _redis_push(
     client.lpush(queue_key, msg)
 
 
-def redis_ai_requeue_processing(
+def _extract_post_uid_from_ai_message(msg: object) -> str:
+    text = str(msg or "").strip()
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("post_uid") or "").strip()
+
+
+def redis_ai_try_claim_lease(
+    client,
+    queue_key: str,
+    *,
+    post_uid: str,
+    lease_seconds: int,
+) -> str:
+    resolved_queue_key = str(queue_key or "").strip()
+    resolved_post_uid = str(post_uid or "").strip()
+    if not client or not resolved_queue_key or not resolved_post_uid:
+        return ""
+    lease_key = redis_ai_lease_key(resolved_queue_key, resolved_post_uid)
+    lease_token = f"{os.getpid()}:{time.time_ns()}:{sha1_short(resolved_post_uid)}"
+    try:
+        ok = client.set(
+            lease_key,
+            lease_token,
+            nx=True,
+            ex=max(1, int(lease_seconds)),
+        )
+    except Exception:
+        raise
+    return lease_token if ok else ""
+
+
+def redis_ai_release_lease(
+    client,
+    queue_key: str,
+    *,
+    post_uid: str,
+    lease_token: str,
+    verbose: bool,
+) -> bool:
+    resolved_queue_key = str(queue_key or "").strip()
+    resolved_post_uid = str(post_uid or "").strip()
+    resolved_token = str(lease_token or "").strip()
+    if (
+        not client
+        or not resolved_queue_key
+        or not resolved_post_uid
+        or not resolved_token
+    ):
+        return False
+    lease_key = redis_ai_lease_key(resolved_queue_key, resolved_post_uid)
+    try:
+        deleted = int(
+            client.eval(
+                _REDIS_AI_RELEASE_LEASE_SCRIPT,
+                1,
+                lease_key,
+                resolved_token,
+            )
+            or 0
+        )
+    except Exception as e:
+        if verbose:
+            print(
+                f"[redis] ai_lease_release_error {type(e).__name__}: {e}",
+                flush=True,
+            )
+        return False
+    return deleted > 0
+
+
+def redis_ai_requeue_processing_without_lease(
     client, queue_key: str, *, max_items: int, verbose: bool
 ) -> int:
     if max_items <= 0:
@@ -215,11 +304,31 @@ def redis_ai_requeue_processing(
     src = redis_ai_processing_key(queue_key)
     dst = redis_ai_ready_key(queue_key)
     moved = 0
-    for _ in range(max_items):
-        msg = client.rpoplpush(src, dst)
-        if not msg:
+    total = int(client.llen(src) or 0)
+    scan_batch_size = max(1, int(REDIS_AI_REQUEUE_SCAN_BATCH_SIZE))
+    next_end = total - 1
+    while next_end >= 0:
+        next_start = max(0, next_end - scan_batch_size + 1)
+        msgs = list(client.lrange(src, next_start, next_end) or [])
+        for msg in reversed(msgs):
+            if moved >= int(max_items):
+                break
+            resolved_msg = str(msg or "")
+            if not resolved_msg:
+                continue
+            post_uid = _extract_post_uid_from_ai_message(resolved_msg)
+            if post_uid and client.exists(redis_ai_lease_key(queue_key, post_uid)):
+                continue
+            removed = client.lrem(src, 1, resolved_msg)
+            if int(removed or 0) <= 0:
+                continue
+            if not post_uid:
+                continue
+            client.lpush(dst, resolved_msg)
+            moved += 1
+        if moved >= int(max_items):
             break
-        moved += 1
+        next_end = next_start - 1
     if moved and verbose:
         print(f"[redis] ai_requeue moved={moved}", flush=True)
     return moved
@@ -299,6 +408,7 @@ def redis_ai_ack_and_cleanup(
     msg: str,
     post_uid: str,
     spool_dir: Path,
+    lease_token: str = "",
     verbose: bool,
 ) -> bool:
     try:
@@ -307,5 +417,5 @@ def redis_ai_ack_and_cleanup(
         if verbose:
             print(f"[redis] ai_ack_error {type(e).__name__}: {e}", flush=True)
         return False
-    del post_uid, spool_dir
+    del post_uid, spool_dir, lease_token
     return True
