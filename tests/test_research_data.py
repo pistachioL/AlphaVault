@@ -16,7 +16,6 @@ def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -
                 "post_uid": "p1",
                 "author": "alice",
                 "raw_text": "看多茅台",
-                "display_md": "看多茅台",
             }
         ]
     )
@@ -50,19 +49,16 @@ def test_build_stock_research_view_aggregates_one_stock_object() -> None:
                 "post_uid": "p1",
                 "author": "alice",
                 "raw_text": "先买一点紫金矿业",
-                "display_md": "先买一点紫金矿业",
             },
             {
                 "post_uid": "p2",
                 "author": "bob",
                 "raw_text": "紫金先拿着",
-                "display_md": "紫金先拿着",
             },
             {
                 "post_uid": "p3",
                 "author": "cindy",
                 "raw_text": "继续观察601899.SH",
-                "display_md": "继续观察601899.SH",
             },
         ]
     )
@@ -129,7 +125,6 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
                 "post_uid": "p1",
                 "author": "alice",
                 "raw_text": "原文内容",
-                "display_md": "格式化原文",
                 "created_at": "2026-03-25 10:23:00",
             }
         ]
@@ -156,8 +151,8 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
     )
 
     assert view.signals[0]["created_at_line"] == "2026-03-25 10:23 · 1天前"
-    assert view.signals[0]["display_md"] == "格式化原文"
     assert view.signals[0]["raw_text"] == "原文内容"
+    assert "display_md" not in view.signals[0]
 
 
 def test_build_stock_research_view_does_not_scan_backfill_posts_on_page_load() -> None:
@@ -168,7 +163,6 @@ def test_build_stock_research_view_does_not_scan_backfill_posts_on_page_load() -
                 "author": "alice",
                 "created_at": "2026-03-25 10:00:00",
                 "raw_text": "先买一点紫金矿业",
-                "display_md": "先买一点紫金矿业",
                 "url": "https://example.com/p1",
             },
             {
@@ -176,7 +170,6 @@ def test_build_stock_research_view_does_not_scan_backfill_posts_on_page_load() -
                 "author": "bob",
                 "created_at": "2026-03-26 11:00:00",
                 "raw_text": "我觉得紫金矿业这里先别急，等一等",
-                "display_md": "我觉得紫金矿业这里先别急，等一等",
                 "url": "https://example.com/p2",
             },
         ]
@@ -209,7 +202,6 @@ def test_build_stock_research_view_paginates_signals_and_returns_total() -> None
                 "post_uid": f"p{i}",
                 "author": "alice",
                 "raw_text": f"原文{i}",
-                "display_md": f"原文{i}",
             }
             for i in range(12)
         ]
@@ -256,7 +248,6 @@ def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -
                 "post_uid": "p1",
                 "author": "alice",
                 "raw_text": "白酒继续走强",
-                "display_md": "白酒继续走强",
             }
         ]
     )
@@ -294,7 +285,6 @@ def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() ->
                 "platform_post_id": "https://weibo.com/3962719063/QxH0rF27I",
                 "author": "挖地瓜的超级鹿鼎公",
                 "raw_text": raw_text,
-                "display_md": raw_text,
                 "created_at": "2026-03-25 10:23:48",
             }
         ]
@@ -318,6 +308,25 @@ def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() ->
         "[原帖 ID: https://weibo.com/3962719063/QxH0rF27I]"
         in view.signals[0]["tree_text"]
     )
+
+
+def test_build_stock_research_view_backfill_preview_drops_image_label_lines() -> None:
+    posts = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "author": "alice",
+                "created_at": "2026-03-26 10:00:00",
+                "url": "https://example.com/p1",
+                "raw_text": "紫金矿业先别急\n[图片] https://img.example.com/1.png",
+            }
+        ]
+    )
+    assertions = pd.DataFrame([])
+
+    view = build_stock_research_view(posts, assertions, stock_key="stock:601899.SH")
+
+    assert view.backfill_posts == []
 
 
 def test_build_search_index_returns_stock_and_sector_hits() -> None:

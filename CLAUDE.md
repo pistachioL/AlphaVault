@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `alphavault_reflex/`: Reflex web UI (state, services, pages). Entry: `alphavault_reflex/alphavault_reflex.py`; config: `rxconfig.py`.
 - `tests/`: `pytest` suite (`test_*.py`).
 - `assets/`: static CSS/JS used by the UI.
-- Root scripts: `weibo_rss_turso_worker.py` (main worker entry), plus one-off maintenance tools (`backfill_display_md.py`, `reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
+- Root scripts: `weibo_rss_turso_worker.py` (main worker entry), plus one-off maintenance tools (`migrate_weibo_raw_text.py`, `reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
 - `docs/superpowers/specs/`: design/architecture specs and notes.
 
 ## Build, Test, and Development Commands

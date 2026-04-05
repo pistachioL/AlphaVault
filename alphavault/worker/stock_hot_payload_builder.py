@@ -37,7 +37,6 @@ WANTED_POST_COLUMNS = [
     "created_at",
     "url",
     "raw_text",
-    "display_md",
 ]
 
 STOCK_ALIAS_RELATIONS_SQL = f"""
@@ -173,7 +172,7 @@ WHERE processed_at IS NOT NULL
     if posts.empty:
         return posts
     out = posts.copy()
-    for col in ["post_uid", "author", "url", "raw_text", "display_md"]:
+    for col in ["post_uid", "author", "url", "raw_text"]:
         if col not in out.columns:
             out[col] = ""
         out[col] = out[col].fillna("").astype(str)
@@ -187,7 +186,6 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     wanted_post_cols = [
         "post_uid",
         "raw_text",
-        "display_md",
         "author",
         "url",
         "created_at",
@@ -196,24 +194,18 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     post_cols = post_cols.rename(
         columns={
             "raw_text": "_post_raw_text",
-            "display_md": "_post_display_md",
             "author": "_post_author",
             "url": "_post_url",
             "created_at": "_post_created_at",
         }
     )
     merged = assertions.merge(post_cols, on="post_uid", how="left")
-    for col in ["raw_text", "display_md", "author", "url"]:
+    for col in ["raw_text", "author", "url"]:
         if col not in merged.columns:
             merged[col] = ""
         merged[col] = merged[col].fillna("").astype(str)
     merged.loc[merged["raw_text"].eq(""), "raw_text"] = (
         merged.loc[merged["raw_text"].eq(""), "_post_raw_text"].fillna("").astype(str)
-    )
-    merged.loc[merged["display_md"].eq(""), "display_md"] = (
-        merged.loc[merged["display_md"].eq(""), "_post_display_md"]
-        .fillna("")
-        .astype(str)
     )
     merged.loc[merged["author"].eq(""), "author"] = (
         merged.loc[merged["author"].eq(""), "_post_author"].fillna("").astype(str)
@@ -234,7 +226,6 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     return merged.drop(
         columns=[
             "_post_raw_text",
-            "_post_display_md",
             "_post_author",
             "_post_url",
             "_post_created_at",
@@ -374,7 +365,6 @@ def build_stock_hot_payload(
                 ),
                 "url": str(row.get("url") or "").strip(),
                 "raw_text": str(row.get("raw_text") or "").strip(),
-                "display_md": str(row.get("display_md") or "").strip(),
                 "tree_label": str(tree_label or "").strip(),
                 "tree_text": str(tree_text or "").strip(),
             }

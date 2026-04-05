@@ -51,7 +51,6 @@ WANTED_POST_COLUMNS_FOR_TREE = [
     "created_at",
     "url",
     "raw_text",
-    "display_md",
 ]
 
 
@@ -65,7 +64,6 @@ def standardize_posts(posts: pd.DataFrame, *, source_name: str) -> pd.DataFrame:
         "created_at": "",
         "url": "",
         "raw_text": "",
-        "display_md": "",
         "status": "",
         "invest_score": 0.0,
         "processed_at": "",
@@ -112,20 +110,12 @@ def standardize_assertions(
 
     assertions["url"] = ""
     assertions["raw_text"] = ""
-    assertions["display_md"] = ""
     if not posts.empty and "post_uid" in posts.columns and "url" in posts.columns:
         url_map = posts.set_index("post_uid")["url"]
         assertions["url"] = assertions["post_uid"].map(url_map).fillna("")
     if not posts.empty and "post_uid" in posts.columns and "raw_text" in posts.columns:
         raw_map = posts.set_index("post_uid")["raw_text"]
         assertions["raw_text"] = assertions["post_uid"].map(raw_map).fillna("")
-    if (
-        not posts.empty
-        and "post_uid" in posts.columns
-        and "display_md" in posts.columns
-    ):
-        display_map = posts.set_index("post_uid")["display_md"]
-        assertions["display_md"] = assertions["post_uid"].map(display_map).fillna("")
 
     if "author" in assertions.columns:
         missing_author = assertions["author"].eq("") | assertions["author"].isna()

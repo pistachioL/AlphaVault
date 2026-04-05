@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import libsql
 from typing import cast
 
 from alphavault.db.turso_db import TursoConnection
@@ -255,3 +256,70 @@ def test_sync_stock_backfill_cache_skips_write_when_signature_unchanged(
     assert replace_calls == []
     assert save_meta_calls == []
     assert mark_dirty_calls == []
+
+
+def test_build_backfill_candidates_uses_raw_text_only_and_drops_image_lines() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        conn.execute(
+            """
+CREATE TABLE posts(
+  post_uid TEXT PRIMARY KEY,
+  author TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  url TEXT NOT NULL,
+  raw_text TEXT NOT NULL,
+  processed_at TEXT NOT NULL
+)
+"""
+        )
+        conn.execute(
+            """
+CREATE TABLE assertions(
+  post_uid TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  action TEXT NOT NULL
+)
+"""
+        )
+        conn.execute(
+            """
+CREATE TABLE assertion_entities(
+  post_uid TEXT NOT NULL,
+  assertion_idx INTEGER NOT NULL,
+  entity_key TEXT NOT NULL,
+  entity_type TEXT NOT NULL
+)
+"""
+        )
+        conn.execute(
+            """
+INSERT INTO posts(
+  post_uid, author, created_at, url, raw_text, processed_at
+)
+VALUES (?, ?, ?, ?, ?, ?)
+""",
+            (
+                "weibo:1",
+                "alice",
+                "2026-03-26 10:00:00",
+                "https://example.com/p1",
+                "alice：601899.SH先别急\n[图片] https://img.example.com/1.png",
+                "2026-03-26 10:00:01",
+            ),
+        )
+
+        rows, scan_truncated = backfill_cache._build_backfill_candidates_for_stock(
+            conn,
+            stock_key="stock:601899.SH",
+            max_rows=5,
+            post_batch_size=5,
+            max_scan_batches=2,
+        )
+
+        assert scan_truncated is False
+        assert [row["post_uid"] for row in rows] == ["weibo:1"]
+        assert rows[0]["preview"] == "alice：601899.SH先别急"
+        assert "[图片]" not in rows[0]["preview"]
+    finally:
+        conn.close()

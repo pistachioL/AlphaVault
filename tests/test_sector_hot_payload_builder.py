@@ -15,7 +15,6 @@ CREATE TABLE posts(
   created_at TEXT NOT NULL,
   url TEXT NOT NULL,
   raw_text TEXT NOT NULL,
-  display_md TEXT NOT NULL,
   processed_at TEXT NOT NULL
 )
 """
@@ -34,10 +33,10 @@ CREATE TABLE assertions(
 """
 INSERT_POST_SQL = """
 INSERT INTO posts(
-  post_uid, platform_post_id, author, created_at, url, raw_text, display_md, processed_at
+  post_uid, platform_post_id, author, created_at, url, raw_text, processed_at
 )
 VALUES (
-  :post_uid, :platform_post_id, :author, :created_at, :url, :raw_text, :display_md, :processed_at
+  :post_uid, :platform_post_id, :author, :created_at, :url, :raw_text, :processed_at
 )
 """
 INSERT_ASSERTION_SQL = """
@@ -68,7 +67,6 @@ def test_build_sector_hot_payload_groups_signals_and_related_stocks() -> None:
                 "created_at": "2099-01-01 00:00:00",
                 "url": "https://example.com/weibo/1",
                 "raw_text": "白酒继续走强",
-                "display_md": "白酒继续走强",
                 "processed_at": "2099-01-01 00:00:01",
             },
         )

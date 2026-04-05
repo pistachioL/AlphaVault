@@ -358,7 +358,6 @@ def process_one_post_uid_topic_prompt_v4(
     focus = str(post.author or "").strip()
     root_key, root_segment, root_content_key = thread_root_info_for_post(
         raw_text=post.raw_text or "",
-        display_md=post.display_md or "",
         author=focus,
     )
 
@@ -374,7 +373,6 @@ def process_one_post_uid_topic_prompt_v4(
         "created_at": post.created_at,
         "url": post.url,
         "raw_text": post.raw_text,
-        "display_md": post.display_md,
         "processed_at": "",
         "ai_status": "running",
         "ai_retry_count": int(post.ai_retry_count or 0),
@@ -390,7 +388,6 @@ def process_one_post_uid_topic_prompt_v4(
 
         rk, _seg, _ck = thread_root_info_for_post(
             raw_text=str(row.get("raw_text") or ""),
-            display_md=str(row.get("display_md") or ""),
             author=str(row.get("author") or "").strip(),
         )
         if rk != root_key:

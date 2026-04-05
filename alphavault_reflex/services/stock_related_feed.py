@@ -30,7 +30,6 @@ class StockRelatedPostRow(TypedDict):
     created_at_line: str
     url: str
     raw_text: str
-    display_md: str
     preview: str
     tree_text: str
     tree_lines: list[dict[str, str]]
@@ -143,7 +142,6 @@ def build_related_feed(
                 "tree_lines": tree_lines,
                 "url": str(row.get("url") or "").strip(),
                 "raw_text": str(row.get("raw_text") or "").strip(),
-                "display_md": str(row.get("display_md") or "").strip(),
             }
         )
 
@@ -170,7 +168,6 @@ def build_related_feed(
                 "author": str(row.get("author") or "").strip(),
                 "url": str(row.get("url") or "").strip(),
                 "raw_text": "",
-                "display_md": "",
                 "preview": preview,
                 "tree_text": tree_text,
                 "tree_lines": tree_lines,

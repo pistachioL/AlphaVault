@@ -31,7 +31,6 @@ def payload_to_cloud_post(
         created_at=str(payload.get("created_at") or "").strip() or now_str_fn(),
         url=str(payload.get("url") or "").strip(),
         raw_text=str(payload.get("raw_text") or ""),
-        display_md=str(payload.get("display_md") or ""),
         ai_retry_count=max(1, int(payload_retry_count_fn(payload) or 1)),
     )
 
@@ -49,7 +48,6 @@ def build_author_recent_payload(
         "created_at": str(getattr(post, "created_at", "") or "").strip(),
         "url": str(getattr(post, "url", "") or "").strip(),
         "raw_text": str(getattr(post, "raw_text", "") or ""),
-        "display_md": str(getattr(post, "display_md", "") or ""),
         "processed_at": "",
         "ai_status": str(ai_status or "").strip(),
         "ai_retry_count": max(0, int(ai_retry_count)),

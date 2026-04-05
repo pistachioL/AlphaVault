@@ -27,11 +27,11 @@ def select_assertion_count_by_post_uids(placeholders: str) -> str:
 
 UPSERT_PENDING_POST = """
 INSERT INTO posts (
-    post_uid, platform, platform_post_id, author, created_at, url, raw_text, display_md,
+    post_uid, platform, platform_post_id, author, created_at, url, raw_text,
     final_status, invest_score, processed_at, model, prompt_version, archived_at,
     ingested_at
 ) VALUES (
-    :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text, :display_md,
+    :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
     :final_status, NULL, NULL, NULL, NULL, :archived_at,
     :ingested_at
 )
@@ -60,10 +60,6 @@ ON CONFLICT(post_uid) DO UPDATE SET
         WHEN posts.processed_at IS NULL OR LOWER(COALESCE(excluded.platform, posts.platform, '')) = 'xueqiu' THEN excluded.raw_text
         ELSE posts.raw_text
     END,
-    display_md=CASE
-        WHEN posts.processed_at IS NULL OR LOWER(COALESCE(excluded.platform, posts.platform, '')) = 'xueqiu' THEN excluded.display_md
-        ELSE posts.display_md
-    END,
     archived_at=CASE
         WHEN posts.processed_at IS NULL OR LOWER(COALESCE(excluded.platform, posts.platform, '')) = 'xueqiu' THEN excluded.archived_at
         ELSE posts.archived_at
@@ -76,7 +72,6 @@ ON CONFLICT(post_uid) DO UPDATE SET
 
 SELECT_CLOUD_POST = """
 SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-       COALESCE(display_md, '') AS display_md,
        0 AS ai_retry_count
 FROM posts
 WHERE post_uid = :post_uid
@@ -91,9 +86,7 @@ LIMIT 1
 """
 
 SELECT_RECENT_POSTS_BY_AUTHOR = """
-SELECT post_uid, platform_post_id, author, created_at, url, raw_text,
-       COALESCE(display_md, '') AS display_md,
-       processed_at
+SELECT post_uid, platform_post_id, author, created_at, url, raw_text, processed_at
 FROM posts
 WHERE author = :author
 ORDER BY created_at DESC
@@ -101,8 +94,7 @@ LIMIT :limit
 """
 
 SELECT_UNPROCESSED_POST_QUEUE_ROWS = """
-SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-       COALESCE(display_md, '') AS display_md
+SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text
 FROM posts
 WHERE processed_at IS NULL OR TRIM(processed_at) = ''
 ORDER BY ingested_at DESC, post_uid DESC
@@ -110,8 +102,7 @@ LIMIT :limit
 """
 
 SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM = """
-SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-       COALESCE(display_md, '') AS display_md
+SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text
 FROM posts
 WHERE platform = :platform
   AND (processed_at IS NULL OR TRIM(processed_at) = '')

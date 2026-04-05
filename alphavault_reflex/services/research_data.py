@@ -10,6 +10,7 @@ from alphavault.research_sector_view import (
     build_sector_research_view,
 )
 from alphavault.research_signal_view import build_signal_rows, merge_post_fields
+from alphavault.weibo.display import strip_image_label_lines
 from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
@@ -227,8 +228,7 @@ def _build_stock_backfill_rows(
     out: list[dict[str, str]] = []
     for _, row in rows.iterrows():
         raw_text = str(row.get("raw_text") or "").strip()
-        display_md = str(row.get("display_md") or "").strip()
-        haystack = (raw_text or display_md).strip()
+        haystack = strip_image_label_lines(raw_text).strip()
         if not haystack:
             continue
         haystack_lower = haystack.lower()

@@ -129,7 +129,6 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 created_at TEXT NOT NULL,
                 url TEXT NOT NULL,
                 raw_text TEXT NOT NULL,
-                display_md TEXT,
                 final_status TEXT NOT NULL,
                 invest_score REAL,
                 processed_at TEXT,
@@ -144,12 +143,12 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
             """
             INSERT INTO posts(
                 post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-                display_md, final_status, invest_score, processed_at, model,
-                prompt_version, archived_at, ingested_at
+                final_status, invest_score, processed_at, model, prompt_version,
+                archived_at, ingested_at
             ) VALUES (
                 :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
-                :display_md, :final_status, :invest_score, :processed_at, :model,
-                :prompt_version, :archived_at, :ingested_at
+                :final_status, :invest_score, :processed_at, :model, :prompt_version,
+                :archived_at, :ingested_at
             )
             """,
             {
@@ -160,7 +159,6 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 "created_at": "2025-01-01 10:00:00",
                 "url": "https://xueqiu.com/123",
                 "raw_text": "old text",
-                "display_md": "old md",
                 "final_status": "relevant",
                 "invest_score": 0.8,
                 "processed_at": "2025-01-01 10:05:00",
@@ -181,7 +179,6 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 "created_at": "2025-01-02 10:00:00+08:00",
                 "url": "https://xueqiu.com/123?updated=1",
                 "raw_text": "new text",
-                "display_md": "new md",
                 "final_status": "irrelevant",
                 "archived_at": "2025-01-02 10:06:00+08:00",
                 "ingested_at": 200,
@@ -225,7 +222,6 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 created_at TEXT NOT NULL,
                 url TEXT NOT NULL,
                 raw_text TEXT NOT NULL,
-                display_md TEXT,
                 final_status TEXT NOT NULL,
                 invest_score REAL,
                 processed_at TEXT,
@@ -240,12 +236,12 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
             """
             INSERT INTO posts(
                 post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-                display_md, final_status, invest_score, processed_at, model,
-                prompt_version, archived_at, ingested_at
+                final_status, invest_score, processed_at, model, prompt_version,
+                archived_at, ingested_at
             ) VALUES (
                 :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
-                :display_md, :final_status, :invest_score, :processed_at, :model,
-                :prompt_version, :archived_at, :ingested_at
+                :final_status, :invest_score, :processed_at, :model, :prompt_version,
+                :archived_at, :ingested_at
             )
             """,
             {
@@ -256,7 +252,6 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 "created_at": "2025-01-01 10:00:00",
                 "url": "https://weibo.com/123",
                 "raw_text": "old text",
-                "display_md": "old md",
                 "final_status": "relevant",
                 "invest_score": 0.8,
                 "processed_at": "2025-01-01 10:05:00",
@@ -277,7 +272,6 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 "created_at": "2025-01-02 10:00:00",
                 "url": "https://weibo.com/123?updated=1",
                 "raw_text": "new text",
-                "display_md": "new md",
                 "final_status": "irrelevant",
                 "archived_at": "2025-01-02 10:06:00",
                 "ingested_at": 200,
@@ -389,7 +383,6 @@ def test_upsert_pending_post_wraps_nonfatal_base_exception(monkeypatch) -> None:
             created_at="2026-03-28 10:00:00",
             url="https://example.com/1",
             raw_text="text",
-            display_md="text",
             archived_at="2026-03-28 10:01:00",
             ingested_at=1,
         )
@@ -429,7 +422,6 @@ def test_upsert_pending_post_reraises_fatal_base_exception(monkeypatch) -> None:
             created_at="2026-03-28 10:00:00",
             url="https://example.com/1",
             raw_text="text",
-            display_md="text",
             archived_at="2026-03-28 10:01:00",
             ingested_at=1,
         )

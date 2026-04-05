@@ -65,12 +65,12 @@ def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
                 class_name="av-tree-lines",
             ),
             rx.cond(
-                row["display_md"] != "",
-                rx.text(row["display_md"], class_name="av-research-signal-body"),
+                row["raw_text"] != "",
+                rx.text(row["raw_text"], class_name="av-research-signal-body"),
                 rx.cond(
-                    row["raw_text"] != "",
-                    rx.text(row["raw_text"], class_name="av-research-signal-body"),
+                    row["preview"] != "",
                     rx.text(row["preview"], class_name="av-research-signal-body"),
+                    rx.el.div(),
                 ),
             ),
         ),

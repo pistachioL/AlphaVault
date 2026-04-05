@@ -17,39 +17,28 @@ def merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.DataF
         return assertions
 
     merged = assertions.copy()
-    post_cols = posts[["post_uid", "raw_text", "display_md", "author"]].copy()
+    wanted_post_cols = ["post_uid", "raw_text", "author"]
+    post_cols = posts[[col for col in wanted_post_cols if col in posts.columns]].copy()
     post_cols = post_cols.rename(
         columns={
             "raw_text": "_post_raw_text",
-            "display_md": "_post_display_md",
             "author": "_post_author",
         }
     )
     merged = merged.merge(post_cols, on="post_uid", how="left")
     if "raw_text" not in merged.columns:
         merged["raw_text"] = ""
-    if "display_md" not in merged.columns:
-        merged["display_md"] = ""
     if "author" not in merged.columns:
         merged["author"] = ""
     merged["raw_text"] = merged["raw_text"].fillna("").astype(str)
-    merged["display_md"] = merged["display_md"].fillna("").astype(str)
     merged["author"] = merged["author"].fillna("").astype(str)
     merged.loc[merged["raw_text"].eq(""), "raw_text"] = (
         merged.loc[merged["raw_text"].eq(""), "_post_raw_text"].fillna("").astype(str)
     )
-    merged.loc[merged["display_md"].eq(""), "display_md"] = (
-        merged.loc[merged["display_md"].eq(""), "_post_display_md"]
-        .fillna("")
-        .astype(str)
-    )
     merged.loc[merged["author"].eq(""), "author"] = (
         merged.loc[merged["author"].eq(""), "_post_author"].fillna("").astype(str)
     )
-    return merged.drop(
-        columns=["_post_raw_text", "_post_display_md", "_post_author"],
-        errors="ignore",
-    )
+    return merged.drop(columns=["_post_raw_text", "_post_author"], errors="ignore")
 
 
 def build_signal_rows(
@@ -94,7 +83,6 @@ def build_signal_rows(
                 "created_at": created_text,
                 "created_at_line": created_at_line,
                 "raw_text": str(row.get("raw_text") or "").strip(),
-                "display_md": str(row.get("display_md") or "").strip(),
                 "tree_label": tree_label,
                 "tree_text": tree_text,
             }

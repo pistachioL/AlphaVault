@@ -25,8 +25,10 @@ from alphavault.rss.utils import (
 )
 from alphavault.text.html import html_to_text
 from alphavault.weibo.display import (
+    SEGMENT_SEPARATOR,
     extract_image_urls_from_html,
-    format_weibo_display_md,
+    format_weibo_thread_text,
+    IMAGE_LINE_TEMPLATE,
 )
 from alphavault.worker.redis_queue import (
     REDIS_PUSH_STATUS_DUPLICATE,
@@ -54,22 +56,53 @@ def _build_raw_text(*, title: str, content_text: str) -> str:
     return str(title or "").strip()
 
 
-def _build_post_texts(
+def _append_image_labels(*, text: str, image_urls: list[str]) -> str:
+    lines = [
+        IMAGE_LINE_TEMPLATE.format(url=str(url or "").strip())
+        for url in image_urls
+        if str(url or "").strip()
+    ]
+    if not lines:
+        return str(text or "").strip()
+    base = str(text or "").strip()
+    if not base:
+        return "\n".join(lines)
+    return base.rstrip() + "\n" + "\n".join(lines)
+
+
+def _build_post_raw_text(
     *,
     title: str,
     content_text: str,
     platform: str,
-) -> tuple[str, str]:
+    author: str,
+    image_urls: list[str],
+) -> str:
     resolved_text = _build_raw_text(title=title, content_text=content_text)
-    if str(platform or "").strip().lower() != PLATFORM_XUEQIU:
-        return resolved_text, resolved_text
+    normalized_platform = str(platform or "").strip().lower()
+    if normalized_platform == PLATFORM_WEIBO:
+        return format_weibo_thread_text(
+            resolved_text,
+            author=str(author or "").strip(),
+            image_urls=image_urls,
+        )
 
-    segments = split_xueqiu_context_segments(resolved_text)
-    if not segments:
-        return resolved_text, resolved_text
+    if normalized_platform == PLATFORM_XUEQIU:
+        segments = split_xueqiu_context_segments(resolved_text)
+        normalized_segments = [
+            str(segment or "").strip()
+            for segment in segments
+            if str(segment or "").strip()
+        ]
+        if not normalized_segments:
+            return _append_image_labels(text=resolved_text, image_urls=image_urls)
+        normalized_segments[-1] = _append_image_labels(
+            text=normalized_segments[-1],
+            image_urls=image_urls,
+        )
+        return SEGMENT_SEPARATOR.join(normalized_segments)
 
-    display_text = "\n\n---\n\n".join(segments)
-    return display_text, display_text
+    return _append_image_labels(text=resolved_text, image_urls=image_urls)
 
 
 def _try_push_to_redis_status(
@@ -259,22 +292,6 @@ def ingest_rss_many_once(
     write_conn: Optional[Any] = None
     write_conn_context: Any = None
 
-    def build_display_md(*, text: str, author_name: str, image_urls: list[str]) -> str:
-        if normalized_platform == PLATFORM_WEIBO:
-            return format_weibo_display_md(
-                text, author=author_name, image_urls=image_urls
-            )
-        if normalized_platform == PLATFORM_XUEQIU:
-            return ""
-        if not text and not image_urls:
-            return ""
-        img_lines = [f'<img class="ke_img" src="{url}" />' for url in image_urls]
-        if not img_lines:
-            return text
-        if not text:
-            return "\n".join(img_lines)
-        return text.rstrip() + "\n" + "\n".join(img_lines)
-
     def _mark_item_accepted(
         *,
         post_uid: str,
@@ -417,23 +434,19 @@ def ingest_rss_many_once(
                 content_text = html_to_text(content_html)
                 image_urls = extract_image_urls_from_html(content_html)
 
-                raw_text, display_text = _build_post_texts(
-                    title=title,
-                    content_text=content_text,
-                    platform=normalized_platform,
-                )
-                if not raw_text:
-                    continue
-
                 created_at = parse_datetime(entry)
                 resolved_author = choose_author(
                     entry, feed, author, platform=normalized_platform
                 )
-                display_md = build_display_md(
-                    text=display_text,
-                    author_name=resolved_author,
+                raw_text = _build_post_raw_text(
+                    title=title,
+                    content_text=content_text,
+                    platform=normalized_platform,
+                    author=resolved_author,
                     image_urls=list(image_urls or []),
                 )
+                if not raw_text:
+                    continue
 
                 payload: Dict[str, Any] = {
                     "post_uid": post_uid,
@@ -443,7 +456,6 @@ def ingest_rss_many_once(
                     "created_at": created_at,
                     "url": link,
                     "raw_text": raw_text,
-                    "display_md": display_md,
                     "ingested_at": int(time.time()),
                 }
 
@@ -566,7 +578,6 @@ def ingest_rss_many_once(
                         created_at=created_at,
                         url=link,
                         raw_text=raw_text,
-                        display_md=display_md,
                         archived_at=now_str(),
                         ingested_at=int(payload["ingested_at"]),
                     )

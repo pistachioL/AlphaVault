@@ -6,7 +6,7 @@ from typing import Any, Iterator
 from alphavault.worker import spool
 
 
-def test_flush_spool_to_turso_drops_xueqiu_display_md(monkeypatch, tmp_path) -> None:
+def test_flush_spool_to_turso_keeps_xueqiu_raw_text(monkeypatch, tmp_path) -> None:
     captured: dict[str, Any] = {}
 
     @contextmanager
@@ -23,7 +23,6 @@ def test_flush_spool_to_turso_drops_xueqiu_display_md(monkeypatch, tmp_path) -> 
         created_at: str,
         url: str,
         raw_text: str,
-        display_md: str,
         archived_at: str,
         ingested_at: int,
     ) -> None:
@@ -36,7 +35,6 @@ def test_flush_spool_to_turso_drops_xueqiu_display_md(monkeypatch, tmp_path) -> 
                 "created_at": created_at,
                 "url": url,
                 "raw_text": raw_text,
-                "display_md": display_md,
                 "archived_at": archived_at,
                 "ingested_at": ingested_at,
             }
@@ -54,7 +52,6 @@ def test_flush_spool_to_turso_drops_xueqiu_display_md(monkeypatch, tmp_path) -> 
         "created_at": "2026-03-31 17:39:52+08:00",
         "url": "https://xueqiu.com/5992135535/381907747",
         "raw_text": "泽元投资：[献花花][献花花]",
-        "display_md": "SHOULD_BE_DROPPED",
         "ingested_at": 1,
     }
     spool.spool_write(tmp_path, post_uid, payload)
@@ -70,4 +67,3 @@ def test_flush_spool_to_turso_drops_xueqiu_display_md(monkeypatch, tmp_path) -> 
     assert had_error is False
     assert captured["platform"] == "xueqiu"
     assert captured["raw_text"] == "泽元投资：[献花花][献花花]"
-    assert captured["display_md"] == ""

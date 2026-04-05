@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS posts (
     created_at TEXT NOT NULL,
     url TEXT NOT NULL,
     raw_text TEXT NOT NULL,
-    display_md TEXT,
     final_status TEXT NOT NULL CHECK (final_status IN ('relevant', 'irrelevant')),
     invest_score REAL,
     processed_at TEXT,

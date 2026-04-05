@@ -25,7 +25,6 @@ def test_build_post_tree_expands_compact_weibo_reply_chain() -> None:
                 "platform_post_id": "https://weibo.com/3962719063/QxH0rF27I",
                 "author": "挖地瓜的超级鹿鼎公",
                 "raw_text": raw_text,
-                "display_md": raw_text,
                 "created_at": "2026-03-25 10:23:48",
             }
         ]
@@ -56,7 +55,6 @@ def test_build_post_tree_shows_plain_repost_as_author_forward() -> None:
                 "platform_post_id": "https://weibo.com/1000/abc",
                 "author": "转发的人",
                 "raw_text": raw_text,
-                "display_md": raw_text,
                 "created_at": "2026-03-25 10:23:48",
             }
         ]
@@ -82,7 +80,6 @@ def test_build_post_tree_prefers_source_raw_text_as_root_when_available() -> Non
                 "platform_post_id": "222",
                 "author": "当前作者",
                 "raw_text": raw_text,
-                "display_md": raw_text,
                 "created_at": "2026-03-25 10:23:48",
             }
         ]
@@ -90,10 +87,10 @@ def test_build_post_tree_prefers_source_raw_text_as_root_when_available() -> Non
 
     _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
 
-    assert "原作者：原微博正文 [源帖 ID: 111]" in tree_text
+    assert "原微博正文 [源帖 ID: 111]" in tree_text
     assert "B：最早回复" in tree_text
     assert "A：中间回复" in tree_text
-    assert "当前作者：当前评论 [转发 ID: 222]" in tree_text
+    assert "📌当前作者：当前评论 [转发 ID: 222]" in tree_text
 
 
 def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
@@ -104,7 +101,6 @@ def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
                 "platform_post_id": "1",
                 "author": "a",
                 "raw_text": "第一条",
-                "display_md": "第一条",
                 "created_at": pd.Timestamp("2026-03-25 10:23:48"),
             },
             {
@@ -112,7 +108,6 @@ def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
                 "platform_post_id": "2",
                 "author": "b",
                 "raw_text": "第二条",
-                "display_md": "第二条",
                 "created_at": pd.Timestamp("2026-03-25 11:23:48", tz="UTC"),
             },
         ]

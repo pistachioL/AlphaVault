@@ -30,7 +30,6 @@ WANTED_POST_COLUMNS = [
     "created_at",
     "url",
     "raw_text",
-    "display_md",
 ]
 
 

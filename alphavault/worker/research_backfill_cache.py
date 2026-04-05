@@ -22,6 +22,7 @@ from alphavault.research_backfill_cache import (
     save_stock_backfill_meta,
 )
 from alphavault.research_stock_cache import mark_entity_page_dirty
+from alphavault.weibo.display import strip_image_label_lines
 from alphavault.worker.job_state import (
     release_worker_job_lock,
     try_acquire_worker_job_lock,
@@ -87,10 +88,7 @@ def _build_text_match_clause(terms_lower: list[str]) -> tuple[str, dict[str, str
             continue
         key = f"term_{idx}"
         params[key] = f"%{_escape_like_term(text)}%"
-        clauses.append(
-            f"(LOWER(COALESCE(raw_text, '')) LIKE :{key} ESCAPE '\\' "
-            f"OR LOWER(COALESCE(display_md, '')) LIKE :{key} ESCAPE '\\')"
-        )
+        clauses.append(f"LOWER(COALESCE(raw_text, '')) LIKE :{key} ESCAPE '\\'")
     if not clauses:
         return "", {}
     return f"\n  AND ({' OR '.join(clauses)})", params
@@ -154,7 +152,7 @@ def _select_posts_text(
         placeholders.append(f":{key}")
     clause = ", ".join(placeholders)
     sql = f"""
-SELECT post_uid, raw_text, display_md
+SELECT post_uid, raw_text
 FROM posts
 WHERE post_uid IN ({clause})
 """
@@ -168,7 +166,6 @@ WHERE post_uid IN ({clause})
             continue
         out[post_uid] = {
             "raw_text": str(row.get("raw_text") or "").strip(),
-            "display_md": str(row.get("display_md") or "").strip(),
         }
     return out
 
@@ -183,7 +180,7 @@ def _select_asserted_post_uids(
         return set()
     rows = conn.execute(
         """
-SELECT DISTINCT post_uid
+SELECT DISTINCT a.post_uid AS post_uid
 FROM assertions a
 JOIN assertion_entities ae
   ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
@@ -315,16 +312,15 @@ def _build_backfill_candidates_for_stock(
     for post_uid in selected_uids:
         meta = selected_meta.get(post_uid) or {}
         raw_text = str((post_text.get(post_uid) or {}).get("raw_text") or "").strip()
-        display_md = str(
-            (post_text.get(post_uid) or {}).get("display_md") or ""
-        ).strip()
-        combined_lower = f"{raw_text}\n{display_md}".lower()
+        clean_raw_text = strip_image_label_lines(raw_text).strip()
+        combined_lower = clean_raw_text.lower()
         matched_terms = [
             term
             for term, term_lower in zip(terms, terms_lower, strict=False)
             if term_lower and term_lower in combined_lower
         ]
-        haystack = (raw_text or display_md).strip()
+        if not matched_terms:
+            continue
         out.append(
             {
                 "post_uid": post_uid,
@@ -332,7 +328,7 @@ def _build_backfill_candidates_for_stock(
                 "created_at": str(meta.get("created_at") or "").strip(),
                 "url": str(meta.get("url") or "").strip(),
                 "matched_terms": ", ".join(matched_terms[:3]),
-                "preview": _preview_text(haystack),
+                "preview": _preview_text(clean_raw_text),
             }
         )
         posts_rows.append(
@@ -342,7 +338,6 @@ def _build_backfill_candidates_for_stock(
                 "created_at": str(meta.get("created_at") or "").strip(),
                 "url": str(meta.get("url") or "").strip(),
                 "raw_text": raw_text,
-                "display_md": display_md,
             }
         )
     _attach_tree_text(out, posts_rows=posts_rows)

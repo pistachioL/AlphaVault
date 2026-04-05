@@ -37,7 +37,6 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
             "created_at_line": "2026-04-01 10:00",
             "url": "u1",
             "raw_text": "t",
-            "display_md": "",
             "tree_text": "tree1",
         },
         {
@@ -49,7 +48,6 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
             "created_at_line": "2026-04-01 09:00",
             "url": "u2",
             "raw_text": "t2",
-            "display_md": "",
             "tree_text": "tree2",
         },
     ]
@@ -83,10 +81,10 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
     assert feed.rows[1]["signal_badge"] == ""
     assert feed.rows[1]["action"] == ""
     assert feed.rows[1]["raw_text"] == ""
-    assert feed.rows[1]["display_md"] == ""
     assert feed.rows[1]["title"] == "m"
     assert feed.rows[1]["created_at_line"] == "2026-04-01 09:30 · 1小时前"
     assert feed.rows[1]["tree_lines"][0]["content"] == "tree3"
+    assert "display_md" not in feed.rows[0]
 
 
 def test_build_related_feed_signal_filter_excludes_backfill() -> None:

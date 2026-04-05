@@ -67,7 +67,6 @@ class CloudPost:
     created_at: str
     url: str
     raw_text: str
-    display_md: str
     ai_retry_count: int
 
 
@@ -118,7 +117,6 @@ def _execute_upsert_pending_post(
     created_at: str,
     url: str,
     raw_text: str,
-    display_md: str,
     archived_at: str,
     ingested_at: int,
 ) -> None:
@@ -138,7 +136,6 @@ def _execute_upsert_pending_post(
             "created_at": created_at,
             "url": url,
             "raw_text": raw_text,
-            "display_md": display_md,
             "final_status": "irrelevant",
             "archived_at": archived_at,
             "ingested_at": int(ingested_at),
@@ -156,7 +153,6 @@ def upsert_pending_post(
     created_at: str,
     url: str,
     raw_text: str,
-    display_md: str,
     archived_at: str,
     ingested_at: int,
 ) -> None:
@@ -177,7 +173,6 @@ def upsert_pending_post(
             created_at=created_at,
             url=url,
             raw_text=raw_text,
-            display_md=display_md,
             archived_at=archived_at,
             ingested_at=ingested_at,
         )
@@ -195,7 +190,6 @@ def upsert_pending_post(
                 created_at=created_at,
                 url=url,
                 raw_text=raw_text,
-                display_md=display_md,
                 archived_at=archived_at,
                 ingested_at=ingested_at,
             )
@@ -226,7 +220,6 @@ def load_cloud_post(engine: TursoEngine, post_uid: str) -> CloudPost:
             created_at=str(row.get("created_at") or ""),
             url=str(row.get("url") or ""),
             raw_text=str(row.get("raw_text") or ""),
-            display_md=str(row.get("display_md") or ""),
             ai_retry_count=int(row.get("ai_retry_count") or 0),
         )
 
@@ -255,7 +248,7 @@ def load_recent_posts_by_author(
     Load recent posts (both processed and unprocessed) for building a thread context.
 
     Returns mappings with keys:
-    - post_uid, platform_post_id, author, created_at, url, raw_text, display_md
+    - post_uid, platform_post_id, author, created_at, url, raw_text
     - processed_at
     """
     resolved_author = str(author or "").strip()

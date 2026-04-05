@@ -3,7 +3,7 @@ Thread tree parsing helpers.
 
 Keep this module focused on:
 - text normalization
-- parsing repost/quote info from raw_text/display_md
+- parsing repost/quote info from raw_text
 - parsing the JSON object after '[CSV原始字段]'
 """
 
@@ -15,14 +15,14 @@ import re
 from typing import Any, Dict
 
 from alphavault.text.html import html_to_text
-from alphavault.weibo.display import build_weibo_display_lines
+from alphavault.weibo.display import build_weibo_display_lines, strip_image_label_lines
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
 FORWARD_ORIGINAL_MARKER = "[转发原文]"
 WEIBO_META_MARKER = "[微博元信息]"
 REPOST_TOKEN = "转发 @"
 MATCH_KEY_LEN = 80
-DISPLAY_MD_SPLIT_RE = re.compile(r"(?m)^\s*---\s*$")
+THREAD_SEGMENT_SPLIT_RE = re.compile(r"(?m)^\s*---\s*$")
 
 SYNTHETIC_SOURCE_ID_PREFIX = "src:"
 
@@ -55,14 +55,15 @@ def _match_key(text: str) -> str:
 
 def _to_one_line_text(text: str) -> str:
     s = strip_csv_raw_fields(html_to_text(str(text or "")))
+    s = strip_image_label_lines(s)
     s = s.replace("\u00a0", " ")
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
-def _clean_display_md_segment(text: str) -> str:
+def _clean_thread_segment(text: str) -> str:
     """
-    Clean a single display_md segment.
+    Clean a single thread-text segment.
 
     This is Weibo-specific, best-effort, and conservative:
     - Strip the noisy "[微博元信息]" tail if present
@@ -82,18 +83,18 @@ def _clean_display_md_segment(text: str) -> str:
         after = s[forward_idx + len(FORWARD_ORIGINAL_MARKER) :].strip()
         s = before if before else after
 
-    return s.strip()
+    return strip_image_label_lines(s).strip()
 
 
-def _parse_display_md_segments(display_md: str) -> list[str]:
-    text = html_to_text(str(display_md or ""))
+def _parse_segmented_thread_text(thread_text: str) -> list[str]:
+    text = html_to_text(str(thread_text or ""))
     if not text.strip():
         return []
-    parts = DISPLAY_MD_SPLIT_RE.split(text)
+    parts = THREAD_SEGMENT_SPLIT_RE.split(text)
     segments: list[str] = []
     for part in parts:
         seg = _to_one_line_text(str(part or ""))
-        seg = _clean_display_md_segment(seg)
+        seg = _clean_thread_segment(seg)
         if seg:
             segments.append(seg)
     return segments
@@ -111,20 +112,20 @@ def _looks_like_compact_weibo_chain(text: str) -> bool:
     )
 
 
-def parse_display_md_segments(
-    display_md: str,
+def parse_thread_segments(
+    thread_text: str,
     *,
     author: str = "",
     raw_text: str = "",
 ) -> list[str]:
     """
-    Parse posts.display_md into tree-ready message segments.
+    Parse segmented thread text into tree-ready message segments.
 
     Prefer the stored '---' split format. If the content still looks like a
     compact Weibo reply/repost chain, rebuild it with the shared Weibo parser.
     """
-    segments = _parse_display_md_segments(display_md)
-    candidate_text = str(raw_text or "").strip() or str(display_md or "").strip()
+    segments = _parse_segmented_thread_text(thread_text)
+    candidate_text = str(raw_text or "").strip() or str(thread_text or "").strip()
     if not _looks_like_compact_weibo_chain(candidate_text):
         return segments
     rebuilt = build_weibo_display_lines(candidate_text, author=author)
@@ -328,11 +329,11 @@ to_one_line_text = _to_one_line_text
 
 __all__ = [
     "CSV_RAW_FIELDS_MARKER",
-    "DISPLAY_MD_SPLIT_RE",
     "FORWARD_ORIGINAL_MARKER",
     "MATCH_KEY_LEN",
     "REPOST_TOKEN",
     "SYNTHETIC_SOURCE_ID_PREFIX",
+    "THREAD_SEGMENT_SPLIT_RE",
     "clean_id",
     "content_key_for_compare",
     "extract_forward_original_text",
@@ -342,7 +343,7 @@ __all__ = [
     "extract_platform_post_id",
     "make_synthetic_source_id",
     "match_key",
-    "parse_display_md_segments",
+    "parse_thread_segments",
     "parse_weibo_csv_raw_fields",
     "strip_leading_speaker",
     "strip_csv_raw_fields",

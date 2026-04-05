@@ -91,7 +91,6 @@ CREATE TABLE posts(
   created_at TEXT NOT NULL,
   url TEXT NOT NULL,
   raw_text TEXT NOT NULL,
-  display_md TEXT NOT NULL,
   processed_at TEXT NOT NULL
 )
 """
@@ -131,9 +130,9 @@ CREATE TABLE assertion_entities(
         conn.execute(
             """
 INSERT INTO posts(
-  post_uid, platform_post_id, author, created_at, url, raw_text, display_md, processed_at
+  post_uid, platform_post_id, author, created_at, url, raw_text, processed_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 """,
             (
                 "weibo:2",
@@ -141,7 +140,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 "alice",
                 "2099-01-02 00:00:00",
                 "https://example.com/weibo/2",
-                "原文",
                 "原文",
                 "2099-01-02 00:00:01",
             ),

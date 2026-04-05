@@ -11,7 +11,6 @@ from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_SPOOL_DIR,
     PLATFORM_WEIBO,
-    PLATFORM_XUEQIU,
 )
 from alphavault.db.turso_db import (
     TursoConnection,
@@ -22,7 +21,6 @@ from alphavault.db.turso_db import (
 )
 from alphavault.db.turso_queue import load_post_processed_at, upsert_pending_post
 from alphavault.rss.utils import now_str
-from alphavault.weibo.display import format_weibo_display_md
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 SPOOL_JSON_SUFFIX = ".json"
@@ -228,11 +226,6 @@ def _upsert_spool_payload(
     platform = platform or PLATFORM_WEIBO
     raw_text = str(payload.get("raw_text") or "")
     author = str(payload.get("author") or "")
-    display_md = str(payload.get("display_md") or "")
-    if platform == PLATFORM_XUEQIU:
-        display_md = ""
-    elif not display_md.strip():
-        display_md = format_weibo_display_md(raw_text, author=author)
     upsert_pending_post(
         conn,
         post_uid=post_uid,
@@ -242,7 +235,6 @@ def _upsert_spool_payload(
         created_at=str(payload.get("created_at") or now_str()),
         url=str(payload.get("url") or ""),
         raw_text=raw_text,
-        display_md=display_md,
         archived_at=now_str(),
         ingested_at=int(payload.get("ingested_at") or int(time.time())),
     )

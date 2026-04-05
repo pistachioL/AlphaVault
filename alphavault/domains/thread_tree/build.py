@@ -12,7 +12,6 @@ from typing import Any, Dict, cast
 
 import pandas as pd
 
-from alphavault.rss.utils import split_xueqiu_context_segments
 from alphavault.domains.thread_tree.parse import (
     clean_id,
     extract_forward_original_text,
@@ -22,7 +21,7 @@ from alphavault.domains.thread_tree.parse import (
     extract_platform_post_id,
     make_synthetic_source_id,
     match_key,
-    parse_display_md_segments,
+    parse_thread_segments,
     parse_weibo_csv_raw_fields,
 )
 from alphavault.domains.thread_tree.render import (
@@ -33,18 +32,6 @@ from alphavault.domains.thread_tree.render import (
 )
 
 _TIMESTAMP_SORT_FALLBACK = pd.Timestamp("1970-01-01 00:00:00", tz="UTC")
-
-
-def _select_xueqiu_display_source(*, raw_text: str, display_md: str) -> str:
-    raw_value = str(raw_text or "")
-    display_value = str(display_md or "")
-    raw_segments = split_xueqiu_context_segments(raw_value)
-    display_segments = split_xueqiu_context_segments(display_value)
-    if len(display_segments) > len(raw_segments):
-        return display_value
-    if raw_segments:
-        return raw_value
-    return display_value or raw_value
 
 
 def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
@@ -74,9 +61,6 @@ def _collect_blogger_authors(
 
 
 def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
-    xueqiu_prefix = "xueqiu:"
-    xueqiu_separator_re = r"\s+---\s+"
-    xueqiu_separator_norm = "\n\n---\n\n"
     base_cols = [
         "post_uid",
         "platform_post_id",
@@ -84,37 +68,12 @@ def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
         "author",
         "url",
         "raw_text",
-        "display_md",
     ]
     have_cols = [col for col in base_cols if col in posts_all.columns]
     if not have_cols:
         return pd.DataFrame()
 
     posts = posts_all[have_cols].copy()
-    if "display_md" in posts.columns and "post_uid" in posts.columns:
-        uid_series = posts["post_uid"].astype(str).str.strip().str.lower()
-        xueqiu_mask = uid_series.str.startswith(xueqiu_prefix)
-        if xueqiu_mask.any():
-            raw_series = (
-                posts.loc[xueqiu_mask, "raw_text"].fillna("").astype(str)
-                if "raw_text" in posts.columns
-                else pd.Series(
-                    [""] * int(xueqiu_mask.sum()), index=posts.index[xueqiu_mask]
-                )
-            )
-            display_series = posts.loc[xueqiu_mask, "display_md"].fillna("").astype(str)
-            resolved_display = raw_series.combine(
-                display_series,
-                lambda raw_text, display_md: _select_xueqiu_display_source(
-                    raw_text=str(raw_text or ""),
-                    display_md=str(display_md or ""),
-                ),
-            )
-            posts.loc[xueqiu_mask, "display_md"] = resolved_display.str.replace(
-                xueqiu_separator_re,
-                xueqiu_separator_norm,
-                regex=True,
-            )
     if "platform_post_id" not in posts.columns and "post_uid" in posts.columns:
         posts["platform_post_id"] = posts["post_uid"].apply(extract_platform_post_id)
     posts["platform_post_id"] = posts["platform_post_id"].apply(clean_id)
@@ -152,16 +111,9 @@ def _build_posts_text_index(posts_lookup: dict[str, dict]) -> dict[str, list[dic
         pid = clean_id(post_id)
         if not pid:
             continue
-        display_md = str(row.get("display_md") or "").strip()
         raw_text = str(row.get("raw_text") or "").strip()
-        candidates = []
         if raw_text:
-            candidates.append(raw_text)
-        if display_md and display_md != raw_text:
-            candidates.append(display_md)
-
-        for text in candidates:
-            key = match_key(text)
+            key = match_key(raw_text)
             if not key:
                 continue
             index.setdefault(key, []).append(
@@ -257,10 +209,10 @@ def _infer_missing_parent_ids(posts: pd.DataFrame) -> pd.DataFrame:
 def _add_synthetic_sources(
     posts: pd.DataFrame,
 ) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
-    # If a post quotes another speaker (display_md has multi segments), but we still
+    # If a post quotes another speaker (raw_text has multi segments), but we still
     # can't find parent_id, create a synthetic "source" parent so root is correct.
     synthetic_sources: dict[str, dict[str, str]] = {}
-    if posts.empty or "display_md" not in posts.columns:
+    if posts.empty:
         return posts, synthetic_sources
 
     posts = posts.copy()
@@ -268,11 +220,11 @@ def _add_synthetic_sources(
         if clean_id(row.get("parent_post_id")):
             continue
         post_author = str(row.get("author") or "").strip()
-        display_md = str(row.get("display_md") or "").strip()
-        segments = parse_display_md_segments(
-            display_md,
+        raw_text = str(row.get("raw_text") or "").strip()
+        segments = parse_thread_segments(
+            raw_text,
             author=post_author,
-            raw_text=str(row.get("raw_text") or ""),
+            raw_text=raw_text,
         )
         if len(segments) < 2:
             continue
@@ -286,7 +238,6 @@ def _add_synthetic_sources(
             source_id,
             {
                 "author": first_speaker,
-                "display_md": segments[0],
                 "raw_text": segments[0],
             },
         )
@@ -354,7 +305,6 @@ def _build_nodes(
             "author": str(row.get("author") or "").strip(),
             "url": str(row.get("url") or "").strip(),
             "raw_text": str(row.get("raw_text") or ""),
-            "display_md": str(row.get("display_md") or ""),
             "csv_fields": row.get("csv_fields")
             if isinstance(row.get("csv_fields"), dict)
             else {},
@@ -374,7 +324,6 @@ def _build_nodes(
             "author": str(src.get("author") or "").strip(),
             "url": "",
             "raw_text": str(src.get("raw_text") or ""),
-            "display_md": str(src.get("display_md") or ""),
             "csv_fields": {},
             "parent_post_id": "",
             "assertions": [],
@@ -430,21 +379,14 @@ def _ensure_parent_stubs(nodes: dict[str, dict]) -> None:
             forward_original = extract_forward_original_text(child_raw_text)
             if forward_original:
                 source_stub["raw_text"] = forward_original
-        child_display_md = str(node.get("display_md") or "").strip()
-        child_segments = parse_display_md_segments(
-            child_display_md,
+        child_segments = parse_thread_segments(
+            child_raw_text,
             author=str(node.get("author") or "").strip(),
             raw_text=child_raw_text,
         )
         fallback_source = child_segments[0] if child_segments else ""
         if fallback_source and not str(source_stub.get("raw_text") or "").strip():
             source_stub["raw_text"] = fallback_source
-        source_raw_text = str(source_stub.get("raw_text") or "").strip()
-        # Prefer showing source raw text as the root node content.
-        # Keep fallback segment only when no source text is available.
-        stub_display_md = (
-            "" if source_raw_text else (fallback_source if fallback_source else "")
-        )
 
         nodes[parent_id] = {
             "platform_post_id": parent_id,
@@ -453,7 +395,6 @@ def _ensure_parent_stubs(nodes: dict[str, dict]) -> None:
             "author": str(source_stub.get("author") or "").strip(),
             "url": str(source_stub.get("url") or "").strip(),
             "raw_text": str(source_stub.get("raw_text") or ""),
-            "display_md": stub_display_md,
             "csv_fields": {},
             "parent_post_id": "",
             "assertions": [],
