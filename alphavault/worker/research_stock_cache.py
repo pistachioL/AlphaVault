@@ -8,20 +8,16 @@ from alphavault.db.turso_db import (
     TursoEngine,
     turso_connect_autocommit,
 )
-from alphavault.research_backfill_cache import list_stock_backfill_posts
 from alphavault.research_stock_cache import (
-    RESEARCH_STOCK_HOT_TABLE,
-    ensure_research_stock_cache_schema,
-    list_stock_dirty_entries,
-    list_stock_dirty_keys,
-    load_stock_extras_snapshot,
-    remove_stock_dirty_keys,
-    save_stock_extras_snapshot,
-    save_stock_hot_view,
-)
-from alphavault.research_workbench import (
-    ensure_research_workbench_schema,
-    list_pending_candidates_for_left_key,
+    DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT,
+    EntityPageDirtyEntry,
+    ENTITY_PAGE_SNAPSHOT_TABLE,
+    claim_entity_page_dirty_entries,
+    fail_entity_page_dirty_claims,
+    list_entity_page_dirty_keys,
+    release_entity_page_dirty_claims,
+    remove_entity_page_dirty_keys,
+    save_entity_page_signal_snapshot,
 )
 from alphavault.worker.job_state import (
     load_worker_job_cursor,
@@ -31,7 +27,9 @@ from alphavault.worker.job_state import (
 )
 from alphavault.worker.stock_hot_payload_builder import (
     build_stock_hot_payload,
-    normalize_stock_key,
+)
+from alphavault.worker.sector_hot_payload_builder import (
+    build_sector_hot_payload,
 )
 
 STOCK_HOT_CACHE_LOCK_KEY = "stock_hot_cache.lock"
@@ -43,15 +41,6 @@ STOCK_HOT_CACHE_MAX_STOCKS_PER_RUN = 4
 STOCK_HOT_CACHE_DIRTY_LIMIT = 16
 STOCK_HOT_CACHE_SIGNAL_WINDOW_DAYS = 30
 STOCK_HOT_CACHE_SIGNAL_CAP = 500
-STOCK_EXTRAS_REFRESH_MIN_SECONDS = 900
-
-_EXTRAS_FORCE_REFRESH_REASONS = {
-    "alias_relation",
-    "candidate_action",
-    "queue_backfill",
-    "relation_candidates_cache",
-    "backfill_cache",
-}
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
@@ -60,6 +49,10 @@ def _log_stock_hot_cache(*, verbose: bool, message: str) -> None:
     if not verbose:
         return
     print(f"[stock_hot_cache] {message}", flush=True)
+
+
+def _is_sector_entity_key(value: str) -> bool:
+    return str(value or "").strip().startswith("cluster:")
 
 
 def _load_bootstrap_cursor(conn: object) -> str:
@@ -97,20 +90,23 @@ def _list_missing_hot_cache_stock_keys(
     cursor_sql = ""
     params: dict[str, object] = {"limit": max(1, int(limit))}
     if cursor:
-        cursor_sql = "AND a.topic_key > :after_stock_key"
+        cursor_sql = "AND ae.entity_key > :after_stock_key"
         params["after_stock_key"] = cursor
     sql = f"""
-SELECT DISTINCT a.topic_key
+SELECT DISTINCT ae.entity_key
 FROM assertions a
+JOIN assertion_entities ae
+  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
 WHERE a.action LIKE 'trade.%'
-  AND a.topic_key LIKE 'stock:%'
+  AND ae.entity_type = 'stock'
+  AND ae.entity_key LIKE 'stock:%'
   {cursor_sql}
   AND NOT EXISTS (
     SELECT 1
-    FROM {RESEARCH_STOCK_HOT_TABLE} hot
-    WHERE hot.stock_key = a.topic_key
+    FROM {ENTITY_PAGE_SNAPSHOT_TABLE} hot
+    WHERE hot.entity_key = ae.entity_key
   )
-ORDER BY a.topic_key ASC
+ORDER BY ae.entity_key ASC
 LIMIT :limit
 """
     rows = conn.execute(sql, params).fetchall()
@@ -134,32 +130,24 @@ def _has_missing_hot_cache_stock_keys(
     return bool(keys)
 
 
-def _parse_naive_datetime(value: object) -> datetime | None:
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return None
-
-
-def _extras_force_refresh(reason: str) -> bool:
-    return str(reason or "").strip() in _EXTRAS_FORCE_REFRESH_REASONS
-
-
-def _is_extras_snapshot_stale(
+def _release_claimed_entries(
     conn: TursoConnection,
     *,
-    stock_key: str,
-    min_refresh_seconds: int,
-) -> bool:
-    snapshot = load_stock_extras_snapshot(conn, stock_key=stock_key)
-    updated_at = _parse_naive_datetime(snapshot.get("updated_at"))
-    if updated_at is None:
-        return True
-    delta = datetime.now() - updated_at
-    return float(delta.total_seconds()) >= max(0, int(min_refresh_seconds))
+    dirty_entries: list[EntityPageDirtyEntry],
+) -> None:
+    keys_by_claim: dict[str, list[str]] = {}
+    for entry in dirty_entries:
+        stock_key = str(entry["stock_key"]).strip()
+        claim_until = str(entry["claim_until"]).strip()
+        if (not stock_key) or (not claim_until):
+            continue
+        keys_by_claim.setdefault(claim_until, []).append(stock_key)
+    for claim_until, keys in keys_by_claim.items():
+        release_entity_page_dirty_claims(
+            conn,
+            stock_keys=keys,
+            claim_until=claim_until,
+        )
 
 
 def refresh_stock_hot_for_key(
@@ -169,54 +157,27 @@ def refresh_stock_hot_for_key(
     signal_window_days: int,
     signal_cap: int,
 ) -> str:
+    target_key = str(stock_key or "").strip()
+    if _is_sector_entity_key(target_key):
+        payload = build_sector_hot_payload(
+            conn,
+            sector_key=target_key,
+            signal_window_days=int(signal_window_days),
+            signal_cap=int(signal_cap),
+        )
+        entity_key = str(payload.get("entity_key") or target_key).strip() or target_key
+        save_entity_page_signal_snapshot(conn, stock_key=entity_key, payload=payload)
+        return entity_key
+
     payload = build_stock_hot_payload(
         conn,
-        stock_key=stock_key,
+        stock_key=target_key,
         signal_window_days=int(signal_window_days),
         signal_cap=int(signal_cap),
     )
-    entity_key = (
-        str(payload.get("entity_key") or stock_key).strip() or str(stock_key).strip()
-    )
-    save_stock_hot_view(conn, stock_key=entity_key, payload=payload)
+    entity_key = str(payload.get("entity_key") or target_key).strip() or target_key
+    save_entity_page_signal_snapshot(conn, stock_key=entity_key, payload=payload)
     return entity_key
-
-
-def refresh_stock_extras_snapshot_for_key(
-    conn: TursoConnection,
-    *,
-    stock_key: str,
-    min_refresh_seconds: int,
-    force: bool,
-) -> bool:
-    entity_key = normalize_stock_key(stock_key)
-    if not entity_key:
-        return False
-    if (not force) and (
-        not _is_extras_snapshot_stale(
-            conn,
-            stock_key=entity_key,
-            min_refresh_seconds=int(min_refresh_seconds),
-        )
-    ):
-        return False
-    pending = list_pending_candidates_for_left_key(
-        conn,
-        left_key=entity_key,
-        limit=12,
-    )
-    backfill = list_stock_backfill_posts(
-        conn,
-        stock_key=entity_key,
-        limit=12,
-    )
-    save_stock_extras_snapshot(
-        conn,
-        stock_key=entity_key,
-        pending_candidates=pending,
-        backfill_posts=backfill,
-    )
-    return True
 
 
 def sync_stock_hot_cache(
@@ -226,7 +187,6 @@ def sync_stock_hot_cache(
     dirty_limit: int = STOCK_HOT_CACHE_DIRTY_LIMIT,
     signal_window_days: int = STOCK_HOT_CACHE_SIGNAL_WINDOW_DAYS,
     signal_cap: int = STOCK_HOT_CACHE_SIGNAL_CAP,
-    extras_refresh_min_seconds: int = STOCK_EXTRAS_REFRESH_MIN_SECONDS,
     lock_lease_seconds: int = STOCK_HOT_CACHE_LOCK_LEASE_SECONDS,
     should_continue: Callable[[], bool] | None = None,
     verbose: bool = False,
@@ -251,19 +211,17 @@ def sync_stock_hot_cache(
         _log_stock_hot_cache(verbose=verbose, message="lock_busy skip=1")
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
     try:
-        ensure_research_stock_cache_schema(engine_or_conn)
-        ensure_research_workbench_schema(engine_or_conn)
         with (
             turso_connect_autocommit(engine_or_conn)
             if isinstance(engine_or_conn, TursoEngine)
             else engine_or_conn
         ) as conn:
             bootstrap_keys: list[str] = []
-            dirty_entries = list_stock_dirty_entries(
+            dirty_entries: list[EntityPageDirtyEntry] = claim_entity_page_dirty_entries(
                 conn,
-                limit=max(1, max(int(max_stocks_per_run), int(dirty_limit))),
+                limit=max(1, int(max_stocks_per_run)),
+                claim_ttl_seconds=int(lock_lease_seconds),
             )
-            dirty_entries = dirty_entries[: max(1, int(max_stocks_per_run))]
             if not dirty_entries:
                 bootstrap_cursor = _load_bootstrap_cursor(conn)
                 bootstrap_keys = _list_missing_hot_cache_stock_keys(
@@ -280,7 +238,11 @@ def sync_stock_hot_cache(
                 dirty_entries = [
                     {
                         "stock_key": key,
-                        "reason": "bootstrap_missing_hot",
+                        "reason_mask": DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT,
+                        "dirty_since": "",
+                        "last_dirty_at": "",
+                        "claim_until": "",
+                        "attempt_count": 0,
                         "updated_at": "",
                     }
                     for key in bootstrap_keys
@@ -297,48 +259,66 @@ def sync_stock_hot_cache(
                 return {"processed": 0, "written": 0, "has_more": False}
 
             written = 0
-            extras_written = 0
             processed_keys: list[str] = []
-            for entry in dirty_entries:
-                stock_key = str(entry.get("stock_key") or "").strip()
+            for idx, entry in enumerate(dirty_entries):
+                stock_key = str(entry["stock_key"]).strip()
                 if not stock_key:
                     continue
-                reason = str(entry.get("reason") or "").strip()
-                entity_key = refresh_stock_hot_for_key(
-                    conn,
-                    stock_key=stock_key,
-                    signal_window_days=int(signal_window_days),
-                    signal_cap=int(signal_cap),
-                )
-                did_refresh_extras = refresh_stock_extras_snapshot_for_key(
-                    conn,
-                    stock_key=entity_key,
-                    min_refresh_seconds=int(extras_refresh_min_seconds),
-                    force=_extras_force_refresh(reason),
-                )
-                if did_refresh_extras:
-                    extras_written += 1
-                remove_stock_dirty_keys(conn, stock_keys=[stock_key])
-                if entity_key != stock_key and entity_key.startswith("stock:"):
-                    remove_stock_dirty_keys(conn, stock_keys=[entity_key])
-                if reason == "bootstrap_missing_hot":
-                    _save_bootstrap_cursor(conn, stock_key)
-                processed_keys.append(stock_key)
-                written += 1
-                _log_stock_hot_cache(
-                    verbose=verbose,
-                    message=(
-                        f"stock_done stock_key={stock_key} "
-                        f"entity_key={entity_key} "
-                        f"reason={reason or '-'} "
-                        f"extras_refreshed={1 if did_refresh_extras else 0}"
-                    ),
-                )
+                claim_until = str(entry["claim_until"]).strip()
+                reason_mask = int(entry["reason_mask"])
+                try:
+                    entity_key = refresh_stock_hot_for_key(
+                        conn,
+                        stock_key=stock_key,
+                        signal_window_days=int(signal_window_days),
+                        signal_cap=int(signal_cap),
+                    )
+                    remove_entity_page_dirty_keys(
+                        conn,
+                        stock_keys=[stock_key],
+                        claim_until=claim_until,
+                    )
+                    if entity_key != stock_key and entity_key.startswith("stock:"):
+                        remove_entity_page_dirty_keys(
+                            conn,
+                            stock_keys=[entity_key],
+                            claim_until=claim_until,
+                        )
+                    if reason_mask == DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT:
+                        _save_bootstrap_cursor(conn, stock_key)
+                    processed_keys.append(stock_key)
+                    written += 1
+                    _log_stock_hot_cache(
+                        verbose=verbose,
+                        message=(
+                            f"stock_done stock_key={stock_key} "
+                            f"entity_key={entity_key} "
+                            f"reason_mask={int(reason_mask)}"
+                        ),
+                    )
+                except BaseException as err:
+                    if claim_until:
+                        fail_entity_page_dirty_claims(
+                            conn,
+                            stock_keys=[stock_key],
+                            claim_until=claim_until,
+                        )
+                        _release_claimed_entries(
+                            conn,
+                            dirty_entries=dirty_entries[idx + 1 :],
+                        )
+                    if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    raise
                 try:
                     continue_now = bool(should_continue()) if should_continue else True
                 except Exception:
                     continue_now = False
                 if not continue_now:
+                    _release_claimed_entries(
+                        conn,
+                        dirty_entries=dirty_entries[idx + 1 :],
+                    )
                     _log_stock_hot_cache(
                         verbose=verbose,
                         message=(
@@ -348,7 +328,7 @@ def sync_stock_hot_cache(
                     )
                     break
 
-            remaining = list_stock_dirty_keys(conn, limit=1)
+            remaining = list_entity_page_dirty_keys(conn, limit=1)
             has_more = bool(remaining)
             if (not has_more) and bootstrap_keys:
                 has_more = _has_missing_hot_cache_stock_keys(
@@ -360,14 +340,12 @@ def sync_stock_hot_cache(
                 message=(
                     f"done processed={int(len(processed_keys))} "
                     f"written={int(written)} "
-                    f"extras_written={int(extras_written)} "
                     f"has_more={1 if has_more else 0}"
                 ),
             )
             return {
                 "processed": int(len(processed_keys)),
                 "written": int(written),
-                "extras_written": int(extras_written),
                 "has_more": bool(has_more),
             }
     finally:
@@ -379,7 +357,6 @@ def sync_stock_hot_cache(
 
 
 __all__ = [
-    "refresh_stock_extras_snapshot_for_key",
     "refresh_stock_hot_for_key",
     "sync_stock_hot_cache",
 ]

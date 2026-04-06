@@ -20,7 +20,6 @@ from alphavault.db.turso_db import (
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
 )
-from alphavault.db.turso_queue import ensure_cloud_queue_schema
 from alphavault.rss.utils import env_float, env_int
 from alphavault.worker.cli import RSSSourceConfig, resolve_rss_source_configs
 from alphavault.worker.ingest import ingest_rss_many_once
@@ -159,7 +158,6 @@ def _run_manual_ingest_for_source(
     )
 
     try:
-        ensure_cloud_queue_schema(engine, verbose=False)
         accepted, enqueue_error = ingest_rss_many_once(
             rss_urls=source.rss_urls,
             engine=engine,

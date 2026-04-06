@@ -1,104 +1,31 @@
 from __future__ import annotations
 
 
-def create_research_objects_table(table: str) -> str:
+def upsert_security_master_stock(table: str) -> str:
     return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    object_key TEXT PRIMARY KEY,
-    object_type TEXT NOT NULL,
-    display_name TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+INSERT INTO {table}(
+    stock_key,
+    market,
+    code,
+    official_name,
+    official_name_norm,
+    created_at,
+    updated_at
 )
-"""
-
-
-def create_research_relations_table(table: str) -> str:
-    return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    relation_id TEXT PRIMARY KEY,
-    relation_type TEXT NOT NULL,
-    left_key TEXT NOT NULL,
-    right_key TEXT NOT NULL,
-    relation_label TEXT NOT NULL,
-    source TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(relation_type, left_key, right_key, relation_label)
+VALUES (
+    :stock_key,
+    :market,
+    :code,
+    :official_name,
+    :official_name_norm,
+    :now,
+    :now
 )
-"""
-
-
-def create_research_relation_candidates_table(table: str) -> str:
-    return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    candidate_id TEXT PRIMARY KEY,
-    relation_type TEXT NOT NULL,
-    left_key TEXT NOT NULL,
-    right_key TEXT NOT NULL,
-    relation_label TEXT NOT NULL,
-    suggestion_reason TEXT NOT NULL DEFAULT '',
-    evidence_summary TEXT NOT NULL DEFAULT '',
-    score REAL NOT NULL DEFAULT 0,
-    ai_status TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-)
-"""
-
-
-def create_research_alias_resolve_tasks_table(table: str) -> str:
-    return f"""
-CREATE TABLE IF NOT EXISTS {table} (
-    alias_key TEXT PRIMARY KEY,
-    status TEXT NOT NULL DEFAULT 'pending',
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-)
-"""
-
-
-def create_research_alias_resolve_tasks_index(table: str) -> str:
-    return f"""
-CREATE INDEX IF NOT EXISTS idx_{table}_status
-ON {table}(status, updated_at)
-"""
-
-
-def create_research_object_index(table: str) -> str:
-    return f"CREATE INDEX IF NOT EXISTS idx_{table}_type ON {table}(object_type)"
-
-
-def create_research_relation_index(table: str) -> str:
-    return f"""
-CREATE INDEX IF NOT EXISTS idx_{table}_lookup
-ON {table}(relation_type, left_key, relation_label, right_key)
-"""
-
-
-def create_research_relation_candidate_index(table: str) -> str:
-    return f"""
-CREATE INDEX IF NOT EXISTS idx_{table}_pending
-ON {table}(status, relation_type, score, updated_at)
-"""
-
-
-def create_research_relation_candidate_left_key_index(table: str) -> str:
-    return f"""
-CREATE INDEX IF NOT EXISTS idx_{table}_left_key_pending
-ON {table}(left_key, status, score, updated_at)
-"""
-
-
-def upsert_research_object(table: str) -> str:
-    return f"""
-INSERT INTO {table}(object_key, object_type, display_name, created_at, updated_at)
-VALUES (:object_key, :object_type, :display_name, :now, :now)
-ON CONFLICT(object_key) DO UPDATE SET
-    object_type = excluded.object_type,
-    display_name = excluded.display_name,
+ON CONFLICT(stock_key) DO UPDATE SET
+    market = excluded.market,
+    code = excluded.code,
+    official_name = excluded.official_name,
+    official_name_norm = excluded.official_name_norm,
     updated_at = excluded.updated_at
 """
 
@@ -175,6 +102,41 @@ ON CONFLICT(candidate_id) DO UPDATE SET
         ELSE excluded.status
     END,
     updated_at = excluded.updated_at
+"""
+
+
+def select_security_master_by_official_names(table: str, *, name_count: int) -> str:
+    count = max(1, int(name_count or 0))
+    placeholders = ", ".join(["?"] * count)
+    return f"""
+SELECT stock_key, official_name, official_name_norm
+FROM {table}
+WHERE official_name_norm IN ({placeholders})
+"""
+
+
+def select_security_master_by_stock_key(table: str) -> str:
+    return f"""
+SELECT official_name
+FROM {table}
+WHERE stock_key = :stock_key
+LIMIT 1
+"""
+
+
+def select_all_security_master(table: str) -> str:
+    return f"""
+SELECT stock_key, official_name, official_name_norm
+FROM {table}
+"""
+
+
+def select_all_stock_alias_relations(table: str) -> str:
+    return f"""
+SELECT left_key, right_key
+FROM {table}
+WHERE relation_type = 'stock_alias'
+  AND relation_label = 'alias_of'
 """
 
 
@@ -260,10 +222,40 @@ ON CONFLICT(alias_key) DO UPDATE SET
 
 def upsert_alias_resolve_task_status(table: str) -> str:
     return f"""
-INSERT INTO {table}(alias_key, status, attempt_count, created_at, updated_at)
-VALUES (:alias_key, :status, :attempt_count, :now, :now)
+INSERT INTO {table}(
+    alias_key,
+    status,
+    attempt_count,
+    sample_post_uid,
+    sample_evidence,
+    sample_raw_text_excerpt,
+    created_at,
+    updated_at
+)
+VALUES (
+    :alias_key,
+    :status,
+    :attempt_count,
+    :sample_post_uid,
+    :sample_evidence,
+    :sample_raw_text_excerpt,
+    :now,
+    :now
+)
 ON CONFLICT(alias_key) DO UPDATE SET
     status = excluded.status,
+    sample_post_uid = CASE
+        WHEN COALESCE({table}.sample_post_uid, '') <> '' THEN {table}.sample_post_uid
+        ELSE excluded.sample_post_uid
+    END,
+    sample_evidence = CASE
+        WHEN COALESCE({table}.sample_evidence, '') <> '' THEN {table}.sample_evidence
+        ELSE excluded.sample_evidence
+    END,
+    sample_raw_text_excerpt = CASE
+        WHEN COALESCE({table}.sample_raw_text_excerpt, '') <> '' THEN {table}.sample_raw_text_excerpt
+        ELSE excluded.sample_raw_text_excerpt
+    END,
     updated_at = excluded.updated_at
 """
 
@@ -272,16 +264,26 @@ def select_alias_resolve_tasks_by_keys(table: str, *, key_count: int) -> str:
     count = max(1, int(key_count or 0))
     placeholders = ", ".join(["?"] * count)
     return f"""
-SELECT alias_key, status, attempt_count
+SELECT alias_key, status, attempt_count,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt
 FROM {table}
 WHERE alias_key IN ({placeholders})
 """
 
 
-def select_alias_resolve_tasks_by_status(table: str) -> str:
+def select_alias_resolve_tasks_by_status(
+    table: str,
+    *,
+    limit_count: int | None = None,
+) -> str:
+    limit_clause = ""
+    if limit_count is not None:
+        limit_clause = "\nLIMIT :limit"
     return f"""
-SELECT alias_key, status, attempt_count, created_at, updated_at
+SELECT alias_key, status, attempt_count,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt,
+       created_at, updated_at
 FROM {table}
 WHERE status = :status
-ORDER BY updated_at DESC, alias_key ASC
+ORDER BY updated_at DESC, alias_key ASC{limit_clause}
 """

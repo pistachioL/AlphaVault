@@ -29,11 +29,8 @@ def test_load_stock_cached_view_without_running_worker_has_no_processing_warning
 ) -> None:
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
-        stock_hot_read, "load_stock_hot_view", lambda *_args, **_kwargs: {}
-    )
-    monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_extras_snapshot",
+        "load_entity_page_signal_snapshot",
         lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
@@ -57,12 +54,14 @@ def test_load_stock_cached_view_with_running_worker_includes_status(
 ) -> None:
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
-        stock_hot_read, "load_stock_hot_view", lambda *_args, **_kwargs: {}
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        lambda *_args, **_kwargs: {},
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_extras_snapshot",
-        lambda *_args, **_kwargs: {},
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
     )
 
     def _fake_state(_engine, *, state_key: str) -> str:
@@ -95,7 +94,7 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_hot_view",
+        "load_entity_page_signal_snapshot",
         lambda *_args, **_kwargs: {
             "entity_key": "stock:600519.SH",
             "header_title": "600519.SH",
@@ -115,11 +114,6 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_stock_extras_snapshot",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
         "load_worker_job_cursor",
         lambda *_args, **_kwargs: "",
     )
@@ -136,3 +130,32 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     first = signals[0]
     assert isinstance(first, dict)
     assert first.get("created_at") == ""
+
+
+def test_load_stock_cached_view_has_no_backfill_posts(monkeypatch) -> None:
+    _setup_single_source(monkeypatch)
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        lambda *_args, **_kwargs: {
+            "entity_key": "stock:600519.SH",
+            "header_title": "600519.SH",
+            "signals": [],
+            "signal_total": 0,
+            "related_sectors": [{"sector_key": "white_liquor"}],
+        },
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "600519.SH",
+        signal_page=1,
+        signal_page_size=5,
+    )
+
+    assert "pending_candidates" not in payload
+    assert "backfill_posts" not in payload

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import time
 from pathlib import Path
 
 from alphavault.env import load_dotenv_if_present
@@ -33,7 +32,6 @@ from alphavault.constants import (
     ENV_AI_TRACE_OUT,
 )
 from alphavault.db.turso_db import get_turso_engine_from_env
-from alphavault.db.turso_queue import ensure_cloud_queue_schema, try_mark_ai_running
 from alphavault.rss.utils import RateLimiter, env_bool, env_float, env_int
 from alphavault.worker.post_processor import process_one_post_uid
 from alphavault.worker.runtime_models import LLMConfig
@@ -185,37 +183,24 @@ def main() -> None:
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
     engine = get_turso_engine_from_env()
-    ensure_cloud_queue_schema(engine, verbose=bool(config.verbose))
 
-    now_epoch = int(time.time())
     ok = 0
     skipped = 0
     for post_uid in post_uids:
-        try:
-            marked = try_mark_ai_running(engine, post_uid=post_uid, now_epoch=now_epoch)
-        except Exception as e:
-            skipped += 1
-            print(
-                f"[manual] skip post_uid={post_uid} mark_running_error={type(e).__name__}",
-                flush=True,
-            )
-            continue
-        if not marked:
-            skipped += 1
-            print(
-                f"[manual] skip post_uid={post_uid} reason=not_due_or_processed",
-                flush=True,
-            )
-            continue
-
         print(
             f"[manual] run post_uid={post_uid} prompt_version={config.prompt_version}",
             flush=True,
         )
-        process_one_post_uid(
+        if process_one_post_uid(
             engine=engine, post_uid=post_uid, config=config, limiter=limiter
+        ):
+            ok += 1
+            continue
+        skipped += 1
+        print(
+            f"[manual] skip post_uid={post_uid} reason=process_failed",
+            flush=True,
         )
-        ok += 1
 
     print(f"[manual] done ok={ok} skipped={skipped}", flush=True)
 

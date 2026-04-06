@@ -51,7 +51,7 @@ repos:
             "manual_run_ai.py",
             "reset_ai_results.py",
             "scan_and_reset_invalid_ai_tags.py",
-            "backfill_display_md.py",
+            "migrate_weibo_raw_text.py",
             "startup_healthcheck.py",
           ]
 

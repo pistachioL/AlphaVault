@@ -21,7 +21,6 @@ SIDEBAR_TOGGLE_TEXT = "关系"
 SIDEBAR_TITLE = "关系"
 SIDEBAR_CLOSE_TEXT = "关"
 RELATED_SECTION_TITLE = "相关板块"
-PENDING_SECTION_TITLE = "待确认关系"
 SIDEBAR_READY_TEXT = "关系数据已就绪。"
 SIDEBAR_UPDATED_AT_PREFIX = "扩展数据更新时间："
 
@@ -102,25 +101,16 @@ def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
                 ),
             ),
             rx.cond(
-                row["display_md"] != "",
-                rx.text(row["display_md"], class_name="av-research-signal-body"),
+                row["raw_text"] != "",
+                rx.text(row["raw_text"], class_name="av-research-signal-body"),
                 rx.cond(
-                    row["raw_text"] != "",
-                    rx.text(row["raw_text"], class_name="av-research-signal-body"),
+                    row["preview"] != "",
                     rx.text(row["preview"], class_name="av-research-signal-body"),
+                    rx.el.div(),
                 ),
             ),
         ),
         rx.hstack(
-            rx.cond(
-                row["is_signal"] != "1",
-                rx.button(
-                    "排队 AI 回补",
-                    on_click=lambda: ResearchState.queue_backfill_post(row["post_uid"]),
-                    class_name="av-btn av-btn-small",
-                ),
-                rx.el.span(""),
-            ),
             rx.cond(
                 row["url"] != "",
                 rx.link(
@@ -143,34 +133,6 @@ def _related_link(row: rx.Var[dict[str, str]]) -> rx.Component:
         row["label"],
         href=row["href"],
         class_name="av-research-chip",
-    )
-
-
-def _pending_item(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.el.div(
-        rx.text(row["candidate_key"], class_name="av-research-side-title"),
-        rx.text(row["evidence_summary"], class_name="av-research-muted"),
-        rx.hstack(
-            rx.button(
-                "确认",
-                on_click=lambda: ResearchState.accept_candidate(row["candidate_id"]),
-                class_name="av-btn av-btn-small",
-            ),
-            rx.button(
-                "忽略",
-                on_click=lambda: ResearchState.ignore_candidate(row["candidate_id"]),
-                variant="soft",
-            ),
-            rx.button(
-                "不再推荐",
-                on_click=lambda: ResearchState.block_candidate(row["candidate_id"]),
-                variant="soft",
-                color_scheme="gray",
-            ),
-            spacing="2",
-            margin_top="10px",
-        ),
-        class_name="av-research-side-item",
     )
 
 
@@ -243,25 +205,7 @@ def _stock_sidebar_sections() -> rx.Component:
                         rx.el.div(),
                     ),
                 ),
-                rx.heading(PENDING_SECTION_TITLE, size="4", margin_top="18px"),
-                rx.cond(
-                    ResearchState.has_pending_candidates,
-                    rx.el.div(
-                        rx.foreach(ResearchState.pending_candidates, _pending_item),
-                        class_name="av-research-side-list",
-                    ),
-                    rx.cond(
-                        ResearchState.show_pending_empty,
-                        rx.text(EMPTY_TEXT, class_name="av-research-muted"),
-                        rx.el.div(),
-                    ),
-                ),
             ),
-        ),
-        rx.cond(
-            ResearchState.backfill_notice != "",
-            rx.text(ResearchState.backfill_notice, class_name="av-research-muted"),
-            rx.el.div(),
         ),
     )
 

@@ -6,7 +6,7 @@ from alphavault.domains.thread_tree.service import build_post_tree
 from alphavault.domains.thread_tree.service import build_post_tree_map
 
 
-def test_build_post_tree_expands_compact_weibo_reply_chain() -> None:
+def test_build_post_tree_keeps_compact_weibo_reply_chain_as_raw_text() -> None:
     post_uid = "xueqiu:https://weibo.com/3962719063/QxH0rF27I"
     raw_text = (
         "回复@落晚平沙:看走势，可以看出大家想法//@落晚平沙:请教公公碰到好几次这个问题"
@@ -25,7 +25,6 @@ def test_build_post_tree_expands_compact_weibo_reply_chain() -> None:
                 "platform_post_id": "https://weibo.com/3962719063/QxH0rF27I",
                 "author": "挖地瓜的超级鹿鼎公",
                 "raw_text": raw_text,
-                "display_md": raw_text,
                 "created_at": "2026-03-25 10:23:48",
             }
         ]
@@ -33,20 +32,13 @@ def test_build_post_tree_expands_compact_weibo_reply_chain() -> None:
 
     _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
 
-    assert "勇敢的心E11：超预期[赞]" in tree_text
-    assert "落晚平沙：请教公公碰到好几次这个问题但是没有想明白" in tree_text
-    assert (
-        "挖地瓜的超级鹿鼎公：看走势，可以看出大家想法 "
-        "[转发 ID: https://weibo.com/3962719063/QxH0rF27I]"
-    ) in tree_text
+    assert "回复@落晚平沙:看走势，可以看出大家想法" in tree_text
+    assert "勇敢的心E11：超预期[赞]" not in tree_text
+    assert "落晚平沙：请教公公碰到好几次这个问题但是没有想明白" not in tree_text
     assert "[回复]" not in tree_text
-    assert (
-        "[转发 ID: https://weibo.com/3962719063/QxH0rF27I] "
-        "挖地瓜的超级鹿鼎公：看走势，可以看出大家想法"
-    ) not in tree_text
 
 
-def test_build_post_tree_shows_plain_repost_as_author_forward() -> None:
+def test_build_post_tree_keeps_plain_repost_raw_text() -> None:
     post_uid = "xueqiu:https://weibo.com/1000/abc"
     raw_text = "转发 @原作者: 原文内容"
     posts = pd.DataFrame(
@@ -56,7 +48,6 @@ def test_build_post_tree_shows_plain_repost_as_author_forward() -> None:
                 "platform_post_id": "https://weibo.com/1000/abc",
                 "author": "转发的人",
                 "raw_text": raw_text,
-                "display_md": raw_text,
                 "created_at": "2026-03-25 10:23:48",
             }
         ]
@@ -64,11 +55,11 @@ def test_build_post_tree_shows_plain_repost_as_author_forward() -> None:
 
     _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
 
-    assert "原作者：原文内容" in tree_text
-    assert "转发的人：转发 [转发 ID: https://weibo.com/1000/abc]" in tree_text
+    assert "转发 @原作者: 原文内容 [转发 ID: https://weibo.com/1000/abc]" in tree_text
+    assert "原作者：原文内容" not in tree_text
 
 
-def test_build_post_tree_prefers_source_raw_text_as_root_when_available() -> None:
+def test_build_post_tree_keeps_compact_repost_chain_in_current_node() -> None:
     post_uid = "weibo:222"
     raw_text = (
         "当前评论//@A:中间回复//@B:最早回复\n\n"
@@ -82,7 +73,6 @@ def test_build_post_tree_prefers_source_raw_text_as_root_when_available() -> Non
                 "platform_post_id": "222",
                 "author": "当前作者",
                 "raw_text": raw_text,
-                "display_md": raw_text,
                 "created_at": "2026-03-25 10:23:48",
             }
         ]
@@ -90,10 +80,10 @@ def test_build_post_tree_prefers_source_raw_text_as_root_when_available() -> Non
 
     _label, tree_text = build_post_tree(post_uid=post_uid, posts=posts)
 
-    assert "原作者：原微博正文 [源帖 ID: 111]" in tree_text
-    assert "B：最早回复" in tree_text
-    assert "A：中间回复" in tree_text
-    assert "当前作者：当前评论 [转发 ID: 222]" in tree_text
+    assert "原微博正文 [源帖 ID: 111]" in tree_text
+    assert "当前评论//@A:中间回复//@B:最早回复 [转发 ID: 222]" in tree_text
+    assert "B：最早回复" not in tree_text
+    assert "A：中间回复" not in tree_text
 
 
 def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
@@ -104,7 +94,6 @@ def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
                 "platform_post_id": "1",
                 "author": "a",
                 "raw_text": "第一条",
-                "display_md": "第一条",
                 "created_at": pd.Timestamp("2026-03-25 10:23:48"),
             },
             {
@@ -112,7 +101,6 @@ def test_build_post_tree_map_handles_mixed_tz_created_at() -> None:
                 "platform_post_id": "2",
                 "author": "b",
                 "raw_text": "第二条",
-                "display_md": "第二条",
                 "created_at": pd.Timestamp("2026-03-25 11:23:48", tz="UTC"),
             },
         ]

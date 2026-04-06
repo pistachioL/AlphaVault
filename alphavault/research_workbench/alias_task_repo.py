@@ -22,6 +22,9 @@ ALIAS_TASK_STATUS_RESOLVED = "resolved"
 class AliasResolveTaskInfo(TypedDict):
     status: str
     attempt_count: int
+    sample_post_uid: str
+    sample_evidence: str
+    sample_raw_text_excerpt: str
 
 
 def _now_str() -> str:
@@ -56,6 +59,11 @@ def get_alias_resolve_tasks_map(
                     out[key] = AliasResolveTaskInfo(
                         status=str(row.get("status") or "").strip(),
                         attempt_count=int(row.get("attempt_count") or 0),
+                        sample_post_uid=str(row.get("sample_post_uid") or "").strip(),
+                        sample_evidence=str(row.get("sample_evidence") or "").strip(),
+                        sample_raw_text_excerpt=str(
+                            row.get("sample_raw_text_excerpt") or ""
+                        ).strip(),
                     )
             return out
     except BaseException as err:
@@ -103,6 +111,9 @@ def set_alias_resolve_task_status(
     alias_key: str,
     status: str,
     attempt_count: int = 0,
+    sample_post_uid: str = "",
+    sample_evidence: str = "",
+    sample_raw_text_excerpt: str = "",
 ) -> None:
     key = str(alias_key or "").strip()
     if not key:
@@ -116,6 +127,11 @@ def set_alias_resolve_task_status(
                     "alias_key": key,
                     "status": str(status or "").strip(),
                     "attempt_count": int(attempt_count or 0),
+                    "sample_post_uid": str(sample_post_uid or "").strip(),
+                    "sample_evidence": str(sample_evidence or "").strip(),
+                    "sample_raw_text_excerpt": str(
+                        sample_raw_text_excerpt or ""
+                    ).strip(),
                     "now": now,
                 },
             )
@@ -125,15 +141,47 @@ def set_alias_resolve_task_status(
 
 def list_manual_alias_resolve_tasks(
     engine_or_conn: TursoEngine | TursoConnection,
+    *,
+    limit: int | None = None,
 ) -> list[dict[str, object]]:
     try:
         with use_conn(engine_or_conn) as conn:
             return (
                 conn.execute(
                     select_alias_resolve_tasks_by_status(
-                        RESEARCH_ALIAS_RESOLVE_TASKS_TABLE
+                        RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
+                        limit_count=limit,
                     ),
-                    {"status": ALIAS_TASK_STATUS_MANUAL},
+                    {
+                        "status": ALIAS_TASK_STATUS_MANUAL,
+                        **({"limit": int(limit)} if limit is not None else {}),
+                    },
+                )
+                .mappings()
+                .all()
+            )
+    except BaseException as err:
+        handle_turso_error(engine_or_conn, err)
+    raise AssertionError("unreachable")
+
+
+def list_pending_alias_resolve_tasks(
+    engine_or_conn: TursoEngine | TursoConnection,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, object]]:
+    try:
+        with use_conn(engine_or_conn) as conn:
+            return (
+                conn.execute(
+                    select_alias_resolve_tasks_by_status(
+                        RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
+                        limit_count=limit,
+                    ),
+                    {
+                        "status": ALIAS_TASK_STATUS_PENDING,
+                        **({"limit": int(limit)} if limit is not None else {}),
+                    },
                 )
                 .mappings()
                 .all()
@@ -152,5 +200,6 @@ __all__ = [
     "get_alias_resolve_tasks_map",
     "increment_alias_resolve_attempts",
     "list_manual_alias_resolve_tasks",
+    "list_pending_alias_resolve_tasks",
     "set_alias_resolve_task_status",
 ]

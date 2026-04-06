@@ -8,6 +8,7 @@ from typing import cast
 
 from alphavault.db.turso_db import TursoEngine
 from alphavault.worker import spool
+from alphavault.worker import redis_queue as redis_queue_module
 
 
 def _build_payload(
@@ -21,7 +22,6 @@ def _build_payload(
         "created_at": "2026-03-28 10:00:00",
         "url": f"https://example.com/post/{platform_post_id}",
         "raw_text": f"文本{platform_post_id}",
-        "display_md": "",
         "ingested_at": ingested_at,
     }
 
@@ -88,7 +88,8 @@ def test_flush_spool_to_turso_reuses_single_connection(monkeypatch, tmp_path) ->
     assert turso_error is False
     assert connect_calls == [engine_marker]
     assert len(upsert_conn_ids) == 2
-    assert list(tmp_path.glob("*.json")) == []
+    assert len(list(tmp_path.glob("*.json"))) == 2
+    assert list(tmp_path.glob("*.json.processing")) == []
 
 
 def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -> None:
@@ -126,7 +127,7 @@ def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -
 
     assert processed == 1
     assert turso_error is False
-    assert list(tmp_path.glob("*.json")) == []
+    assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
@@ -172,7 +173,7 @@ def test_flush_spool_to_turso_recovers_stale_processing_file(
     assert processed == 1
     assert turso_error is False
     assert seen_post_uids == ["weibo:20"]
-    assert list(tmp_path.glob("*.json")) == []
+    assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
@@ -258,6 +259,52 @@ def test_flush_spool_to_turso_restores_json_when_turso_write_fails(
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
+def test_flush_spool_to_turso_keeps_json_when_redis_push_succeeds(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(TursoEngine, object())
+    conn_marker = object()
+
+    class _ConnContext:
+        def __enter__(self):
+            return conn_marker
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    def _fake_connect(_engine):
+        return _ConnContext()
+
+    def _fake_upsert(_conn, **_kwargs) -> None:
+        raise RuntimeError("boom")
+
+    spool.spool_write(
+        tmp_path, "weibo:50", _build_payload("weibo:50", "50", "作者E", 150)
+    )
+    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
+    monkeypatch.setattr(
+        redis_queue_module,
+        "redis_try_push_dedup",
+        lambda *_args, **_kwargs: True,
+    )
+
+    processed, turso_error = spool.flush_spool_to_turso(
+        spool_dir=tmp_path,
+        engine=engine_marker,
+        max_items=10,
+        verbose=False,
+        redis_client=object(),
+        redis_queue_key="test:q",
+        delete_spool_on_redis_push=False,
+    )
+
+    assert processed == 1
+    assert turso_error is False
+    assert len(list(tmp_path.glob("*.json"))) == 1
+    assert list(tmp_path.glob("*.json.processing")) == []
+
+
 def test_restore_claimed_file_keeps_old_and_new_json(tmp_path) -> None:
     post_uid = "weibo:restore-conflict"
     old_payload = _build_payload(post_uid, "50", "作者E", 150)
@@ -285,4 +332,139 @@ def test_restore_claimed_file_keeps_old_and_new_json(tmp_path) -> None:
     )
     final_payload = json.loads(target_path.read_text(encoding="utf-8"))
     assert final_payload["platform_post_id"] == "51"
+    assert list(tmp_path.glob("*.json.processing")) == []
+
+
+def test_recover_spool_to_turso_and_redis_restores_missing_requeues_pending_and_deletes_done(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(TursoEngine, object())
+    conn_marker = object()
+    upserted: list[str] = []
+    requeued: list[str] = []
+
+    class _ConnContext:
+        def __enter__(self):
+            return conn_marker
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    def _fake_connect(_engine):
+        return _ConnContext()
+
+    def _fake_load_processed_at(conn, *, post_uid: str):
+        assert conn is conn_marker
+        return {
+            "weibo:missing": None,
+            "weibo:pending": "",
+            "weibo:done": "2026-04-04 10:00:00",
+        }[post_uid]
+
+    def _fake_upsert(conn, **kwargs) -> None:
+        assert conn is conn_marker
+        upserted.append(str(kwargs.get("post_uid") or ""))
+
+    spool.spool_write(
+        tmp_path,
+        "weibo:missing",
+        _build_payload("weibo:missing", "60", "作者F", 160),
+    )
+    spool.spool_write(
+        tmp_path,
+        "weibo:pending",
+        _build_payload("weibo:pending", "61", "作者G", 161),
+    )
+    spool.spool_write(
+        tmp_path,
+        "weibo:done",
+        _build_payload("weibo:done", "62", "作者H", 162),
+    )
+
+    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(spool, "load_post_processed_at", _fake_load_processed_at)
+    monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
+
+    def _fake_requeue_status(_client, _queue_key, *, post_uid, **_kwargs):  # type: ignore[no-untyped-def]
+        requeued.append(str(post_uid))
+        return redis_queue_module.REDIS_PUSH_STATUS_PUSHED
+
+    monkeypatch.setattr(
+        redis_queue_module,
+        "redis_try_push_ai_dedup_status",
+        _fake_requeue_status,
+    )
+
+    restored_posts, queued_redis, deleted_done, has_error = (
+        spool.recover_spool_to_turso_and_redis(
+            spool_dir=tmp_path,
+            engine=engine_marker,
+            max_items=10,
+            verbose=False,
+            redis_client=object(),
+            redis_queue_key="test:q",
+        )
+    )
+
+    assert restored_posts == 1
+    assert queued_redis == 2
+    assert deleted_done == 1
+    assert has_error is False
+    assert upserted == ["weibo:missing"]
+    assert sorted(requeued) == ["weibo:missing", "weibo:pending"]
+    remaining_json = sorted(path.name for path in tmp_path.glob("*.json"))
+    assert len(remaining_json) == 2
+    assert list(tmp_path.glob("*.json.processing")) == []
+
+
+def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(TursoEngine, object())
+    conn_marker = object()
+
+    class _ConnContext:
+        def __enter__(self):
+            return conn_marker
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    def _fake_connect(_engine):
+        return _ConnContext()
+
+    spool.spool_write(
+        tmp_path,
+        "weibo:pending-error",
+        _build_payload("weibo:pending-error", "63", "作者I", 163),
+    )
+
+    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool,
+        "load_post_processed_at",
+        lambda conn, *, post_uid: "" if conn is conn_marker else post_uid,
+    )
+    monkeypatch.setattr(
+        redis_queue_module,
+        "redis_try_push_ai_dedup_status",
+        lambda *_args, **_kwargs: redis_queue_module.REDIS_PUSH_STATUS_ERROR,
+    )
+
+    restored_posts, queued_redis, deleted_done, has_error = (
+        spool.recover_spool_to_turso_and_redis(
+            spool_dir=tmp_path,
+            engine=engine_marker,
+            max_items=10,
+            verbose=False,
+            redis_client=object(),
+            redis_queue_key="test:q",
+        )
+    )
+
+    assert restored_posts == 0
+    assert queued_redis == 0
+    assert deleted_done == 0
+    assert has_error is True
+    assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []

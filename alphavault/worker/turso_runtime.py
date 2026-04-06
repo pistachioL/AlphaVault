@@ -5,8 +5,8 @@ from alphavault.db.turso_db import (
     TursoEngine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
+    turso_connect_autocommit,
 )
-from alphavault.db.turso_queue import ensure_cloud_queue_schema
 
 
 def maybe_dispose_turso_engine_on_transient_error(
@@ -50,7 +50,8 @@ def ensure_turso_ready(
         return True
     prefix = f"[turso:{source_name}]" if source_name else "[turso]"
     try:
-        ensure_cloud_queue_schema(engine, verbose=bool(verbose))
+        with turso_connect_autocommit(engine):
+            pass
         print(f"{prefix} ready", flush=True)
         return True
     except BaseException as err:

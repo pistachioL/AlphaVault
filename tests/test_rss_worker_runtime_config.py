@@ -134,8 +134,6 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
             return ingest.REDIS_PUSH_STATUS_PUSHED
         return ingest.REDIS_PUSH_STATUS_ERROR
 
-    author_recent_push_calls: list[str] = []
-
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(
         ingest,
@@ -160,17 +158,6 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
     )
     monkeypatch.setattr(ingest, "_try_push_to_redis_status", _fake_push_to_redis_status)
 
-    def _fake_author_recent_push(*_args, **_kwargs) -> bool:  # type: ignore[no-untyped-def]
-        author_recent_push_calls.append("called")
-        return True
-
-    monkeypatch.setattr(
-        ingest,
-        "redis_author_recent_push",
-        _fake_author_recent_push,
-        raising=False,
-    )
-
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
         engine=object(),  # type: ignore[arg-type]
@@ -189,7 +176,82 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
     assert accepted == 1
     assert enqueue_error is False
     assert upsert_calls == []
-    assert author_recent_push_calls == []
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+def test_ingest_rss_many_once_enqueue_callback_skips_sync_redis_and_turso(
+    monkeypatch, tmp_path
+) -> None:
+    queued_payloads: list[dict[str, object]] = []
+
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del url, timeout, retries
+        return SimpleNamespace(
+            entries=[{"link": "https://example.com/post/1", "title": "标题"}]
+        )
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: ("mid1", "weibo:1", ""),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "upsert_pending_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not write turso inline")
+        ),
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not push redis inline")
+        ),
+    )
+
+    accepted, enqueue_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss"],
+        engine=object(),  # type: ignore[arg-type]
+        spool_dir=tmp_path,
+        redis_client=object(),
+        redis_queue_key="k",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        verbose=False,
+        enqueue_spooled_payload=lambda payload: queued_payloads.append(dict(payload)),
+    )
+
+    assert accepted == 1
+    assert enqueue_error is False
+    assert queued_payloads == [
+        {
+            "post_uid": "weibo:1",
+            "platform": "weibo",
+            "platform_post_id": "mid1",
+            "author": "测试博主",
+            "created_at": "2026-03-28 10:00:00",
+            "url": "https://example.com/post/1",
+            "raw_text": "测试博主：标题",
+            "ingested_at": queued_payloads[0]["ingested_at"],
+        }
+    ]
+    assert isinstance(queued_payloads[0]["ingested_at"], int) is True
     assert len(list(tmp_path.glob("*.json"))) == 1
 
 

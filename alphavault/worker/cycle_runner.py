@@ -90,38 +90,25 @@ def build_source_turso_error(
     maintenance_error: bool,
     spool_flush_error: bool,
     schedule_error: bool,
-    alias_sync_error: bool,
-    backfill_cache_error: bool,
-    relation_cache_error: bool,
     stock_hot_error: bool,
 ) -> bool:
     return bool(
-        maintenance_error
-        or spool_flush_error
-        or schedule_error
-        or alias_sync_error
-        or backfill_cache_error
-        or relation_cache_error
-        or stock_hot_error
+        maintenance_error or spool_flush_error or schedule_error or stock_hot_error
     )
 
 
 def should_wait_with_event(
     *,
     ai_inflight: bool,
-    any_alias_inflight: bool,
-    any_backfill_inflight: bool,
-    any_relation_inflight: bool,
     any_stock_hot_inflight: bool,
+    any_redis_enqueue_inflight: bool,
     any_rss_inflight: bool,
     any_spool_flush_inflight: bool,
 ) -> bool:
     return bool(
         ai_inflight
-        or any_alias_inflight
-        or any_backfill_inflight
-        or any_relation_inflight
         or any_stock_hot_inflight
+        or any_redis_enqueue_inflight
         or any_rss_inflight
         or any_spool_flush_inflight
     )

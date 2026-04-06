@@ -1,28 +1,20 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
 from dataclasses import dataclass
 import threading
 import time
 from typing import Any, Callable, Optional
 
-from alphavault.ai.analyze import (
-    DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
-    DEFAULT_MODEL,
-)
-from alphavault.infra.ai.runtime_config import AiRuntimeConfig
 from alphavault.rss.utils import RateLimiter, sleep_until_active
 from alphavault.worker import periodic_jobs
-from alphavault.worker import scheduler
 from alphavault.worker.progress_state import has_due_ai_posts
 from alphavault.worker.runtime_cache import memoize_bool_with_ttl
 from alphavault.worker.runtime_models import LLMConfig, WorkerSourceRuntime
 from alphavault.worker.source_runtime import log_source_runtime
 from alphavault.worker.worker_constants import DUE_AI_CHECK_CACHE_TTL_SECONDS
-from alphavault.worker.worker_loop_runtime import rss_inflight_now
 from alphavault.worker.worker_loop_models import (
     SourceTickContext,
     SourceTickExecutors,
@@ -53,7 +45,6 @@ class WorkerLoopContext:
     worker_active_hours: Optional[tuple[int, int]]
     worker_interval_seconds: float
     due_ai_cached_by_source: dict[str, Callable[[], bool]]
-    alias_ai_runtime_config: AiRuntimeConfig
 
 
 @contextmanager
@@ -61,16 +52,10 @@ def _open_executors(*, ai_cap: int, source_count: int) -> Iterator[SourceTickExe
     max_source_workers = max(1, int(source_count))
     with ExitStack() as stack:
         ai_executor = stack.enter_context(ThreadPoolExecutor(max_workers=int(ai_cap)))
-        alias_executor = stack.enter_context(
-            ThreadPoolExecutor(max_workers=int(max_source_workers))
-        )
-        relation_executor = stack.enter_context(
-            ThreadPoolExecutor(max_workers=int(max_source_workers))
-        )
-        backfill_executor = stack.enter_context(
-            ThreadPoolExecutor(max_workers=int(max_source_workers))
-        )
         stock_hot_executor = stack.enter_context(
+            ThreadPoolExecutor(max_workers=int(max_source_workers))
+        )
+        redis_enqueue_executor = stack.enter_context(
             ThreadPoolExecutor(max_workers=int(max_source_workers))
         )
         spool_executor = stack.enter_context(
@@ -81,10 +66,8 @@ def _open_executors(*, ai_cap: int, source_count: int) -> Iterator[SourceTickExe
         )
         yield SourceTickExecutors(
             ai_executor=ai_executor,
-            alias_executor=alias_executor,
-            relation_executor=relation_executor,
-            backfill_executor=backfill_executor,
             stock_hot_executor=stock_hot_executor,
+            redis_enqueue_executor=redis_enqueue_executor,
             spool_executor=spool_executor,
             rss_executor=rss_executor,
         )
@@ -120,20 +103,6 @@ def _build_due_ai_cached_by_source(
     return cached
 
 
-def _build_alias_ai_runtime_config(*, config: LLMConfig) -> AiRuntimeConfig:
-    return AiRuntimeConfig(
-        api_key=str(config.api_key or "").strip(),
-        model=str(config.model or "").strip() or DEFAULT_MODEL,
-        base_url=str(config.base_url or "").strip(),
-        api_mode=str(config.api_mode or DEFAULT_AI_MODE).strip() or DEFAULT_AI_MODE,
-        temperature=float(config.ai_temperature),
-        reasoning_effort=str(config.ai_reasoning_effort or "").strip()
-        or DEFAULT_AI_REASONING_EFFORT,
-        timeout_seconds=float(config.ai_timeout_seconds),
-        retries=int(config.ai_retries),
-    )
-
-
 def _build_settings(args) -> WorkerLoopSettings:
     verbose = bool(getattr(args, "verbose", False))
     limit = int(getattr(args, "limit", 0) or 0)
@@ -160,22 +129,6 @@ def _compute_maintenance(
     return bool(do_maintenance), float(next_at), float(next_in)
 
 
-def _ensure_low_priority_gate(
-    *,
-    low_priority_gate: scheduler.LowPriorityAiSlotGate | None,
-    inflight_futures: set[Future],
-    ai_cap: int,
-) -> scheduler.LowPriorityAiSlotGate:
-    if low_priority_gate is not None:
-        return low_priority_gate
-    return scheduler.LowPriorityAiSlotGate(
-        cap_getter=lambda: scheduler.compute_low_priority_budget(
-            ai_cap=int(ai_cap),
-            rss_inflight_now=int(rss_inflight_now(inflight_futures)),
-        )
-    )
-
-
 def _build_tick_ctx(
     *,
     loop_ctx: WorkerLoopContext,
@@ -184,7 +137,6 @@ def _build_tick_ctx(
     maintenance_next_at: float,
     now: float,
     do_maintenance: bool,
-    low_priority_gate: scheduler.LowPriorityAiSlotGate | None,
 ) -> SourceTickContext:
     source_name = str(source.config.name or "").strip()
     return SourceTickContext(
@@ -203,8 +155,6 @@ def _build_tick_ctx(
         maintenance_next_at=float(maintenance_next_at),
         now=float(now),
         do_maintenance=bool(do_maintenance),
-        alias_ai_runtime_config=loop_ctx.alias_ai_runtime_config,
-        low_priority_gate=low_priority_gate,
         due_ai_pending_get=loop_ctx.due_ai_cached_by_source.get(source_name),
     )
 
@@ -216,7 +166,6 @@ def _run_sources_once(
     maintenance_next_at: float,
     now: float,
     do_maintenance: bool,
-    low_priority_gate: scheduler.LowPriorityAiSlotGate | None,
     execs: SourceTickExecutors,
     state: SourceTickState,
 ) -> bool:
@@ -229,7 +178,6 @@ def _run_sources_once(
             maintenance_next_at=float(maintenance_next_at),
             now=float(now),
             do_maintenance=bool(do_maintenance),
-            low_priority_gate=low_priority_gate,
         )
         any_inflight = any_inflight or bool(
             run_source_tick(source=source, ctx=tick_ctx, execs=execs, state=state)
@@ -254,10 +202,9 @@ def _run_worker_loop_tick(
     *,
     loop_ctx: WorkerLoopContext,
     maintenance_next_at: float,
-    low_priority_gate: scheduler.LowPriorityAiSlotGate | None,
     execs: SourceTickExecutors,
     state: SourceTickState,
-) -> tuple[bool, float, scheduler.LowPriorityAiSlotGate | None, float]:
+) -> tuple[bool, float, float]:
     if loop_ctx.worker_active_hours is not None:
         sleep_until_active(
             loop_ctx.worker_active_hours, verbose=loop_ctx.settings.verbose
@@ -274,25 +221,18 @@ def _run_worker_loop_tick(
         now=float(now),
         worker_interval_seconds=float(loop_ctx.worker_interval_seconds),
     )
-    low_priority_gate = _ensure_low_priority_gate(
-        low_priority_gate=low_priority_gate,
-        inflight_futures=state.inflight_futures,
-        ai_cap=int(loop_ctx.ai_cap),
-    )
     any_inflight = _run_sources_once(
         loop_ctx=loop_ctx,
         worker_interval_seconds=float(loop_ctx.worker_interval_seconds),
         maintenance_next_at=float(maintenance_next_at),
         now=float(now),
         do_maintenance=bool(do_maintenance),
-        low_priority_gate=low_priority_gate,
         execs=execs,
         state=state,
     )
     return (
         bool(any_inflight),
         float(maintenance_next_at),
-        low_priority_gate,
         float(next_maintenance_in),
     )
 
@@ -307,23 +247,18 @@ def _run_worker_loop_forever(
         inflight_owner_by_future={},
     )
     maintenance_next_at = 0.0
-    low_priority_gate: scheduler.LowPriorityAiSlotGate | None = None
     with _open_executors(
         ai_cap=int(loop_ctx.ai_cap),
         source_count=len(loop_ctx.sources),
     ) as execs:
         while True:
-            (
-                any_inflight,
-                maintenance_next_at,
-                low_priority_gate,
-                next_maintenance_in,
-            ) = _run_worker_loop_tick(
-                loop_ctx=loop_ctx,
-                maintenance_next_at=float(maintenance_next_at),
-                low_priority_gate=low_priority_gate,
-                execs=execs,
-                state=state,
+            any_inflight, maintenance_next_at, next_maintenance_in = (
+                _run_worker_loop_tick(
+                    loop_ctx=loop_ctx,
+                    maintenance_next_at=float(maintenance_next_at),
+                    execs=execs,
+                    state=state,
+                )
             )
             _wait_after_tick(
                 any_inflight=bool(any_inflight),
@@ -361,7 +296,6 @@ def run_worker_forever(
         redis_client=redis_client,
         verbose=settings.verbose,
     )
-    alias_ai_runtime_config = _build_alias_ai_runtime_config(config=config)
     loop_ctx = WorkerLoopContext(
         args=args,
         sources=sources,
@@ -376,7 +310,6 @@ def run_worker_forever(
         worker_active_hours=worker_active_hours,
         worker_interval_seconds=float(worker_interval_seconds),
         due_ai_cached_by_source=due_ai_cached_by_source,
-        alias_ai_runtime_config=alias_ai_runtime_config,
     )
     _run_worker_loop_forever(
         loop_ctx=loop_ctx,

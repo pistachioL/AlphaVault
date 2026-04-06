@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import inspect
 from typing import Any, cast
 
 import libsql
@@ -8,9 +9,8 @@ import pytest
 
 from alphavault.db import turso_queue
 from alphavault.db.sql.turso_queue import (
-    INSERT_ASSERTION_OUTBOX,
-    RECOVER_DONE_WITHOUT_PROCESSED_AT,
-    RECOVER_STUCK_AI_TASKS,
+    INSERT_ASSERTION_ENTITY,
+    INSERT_ASSERTION_MENTION,
     UPSERT_PENDING_POST,
 )
 from alphavault.db.turso_db import (
@@ -18,6 +18,7 @@ from alphavault.db.turso_db import (
     is_turso_stream_not_found_error,
     turso_savepoint,
 )
+from alphavault.domains.entity_match.resolve import EntityMatchResult
 from alphavault.worker.ingest import _build_raw_text
 
 
@@ -115,88 +116,6 @@ def test_turso_savepoint_commit_and_rollback() -> None:
         conn.close()
 
 
-def test_named_params_support_escaped_colon_literal() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            "CREATE TABLE posts(post_uid TEXT PRIMARY KEY, ai_status TEXT, ai_running_at INTEGER, ai_last_error TEXT, ai_next_retry_at INTEGER)"
-        )
-        conn.execute(
-            "INSERT INTO posts(post_uid, ai_status, ai_running_at) VALUES (:post_uid, :ai_status, :ai_running_at)",
-            {"post_uid": "p1", "ai_status": "running", "ai_running_at": 10},
-        )
-
-        res = conn.execute(
-            RECOVER_STUCK_AI_TASKS,
-            {"threshold": 10, "next_retry_at": 999},
-        )
-        assert int(res.rowcount or 0) == 1
-
-        row = (
-            conn.execute(
-                "SELECT ai_status, ai_last_error, ai_next_retry_at FROM posts WHERE post_uid = :post_uid",
-                {"post_uid": "p1"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert row == {
-            "ai_status": "error",
-            "ai_last_error": "ai:recovered_after_restart",
-            "ai_next_retry_at": 999,
-        }
-    finally:
-        conn.close()
-
-
-def test_named_params_support_escaped_colon_literal_in_recover_done_without_processed_at() -> (
-    None
-):
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute(
-            "CREATE TABLE posts(post_uid TEXT PRIMARY KEY, ai_status TEXT, processed_at TEXT, ai_last_error TEXT, ai_running_at INTEGER, ai_next_retry_at INTEGER)"
-        )
-        conn.execute(
-            "INSERT INTO posts(post_uid, ai_status, processed_at) VALUES (:post_uid, :ai_status, :processed_at)",
-            {"post_uid": "p1", "ai_status": "done", "processed_at": ""},
-        )
-        conn.execute(
-            "INSERT INTO posts(post_uid, ai_status, processed_at) VALUES (:post_uid, :ai_status, :processed_at)",
-            {"post_uid": "p2", "ai_status": "done", "processed_at": "2025-01-01"},
-        )
-
-        # NOTE: the worker uses an empty dict params object here, which previously
-        # triggered sqlparams interpreting ":recovered_done_without_processed_at"
-        # inside the SQL string literal as a named param.
-        res = conn.execute(RECOVER_DONE_WITHOUT_PROCESSED_AT, {})
-        assert int(res.rowcount or 0) == 1
-
-        row1 = (
-            conn.execute(
-                "SELECT ai_status, ai_last_error FROM posts WHERE post_uid = :post_uid",
-                {"post_uid": "p1"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        row2 = (
-            conn.execute(
-                "SELECT ai_status, ai_last_error FROM posts WHERE post_uid = :post_uid",
-                {"post_uid": "p2"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert row1 == {
-            "ai_status": "pending",
-            "ai_last_error": "ai:recovered_done_without_processed_at",
-        }
-        assert row2 == {"ai_status": "done", "ai_last_error": None}
-    finally:
-        conn.close()
-
-
 def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
@@ -210,19 +129,12 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 created_at TEXT NOT NULL,
                 url TEXT NOT NULL,
                 raw_text TEXT NOT NULL,
-                display_md TEXT,
                 final_status TEXT NOT NULL,
                 invest_score REAL,
                 processed_at TEXT,
                 model TEXT,
                 prompt_version TEXT,
                 archived_at TEXT,
-                ai_status TEXT NOT NULL DEFAULT 'done',
-                ai_retry_count INTEGER NOT NULL DEFAULT 0,
-                ai_next_retry_at INTEGER,
-                ai_running_at INTEGER,
-                ai_last_error TEXT,
-                ai_result_json TEXT,
                 ingested_at INTEGER NOT NULL DEFAULT 0
             )
             """
@@ -231,16 +143,12 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
             """
             INSERT INTO posts(
                 post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-                display_md, final_status, invest_score, processed_at, model,
-                prompt_version, archived_at, ai_status, ai_retry_count,
-                ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
-                ingested_at
+                final_status, invest_score, processed_at, model, prompt_version,
+                archived_at, ingested_at
             ) VALUES (
                 :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
-                :display_md, :final_status, :invest_score, :processed_at, :model,
-                :prompt_version, :archived_at, :ai_status, :ai_retry_count,
-                :ai_next_retry_at, :ai_running_at, :ai_last_error, :ai_result_json,
-                :ingested_at
+                :final_status, :invest_score, :processed_at, :model, :prompt_version,
+                :archived_at, :ingested_at
             )
             """,
             {
@@ -251,19 +159,12 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 "created_at": "2025-01-01 10:00:00",
                 "url": "https://xueqiu.com/123",
                 "raw_text": "old text",
-                "display_md": "old md",
                 "final_status": "relevant",
                 "invest_score": 0.8,
                 "processed_at": "2025-01-01 10:05:00",
                 "model": "gpt",
                 "prompt_version": "v1",
                 "archived_at": "2025-01-01 10:06:00",
-                "ai_status": "done",
-                "ai_retry_count": 0,
-                "ai_next_retry_at": None,
-                "ai_running_at": None,
-                "ai_last_error": None,
-                "ai_result_json": "{}",
                 "ingested_at": 100,
             },
         )
@@ -278,10 +179,8 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
                 "created_at": "2025-01-02 10:00:00+08:00",
                 "url": "https://xueqiu.com/123?updated=1",
                 "raw_text": "new text",
-                "display_md": "new md",
                 "final_status": "irrelevant",
                 "archived_at": "2025-01-02 10:06:00+08:00",
-                "ai_status": "pending",
                 "ingested_at": 200,
             },
         )
@@ -323,19 +222,12 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 created_at TEXT NOT NULL,
                 url TEXT NOT NULL,
                 raw_text TEXT NOT NULL,
-                display_md TEXT,
                 final_status TEXT NOT NULL,
                 invest_score REAL,
                 processed_at TEXT,
                 model TEXT,
                 prompt_version TEXT,
                 archived_at TEXT,
-                ai_status TEXT NOT NULL DEFAULT 'done',
-                ai_retry_count INTEGER NOT NULL DEFAULT 0,
-                ai_next_retry_at INTEGER,
-                ai_running_at INTEGER,
-                ai_last_error TEXT,
-                ai_result_json TEXT,
                 ingested_at INTEGER NOT NULL DEFAULT 0
             )
             """
@@ -344,16 +236,12 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
             """
             INSERT INTO posts(
                 post_uid, platform, platform_post_id, author, created_at, url, raw_text,
-                display_md, final_status, invest_score, processed_at, model,
-                prompt_version, archived_at, ai_status, ai_retry_count,
-                ai_next_retry_at, ai_running_at, ai_last_error, ai_result_json,
-                ingested_at
+                final_status, invest_score, processed_at, model, prompt_version,
+                archived_at, ingested_at
             ) VALUES (
                 :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
-                :display_md, :final_status, :invest_score, :processed_at, :model,
-                :prompt_version, :archived_at, :ai_status, :ai_retry_count,
-                :ai_next_retry_at, :ai_running_at, :ai_last_error, :ai_result_json,
-                :ingested_at
+                :final_status, :invest_score, :processed_at, :model, :prompt_version,
+                :archived_at, :ingested_at
             )
             """,
             {
@@ -364,19 +252,12 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 "created_at": "2025-01-01 10:00:00",
                 "url": "https://weibo.com/123",
                 "raw_text": "old text",
-                "display_md": "old md",
                 "final_status": "relevant",
                 "invest_score": 0.8,
                 "processed_at": "2025-01-01 10:05:00",
                 "model": "gpt",
                 "prompt_version": "v1",
                 "archived_at": "2025-01-01 10:06:00",
-                "ai_status": "done",
-                "ai_retry_count": 0,
-                "ai_next_retry_at": None,
-                "ai_running_at": None,
-                "ai_last_error": None,
-                "ai_result_json": "{}",
                 "ingested_at": 100,
             },
         )
@@ -391,10 +272,8 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
                 "created_at": "2025-01-02 10:00:00",
                 "url": "https://weibo.com/123?updated=1",
                 "raw_text": "new text",
-                "display_md": "new md",
                 "final_status": "irrelevant",
                 "archived_at": "2025-01-02 10:06:00",
-                "ai_status": "pending",
                 "ingested_at": 200,
             },
         )
@@ -504,7 +383,6 @@ def test_upsert_pending_post_wraps_nonfatal_base_exception(monkeypatch) -> None:
             created_at="2026-03-28 10:00:00",
             url="https://example.com/1",
             raw_text="text",
-            display_md="text",
             archived_at="2026-03-28 10:01:00",
             ingested_at=1,
         )
@@ -544,14 +422,23 @@ def test_upsert_pending_post_reraises_fatal_base_exception(monkeypatch) -> None:
             created_at="2026-03-28 10:00:00",
             url="https://example.com/1",
             raw_text="text",
-            display_md="text",
             archived_at="2026-03-28 10:01:00",
             ingested_at=1,
         )
     assert engine.dispose_calls == 0
 
 
-def test_write_assertions_and_mark_done_writes_outbox_event(monkeypatch) -> None:
+def test_write_assertions_and_mark_done_has_no_outbox_params() -> None:
+    params = inspect.signature(turso_queue.write_assertions_and_mark_done).parameters
+
+    assert "outbox_source" not in params
+    assert "outbox_author" not in params
+    assert "outbox_event_json" not in params
+
+
+def test_write_assertions_and_mark_done_writes_assertion_mentions(
+    monkeypatch,
+) -> None:
     calls: list[tuple[str, object]] = []
 
     class _FakeConn:
@@ -576,40 +463,63 @@ def test_write_assertions_and_mark_done_writes_outbox_event(monkeypatch) -> None
 
     turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
-        post_uid="weibo:1",
+        post_uid="weibo:2",
         final_status="relevant",
         invest_score=0.9,
         processed_at="2026-03-28 12:00:00",
         model="m",
-        prompt_version="p",
+        prompt_version="topic-prompt-v4",
         archived_at="2026-03-28 12:00:01",
-        ai_result_json=None,
-        assertions=[],
-        outbox_source="weibo",
-        outbox_author="作者A",
-        outbox_event_json='{"event_type":"ai_done","post_uid":"weibo:1"}',
+        assertions=[
+            {
+                "topic_key": "stock:600519",
+                "speaker": "作者A",
+                "relation_to_topic": "new",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "他说开始买了。",
+                "evidence": "我今天开始买600519了",
+                "evidence_refs_json": "[]",
+                "confidence": 0.95,
+                "stock_codes_json": '["600519"]',
+                "stock_names_json": '["茅台"]',
+                "industries_json": "[]",
+                "commodities_json": "[]",
+                "indices_json": "[]",
+                "assertion_mentions": [
+                    {
+                        "mention_text": "600519",
+                        "mention_type": "stock_code",
+                        "evidence": "我今天开始买600519了",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
     )
 
-    outbox_calls = [
-        item for item in calls if item[0].strip() == INSERT_ASSERTION_OUTBOX.strip()
+    mention_calls = [
+        item for item in calls if item[0].strip() == INSERT_ASSERTION_MENTION.strip()
     ]
-    assert len(outbox_calls) == 1
-    outbox_params = cast(dict[str, object], outbox_calls[0][1])
-    assert outbox_params["source"] == "weibo"
-    assert outbox_params["post_uid"] == "weibo:1"
-    assert outbox_params["author"] == "作者A"
+    assert len(mention_calls) == 1
+    mention_params = cast(list[dict[str, object]], mention_calls[0][1])
+    assert mention_params == [
+        {
+            "post_uid": "weibo:2",
+            "assertion_idx": 1,
+            "mention_idx": 1,
+            "mention_text": "600519",
+            "mention_type": "stock_code",
+            "evidence": "我今天开始买600519了",
+            "confidence": 0.95,
+        }
+    ]
 
 
-def test_load_assertion_outbox_events_maps_rows(monkeypatch) -> None:
-    class _Rows:
-        def __init__(self, rows):  # type: ignore[no-untyped-def]
-            self._rows = rows
-
-        def mappings(self):  # type: ignore[no-untyped-def]
-            return self
-
-        def fetchall(self):  # type: ignore[no-untyped-def]
-            return list(self._rows)
+def test_write_assertions_and_mark_done_writes_assertion_entities(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
 
     class _FakeConn:
         def __enter__(self):  # type: ignore[no-untyped-def]
@@ -618,28 +528,246 @@ def test_load_assertion_outbox_events_maps_rows(monkeypatch) -> None:
         def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
             return False
 
-        def execute(self, _query, _params=None):  # type: ignore[no-untyped-def]
-            return _Rows(
-                [
-                    {
-                        "id": 7,
-                        "source": "weibo",
-                        "post_uid": "weibo:7",
-                        "author": "作者A",
-                        "event_json": '{"event_type":"ai_done"}',
-                        "created_at": "2026-03-28 12:00:00",
-                    }
-                ]
-            )
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            calls.append((str(query), params))
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
 
     monkeypatch.setattr(
         turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
     )
-    events = turso_queue.load_assertion_outbox_events(
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+
+    turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
-        after_id=0,
-        limit=10,
+        post_uid="weibo:3",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-03-28 12:00:01",
+        assertions=[
+            {
+                "topic_key": "stock:600519",
+                "speaker": "作者A",
+                "relation_to_topic": "new",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "他说开始买了。",
+                "evidence": "我今天开始买600519了",
+                "evidence_refs_json": "[]",
+                "confidence": 0.95,
+                "stock_codes_json": '["600519"]',
+                "stock_names_json": '["茅台"]',
+                "industries_json": "[]",
+                "commodities_json": "[]",
+                "indices_json": "[]",
+                "assertion_entities": [
+                    {
+                        "entity_key": "stock:600519.SH",
+                        "entity_type": "stock",
+                        "source_mention_text": "600519",
+                        "source_mention_type": "stock_code",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
     )
-    assert len(events) == 1
-    assert events[0].id == 7
-    assert events[0].post_uid == "weibo:7"
+
+    entity_calls = [
+        item for item in calls if item[0].strip() == INSERT_ASSERTION_ENTITY.strip()
+    ]
+    assert len(entity_calls) == 1
+    entity_params = cast(list[dict[str, object]], entity_calls[0][1])
+    assert entity_params == [
+        {
+            "post_uid": "weibo:3",
+            "assertion_idx": 1,
+            "entity_idx": 1,
+            "entity_key": "stock:600519.SH",
+            "entity_type": "stock",
+            "source_mention_text": "600519",
+            "source_mention_type": "stock_code",
+            "confidence": 0.95,
+        }
+    ]
+
+
+def test_write_assertions_and_mark_done_persists_entity_match_followups_before_done(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    followup_calls: list[EntityMatchResult] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            del params
+            calls.append(str(query).strip())
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    def _fake_persist(_conn, result):  # type: ignore[no-untyped-def]
+        followup_calls.append(result)
+        calls.append("__persist_entity_match_followups__")
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(
+        turso_queue,
+        "persist_entity_match_followups",
+        _fake_persist,
+        raising=False,
+    )
+
+    turso_queue.write_assertions_and_mark_done(
+        cast(Any, object()),
+        post_uid="weibo:4",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-03-28 12:00:01",
+        assertions=[
+            {
+                "topic_key": "stock:600519",
+                "speaker": "作者A",
+                "relation_to_topic": "new",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "他说开始买了。",
+                "evidence": "我今天开始买600519了",
+                "evidence_refs_json": "[]",
+                "confidence": 0.95,
+                "stock_codes_json": '["600519"]',
+                "stock_names_json": '["茅台"]',
+                "industries_json": "[]",
+                "commodities_json": "[]",
+                "indices_json": "[]",
+                "assertion_entities": [
+                    {
+                        "entity_key": "stock:600519.SH",
+                        "entity_type": "stock",
+                        "source_mention_text": "600519",
+                        "source_mention_type": "stock_code",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ],
+        entity_match_results=[
+            EntityMatchResult(
+                entities=[],
+                relation_candidates=[
+                    {
+                        "candidate_id": "stock_alias|stock:600519.SH|stock:茅台|alias_of",
+                        "relation_type": "stock_alias",
+                        "left_key": "stock:600519.SH",
+                        "right_key": "stock:茅台",
+                        "relation_label": "alias_of",
+                        "suggestion_reason": "同条观点里代码和简称一起出现",
+                        "evidence_summary": "同条观点里代码和简称一起出现",
+                        "score": 0.9,
+                        "ai_status": "skipped",
+                    }
+                ],
+                alias_task_keys=[],
+            )
+        ],
+    )
+
+    assert len(followup_calls) == 1
+    assert calls.index(INSERT_ASSERTION_ENTITY.strip()) < calls.index(
+        "__persist_entity_match_followups__"
+    )
+    assert calls.index("__persist_entity_match_followups__") < calls.index(
+        turso_queue.UPDATE_POST_DONE.strip()
+    )
+
+
+def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            del params
+            calls.append(str(query).strip())
+            return self
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(
+        turso_queue,
+        "persist_entity_match_followups",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        turso_queue.write_assertions_and_mark_done(
+            cast(Any, object()),
+            post_uid="weibo:5",
+            final_status="relevant",
+            invest_score=0.9,
+            processed_at="2026-03-28 12:00:00",
+            model="m",
+            prompt_version="topic-prompt-v4",
+            archived_at="2026-03-28 12:00:01",
+            assertions=[
+                {
+                    "topic_key": "stock:600519",
+                    "speaker": "作者A",
+                    "relation_to_topic": "new",
+                    "action": "trade.buy",
+                    "action_strength": 2,
+                    "summary": "他说开始买了。",
+                    "evidence": "我今天开始买600519了",
+                    "evidence_refs_json": "[]",
+                    "confidence": 0.95,
+                    "stock_codes_json": '["600519"]',
+                    "stock_names_json": '["茅台"]',
+                    "industries_json": "[]",
+                    "commodities_json": "[]",
+                    "indices_json": "[]",
+                }
+            ],
+            entity_match_results=[
+                EntityMatchResult(
+                    entities=[],
+                    relation_candidates=[],
+                    alias_task_keys=["stock:茅台"],
+                )
+            ],
+        )
+
+    assert turso_queue.UPDATE_POST_DONE.strip() not in calls

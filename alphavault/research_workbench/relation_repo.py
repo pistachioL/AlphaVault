@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from alphavault.db.sql.research_workbench import (
-    upsert_research_object,
-    upsert_research_relation,
-)
+from alphavault.db.sql.research_workbench import upsert_research_relation
 from alphavault.db.turso_db import TursoConnection, TursoEngine
 from alphavault.db.turso_db import turso_savepoint
+from alphavault.infra.entity_match_redis import (
+    sync_stock_alias_shadow_dict_best_effort,
+)
 from alphavault.timeutil import now_cst_str
 from alphavault.domains.relation.ids import make_relation_id
 
 from .schema import (
-    RESEARCH_OBJECTS_TABLE,
     RESEARCH_RELATIONS_TABLE,
     handle_turso_error,
     use_conn,
@@ -25,38 +24,6 @@ def _now_str() -> str:
     return now_cst_str()
 
 
-def _display_name_from_key(object_key: str) -> str:
-    value = str(object_key or "").strip()
-    if ":" not in value:
-        return value
-    return value.split(":", 1)[1].strip()
-
-
-def _object_type_from_key(object_key: str) -> str:
-    value = str(object_key or "").strip()
-    if value.startswith("stock:"):
-        return "stock"
-    if value.startswith("cluster:"):
-        return "sector"
-    return "unknown"
-
-
-def _upsert_object(conn: TursoConnection, object_key: str) -> None:
-    key = str(object_key or "").strip()
-    if not key:
-        return
-    now = _now_str()
-    conn.execute(
-        upsert_research_object(RESEARCH_OBJECTS_TABLE),
-        {
-            "object_key": key,
-            "object_type": _object_type_from_key(key),
-            "display_name": _display_name_from_key(key),
-            "now": now,
-        },
-    )
-
-
 def record_relation(
     conn: TursoConnection,
     *,
@@ -67,8 +34,6 @@ def record_relation(
     source: str,
 ) -> None:
     now = _now_str()
-    _upsert_object(conn, left_key)
-    _upsert_object(conn, right_key)
     conn.execute(
         upsert_research_relation(RESEARCH_RELATIONS_TABLE),
         {
@@ -130,6 +95,13 @@ def record_stock_alias_relation(
                 )
     except BaseException as err:
         handle_turso_error(engine_or_conn, err)
+    try:
+        sync_stock_alias_shadow_dict_best_effort(
+            stock_key=stock_key,
+            alias_key=alias_key,
+        )
+    except Exception:
+        pass
 
 
 __all__ = [

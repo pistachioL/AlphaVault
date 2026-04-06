@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import libsql
 from typing import cast
 
+import pytest
+
+from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.turso_db import TursoConnection
+from alphavault.research_stock_cache import (
+    dirty_reason_mask_for,
+)
 from alphavault.worker import research_stock_cache as stock_hot_cache
 
 
@@ -14,11 +21,46 @@ class _FakeConn:
         return False
 
 
-def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
-    removed: list[str] = []
+def test_list_missing_hot_cache_stock_keys_reads_assertion_entities() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        apply_cloud_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO assertions(
+                post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence
+            )
+            VALUES (
+                'weibo:1', 1, 'stock:紫金', 'trade.buy', 1, '小仓试错', '原文', 0.9
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO assertion_entities(
+                post_uid, assertion_idx, entity_idx, entity_key, entity_type, confidence
+            )
+            VALUES ('weibo:1', 1, 1, 'stock:601899.SH', 'stock', 0.9)
+            """
+        )
 
-    def _remove_stock_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
-        removed.extend(stock_keys)
+        keys = stock_hot_cache._list_missing_hot_cache_stock_keys(conn, limit=10)
+
+        assert keys == ["stock:601899.SH"]
+    finally:
+        conn.close()
+
+
+def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
+    removed: list[tuple[list[str], str]] = []
+
+    def _remove_entity_page_dirty_keys(
+        _conn: object,
+        *,
+        stock_keys: list[str],
+        claim_until: str = "",
+    ) -> int:
+        removed.append((list(stock_keys), claim_until))
         return len(stock_keys)
 
     monkeypatch.setattr(
@@ -33,22 +75,13 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "ensure_research_stock_cache_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_workbench_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_dirty_entries",
+        "claim_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [
             {
                 "stock_key": "stock:601899.SH",
-                "reason": "ai_done",
-                "updated_at": "2026-03-27 10:00:00",
+                "reason_mask": dirty_reason_mask_for("ai_done"),
+                "claim_until": "2026-04-04 10:10:00+08:00",
+                "attempt_count": 0,
             }
         ],
     )
@@ -59,17 +92,12 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "refresh_stock_extras_snapshot_for_key",
-        lambda *_args, **_kwargs: True,
+        "remove_entity_page_dirty_keys",
+        _remove_entity_page_dirty_keys,
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "remove_stock_dirty_keys",
-        _remove_stock_dirty_keys,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_dirty_keys",
+        "list_entity_page_dirty_keys",
         lambda *_args, **_kwargs: [],
     )
 
@@ -81,102 +109,13 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
 
     assert int(stats.get("processed", 0)) == 1
     assert bool(stats.get("has_more", True)) is False
-    assert removed == ["stock:601899.SH"]
-
-
-def test_refresh_stock_extras_snapshot_respects_min_interval(monkeypatch) -> None:
-    saved: list[str] = []
-
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "load_stock_extras_snapshot",
-        lambda *_args, **_kwargs: {"updated_at": "2099-01-01 00:00:00"},
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_pending_candidates_for_left_key",
-        lambda *_args, **_kwargs: [{"candidate_id": "cand-1"}],
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_backfill_posts",
-        lambda *_args, **_kwargs: [{"post_uid": "weibo:1"}],
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "save_stock_extras_snapshot",
-        lambda _conn, *, stock_key, **_kwargs: saved.append(stock_key),
-    )
-
-    skipped = stock_hot_cache.refresh_stock_extras_snapshot_for_key(
-        cast(TursoConnection, _FakeConn()),
-        stock_key="stock:601899.SH",
-        min_refresh_seconds=900,
-        force=False,
-    )
-    forced = stock_hot_cache.refresh_stock_extras_snapshot_for_key(
-        cast(TursoConnection, _FakeConn()),
-        stock_key="stock:601899.SH",
-        min_refresh_seconds=900,
-        force=True,
-    )
-
-    assert skipped is False
-    assert forced is True
-    assert saved == ["stock:601899.SH"]
-
-
-def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> None:
-    saved_args: list[tuple[str, list[dict[str, object]], list[dict[str, object]]]] = []
-
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "load_stock_extras_snapshot",
-        lambda *_args, **_kwargs: {"updated_at": ""},
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_pending_candidates_for_left_key",
-        lambda *_args, **_kwargs: [{"candidate_id": "cand-2"}],
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_backfill_posts",
-        lambda *_args, **_kwargs: [{"post_uid": "weibo:2"}],
-    )
-
-    def _capture_save(
-        _conn,
-        *,
-        stock_key: str,
-        pending_candidates: list[dict[str, object]],
-        backfill_posts: list[dict[str, object]],
-    ) -> None:
-        saved_args.append((stock_key, pending_candidates, backfill_posts))
-
-    monkeypatch.setattr(stock_hot_cache, "save_stock_extras_snapshot", _capture_save)
-
-    refreshed = stock_hot_cache.refresh_stock_extras_snapshot_for_key(
-        cast(TursoConnection, _FakeConn()),
-        stock_key="stock:601899.SH",
-        min_refresh_seconds=900,
-        force=False,
-    )
-
-    assert refreshed is True
-    assert saved_args == [
-        (
-            "stock:601899.SH",
-            [{"candidate_id": "cand-2"}],
-            [{"post_uid": "weibo:2"}],
-        )
-    ]
+    assert removed == [(["stock:601899.SH"], "2026-04-04 10:10:00+08:00")]
 
 
 def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
     monkeypatch,
 ) -> None:
-    removed: list[str] = []
+    removed: list[tuple[list[str], str]] = []
 
     monkeypatch.setattr(
         stock_hot_cache,
@@ -190,17 +129,7 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "ensure_research_stock_cache_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_workbench_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_dirty_entries",
+        "claim_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(
@@ -213,24 +142,24 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
         "refresh_stock_hot_for_key",
         lambda _conn, **kwargs: str(kwargs.get("stock_key") or ""),
     )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "refresh_stock_extras_snapshot_for_key",
-        lambda *_args, **_kwargs: True,
-    )
 
-    def _remove_stock_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
-        removed.extend(stock_keys)
+    def _remove_entity_page_dirty_keys(
+        _conn: object,
+        *,
+        stock_keys: list[str],
+        claim_until: str = "",
+    ) -> int:
+        removed.append((list(stock_keys), claim_until))
         return len(stock_keys)
 
     monkeypatch.setattr(
         stock_hot_cache,
-        "remove_stock_dirty_keys",
-        _remove_stock_dirty_keys,
+        "remove_entity_page_dirty_keys",
+        _remove_entity_page_dirty_keys,
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_keys",
+        "list_entity_page_dirty_keys",
         lambda *_args, **_kwargs: [],
     )
 
@@ -242,11 +171,12 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
 
     assert int(stats.get("processed", 0)) == 1
     assert int(stats.get("written", 0)) == 1
-    assert removed == ["stock:601899.SH"]
+    assert removed == [(["stock:601899.SH"], "")]
 
 
 def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> None:
-    removed: list[str] = []
+    removed: list[tuple[list[str], str]] = []
+    released: list[tuple[list[str], str]] = []
 
     monkeypatch.setattr(
         stock_hot_cache,
@@ -260,20 +190,20 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "ensure_research_stock_cache_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "ensure_research_workbench_schema",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_dirty_entries",
+        "claim_entity_page_dirty_entries",
         lambda *_args, **_kwargs: [
-            {"stock_key": "stock:1", "reason": "ai_done", "updated_at": "2026-03-27"},
-            {"stock_key": "stock:2", "reason": "ai_done", "updated_at": "2026-03-27"},
+            {
+                "stock_key": "stock:1",
+                "reason_mask": dirty_reason_mask_for("ai_done"),
+                "claim_until": "2026-04-04 10:10:00+08:00",
+                "attempt_count": 0,
+            },
+            {
+                "stock_key": "stock:2",
+                "reason_mask": dirty_reason_mask_for("ai_done"),
+                "claim_until": "2026-04-04 10:10:00+08:00",
+                "attempt_count": 0,
+            },
         ],
     )
     monkeypatch.setattr(
@@ -281,24 +211,39 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
         "refresh_stock_hot_for_key",
         lambda _conn, **kwargs: str(kwargs.get("stock_key") or ""),
     )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "refresh_stock_extras_snapshot_for_key",
-        lambda *_args, **_kwargs: False,
-    )
 
-    def _remove_stock_dirty_keys(_conn: object, *, stock_keys: list[str]) -> int:
-        removed.extend(stock_keys)
+    def _remove_entity_page_dirty_keys(
+        _conn: object,
+        *,
+        stock_keys: list[str],
+        claim_until: str = "",
+    ) -> int:
+        removed.append((list(stock_keys), claim_until))
         return len(stock_keys)
 
     monkeypatch.setattr(
         stock_hot_cache,
-        "remove_stock_dirty_keys",
-        _remove_stock_dirty_keys,
+        "remove_entity_page_dirty_keys",
+        _remove_entity_page_dirty_keys,
+    )
+
+    def _release_entity_page_dirty_claims(
+        _conn: object,
+        *,
+        stock_keys: list[str],
+        claim_until: str,
+    ) -> int:
+        released.append((list(stock_keys), claim_until))
+        return len(stock_keys)
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "release_entity_page_dirty_claims",
+        _release_entity_page_dirty_claims,
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "list_stock_dirty_keys",
+        "list_entity_page_dirty_keys",
         lambda *_args, **_kwargs: ["stock:2"],
     )
 
@@ -311,4 +256,132 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
 
     assert int(stats.get("processed", 0)) == 1
     assert bool(stats.get("has_more", False)) is True
-    assert removed == ["stock:1"]
+    assert removed == [(["stock:1"], "2026-04-04 10:10:00+08:00")]
+    assert released == [(["stock:2"], "2026-04-04 10:10:00+08:00")]
+
+
+def test_sync_stock_hot_cache_handles_sector_keys(monkeypatch) -> None:
+    removed: list[tuple[list[str], str]] = []
+    hot_calls: list[str] = []
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "try_acquire_worker_job_lock",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "release_worker_job_lock",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "claim_entity_page_dirty_entries",
+        lambda *_args, **_kwargs: [
+            {
+                "stock_key": "cluster:white_liquor",
+                "reason_mask": dirty_reason_mask_for("ai_done"),
+                "claim_until": "2026-04-04 10:10:00+08:00",
+                "attempt_count": 0,
+            }
+        ],
+    )
+
+    def _refresh_stock_hot_for_key(_conn: object, **kwargs: object) -> str:
+        stock_key = str(kwargs.get("stock_key") or "")
+        hot_calls.append(stock_key)
+        return stock_key
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "refresh_stock_hot_for_key",
+        _refresh_stock_hot_for_key,
+    )
+
+    def _remove_entity_page_dirty_keys(
+        _conn: object,
+        *,
+        stock_keys: list[str],
+        claim_until: str = "",
+    ) -> int:
+        removed.append((list(stock_keys), claim_until))
+        return len(stock_keys)
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "remove_entity_page_dirty_keys",
+        _remove_entity_page_dirty_keys,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "list_entity_page_dirty_keys",
+        lambda *_args, **_kwargs: [],
+    )
+
+    stats = stock_hot_cache.sync_stock_hot_cache(
+        cast(TursoConnection, _FakeConn()),
+        max_stocks_per_run=4,
+        dirty_limit=16,
+    )
+
+    assert int(stats.get("processed", 0)) == 1
+    assert hot_calls == ["cluster:white_liquor"]
+    assert removed == [(["cluster:white_liquor"], "2026-04-04 10:10:00+08:00")]
+
+
+def test_sync_stock_hot_cache_marks_claim_failed_when_refresh_raises(
+    monkeypatch,
+) -> None:
+    failed: list[tuple[list[str], str]] = []
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "try_acquire_worker_job_lock",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "release_worker_job_lock",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "claim_entity_page_dirty_entries",
+        lambda *_args, **_kwargs: [
+            {
+                "stock_key": "stock:601899.SH",
+                "reason_mask": dirty_reason_mask_for("ai_done"),
+                "claim_until": "2026-04-04 10:10:00+08:00",
+                "attempt_count": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "refresh_stock_hot_for_key",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    def _fail_entity_page_dirty_claims(
+        _conn: object,
+        *,
+        stock_keys: list[str],
+        claim_until: str,
+    ) -> int:
+        failed.append((list(stock_keys), claim_until))
+        return len(stock_keys)
+
+    monkeypatch.setattr(
+        stock_hot_cache,
+        "fail_entity_page_dirty_claims",
+        _fail_entity_page_dirty_claims,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        stock_hot_cache.sync_stock_hot_cache(
+            cast(TursoConnection, _FakeConn()),
+            max_stocks_per_run=4,
+            dirty_limit=16,
+        )
+
+    assert failed == [(["stock:601899.SH"], "2026-04-04 10:10:00+08:00")]

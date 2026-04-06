@@ -2,29 +2,20 @@ from __future__ import annotations
 
 import libsql
 
+from alphavault.db.cloud_schema import (
+    apply_cloud_schema as ensure_research_workbench_schema,
+)
 from alphavault.db.turso_db import TursoConnection
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
-    ensure_research_workbench_schema,
+    ALIAS_TASK_STATUS_PENDING,
+    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
     get_alias_resolve_tasks_map,
     increment_alias_resolve_attempts,
     list_manual_alias_resolve_tasks,
+    list_pending_alias_resolve_tasks,
     set_alias_resolve_task_status,
 )
-from alphavault.worker.local_cache import (
-    ENV_LOCAL_CACHE_DB_PATH,
-    apply_outbox_event_payload,
-    open_local_cache,
-    resolve_local_cache_db_path,
-)
-
-
-def test_default_max_retries_is_6(monkeypatch) -> None:
-    monkeypatch.delenv("WORKER_STOCK_ALIAS_MAX_RETRIES", raising=False)
-
-    from alphavault.worker.stock_alias_sync import _resolve_alias_max_retries
-
-    assert _resolve_alias_max_retries() == 6
 
 
 def test_ensure_schema_creates_alias_resolve_tasks_table() -> None:
@@ -32,7 +23,11 @@ def test_ensure_schema_creates_alias_resolve_tasks_table() -> None:
     try:
         ensure_research_workbench_schema(conn)
         conn.execute(
-            "SELECT alias_key, status, attempt_count FROM research_alias_resolve_tasks"
+            f"""
+SELECT alias_key, status, attempt_count,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt
+FROM {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE}
+"""
         ).fetchall()
     finally:
         conn.close()
@@ -52,7 +47,13 @@ def test_increment_attempts_creates_row_and_increments() -> None:
         assert second == {"stock:紫金": 2}
 
         assert get_alias_resolve_tasks_map(conn, ["stock:紫金"]) == {
-            "stock:紫金": {"status": "pending", "attempt_count": 2}
+            "stock:紫金": {
+                "status": "pending",
+                "attempt_count": 2,
+                "sample_post_uid": "",
+                "sample_evidence": "",
+                "sample_raw_text_excerpt": "",
+            }
         }
     finally:
         conn.close()
@@ -75,49 +76,92 @@ def test_set_status_and_list_manual() -> None:
         conn.close()
 
 
-def test_worker_marks_manual_after_max_retries(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("WORKER_STOCK_ALIAS_MAX_RETRIES", "2")
-
-    from alphavault.worker.stock_alias_sync import sync_stock_alias_relations
-
+def test_set_status_keeps_first_sample_context() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
-        monkeypatch.setenv(ENV_LOCAL_CACHE_DB_PATH, str(tmp_path / "cache.sqlite3"))
-        db_path = resolve_local_cache_db_path(source_name="")
-        with open_local_cache(db_path=db_path) as cache_conn:
-            apply_outbox_event_payload(
-                cache_conn,
-                payload={
-                    "event_type": "ai_done",
-                    "post_uid": "p1",
-                    "author": "alice",
-                    "created_at": "2026-03-26 10:00:00",
-                    "final_status": "relevant",
-                    "assertions": [
-                        {
-                            "topic_key": "stock:紫金",
-                            "action": "trade.buy",
-                            "action_strength": 1,
-                            "confidence": 0.9,
-                            "stock_codes": [],
-                            "stock_names": ["紫金"],
-                        }
-                    ],
-                },
-            )
-
         ensure_research_workbench_schema(conn)
 
-        sync_stock_alias_relations(conn)
-        sync_stock_alias_relations(conn)
+        set_alias_resolve_task_status(
+            conn,
+            alias_key="stock:茅台",
+            status=ALIAS_TASK_STATUS_PENDING,
+            sample_post_uid="weibo:1",
+            sample_evidence="第一条证据",
+            sample_raw_text_excerpt="第一条原文",
+        )
+        set_alias_resolve_task_status(
+            conn,
+            alias_key="stock:茅台",
+            status=ALIAS_TASK_STATUS_PENDING,
+            sample_post_uid="weibo:2",
+            sample_evidence="第二条证据",
+            sample_raw_text_excerpt="第二条原文",
+        )
 
-        manual = list_manual_alias_resolve_tasks(conn)
-        assert manual
-        assert manual[0]["alias_key"] == "stock:紫金"
-        assert str(manual[0]["attempt_count"]) == "2"
-        assert manual[0]["status"] == ALIAS_TASK_STATUS_MANUAL
+        assert get_alias_resolve_tasks_map(conn, ["stock:茅台"]) == {
+            "stock:茅台": {
+                "status": "pending",
+                "attempt_count": 0,
+                "sample_post_uid": "weibo:1",
+                "sample_evidence": "第一条证据",
+                "sample_raw_text_excerpt": "第一条原文",
+            }
+        }
+    finally:
+        conn.close()
 
-        sync_stock_alias_relations(conn)
+
+def test_list_pending_alias_resolve_tasks_includes_sample_context() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+
+        set_alias_resolve_task_status(
+            conn,
+            alias_key="stock:长电",
+            status=ALIAS_TASK_STATUS_PENDING,
+            sample_post_uid="weibo:9",
+            sample_evidence="提到长电和封测",
+            sample_raw_text_excerpt="今天继续看好长电科技。",
+        )
+
+        pending = list_pending_alias_resolve_tasks(conn)
+        assert pending == [
+            {
+                "alias_key": "stock:长电",
+                "status": "pending",
+                "attempt_count": 0,
+                "sample_post_uid": "weibo:9",
+                "sample_evidence": "提到长电和封测",
+                "sample_raw_text_excerpt": "今天继续看好长电科技。",
+                "created_at": pending[0]["created_at"],
+                "updated_at": pending[0]["updated_at"],
+            }
+        ]
+    finally:
+        conn.close()
+
+
+def test_list_pending_alias_resolve_tasks_respects_limit() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+
+        set_alias_resolve_task_status(
+            conn,
+            alias_key="stock:长电",
+            status=ALIAS_TASK_STATUS_PENDING,
+            sample_post_uid="weibo:1",
+        )
+        set_alias_resolve_task_status(
+            conn,
+            alias_key="stock:茅台",
+            status=ALIAS_TASK_STATUS_PENDING,
+            sample_post_uid="weibo:2",
+        )
+
+        pending = list_pending_alias_resolve_tasks(conn, limit=1)
+        assert len(pending) == 1
     finally:
         conn.close()
 

@@ -5,18 +5,16 @@ from typing import Any
 
 import pandas as pd
 
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.domains.common.json_list import parse_json_list
-from alphavault.domains.stock.key_match import is_stock_code_value
 from alphavault.domains.stock.object_index import (
     build_stock_object_index,
     filter_assertions_for_stock_object,
 )
 from alphavault.domains.thread_tree.service import build_post_tree_map
+from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
 
 
 WANTED_ASSERTION_COLUMNS = [
@@ -30,7 +28,6 @@ WANTED_ASSERTION_COLUMNS = [
     "stock_codes_json",
     "stock_names_json",
     "cluster_keys_json",
-    "cluster_key",
 ]
 
 WANTED_POST_COLUMNS = [
@@ -40,12 +37,11 @@ WANTED_POST_COLUMNS = [
     "created_at",
     "url",
     "raw_text",
-    "display_md",
 ]
 
-STOCK_ALIAS_RELATIONS_SQL = """
+STOCK_ALIAS_RELATIONS_SQL = f"""
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
-FROM research_relations
+FROM {RESEARCH_RELATIONS_TABLE}
 WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 """
 
@@ -61,14 +57,6 @@ def _window_cutoff_str(days: int) -> str:
     window_days = max(1, int(days))
     cutoff = datetime.now(tz=UTC) - timedelta(days=window_days)
     return cutoff.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _stock_code_from_key(stock_key: str) -> str:
-    key = normalize_stock_key(stock_key)
-    if not key.startswith("stock:"):
-        return ""
-    code = str(key[len("stock:") :].strip()).upper()
-    return code if is_stock_code_value(code) else ""
 
 
 def _load_stock_alias_relations(conn: TursoConnection) -> pd.DataFrame:
@@ -108,13 +96,6 @@ def _load_stock_assertions(
     window_days: int,
     max_rows: int,
 ) -> pd.DataFrame:
-    assertion_cols = table_columns(conn, "assertions")
-    selected_cols = [
-        col for col in WANTED_ASSERTION_COLUMNS if col in set(assertion_cols)
-    ]
-    if not selected_cols:
-        return pd.DataFrame()
-    query = build_assertions_query(selected_cols)
     params: dict[str, Any] = {
         "stock_key": str(stock_key or "").strip(),
         "cutoff": _window_cutoff_str(window_days),
@@ -126,25 +107,33 @@ def _load_stock_assertions(
         stock_key=stock_key,
     )
     keys = [key for key in keys if key]
-    key_clause = "topic_key = :stock_key"
+    key_clause = "ae.entity_key = :stock_key"
     if len(keys) > 1:
         key_values = keys[1:]
         key_placeholders = make_in_placeholders(prefix="k", count=len(key_values))
         params.update(make_in_params(prefix="k", values=key_values))
-        key_clause = f"(topic_key = :stock_key OR topic_key IN ({key_placeholders}))"
+        key_clause = (
+            f"(ae.entity_key = :stock_key OR ae.entity_key IN ({key_placeholders}))"
+        )
 
-    code = _stock_code_from_key(stock_key)
-    if code and "stock_codes_json" in assertion_cols:
-        params["stock_code_like"] = f"%{code}%"
-        key_clause = f"({key_clause} OR stock_codes_json LIKE :stock_code_like)"
-
-    query += "\nWHERE action LIKE 'trade.%'"
-    if "created_at" in assertion_cols:
-        query += "\n  AND created_at >= :cutoff"
-    query += f"\n  AND {key_clause}"
-    if "created_at" in assertion_cols:
-        query += "\nORDER BY created_at DESC"
-    query += "\nLIMIT :limit"
+    select_expr = ", ".join(
+        [
+            *(f"a.{col}" for col in WANTED_ASSERTION_COLUMNS),
+            "ae.entity_key AS resolved_entity_key",
+        ]
+    )
+    query = f"""
+SELECT {select_expr}
+FROM assertions a
+JOIN assertion_entities ae
+  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
+WHERE a.action LIKE 'trade.%'
+  AND ae.entity_type = 'stock'
+  AND {key_clause}
+  AND a.created_at >= :cutoff
+ORDER BY a.created_at DESC
+LIMIT :limit
+"""
 
     assertions = turso_read_sql_df(conn, query, params=params)
     if assertions.empty:
@@ -159,14 +148,8 @@ def _load_stock_assertions(
         out["stock_names_json"] = "[]"
     out["stock_codes_json"] = out["stock_codes_json"].fillna("[]").astype(str)
     out["stock_names_json"] = out["stock_names_json"].fillna("[]").astype(str)
-    if "cluster_keys_json" in out.columns:
-        out["cluster_keys"] = out["cluster_keys_json"].apply(parse_json_list)
-    elif "cluster_key" in out.columns:
-        out["cluster_keys"] = out["cluster_key"].apply(
-            lambda item: [str(item).strip()] if str(item or "").strip() else []
-        )
-    else:
-        out["cluster_keys"] = [[] for _ in range(len(out))]
+    out["cluster_keys"] = out["cluster_keys_json"].fillna("[]").astype(str)
+    out["cluster_keys"] = out["cluster_keys"].apply(parse_json_list)
     return out
 
 
@@ -179,13 +162,8 @@ def _load_posts_for_assertions(
     if not cleaned:
         return pd.DataFrame()
     placeholders = ", ".join(["?"] * len(cleaned))
-    post_cols = table_columns(conn, "posts")
-    selected_cols = [col for col in WANTED_POST_COLUMNS if col in set(post_cols)]
-    if "display_md" not in selected_cols:
-        selected_cols.append("'' AS display_md")
-    post_select_expr = ", ".join(selected_cols)
     sql = f"""
-SELECT {post_select_expr}
+SELECT {", ".join(WANTED_POST_COLUMNS)}
 FROM posts
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})
@@ -194,7 +172,7 @@ WHERE processed_at IS NOT NULL
     if posts.empty:
         return posts
     out = posts.copy()
-    for col in ["post_uid", "author", "url", "raw_text", "display_md"]:
+    for col in ["post_uid", "author", "url", "raw_text"]:
         if col not in out.columns:
             out[col] = ""
         out[col] = out[col].fillna("").astype(str)
@@ -208,7 +186,6 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     wanted_post_cols = [
         "post_uid",
         "raw_text",
-        "display_md",
         "author",
         "url",
         "created_at",
@@ -217,24 +194,18 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     post_cols = post_cols.rename(
         columns={
             "raw_text": "_post_raw_text",
-            "display_md": "_post_display_md",
             "author": "_post_author",
             "url": "_post_url",
             "created_at": "_post_created_at",
         }
     )
     merged = assertions.merge(post_cols, on="post_uid", how="left")
-    for col in ["raw_text", "display_md", "author", "url"]:
+    for col in ["raw_text", "author", "url"]:
         if col not in merged.columns:
             merged[col] = ""
         merged[col] = merged[col].fillna("").astype(str)
     merged.loc[merged["raw_text"].eq(""), "raw_text"] = (
         merged.loc[merged["raw_text"].eq(""), "_post_raw_text"].fillna("").astype(str)
-    )
-    merged.loc[merged["display_md"].eq(""), "display_md"] = (
-        merged.loc[merged["display_md"].eq(""), "_post_display_md"]
-        .fillna("")
-        .astype(str)
     )
     merged.loc[merged["author"].eq(""), "author"] = (
         merged.loc[merged["author"].eq(""), "_post_author"].fillna("").astype(str)
@@ -255,7 +226,6 @@ def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.Data
     return merged.drop(
         columns=[
             "_post_raw_text",
-            "_post_display_md",
             "_post_author",
             "_post_url",
             "_post_created_at",
@@ -395,7 +365,6 @@ def build_stock_hot_payload(
                 ),
                 "url": str(row.get("url") or "").strip(),
                 "raw_text": str(row.get("raw_text") or "").strip(),
-                "display_md": str(row.get("display_md") or "").strip(),
                 "tree_label": str(tree_label or "").strip(),
                 "tree_text": str(tree_text or "").strip(),
             }

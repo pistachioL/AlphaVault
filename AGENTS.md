@@ -27,6 +27,8 @@ Uses `uv` (lockfile: `uv.lock`).
 ## Testing Guidelines
 - Framework: `pytest` (tests live in `tests/`).
 - Keep unit tests deterministic and fast; if a test needs env/config, document required variables in the test or link to `.env.example`.
+- 测试里不要用 `lambda` 包 `list.append(...)` 再顺手返回别的值，比如 `(seen.append(x), data)[1]` 或 `seen.append(x) or data` 这种写法；`mypy` 会把它当成错误。
+- 如果测试 stub 里既要记日志、又要返回数据，改成一个小的本地 `def _fake_*(): ...`，先 `append`，再 `return`。
 
 ## Commit & Pull Request Guidelines
 - Commit messages follow a scoped pattern used in `git log`: `feat(scope): ...`, `fix(scope): ...`, `refactor(scope): ...`, `chore: ...`, `docs: ...`.
@@ -38,6 +40,16 @@ Uses `uv` (lockfile: `uv.lock`).
 - Keep complexity low: prefer guard clauses; avoid >3 levels of nesting; split large functions into helpers.
 - No “god files”: if a file grows beyond ~500 lines or mixes unrelated responsibilities, split by domain/module.
 - YAGNI: don’t add “maybe needed later” abstractions; only add backwards-compat fallbacks when explicitly required.
+
+## Cloud Schema Rules
+- 云端 `Turso` 表结构只认一份总 SQL：`alphavault/db/sql/cloud_schema.sql`。
+- 新环境上线前，先手工执行 `alphavault/db/sql/cloud_schema.sql`，再启动服务和脚本。
+- Python 里只允许保留一个最底层装库入口：`alphavault.db.cloud_schema.apply_cloud_schema(...)`，只给测试或人工装空库用。
+- 业务模块里不允许再导出或保留 `ensure_*schema`、`init_*schema` 这类 wrapper helper。
+- 运行时不允许自动建表、补列、迁移旧表；缺表缺列就直接报错。
+- 云端代码里不允许用 `PRAGMA table_info`、`table_columns(...)`、`ALTER TABLE` 这类动态兼容手法。
+- 新字段直接写进 `CREATE TABLE`；如果要补的是索引，可以单独写 `CREATE INDEX IF NOT EXISTS`。
+- Python 里不要再保留第二份云端 `CREATE TABLE` / `CREATE INDEX` 真相，避免和总 SQL 分叉。
 
 ## 流程图与逻辑图写法标准
 - 默认目标：图本身就要让人看懂，不依赖图外解释；用户只看图，也要知道整体逻辑、数据怎么流、哪里容易出问题。

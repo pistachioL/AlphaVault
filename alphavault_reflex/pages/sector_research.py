@@ -21,11 +21,7 @@ def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.cond(
             row["tree_text"] != "",
             rx.el.pre(row["tree_text"], class_name="av-research-signal-tree"),
-            rx.cond(
-                row["display_md"] != "",
-                rx.text(row["display_md"], class_name="av-research-signal-body"),
-                rx.text(row["raw_text"], class_name="av-research-signal-body"),
-            ),
+            rx.text(row["raw_text"], class_name="av-research-signal-body"),
         ),
         class_name="av-research-card",
     )
@@ -36,34 +32,6 @@ def _related_link(row: rx.Var[dict[str, str]]) -> rx.Component:
         row["label"],
         href=row["href"],
         class_name="av-research-chip",
-    )
-
-
-def _pending_item(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.el.div(
-        rx.text(row["candidate_key"], class_name="av-research-side-title"),
-        rx.text(row["evidence_summary"], class_name="av-research-muted"),
-        rx.hstack(
-            rx.button(
-                "确认",
-                on_click=lambda: ResearchState.accept_candidate(row["candidate_id"]),
-                class_name="av-btn av-btn-small",
-            ),
-            rx.button(
-                "忽略",
-                on_click=lambda: ResearchState.ignore_candidate(row["candidate_id"]),
-                variant="soft",
-            ),
-            rx.button(
-                "不再推荐",
-                on_click=lambda: ResearchState.block_candidate(row["candidate_id"]),
-                variant="soft",
-                color_scheme="gray",
-            ),
-            spacing="2",
-            margin_top="10px",
-        ),
-        class_name="av-research-side-item",
     )
 
 
@@ -130,23 +98,6 @@ def sector_research_page() -> rx.Component:
                         ),
                         rx.cond(
                             ResearchState.show_related_empty,
-                            rx.text(EMPTY_TEXT, class_name="av-research-muted"),
-                            rx.el.div(),
-                        ),
-                    ),
-                ),
-                rx.heading("待确认关系", size="4", margin_top="18px"),
-                rx.cond(
-                    PAGE_LOADING,
-                    _section_loading(),
-                    rx.cond(
-                        ResearchState.has_pending_candidates,
-                        rx.el.div(
-                            rx.foreach(ResearchState.pending_candidates, _pending_item),
-                            class_name="av-research-side-list",
-                        ),
-                        rx.cond(
-                            ResearchState.show_pending_empty,
                             rx.text(EMPTY_TEXT, class_name="av-research-muted"),
                             rx.el.div(),
                         ),

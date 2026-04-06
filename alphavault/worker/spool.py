@@ -11,17 +11,16 @@ from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_SPOOL_DIR,
     PLATFORM_WEIBO,
-    PLATFORM_XUEQIU,
 )
 from alphavault.db.turso_db import (
+    TursoConnection,
     TursoEngine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
     turso_connect_autocommit,
 )
-from alphavault.db.turso_queue import upsert_pending_post
+from alphavault.db.turso_queue import load_post_processed_at, upsert_pending_post
 from alphavault.rss.utils import now_str
-from alphavault.weibo.display import format_weibo_display_md
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 SPOOL_JSON_SUFFIX = ".json"
@@ -194,6 +193,89 @@ def _maybe_dispose_turso_engine_on_transient_error(
         return
 
 
+def _load_claimed_payload(
+    *, claimed_path: Path, verbose: bool
+) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(claimed_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        if verbose:
+            print(
+                f"[spool] bad_file {claimed_path.name} {type(e).__name__}: {e}",
+                flush=True,
+            )
+        _cleanup_spool_file(claimed_path)
+        return None
+    if not isinstance(payload, dict):
+        _cleanup_spool_file(claimed_path)
+        return None
+    return payload
+
+
+def _upsert_spool_payload(
+    conn: TursoConnection,
+    *,
+    payload: dict[str, Any],
+) -> str:
+    post_uid = str(payload.get("post_uid") or "")
+    if not post_uid:
+        return ""
+    platform = str(payload.get("platform") or PLATFORM_WEIBO).strip().lower()
+    platform = platform or PLATFORM_WEIBO
+    raw_text = str(payload.get("raw_text") or "")
+    author = str(payload.get("author") or "")
+    upsert_pending_post(
+        conn,
+        post_uid=post_uid,
+        platform=platform,
+        platform_post_id=str(payload.get("platform_post_id") or ""),
+        author=author,
+        created_at=str(payload.get("created_at") or now_str()),
+        url=str(payload.get("url") or ""),
+        raw_text=raw_text,
+        archived_at=now_str(),
+        ingested_at=int(payload.get("ingested_at") or int(time.time())),
+    )
+    return post_uid
+
+
+def _try_push_payload_to_ai_ready(
+    *,
+    redis_client: Any,
+    redis_queue_key: str,
+    post_uid: str,
+    payload: dict[str, Any],
+    verbose: bool,
+) -> tuple[int, bool]:
+    if not redis_client or not str(redis_queue_key or "").strip() or not post_uid:
+        return 0, False
+    try:
+        from alphavault.worker.redis_queue import (
+            REDIS_PUSH_STATUS_ERROR,
+            REDIS_PUSH_STATUS_PUSHED,
+            redis_try_push_ai_dedup_status,
+            resolve_redis_dedup_ttl_seconds,
+        )
+
+        status = redis_try_push_ai_dedup_status(
+            redis_client,
+            str(redis_queue_key),
+            post_uid=post_uid,
+            payload=payload,
+            ttl_seconds=resolve_redis_dedup_ttl_seconds(),
+            verbose=bool(verbose),
+        )
+    except Exception as e:
+        if verbose:
+            print(f"[redis] ai_requeue_error {type(e).__name__}: {e}", flush=True)
+        return 0, True
+    if status == REDIS_PUSH_STATUS_ERROR:
+        return 0, True
+    return (1 if status == REDIS_PUSH_STATUS_PUSHED else 0), False
+
+
 def flush_spool_to_turso(
     *,
     spool_dir: Path,
@@ -202,7 +284,7 @@ def flush_spool_to_turso(
     verbose: bool,
     redis_client=None,
     redis_queue_key: str = "",
-    delete_spool_on_redis_push: bool = True,
+    delete_spool_on_redis_push: bool = False,
 ) -> Tuple[int, bool]:
     if engine is None:
         return 0, False
@@ -220,17 +302,11 @@ def flush_spool_to_turso(
                 claimed_path = _claim_spool_file(path)
                 if claimed_path is None:
                     continue
-                try:
-                    payload = json.loads(claimed_path.read_text(encoding="utf-8"))
-                except FileNotFoundError:
-                    continue
-                except Exception as e:
-                    if verbose:
-                        print(
-                            f"[spool] bad_file {path.name} {type(e).__name__}: {e}",
-                            flush=True,
-                        )
-                    _cleanup_spool_file(claimed_path)
+                payload = _load_claimed_payload(
+                    claimed_path=claimed_path,
+                    verbose=bool(verbose),
+                )
+                if payload is None:
                     continue
 
                 post_uid = str(payload.get("post_uid") or "")
@@ -239,30 +315,7 @@ def flush_spool_to_turso(
                     continue
 
                 try:
-                    platform = (
-                        str(payload.get("platform") or PLATFORM_WEIBO).strip().lower()
-                        or PLATFORM_WEIBO
-                    )
-                    raw_text = str(payload.get("raw_text") or "")
-                    author = str(payload.get("author") or "")
-                    display_md = str(payload.get("display_md") or "")
-                    if platform == PLATFORM_XUEQIU:
-                        display_md = ""
-                    elif not display_md.strip():
-                        display_md = format_weibo_display_md(raw_text, author=author)
-                    upsert_pending_post(
-                        conn,
-                        post_uid=post_uid,
-                        platform=platform,
-                        platform_post_id=str(payload.get("platform_post_id") or ""),
-                        author=str(payload.get("author") or ""),
-                        created_at=str(payload.get("created_at") or now_str()),
-                        url=str(payload.get("url") or ""),
-                        raw_text=raw_text,
-                        display_md=display_md,
-                        archived_at=now_str(),
-                        ingested_at=int(payload.get("ingested_at") or int(time.time())),
-                    )
+                    _upsert_spool_payload(conn, payload=payload)
                 except BaseException as e:
                     if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                         raise
@@ -311,7 +364,10 @@ def flush_spool_to_turso(
                     )
                     return processed, True
 
-                _cleanup_spool_file(claimed_path)
+                _restore_claimed_file_for_retry(
+                    claimed_path=claimed_path,
+                    target_path=path,
+                )
                 processed += 1
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
@@ -322,3 +378,117 @@ def flush_spool_to_turso(
         return processed, True
 
     return processed, False
+
+
+def recover_spool_to_turso_and_redis(
+    *,
+    spool_dir: Path,
+    engine: Optional[TursoEngine],
+    max_items: int,
+    verbose: bool,
+    redis_client=None,
+    redis_queue_key: str = "",
+) -> tuple[int, int, int, bool]:
+    if engine is None:
+        return 0, 0, 0, False
+    max_batch = max(0, int(max_items))
+    if max_batch <= 0:
+        return 0, 0, 0, False
+    _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
+    paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
+    if not paths:
+        return 0, 0, 0, False
+
+    restored_posts = 0
+    queued_redis = 0
+    deleted_done = 0
+    try:
+        with turso_connect_autocommit(engine) as conn:
+            for path in paths[:max_batch]:
+                claimed_path = _claim_spool_file(path)
+                if claimed_path is None:
+                    continue
+                payload = _load_claimed_payload(
+                    claimed_path=claimed_path,
+                    verbose=bool(verbose),
+                )
+                if payload is None:
+                    continue
+
+                post_uid = str(payload.get("post_uid") or "")
+                if not post_uid:
+                    _cleanup_spool_file(claimed_path)
+                    continue
+
+                try:
+                    processed_at = load_post_processed_at(conn, post_uid=post_uid)
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+                    _restore_claimed_file_for_retry(
+                        claimed_path=claimed_path,
+                        target_path=path,
+                    )
+                    return restored_posts, queued_redis, deleted_done, True
+
+                if processed_at is None:
+                    try:
+                        _upsert_spool_payload(conn, payload=payload)
+                    except BaseException as e:
+                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                            raise
+                        _maybe_dispose_turso_engine_on_transient_error(
+                            engine=engine,
+                            err=e,
+                        )
+                        if verbose:
+                            print(
+                                f"[spool] recover_upsert_error {path.name} "
+                                f"{type(e).__name__}: {e}",
+                                flush=True,
+                            )
+                        _restore_claimed_file_for_retry(
+                            claimed_path=claimed_path,
+                            target_path=path,
+                        )
+                        return restored_posts, queued_redis, deleted_done, True
+                    restored_posts += 1
+                    processed_at = ""
+
+                if str(processed_at or "").strip():
+                    _cleanup_spool_file(claimed_path)
+                    deleted_done += 1
+                    continue
+
+                pushed, push_error = _try_push_payload_to_ai_ready(
+                    redis_client=redis_client,
+                    redis_queue_key=redis_queue_key,
+                    post_uid=post_uid,
+                    payload=payload,
+                    verbose=bool(verbose),
+                )
+                queued_redis += int(pushed)
+                if push_error:
+                    _restore_claimed_file_for_retry(
+                        claimed_path=claimed_path,
+                        target_path=path,
+                    )
+                    return restored_posts, queued_redis, deleted_done, True
+
+                _restore_claimed_file_for_retry(
+                    claimed_path=claimed_path,
+                    target_path=path,
+                )
+    except BaseException as e:
+        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+            raise
+        _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+        if verbose:
+            print(
+                f"[spool] recover_connect_error {type(e).__name__}: {e}",
+                flush=True,
+            )
+        return restored_posts, queued_redis, deleted_done, True
+
+    return restored_posts, queued_redis, deleted_done, False

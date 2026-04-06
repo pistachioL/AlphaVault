@@ -6,9 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from alphavault.db.introspect import table_columns
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.sql.ui import build_assertions_query
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.db.turso_pandas import turso_read_sql_df
@@ -81,6 +79,7 @@ def load_stock_trade_sources_fast_cached(
     stock_code: str,
     per_source_limit: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    del stock_code
     normalized_key = normalize_stock_key_for_fast_query(stock_key)
     if not normalized_key:
         return pd.DataFrame(), pd.DataFrame()
@@ -88,45 +87,33 @@ def load_stock_trade_sources_fast_cached(
 
     engine = ensure_turso_engine(db_url, auth_token)
     with turso_connect_autocommit(engine) as conn:
-        assertion_cols = table_columns(conn, "assertions")
-        selected_assertion_cols = [
-            col for col in WANTED_TRADE_ASSERTION_COLUMNS if col in assertion_cols
-        ]
-        if not selected_assertion_cols:
-            return pd.DataFrame(), pd.DataFrame()
-
-        base_query = build_assertions_query(selected_assertion_cols)
         params: dict[str, object] = {"stock_key": normalized_key, "limit": limit}
         alias_keys = _load_stock_alias_keys(conn, stock_key=normalized_key)
-        key_clause = "topic_key = :stock_key"
+        key_clause = "ae.entity_key = :stock_key"
         if alias_keys:
             placeholders = make_in_placeholders(prefix="k", count=len(alias_keys))
             params.update(make_in_params(prefix="k", values=alias_keys))
-            key_clause = f"(topic_key = :stock_key OR topic_key IN ({placeholders}))"
-        order_clause = (
-            " ORDER BY created_at DESC" if "created_at" in assertion_cols else ""
+            key_clause = (
+                f"(ae.entity_key = :stock_key OR ae.entity_key IN ({placeholders}))"
+            )
+        select_expr = ", ".join(
+            [
+                *(f"a.{col}" for col in WANTED_TRADE_ASSERTION_COLUMNS),
+                "ae.entity_key AS resolved_entity_key",
+            ]
         )
         assertions_query = (
-            f"{base_query}\n"
-            "WHERE action LIKE 'trade.%'\n"
-            f"  AND {key_clause}"
-            f"{order_clause}\n"
+            f"SELECT {select_expr}\n"
+            "FROM assertions a\n"
+            "JOIN assertion_entities ae\n"
+            "  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx\n"
+            "WHERE a.action LIKE 'trade.%'\n"
+            "  AND ae.entity_type = 'stock'\n"
+            f"  AND {key_clause}\n"
+            "ORDER BY a.created_at DESC\n"
             "LIMIT :limit"
         )
         assertions = turso_read_sql_df(conn, assertions_query, params=params)
-        if assertions.empty and stock_code and "stock_codes_json" in assertion_cols:
-            fallback_params: dict[str, object] = {
-                "stock_code_like": f"%{stock_code}%",
-                "limit": limit,
-            }
-            fallback_query = (
-                f"{base_query}\n"
-                "WHERE action LIKE 'trade.%'\n"
-                "  AND stock_codes_json LIKE :stock_code_like"
-                f"{order_clause}\n"
-                "LIMIT :limit"
-            )
-            assertions = turso_read_sql_df(conn, fallback_query, params=fallback_params)
 
         posts = pd.DataFrame()
         if not assertions.empty:
@@ -143,17 +130,9 @@ def load_stock_trade_sources_fast_cached(
                 )
             )
             if post_uids:
-                post_cols = table_columns(conn, "posts")
-                display_expr = (
-                    "display_md" if "display_md" in post_cols else "'' AS display_md"
-                )
-                selected_post_cols = [
-                    col for col in WANTED_POST_COLUMNS_FOR_TREE if col in post_cols
-                ]
-                post_select_expr = ", ".join(selected_post_cols + [display_expr])
                 placeholders = ", ".join(["?"] * len(post_uids))
                 posts_query = f"""
-SELECT {post_select_expr}
+SELECT {", ".join(WANTED_POST_COLUMNS_FOR_TREE)}
 FROM posts
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})

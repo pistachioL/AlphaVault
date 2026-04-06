@@ -3,12 +3,6 @@ from __future__ import annotations
 import reflex as rx
 from reflex import constants as rx_constants
 
-from alphavault.research_stock_cache import mark_stock_dirty
-from alphavault_reflex.services.relation_actions import apply_candidate_action
-from alphavault_reflex.services.research_backfill_actions import (
-    get_turso_engine_for_post_uid as _get_turso_engine_for_post_uid,
-    queue_post_for_ai_backfill,
-)
 from alphavault_reflex.services.research_page_loader import (
     load_sector_page_view,
     load_stock_page_cached_view,
@@ -63,9 +57,6 @@ class ResearchState(rx.State):
     stock_load_request_id: int = 0
     primary_signals: list[dict[str, str]] = []
     related_items: list[dict[str, str]] = []
-    pending_candidates: list[dict[str, str]] = []
-    backfill_posts: list[dict[str, str]] = []
-    backfill_notice: str = ""
     signal_page: int = 1
     signal_page_size: int = DEFAULT_SIGNAL_PAGE_SIZE
     signal_total: int = 0
@@ -128,37 +119,8 @@ class ResearchState(rx.State):
         )
 
     @rx.var
-    def show_pending_empty(self) -> bool:
-        return bool(
-            self.loaded_once
-            and (not self.loading)
-            and (not self.extras_loading)
-            and self.stock_sidebar_ready
-            and (str(self.load_error or "").strip() == "")
-            and (not self.pending_candidates)
-        )
-
-    @rx.var
-    def show_backfill_empty(self) -> bool:
-        return bool(
-            self.loaded_once
-            and (not self.loading)
-            and (not self.extras_loading)
-            and (str(self.load_error or "").strip() == "")
-            and (not self.backfill_posts)
-        )
-
-    @rx.var
-    def has_pending_candidates(self) -> bool:
-        return bool(self.pending_candidates)
-
-    @rx.var
     def has_related_items(self) -> bool:
         return bool(self.related_items)
-
-    @rx.var
-    def has_backfill_posts(self) -> bool:
-        return bool(self.backfill_posts)
 
     @rx.var
     def signal_page_size_options(self) -> list[str]:
@@ -199,7 +161,6 @@ class ResearchState(rx.State):
             self.related_filter = RELATED_FILTER_ALL
             self.related_limit = DEFAULT_RELATED_LIMIT
             self._reset_stock_sidebar_state(close_sidebar=True)
-            self.backfill_notice = ""
         stock_key = _normalize_stock_key(slug)
         self.stock_load_request_id = max(int(self.stock_load_request_id), 0) + 1
         self.entity_type = "stock"
@@ -211,7 +172,6 @@ class ResearchState(rx.State):
         self.worker_next_run_at = ""
         self.worker_cycle_updated_at = ""
         self.worker_running = False
-        self.backfill_posts = []
         self.related_posts = []
         self.related_total = 0
 
@@ -221,7 +181,6 @@ class ResearchState(rx.State):
             signal_page_size=normalize_related_limit(self.related_limit),
         )
         self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
-        self.backfill_posts = _coerce_rows(view.get("backfill_posts"))
         self._refresh_related_posts()
         self.worker_status_text = str(view.get("worker_status_text") or "").strip()
         self.worker_next_run_at = str(view.get("worker_next_run_at") or "").strip()
@@ -282,7 +241,6 @@ class ResearchState(rx.State):
             return
         view = load_stock_sidebar_cached_view(target)
         self.related_items = _prepare_sector_links(view.get("related_sectors"))
-        self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
         self.extras_updated_at = str(view.get("extras_updated_at") or "").strip()
         self.stock_sidebar_loaded = True
         self.extras_ready = True
@@ -293,7 +251,6 @@ class ResearchState(rx.State):
         self.related_limit = normalize_related_limit(self.related_limit)
         feed = build_related_feed(
             signals=self.primary_signals,
-            backfill_posts=self.backfill_posts,
             related_filter=self.related_filter,
             limit=self.related_limit,
         )
@@ -301,9 +258,7 @@ class ResearchState(rx.State):
         if self.related_filter == RELATED_FILTER_SIGNAL:
             self.related_total = max(int(self.signal_total or 0), 0)
         else:
-            self.related_total = max(int(self.signal_total or 0), 0) + len(
-                self.backfill_posts or []
-            )
+            self.related_total = max(int(self.signal_total or 0), 0)
 
     def _apply_stock_primary_view(
         self, view: dict[str, object], *, fallback_stock_key: str
@@ -333,7 +288,6 @@ class ResearchState(rx.State):
         self.extras_ready = False
         self.extras_updated_at = ""
         self.related_items = []
-        self.pending_candidates = []
 
     @rx.event
     def prev_signal_page(self):
@@ -406,8 +360,6 @@ class ResearchState(rx.State):
         self.worker_running = False
         self.primary_signals = _coerce_rows(view.get("signals"))
         self.related_items = _prepare_stock_links(view.get("related_stocks"))
-        self.pending_candidates = _coerce_rows(view.get("pending_candidates"))
-        self.backfill_posts = []
         self.loaded_once = True
         self.loading = False
 
@@ -427,75 +379,6 @@ class ResearchState(rx.State):
         ):
             return
         return self.load_sector_page(slug)
-
-    @rx.event
-    def accept_candidate(self, candidate_id: str):
-        return self._mutate_candidate(candidate_id, action="accept")
-
-    @rx.event
-    def ignore_candidate(self, candidate_id: str):
-        return self._mutate_candidate(candidate_id, action="ignore")
-
-    @rx.event
-    def block_candidate(self, candidate_id: str):
-        return self._mutate_candidate(candidate_id, action="block")
-
-    @rx.event
-    def queue_backfill_post(self, post_uid: str) -> None:
-        target = str(post_uid or "").strip()
-        if not target:
-            return
-        try:
-            queue_post_for_ai_backfill(target)
-        except BaseException as err:
-            if isinstance(err, (KeyboardInterrupt, SystemExit)):
-                raise
-            self.backfill_notice = f"排队失败：{type(err).__name__}"
-            return
-        clear_reflex_source_caches()
-        clear_stock_hot_read_caches()
-        if self.entity_key.startswith("stock:"):
-            try:
-                engine = _get_turso_engine_for_post_uid(target)
-                mark_stock_dirty(
-                    engine,
-                    stock_key=self.entity_key,
-                    reason="queue_backfill",
-                )
-            except BaseException:
-                pass
-        self.backfill_notice = f"已排队：{target}（等一会再刷新）"
-
-    def _mutate_candidate(self, candidate_id: str, *, action: str):
-        target = str(candidate_id or "").strip()
-        if not target:
-            return
-        row = next(
-            (
-                item
-                for item in self.pending_candidates
-                if str(item.get("candidate_id") or "").strip() == target
-            ),
-            None,
-        )
-        if row is None:
-            return
-        apply_candidate_action(row, action)
-        clear_reflex_source_caches()
-        clear_stock_hot_read_caches()
-        if self.entity_type == "stock":
-            self._reset_stock_sidebar_state(close_sidebar=False)
-            self.load_stock_page(self.entity_key.removeprefix("stock:"))
-            if self.stock_sidebar_open:
-                return self.open_stock_sidebar()
-            return
-        if self.entity_type == "sector":
-            return self.load_sector_page(self.entity_key.removeprefix("cluster:"))
-        self.pending_candidates = [
-            item
-            for item in self.pending_candidates
-            if str(item.get("candidate_id") or "").strip() != target
-        ]
 
 
 _RESEARCH_ROUTE_ARGS = {

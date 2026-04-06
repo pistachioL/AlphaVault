@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `alphavault_reflex/`: Reflex web UI (state, services, pages). Entry: `alphavault_reflex/alphavault_reflex.py`; config: `rxconfig.py`.
 - `tests/`: `pytest` suite (`test_*.py`).
 - `assets/`: static CSS/JS used by the UI.
-- Root scripts: `weibo_rss_turso_worker.py` (main worker entry), plus one-off maintenance tools (`backfill_display_md.py`, `reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
+- Root scripts: `weibo_rss_turso_worker.py` (main worker entry), plus one-off maintenance tools (`migrate_weibo_raw_text.py`, `reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
 - `docs/superpowers/specs/`: design/architecture specs and notes.
 
 ## Build, Test, and Development Commands
@@ -26,29 +26,30 @@ Uses `uv` (lockfile: `uv.lock`).
 ### Worker pipeline (`weibo_rss_turso_worker.py` → `alphavault/worker/`)
 The main loop runs two parallel tracks:
 
-1. **RSS ingest** (`worker/ingest.py`): Fetches feeds via `alphavault/rss/utils.py`, deduplicates via Redis (or falls back to Turso), writes raw posts as `ai_status='pending'` rows via `db/turso_queue.py:upsert_pending_post`. Posts are also written to a local spool directory (`worker/spool.py`) as a crash-safe buffer.
+1. **RSS ingest** (`worker_loop_rss.py`, `worker/spool.py`, `worker_loop_spool.py`, `worker_loop_redis_enqueue.py`): Fetches feeds via `alphavault/rss/utils.py`, writes each payload to local `spool/` first, upserts the raw post into `posts` via `db/turso_queue.py:upsert_pending_post`, then pushes a short payload into the Redis AI queue.
 
-2. **AI processing** (`worker/worker.py`, `ai/analyze.py`): A `ThreadPoolExecutor` picks up `pending` rows (`select_due_post_uids`), calls `try_mark_ai_running` (optimistic lock), invokes `analyze_with_litellm` (via `ai/_client.py` → `litellm`), then writes results atomically via `write_assertions_and_mark_done`. Errors go to `mark_ai_error` with exponential backoff via `next_retry_at`.
+2. **AI processing** (`worker_loop_ai.py`, `worker/ai_processor.py`, `worker/post_processor_topic_prompt_v4.py`): A `ThreadPoolExecutor` pops payloads from Redis, claims a Redis lease for `post_uid`, invokes the LLM, then writes assertions atomically via `write_assertions_and_mark_done`. Success acks Redis and cleans up the finished spool file; failures go to the Redis delayed retry queue.
 
-**State machine for posts**: `pending` → `running` → `done` (with `processed_at` set) or back to `pending` on retry. Only posts with `processed_at IS NOT NULL` are shown in the UI.
+**State signal for posts**: the cloud `posts` table no longer stores per-post AI runtime columns. The main durable signal is `processed_at`: unprocessed rows have `processed_at IS NULL`, and processed rows have `processed_at` filled. Only posts with `processed_at IS NOT NULL` are shown in the UI.
 
-**Recovery helpers** in `turso_queue.py`: `recover_stuck_ai_tasks` resets tasks stuck in `running`, and `recover_done_without_processed_at` fixes inconsistent rows — both run on each maintenance cycle.
+**Recovery path** (`worker_loop_maintenance.py`, `worker/spool.py`): maintenance first scans `spool/`, re-upserts missing posts into Turso, requeues unfinished rows back to Redis from `posts.processed_at IS NULL`, and requeues Redis `processing` jobs that lost their lease.
 
 ### Database layer (`alphavault/db/`)
 - `turso_db.py`: `TursoEngine` (custom LIFO connection pool over `libsql`), `TursoConnection` (named→qmark param translation via `sqlparams`, retry on transient errors), `turso_savepoint` (manual `BEGIN/COMMIT/ROLLBACK` since libsql doesn't support DBAPI transactions). All SQL constants live in `db/sql/`.
-- `turso_queue.py`: queue-specific read/write helpers (upsert, select-due, mark-running, write-done, error, recovery). This is the main write path for the worker.
+- `turso_queue.py`: main post/assertion read-write helpers (`upsert_pending_post`, `load_cloud_post`, `load_unprocessed_post_queue_rows`, `write_assertions_and_mark_done`). Redis queue state is handled in `alphavault/worker/redis_queue.py`, not in Turso runtime columns.
 - `turso_env.py`: parses `WEIBO_TURSO_DATABASE_URL/AUTH_TOKEN` and `XUEQIU_TURSO_DATABASE_URL/AUTH_TOKEN` into source configs.
 - Two Turso databases are supported simultaneously (weibo + xueqiu); each has its own engine.
 
 ### AI layer (`alphavault/ai/`)
 - `analyze.py`: public API — `analyze_with_litellm` calls the LLM, parses JSON output, normalizes assertion `action` values (via `ALLOWED_ACTIONS` + `LEGACY_ACTION_MAP`), and validates results.
 - `_client.py` / `_litellm.py`: low-level LLM call with rate limiting (`RateLimiter`), streaming, and retries.
-- `topic_prompt_v3.py` + `topic_prompt_v3_header.txt`: prompt construction. The prompt asks the model to return structured `assertions` (with `topic_key`, `action`, `stock_codes_json`, `stock_names_json`, etc.).
+- `topic_prompt_v4.py` + `topic_prompt_v4_header.txt`: prompt construction. The prompt asks the model to return `assertions + mentions`，由系统自己再落 `topic_key` 和原词分桶字段。
 - `tag_validate.py`: post-hoc validation of AI output tags.
 
-### Stock object / alias layer (`alphavault/domains/stock` + `alphavault/infra/ai`)
+### Stock object / alias layer (`alphavault/domains/stock` + `alphavault/domains/entity_match` + `alphavault/research_workbench`)
 - `alphavault/domains/stock/object_index.py`: builds stock objects from fragmented `topic_key` / `stock_codes_json` / `stock_names_json`, and resolves aliases via confirmed relations.
-- `alphavault/infra/ai/stock_alias.py`: optional AI-assisted alias resolving for short names / nicknames (can be disabled).
+- `alphavault/domains/entity_match/resolve.py`: main stock mention resolver. `stock_code` maps directly, `stock_name` uses `security_master`, `stock_alias` uses confirmed `alias_of`; unresolved aliases become candidates or `alias_resolve_tasks`.
+- `alphavault/research_workbench/security_master_repo.py` + `relation_repo.py` + `alias_task_repo.py`: maintain truth tables, manual alias confirmation, and pending alias tasks.
 - `alphavault/app/relation/candidate_builders.py`: builds relation candidates for the organizer.
 - `alphavault/infra/ai/relation_candidate_ranker.py`: optional AI ranking for relation candidates (can be disabled).
 
@@ -62,8 +63,8 @@ The main loop runs two parallel tracks:
 - Pages live in `pages/`; heavy data loading is done in `services/` and called from state event handlers.
 - Custom CSS in `assets/` (`homework_board.css`, `research_workbench.css`) plus JS (`table_resizer.js`).
 
-### Redis (optional)
-When `REDIS_URL` is set, Redis acts as the primary AI work queue and dedup store, reducing Turso read pressure. Author recent-post context is also cached in Redis. Without Redis the system falls back to Turso for all state.
+### Redis (required for AI worker)
+The AI worker requires `REDIS_URL`. Redis holds the runtime queue state: ready / processing / delayed / lease / dedup. Turso remains the durable truth, and maintenance can rebuild the Redis queue from `spool/` plus `posts.processed_at IS NULL`. Without Redis the AI worker does not run.
 
 ## Coding Style & Naming Conventions
 - Python 3.10+, 4-space indentation, type hints on public APIs.

@@ -3,7 +3,7 @@ Build an AI-ready message_tree for a Weibo author thread.
 
 Design notes:
 - We only ingest the author's posts (RSS). Other users' "comments" are reconstructed
-  from display_md segments ("speaker：text").
+  from segmented raw_text ("speaker：text").
 - Prompt v3 expects a tree: nodes have source_kind/source_id/speaker/text/children.
 - Keep it conservative: hard limits (no extra configs) to avoid huge prompts.
 """
@@ -17,11 +17,10 @@ from alphavault.domains.thread_tree.parse import (
     content_key_for_compare,
     extract_speaker_name,
     make_synthetic_source_id,
-    parse_display_md_segments,
+    parse_thread_segments,
     strip_leading_speaker,
     to_one_line_text,
 )
-from alphavault.weibo.display import SEGMENT_SEPARATOR, format_weibo_display_md
 
 # Hard limits to prevent huge prompts.
 MAX_THREAD_POSTS = 60
@@ -44,33 +43,26 @@ def _truncate_text(text: str, *, max_chars: int) -> tuple[str, bool]:
     return s[: max(0, int(max_chars))], True
 
 
-def _ensure_display_md(*, raw_text: str, display_md: str, author: str) -> str:
-    if str(display_md or "").strip():
-        return str(display_md or "")
-    raw_value = str(raw_text or "")
-    if SEGMENT_SEPARATOR in raw_value:
-        return raw_value
-    return format_weibo_display_md(raw_value, author=str(author or "").strip())
+def _ensure_thread_text(*, raw_text: str, author: str) -> str:
+    del author
+    return str(raw_text or "")
 
 
 def thread_root_info_for_post(
     *,
     raw_text: str,
-    display_md: str,
     author: str,
 ) -> tuple[str, str, str]:
     """
     Return (root_key, root_segment, root_content_key).
 
     root_key: stable synthetic id (src:xxxx) derived from the 1st segment.
-    root_segment: the 1st display_md segment line ("speaker：text").
+    root_segment: the 1st thread-text segment line ("speaker：text").
     root_content_key: normalized compare key for skipping repeated roots.
     """
     resolved_author = str(author or "").strip()
-    md = _ensure_display_md(
-        raw_text=raw_text, display_md=display_md, author=resolved_author
-    )
-    segments = parse_display_md_segments(md) if md.strip() else []
+    thread_text = _ensure_thread_text(raw_text=raw_text, author=resolved_author)
+    segments = parse_thread_segments(thread_text) if thread_text.strip() else []
     if segments:
         root_segment = segments[0]
     else:
@@ -157,7 +149,7 @@ def build_topic_runtime_context(
     """
     Build (runtime_context, truncated_nodes_count).
 
-    posts: list of dicts (each needs platform_post_id/author/created_at/raw_text/display_md).
+    posts: list of dicts (each needs platform_post_id/author/created_at/raw_text).
     include_virtual_comments: whether to reconstruct other speakers as virtual 'comment' nodes.
     """
     focus = str(focus_username or "").strip()
@@ -175,9 +167,8 @@ def build_topic_runtime_context(
             continue
         author = str(row.get("author") or "").strip()
         raw_text = str(row.get("raw_text") or "")
-        display_md = str(row.get("display_md") or "")
-        md = _ensure_display_md(raw_text=raw_text, display_md=display_md, author=author)
-        segments = parse_display_md_segments(md) if md.strip() else []
+        thread_text = _ensure_thread_text(raw_text=raw_text, author=author)
+        segments = parse_thread_segments(thread_text) if thread_text.strip() else []
         if len(segments) != 1:
             continue
         seg_key = content_key_for_compare(
@@ -198,12 +189,11 @@ def build_topic_runtime_context(
         )
         root_created_at = str(root_post_row.get("created_at") or "").strip()
         root_speaker = str(root_post_row.get("author") or "").strip() or root_speaker
-        md = _ensure_display_md(
+        thread_text = _ensure_thread_text(
             raw_text=str(root_post_row.get("raw_text") or ""),
-            display_md=str(root_post_row.get("display_md") or ""),
             author=root_speaker,
         )
-        segments = parse_display_md_segments(md) if md.strip() else []
+        segments = parse_thread_segments(thread_text) if thread_text.strip() else []
         if segments:
             root_text = (
                 strip_leading_speaker(segments[-1], author_hint=root_speaker)
@@ -235,10 +225,9 @@ def build_topic_runtime_context(
         author = str(row.get("author") or "").strip()
         created_at = str(row.get("created_at") or "").strip()
         raw_text = str(row.get("raw_text") or "")
-        display_md = str(row.get("display_md") or "")
 
-        md = _ensure_display_md(raw_text=raw_text, display_md=display_md, author=author)
-        segments = parse_display_md_segments(md) if md.strip() else []
+        thread_text = _ensure_thread_text(raw_text=raw_text, author=author)
+        segments = parse_thread_segments(thread_text) if thread_text.strip() else []
         if not segments:
             # Fallback: treat the whole raw_text as a single "author" segment.
             segments = [f"{author}：{to_one_line_text(raw_text)}".strip("：")]
@@ -273,9 +262,6 @@ def build_topic_runtime_context(
             speaker = extract_speaker_name(seg).strip()
             if not speaker:
                 continue
-            if focus and speaker == focus:
-                # Avoid creating "virtual" focus-username nodes (hard to map back to a post).
-                continue
 
             node_text = strip_leading_speaker(seg, author_hint=speaker) or ""
             node_text, node_truncated = _truncate_text(
@@ -284,9 +270,13 @@ def build_topic_runtime_context(
             if node_truncated:
                 truncated_nodes += 1
 
+            source_kind = "comment"
+            if focus and speaker == focus:
+                source_kind = "talk_reply"
+
             path_payloads.append(
                 {
-                    "source_kind": "comment",
+                    "source_kind": source_kind,
                     "source_id": make_synthetic_source_id(seg),
                     "speaker": speaker,
                     "created_at": created_at,

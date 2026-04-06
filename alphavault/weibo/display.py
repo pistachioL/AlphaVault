@@ -1,13 +1,12 @@
 """
-Weibo display helpers.
+Weibo thread-text helpers.
 
-This project stores raw RSS text in posts.raw_text. Streamlit uses display_md to show
-readable content.
+This project stores the normalized root-to-current thread text in posts.raw_text.
 
-Goal: convert noisy Weibo reply/repost chains into readable Markdown:
+Goal: convert noisy Weibo reply/repost chains into readable thread text:
 - "speaker：text"
 - segments separated by '---'
-- optional <img> lines for images
+- optional "[图片] URL" lines for images
 """
 
 from __future__ import annotations
@@ -26,7 +25,8 @@ FORWARD_ORIGINAL_MARKER = "[转发原文]"
 QUOTE_MARKER = "//@"
 SEGMENT_SEPARATOR = "\n\n---\n\n"
 DEFAULT_UNKNOWN_AUTHOR = "未知"
-IMG_LINE_TEMPLATE = '<img class="ke_img" src="{url}" />'
+IMAGE_LABEL_PREFIX = "[图片]"
+IMAGE_LINE_TEMPLATE = f"{IMAGE_LABEL_PREFIX} {{url}}"
 REPOST_ONLY_TEXT = "转发"
 
 _MAX_HTML_UNESCAPE_PASSES = 2
@@ -83,8 +83,18 @@ def _strip_weibo_trailing_meta_sections(text: str) -> str:
     return value[: min(cut_positions)].rstrip()
 
 
+def strip_image_label_lines(text: str) -> str:
+    lines: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = str(raw_line or "").strip()
+        if line.startswith(IMAGE_LABEL_PREFIX):
+            continue
+        lines.append(str(raw_line or ""))
+    return "\n".join(lines).strip()
+
+
 def normalize_weibo_text(text: str) -> str:
-    value = _unescape_html_entities(text)
+    value = _unescape_html_entities(strip_image_label_lines(text))
     value = value.replace("\r\n", "\n").replace("\r", "\n")
     for ch in ("\u00a0", "\u2002", "\u2003", "\u2009", "\u202f", "\ufeff"):
         value = value.replace(ch, " ")
@@ -392,43 +402,21 @@ def _build_normalized_segments(
     return normalized_segments
 
 
-def build_weibo_display_lines(
-    raw_text: str,
-    *,
-    author: str = "",
-    max_depth: int = 3,
-) -> List[str]:
-    segments = _build_normalized_segments(
-        raw_text,
-        author=author,
-        max_depth=max_depth,
-    )
-    lines: List[str] = []
-    for seg in segments:
-        speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
-        text = normalize_weibo_text(seg.text or "")
-        if not text:
-            continue
-        lines.append(f"{speaker}：{text}")
-    return lines
-
-
-def format_weibo_display_md(
+def format_weibo_thread_text(
     raw_text: str,
     *,
     author: str = "",
     image_urls: Optional[Iterable[str]] = None,
 ) -> str:
+    images = _dedup_keep_order(image_urls or [])
+    img_lines = [IMAGE_LINE_TEMPLATE.format(url=url) for url in images]
     normalized_segments = _build_normalized_segments(
         raw_text,
         author=str(author or "").strip(),
         max_depth=3,
     )
     if not normalized_segments:
-        return ""
-
-    images = _dedup_keep_order(image_urls or [])
-    img_lines = [IMG_LINE_TEMPLATE.format(url=url) for url in images]
+        return "\n".join(img_lines).strip()
 
     blocks: List[str] = []
     for seg in normalized_segments:

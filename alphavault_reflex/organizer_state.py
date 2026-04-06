@@ -3,13 +3,13 @@ from __future__ import annotations
 import reflex as rx
 import pandas as pd
 
+from alphavault.infra.ai.alias_resolve_predictor import enrich_alias_tasks_with_ai
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_BLOCKED,
     ALIAS_TASK_STATUS_RESOLVED,
-    ensure_research_workbench_schema,
     get_research_workbench_engine_from_env,
     list_candidate_status_map,
-    list_manual_alias_resolve_tasks,
+    list_pending_alias_resolve_tasks,
     record_stock_alias_relation,
     set_alias_resolve_task_status,
 )
@@ -36,6 +36,16 @@ SECTION_STOCK_ALIAS = "stock_alias"
 SECTION_STOCK_SECTOR = "stock_sector"
 SECTION_SECTOR_SECTOR = "sector_sector"
 SECTION_ALIAS_MANUAL = "alias_manual"
+ALIAS_TASK_PAGE_LIMIT = 30
+ALIAS_TASK_PAGE_STEP = 30
+ALIAS_AI_PREVIEW_KEYS = (
+    "ai_status",
+    "ai_stock_code",
+    "ai_official_name",
+    "ai_confidence",
+    "ai_reason",
+    "ai_uncertain",
+)
 
 
 def _parse_manual_alias_target_stock_key(value: str) -> str:
@@ -50,12 +60,47 @@ def _parse_manual_alias_target_stock_key(value: str) -> str:
     return f"stock:{code}"
 
 
+def _merge_alias_ai_preview_rows(
+    old_rows: list[dict[str, str]],
+    new_rows: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    if not old_rows or not new_rows:
+        return new_rows
+    preview_by_alias_key: dict[str, dict[str, str]] = {}
+    for row in old_rows:
+        alias_key = str(row.get("alias_key") or "").strip()
+        if not alias_key:
+            continue
+        preview_fields = {
+            key: str(row.get(key) or "").strip()
+            for key in ALIAS_AI_PREVIEW_KEYS
+            if str(row.get(key) or "").strip()
+        }
+        if preview_fields:
+            preview_by_alias_key[alias_key] = preview_fields
+    if not preview_by_alias_key:
+        return new_rows
+
+    merged_rows: list[dict[str, str]] = []
+    for row in new_rows:
+        merged_row = dict(row)
+        alias_key = str(merged_row.get("alias_key") or "").strip()
+        matched_preview_fields = preview_by_alias_key.get(alias_key)
+        if matched_preview_fields:
+            for key, value in matched_preview_fields.items():
+                if not str(merged_row.get(key) or "").strip():
+                    merged_row[key] = value
+        merged_rows.append(merged_row)
+    return merged_rows
+
+
 class OrganizerState(rx.State):
     search_query: str = ""
     search_results: list[dict[str, str]] = []
     active_section: str = SECTION_STOCK_ALIAS
     pending_rows: list[dict[str, str]] = []
     load_error: str = ""
+    alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT
 
     alias_manual_dialog_open: bool = False
     alias_manual_alias_key: str = ""
@@ -80,12 +125,14 @@ class OrganizerState(rx.State):
 
     @rx.event
     def load_pending(self) -> None:
-        self.pending_rows, self.load_error = load_pending_rows(self.active_section)
+        self._reload_pending_rows()
 
     @rx.event
     def set_active_section(self, value: str) -> None:
         self.active_section = str(value or SECTION_STOCK_ALIAS)
-        self.pending_rows, self.load_error = load_pending_rows(self.active_section)
+        if self.active_section == SECTION_ALIAS_MANUAL:
+            self.alias_task_limit = ALIAS_TASK_PAGE_LIMIT
+        self._reload_pending_rows()
 
     @rx.event
     def accept_candidate(self, candidate_id: str) -> None:
@@ -114,11 +161,15 @@ class OrganizerState(rx.State):
         self.alias_manual_error = ""
 
     @rx.event
-    def open_alias_manual_dialog(self, alias_key: str) -> None:
+    def open_alias_manual_dialog(
+        self,
+        alias_key: str,
+        suggested_stock_code: str = "",
+    ) -> None:
         key = str(alias_key or "").strip()
         self.alias_manual_dialog_open = True
         self.alias_manual_alias_key = key
-        self.alias_manual_target_input = ""
+        self.alias_manual_target_input = str(suggested_stock_code or "").strip()
         self.alias_manual_error = ""
 
     @rx.event
@@ -138,7 +189,6 @@ class OrganizerState(rx.State):
             return
         try:
             engine = get_research_workbench_engine_from_env()
-            ensure_research_workbench_schema(engine)
             record_stock_alias_relation(
                 engine,
                 stock_key=target_key,
@@ -157,7 +207,7 @@ class OrganizerState(rx.State):
             return
         clear_reflex_source_caches()
         self.close_alias_manual_dialog()
-        self.pending_rows, self.load_error = load_pending_rows(self.active_section)
+        self._reload_pending_rows()
 
     @rx.event
     def block_alias_manual(self) -> None:
@@ -166,7 +216,6 @@ class OrganizerState(rx.State):
             return
         try:
             engine = get_research_workbench_engine_from_env()
-            ensure_research_workbench_schema(engine)
             set_alias_resolve_task_status(
                 engine,
                 alias_key=alias_key,
@@ -179,7 +228,54 @@ class OrganizerState(rx.State):
             return
         clear_reflex_source_caches()
         self.close_alias_manual_dialog()
-        self.pending_rows, self.load_error = load_pending_rows(self.active_section)
+        self._reload_pending_rows()
+
+    @rx.event
+    def preview_alias_ai_batch(self) -> None:
+        if self.active_section != SECTION_ALIAS_MANUAL:
+            return
+        target_indexes = [
+            index
+            for index, row in enumerate(self.pending_rows)
+            if not str(row.get("ai_status") or "").strip()
+        ]
+        if not target_indexes:
+            return
+        target_rows = [dict(self.pending_rows[index]) for index in target_indexes]
+        try:
+            enriched_rows = enrich_alias_tasks_with_ai(
+                target_rows,
+                ai_enabled=True,
+                limit=10,
+            )
+            merged_rows = [dict(row) for row in self.pending_rows]
+            for index, row in zip(target_indexes, enriched_rows, strict=False):
+                merged_rows[index] = row
+            self.pending_rows = merged_rows
+            self.load_error = ""
+        except BaseException as err:
+            if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            self.load_error = str(err)
+
+    @rx.event
+    def load_more_alias_tasks(self) -> None:
+        if self.active_section != SECTION_ALIAS_MANUAL:
+            return
+        self.alias_task_limit = (
+            max(0, int(self.alias_task_limit)) + ALIAS_TASK_PAGE_STEP
+        )
+        self._reload_pending_rows()
+
+    def _reload_pending_rows(self) -> None:
+        pending_rows, load_error = load_pending_rows(
+            self.active_section,
+            alias_task_limit=self.alias_task_limit,
+        )
+        if self.active_section == SECTION_ALIAS_MANUAL:
+            pending_rows = _merge_alias_ai_preview_rows(self.pending_rows, pending_rows)
+        self.pending_rows = pending_rows
+        self.load_error = load_error
 
     def _mutate_candidate(self, candidate_id: str, *, action: str) -> None:
         applied = apply_candidate_action_by_id(
@@ -219,13 +315,19 @@ def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
     return filtered[:20], ""
 
 
-def load_pending_rows(section: str) -> tuple[list[dict[str, str]], str]:
+def load_pending_rows(
+    section: str,
+    *,
+    alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT,
+) -> tuple[list[dict[str, str]], str]:
     section_key = str(section or SECTION_STOCK_ALIAS).strip()
     if section_key == SECTION_ALIAS_MANUAL:
         try:
             engine = get_research_workbench_engine_from_env()
-            ensure_research_workbench_schema(engine)
-            task_rows = list_manual_alias_resolve_tasks(engine)
+            task_rows = list_pending_alias_resolve_tasks(
+                engine,
+                limit=max(1, int(alias_task_limit)),
+            )
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
@@ -240,7 +342,18 @@ def load_pending_rows(section: str) -> tuple[list[dict[str, str]], str]:
                     "alias_key": alias_key,
                     "attempt_count": str(row.get("attempt_count") or "0").strip(),
                     "status": str(row.get("status") or "").strip(),
+                    "sample_post_uid": str(row.get("sample_post_uid") or "").strip(),
+                    "sample_evidence": str(row.get("sample_evidence") or "").strip(),
+                    "sample_raw_text_excerpt": str(
+                        row.get("sample_raw_text_excerpt") or ""
+                    ).strip(),
                     "updated_at": str(row.get("updated_at") or "").strip(),
+                    "ai_status": "",
+                    "ai_stock_code": "",
+                    "ai_official_name": "",
+                    "ai_confidence": "",
+                    "ai_reason": "",
+                    "ai_uncertain": "",
                 }
             )
         return out, ""
@@ -331,7 +444,6 @@ def _filter_known_candidate_statuses(
         return []
     try:
         engine = get_research_workbench_engine_from_env()
-        ensure_research_workbench_schema(engine)
         status_map = list_candidate_status_map(
             engine,
             [str(row.get("candidate_id") or "").strip() for row in rows],

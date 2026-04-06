@@ -26,7 +26,7 @@ def test_normalize_related_limit_clamps_and_defaults() -> None:
     assert normalize_related_limit(str(MAX_RELATED_LIMIT + 1000)) == MAX_RELATED_LIMIT
 
 
-def test_build_related_feed_merges_and_sorts_and_slices() -> None:
+def test_build_related_feed_sorts_and_slices_signals_only() -> None:
     signals = [
         {
             "post_uid": "weibo:1",
@@ -37,7 +37,6 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
             "created_at_line": "2026-04-01 10:00",
             "url": "u1",
             "raw_text": "t",
-            "display_md": "",
             "tree_text": "tree1",
         },
         {
@@ -49,31 +48,18 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
             "created_at_line": "2026-04-01 09:00",
             "url": "u2",
             "raw_text": "t2",
-            "display_md": "",
             "tree_text": "tree2",
         },
-    ]
-    backfill = [
-        {
-            "post_uid": "weibo:3",
-            "author": "c",
-            "created_at": "2026-04-01 09:30:00",
-            "url": "u3",
-            "matched_terms": "m",
-            "preview": "p",
-            "tree_text": "tree3",
-        }
     ]
 
     feed = build_related_feed(
         signals=signals,
-        backfill_posts=backfill,
         related_filter="all",
         limit=2,
         now="2026-04-01 10:30",
     )
-    assert feed.total == 3
-    assert [row["post_uid"] for row in feed.rows] == ["weibo:1", "weibo:3"]
+    assert feed.total == 2
+    assert [row["post_uid"] for row in feed.rows] == ["weibo:1", "weibo:2"]
     assert feed.rows[0]["is_signal"] == "1"
     assert feed.rows[0]["signal_badge"] == "买"
     assert feed.rows[0]["title"] == "s1"
@@ -82,39 +68,24 @@ def test_build_related_feed_merges_and_sorts_and_slices() -> None:
     assert feed.rows[0]["tree_preview_lines"][0]["content"] == "tree1"
     assert feed.rows[0]["tree_can_expand"] == ""
     assert feed.rows[0]["tree_expand_label"] == ""
-    assert feed.rows[1]["is_signal"] == ""
-    assert feed.rows[1]["signal_badge"] == ""
-    assert feed.rows[1]["action"] == ""
-    assert feed.rows[1]["raw_text"] == ""
-    assert feed.rows[1]["display_md"] == ""
-    assert feed.rows[1]["title"] == "m"
-    assert feed.rows[1]["created_at_line"] == "2026-04-01 09:30 · 1小时前"
-    assert feed.rows[1]["tree_lines"][0]["content"] == "tree3"
+    assert feed.rows[1]["is_signal"] == "1"
+    assert feed.rows[1]["signal_badge"] == "卖"
+    assert feed.rows[1]["action"] == "trade.sell"
+    assert feed.rows[1]["raw_text"] == "t2"
+    assert feed.rows[1]["title"] == "s2"
+    assert feed.rows[1]["created_at_line"] == "2026-04-01 09:00 · 1小时前"
+    assert feed.rows[1]["tree_lines"][0]["content"] == "tree2"
+    assert "display_md" not in feed.rows[0]
 
 
-def test_build_related_feed_signal_filter_excludes_backfill() -> None:
+def test_build_related_feed_signal_filter_keeps_signals() -> None:
     feed = build_related_feed(
         signals=[{"post_uid": "p1", "summary": "s", "action": "trade.buy"}],
-        backfill_posts=[{"post_uid": "p2", "matched_terms": "m"}],
         related_filter="signal",
         limit=20,
     )
     assert feed.total == 1
     assert [row["post_uid"] for row in feed.rows] == ["p1"]
-
-
-def test_build_related_feed_dedupes_by_post_uid_prefers_signals() -> None:
-    feed = build_related_feed(
-        signals=[{"post_uid": "p1", "summary": "s", "action": "trade.buy"}],
-        backfill_posts=[
-            {"post_uid": "p1", "matched_terms": "m", "created_at": "2026-01-01"}
-        ],
-        related_filter="all",
-        limit=20,
-    )
-    assert feed.total == 1
-    assert feed.rows[0]["post_uid"] == "p1"
-    assert feed.rows[0]["is_signal"] == "1"
 
 
 def test_build_related_feed_rebuilds_weibo_reply_chain_tree_when_missing() -> None:
@@ -134,18 +105,18 @@ def test_build_related_feed_rebuilds_weibo_reply_chain_tree_when_missing() -> No
                 "created_at_line": "2026-04-01 10:00",
                 "url": "u1",
                 "raw_text": raw_chain,
-                "display_md": "",
                 "tree_text": "",
             }
         ],
-        backfill_posts=[],
         related_filter="all",
         limit=20,
         now="2026-04-01 10:30",
     )
     assert len(feed.rows) == 1
     tree_text = feed.rows[0]["tree_text"]
-    assert tree_text.startswith("📌一名造价师De：公公你是怎么做到上个月新城成本0.753港币，这个月就到了0.3")
+    assert tree_text.startswith(
+        "📌一名造价师De：公公你是怎么做到上个月新城成本0.753港币，这个月就到了0.3"
+    )
     assert "└── @挖地瓜的超级鹿鼎公：卖了10万股" in tree_text
     assert "└── 📌一名造价师De：卖了10万股" in tree_text
     assert any(line["prefix"] != "" for line in feed.rows[0]["tree_lines"])
@@ -162,11 +133,9 @@ def test_build_related_feed_rebuilds_tree_even_when_cached_tree_text_exists() ->
                 "created_at": "2026-04-01 10:00",
                 "url": "u",
                 "raw_text": "回复@B:最后一条//@B:上一条",
-                "display_md": "",
                 "tree_text": "旧缓存",
             }
         ],
-        backfill_posts=[],
         related_filter="all",
         limit=20,
     )
@@ -185,11 +154,9 @@ def test_build_related_feed_hides_weibo_meta_and_forward_markers() -> None:
                 "author": "A",
                 "created_at": "2026-04-01 10:00",
                 "raw_text": "",
-                "display_md": "",
                 "tree_text": "A：第一句\n[微博元信息]\n@用户: x,y\n[转发原文]\nB：第二句",
             }
         ],
-        backfill_posts=[],
         related_filter="all",
         limit=20,
     )
@@ -223,11 +190,9 @@ def test_build_related_feed_long_forward_original_keeps_single_root_and_inline_e
                 "author": "挖地瓜的超级鹿鼎公",
                 "created_at": "2026-04-01 10:00",
                 "raw_text": raw_text,
-                "display_md": "",
                 "tree_text": "旧缓存树",
             }
         ],
-        backfill_posts=[],
         related_filter="all",
         limit=20,
     )
@@ -259,7 +224,6 @@ def test_build_related_feed_original_post_does_not_show_reply_chain_from_cached_
                 "author": "挖地瓜的超级鹿鼎公",
                 "created_at": "2026-04-01 10:00",
                 "raw_text": "游戏仓2026年2月PS图\n本游戏仓2月收盘1888.5W",
-                "display_md": "",
                 "tree_text": (
                     "游戏仓2026年2月PS图 ... [原帖 ID: 5270950817566951]\n"
                     "└── @透明水纹：舅舅，长电T了两毛钱。。\n"
@@ -267,7 +231,6 @@ def test_build_related_feed_original_post_does_not_show_reply_chain_from_cached_
                 ),
             }
         ],
-        backfill_posts=[],
         related_filter="all",
         limit=20,
     )
@@ -288,11 +251,9 @@ def test_build_related_feed_original_colon_line_not_prefixed_with_at() -> None:
                 "author": "作者A",
                 "created_at": "2026-04-01 10:00",
                 "raw_text": "本游戏仓：2015年8月18日3999点入市",
-                "display_md": "",
                 "tree_text": "本游戏仓：2015年8月18日3999点入市 [原帖 ID: 100]",
             }
         ],
-        backfill_posts=[],
         related_filter="all",
         limit=20,
     )

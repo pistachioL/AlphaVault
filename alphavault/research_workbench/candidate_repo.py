@@ -10,9 +10,16 @@ from alphavault.db.sql.research_workbench import (
 )
 from alphavault.db.turso_db import TursoConnection, TursoEngine
 from alphavault.db.turso_db import turso_savepoint
+from alphavault.infra.entity_match_redis import (
+    sync_stock_alias_shadow_dict_best_effort,
+)
 from alphavault.timeutil import now_cst_str
 
-from .relation_repo import record_relation
+from .relation_repo import (
+    RELATION_LABEL_ALIAS,
+    RELATION_TYPE_STOCK_ALIAS,
+    record_relation,
+)
 from .schema import RESEARCH_RELATION_CANDIDATES_TABLE, handle_turso_error, use_conn
 
 STATUS_PENDING = "pending"
@@ -163,6 +170,10 @@ def accept_relation_candidate(
     candidate_key = str(candidate_id or "").strip()
     if not candidate_key:
         return
+    accepted_relation_type = ""
+    accepted_left_key = ""
+    accepted_right_key = ""
+    accepted_relation_label = ""
     try:
         with use_conn(engine_or_conn) as conn:
             row = (
@@ -175,6 +186,10 @@ def accept_relation_candidate(
             )
             if not row:
                 return
+            accepted_relation_type = str(row.get("relation_type") or "").strip()
+            accepted_left_key = str(row.get("left_key") or "").strip()
+            accepted_right_key = str(row.get("right_key") or "").strip()
+            accepted_relation_label = str(row.get("relation_label") or "").strip()
             with turso_savepoint(conn):
                 conn.execute(
                     update_candidate_status(RESEARCH_RELATION_CANDIDATES_TABLE),
@@ -186,14 +201,25 @@ def accept_relation_candidate(
                 )
                 record_relation(
                     conn,
-                    relation_type=str(row.get("relation_type") or "").strip(),
-                    left_key=str(row.get("left_key") or "").strip(),
-                    right_key=str(row.get("right_key") or "").strip(),
-                    relation_label=str(row.get("relation_label") or "").strip(),
+                    relation_type=accepted_relation_type,
+                    left_key=accepted_left_key,
+                    right_key=accepted_right_key,
+                    relation_label=accepted_relation_label,
                     source=source,
                 )
     except BaseException as err:
         handle_turso_error(engine_or_conn, err)
+    if (
+        accepted_relation_type == RELATION_TYPE_STOCK_ALIAS
+        and accepted_relation_label == RELATION_LABEL_ALIAS
+    ):
+        try:
+            sync_stock_alias_shadow_dict_best_effort(
+                stock_key=accepted_left_key,
+                alias_key=accepted_right_key,
+            )
+        except Exception:
+            pass
 
 
 def ignore_relation_candidate(

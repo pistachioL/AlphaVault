@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from alphavault.ai.analyze import _call_ai_with_litellm
+from alphavault.ai.topic_cluster_suggest import ai_is_configured
+from alphavault.domains.stock.key_match import (
+    is_stock_code_value,
+    normalize_stock_code,
+)
+
+from .runtime_config import ai_runtime_config_from_env
+
+
+AI_STATUS_SKIPPED = "skipped"
+AI_STATUS_RANKED = "ranked"
+AI_STATUS_ERROR = "error"
+
+_ALIAS_AI_BATCH_CAP = 10
+_ALIAS_AI_TIMEOUT_SECONDS_CAP = 20.0
+_ALIAS_AI_RETRY_CAP = 1
+
+
+def _clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _clamp_confidence(value: object) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return max(0.0, min(float(value), 1.0))
+    try:
+        return max(0.0, min(float(_clean_text(value) or "0"), 1.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _format_confidence(value: object) -> str:
+    score = _clamp_confidence(value)
+    text = f"{score:.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _normalize_bool_flag(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else ""
+    raw = _clean_text(value).lower()
+    return "true" if raw in {"1", "true", "yes", "y"} else ""
+
+
+def _normalize_stock_code_or_empty(value: object) -> str:
+    code = normalize_stock_code(value=str(value or ""))
+    return code if is_stock_code_value(code) else ""
+
+
+def _with_ai_fields(
+    item: dict[str, Any],
+    *,
+    status: str,
+    stock_code: str = "",
+    official_name: str = "",
+    confidence: str = "",
+    reason: str = "",
+    uncertain: str = "",
+) -> dict[str, Any]:
+    row = dict(item)
+    row["ai_status"] = status
+    row["ai_stock_code"] = _clean_text(stock_code)
+    row["ai_official_name"] = _clean_text(official_name)
+    row["ai_confidence"] = _clean_text(confidence)
+    row["ai_reason"] = _clean_text(reason) or _clean_text(row.get("sample_evidence"))
+    row["ai_uncertain"] = _clean_text(uncertain)
+    return row
+
+
+def _ensure_ai_fields(item: dict[str, Any]) -> dict[str, Any]:
+    row = dict(item)
+    for key in (
+        "ai_status",
+        "ai_stock_code",
+        "ai_official_name",
+        "ai_confidence",
+        "ai_reason",
+        "ai_uncertain",
+    ):
+        row.setdefault(key, "")
+    return row
+
+
+def enrich_alias_tasks_with_ai(
+    tasks: list[dict[str, Any]],
+    *,
+    ai_enabled: bool,
+    limit: int = _ALIAS_AI_BATCH_CAP,
+    should_continue: Callable[[], bool] | None = None,
+) -> list[dict[str, Any]]:
+    rows = [_ensure_ai_fields(item) for item in tasks]
+    if not rows:
+        return []
+
+    batch_size = max(0, min(int(limit), _ALIAS_AI_BATCH_CAP))
+    attempted = rows[:batch_size]
+    untouched = rows[batch_size:]
+    if not attempted:
+        return rows
+
+    if should_continue is not None:
+        try:
+            if not bool(should_continue()):
+                return [
+                    _with_ai_fields(item, status=AI_STATUS_SKIPPED)
+                    for item in attempted
+                ] + untouched
+        except Exception:
+            return [
+                _with_ai_fields(item, status=AI_STATUS_SKIPPED) for item in attempted
+            ] + untouched
+
+    if not ai_enabled:
+        return [
+            _with_ai_fields(item, status=AI_STATUS_SKIPPED) for item in attempted
+        ] + untouched
+
+    ok, _err = ai_is_configured()
+    if not ok:
+        return [
+            _with_ai_fields(item, status=AI_STATUS_SKIPPED) for item in attempted
+        ] + untouched
+
+    try:
+        ranked = _predict_alias_tasks_with_ai(attempted)
+    except Exception:
+        ranked = [_with_ai_fields(item, status=AI_STATUS_ERROR) for item in attempted]
+    return ranked + untouched
+
+
+def _predict_alias_tasks_with_ai(
+    tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    config = ai_runtime_config_from_env(timeout_seconds_default=1000.0)
+    task_lines: list[str] = []
+    for item in tasks:
+        alias_key = _clean_text(item.get("alias_key"))
+        alias_text = (
+            alias_key[len("stock:") :] if alias_key.startswith("stock:") else alias_key
+        )
+        task_lines.append(
+            "\n".join(
+                [
+                    f"- alias_key={alias_key}",
+                    f"  alias={alias_text}",
+                    f"  sample_post_uid={_clean_text(item.get('sample_post_uid'))}",
+                    f"  sample_evidence={_clean_text(item.get('sample_evidence'))}",
+                    "  sample_raw_text_excerpt="
+                    f"{_clean_text(item.get('sample_raw_text_excerpt'))}",
+                ]
+            )
+        )
+
+    prompt = f"""
+你是股票简称预判助手。请根据每个简称的样例上下文，保守判断它最可能对应的股票代码和正式简称，并输出严格 JSON。
+
+输入列表：
+{chr(10).join(task_lines)}
+
+输出 JSON：
+{{
+  "predictions": [
+    {{
+      "alias_key": "stock:...",
+      "stock_code": "600519.SH",
+      "official_name": "贵州茅台",
+      "confidence": 0.0,
+      "reason": "一句话理由",
+      "is_uncertain": false
+    }}
+  ]
+}}
+
+规则：
+- alias_key 只能从输入列表里选，禁止编造。
+- 每个输入最多返回 1 条 prediction。
+- 没把握就保守：stock_code 和 official_name 可以留空，并把 is_uncertain 设成 true。
+- stock_code 必须是标准格式，比如 600519.SH、0005.HK、AAPL.US。
+- 不要输出 Markdown。
+""".strip()
+
+    parsed = _call_ai_with_litellm(
+        prompt=prompt,
+        api_mode=config.api_mode,
+        ai_stream=False,
+        model_name=config.model,
+        base_url=config.base_url,
+        api_key=config.api_key,
+        timeout_seconds=min(
+            float(config.timeout_seconds),
+            _ALIAS_AI_TIMEOUT_SECONDS_CAP,
+        ),
+        retry_count=min(int(config.retries), _ALIAS_AI_RETRY_CAP),
+        temperature=float(config.temperature),
+        reasoning_effort=str(config.reasoning_effort),
+        trace_out=None,
+        trace_label="alias_tasks:predict",
+    )
+    predictions = parsed.get("predictions") if isinstance(parsed, dict) else None
+    if not isinstance(predictions, list):
+        return [_with_ai_fields(item, status=AI_STATUS_ERROR) for item in tasks]
+
+    prediction_map: dict[str, dict[str, Any]] = {}
+    for item in predictions:
+        if not isinstance(item, dict):
+            continue
+        alias_key = _clean_text(item.get("alias_key"))
+        if not alias_key:
+            continue
+        prediction_map[alias_key] = item
+
+    out: list[dict[str, Any]] = []
+    for item in tasks:
+        alias_key = _clean_text(item.get("alias_key"))
+        prediction = prediction_map.get(alias_key)
+        if prediction is None:
+            out.append(
+                _with_ai_fields(
+                    item,
+                    status=AI_STATUS_ERROR,
+                    reason="AI 未返回这条简称的结果",
+                    uncertain="true",
+                )
+            )
+            continue
+        out.append(
+            _with_ai_fields(
+                item,
+                status=AI_STATUS_RANKED,
+                stock_code=_normalize_stock_code_or_empty(prediction.get("stock_code")),
+                official_name=_clean_text(prediction.get("official_name")),
+                confidence=_format_confidence(prediction.get("confidence")),
+                reason=_clean_text(prediction.get("reason")),
+                uncertain=_normalize_bool_flag(prediction.get("is_uncertain")),
+            )
+        )
+    return out
+
+
+__all__ = [
+    "AI_STATUS_ERROR",
+    "AI_STATUS_RANKED",
+    "AI_STATUS_SKIPPED",
+    "enrich_alias_tasks_with_ai",
+]

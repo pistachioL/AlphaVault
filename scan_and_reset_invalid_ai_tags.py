@@ -7,10 +7,7 @@ from alphavault.env import load_dotenv_if_present
 from alphavault.ai.tag_validate import validate_assertion_row
 from alphavault.db.sql.scripts import scan_invalid_assertion_rows
 from alphavault.db.turso_db import get_turso_engine_from_env
-from alphavault.db.turso_queue import (
-    ensure_cloud_queue_schema,
-    reset_ai_results_for_post_uids,
-)
+from alphavault.db.turso_queue import reset_ai_results_for_post_uids
 from alphavault.rss.utils import now_str
 
 
@@ -25,7 +22,7 @@ def parse_args() -> argparse.Namespace:
         "--prompt-version",
         type=str,
         default="",
-        help="只扫描这个 prompt_version（默认扫全部；可选：topic-prompt-v3 / weibo_assertions_v1）",
+        help="只扫描这个 prompt_version（默认扫全部；可选：topic-prompt-v4 / weibo_assertions_v1）",
     )
     parser.add_argument(
         "--limit", type=int, default=0, help="最多 reset 多少个 post（0=不限）"
@@ -97,7 +94,6 @@ def main() -> None:
         raise SystemExit("危险操作：非 dry-run 请加 --yes 确认")
 
     engine = get_turso_engine_from_env()
-    ensure_cloud_queue_schema(engine, verbose=bool(args.verbose))
 
     limit = max(0, int(args.limit))
     invalid_uids, _errors, scanned_rows = _scan_invalid_post_uids(

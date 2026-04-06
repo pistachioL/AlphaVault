@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
+from alphavault.worker.redis_queue import (
+    REDIS_PUSH_STATUS_ERROR,
+    REDIS_PUSH_STATUS_PUSHED,
+)
 from alphavault.worker.backoff import backoff_seconds
 
 
@@ -80,15 +84,12 @@ def maybe_run_redis_due_maintenance(
 def should_run_maintenance_recovery(
     *,
     source: Any,
-    force_maintenance: bool,
     maintenance_recovery_interval_cycles: int,
 ) -> bool:
     cycle_count = (
         max(0, int(getattr(source, "maintenance_recovery_cycle_count", 0))) + 1
     )
     source.maintenance_recovery_cycle_count = int(cycle_count)
-    if bool(force_maintenance):
-        return True
     if cycle_count <= 1:
         return True
     if bool(getattr(source, "maintenance_recovery_force_next", False)):
@@ -108,6 +109,116 @@ def update_maintenance_recovery_state(
     )
 
 
+def should_requeue_unprocessed_posts_from_db(
+    *,
+    source: Any,
+    do_recovery: bool,
+    redis_queue_has_pending_work: bool,
+    source_has_running_jobs: bool,
+) -> bool:
+    if not bool(do_recovery):
+        return False
+    cycle_count = max(0, int(getattr(source, "maintenance_recovery_cycle_count", 0)))
+    if cycle_count <= 1:
+        return True
+    return not bool(redis_queue_has_pending_work) and not bool(source_has_running_jobs)
+
+
+def has_pending_ai_queue_work(
+    *,
+    redis_client: Any,
+    redis_queue_key: str,
+    verbose: bool,
+    pending_count_fn: Callable[..., int],
+    fatal_exceptions: tuple[type[BaseException], ...],
+) -> bool:
+    resolved_queue_key = str(redis_queue_key or "").strip()
+    if not redis_client or not resolved_queue_key:
+        return False
+    try:
+        return bool(pending_count_fn(redis_client, resolved_queue_key))
+    except BaseException as err:
+        if isinstance(err, fatal_exceptions):
+            raise
+        if verbose:
+            print(
+                f"[redis] ai_pending_count_error queue={resolved_queue_key} "
+                f"{type(err).__name__}: {err}",
+                flush=True,
+            )
+        return True
+
+
+def requeue_unprocessed_posts_to_redis(
+    *,
+    engine: Any,
+    platform: str,
+    redis_client: Any,
+    redis_queue_key: str,
+    verbose: bool,
+    max_items: int,
+    load_unprocessed_posts_for_requeue_fn: Callable[..., list[dict[str, object]]],
+    redis_try_push_ai_dedup_status_fn: Callable[..., str],
+    resolve_redis_dedup_ttl_seconds_fn: Callable[[], int],
+    fatal_exceptions: tuple[type[BaseException], ...],
+) -> tuple[int, bool]:
+    if engine is None:
+        return 0, False
+    if max_items <= 0:
+        return 0, False
+    if not redis_client or not str(redis_queue_key or "").strip():
+        return 0, False
+
+    resolved_platform = str(platform or "").strip().lower() or None
+    try:
+        rows = load_unprocessed_posts_for_requeue_fn(
+            engine,
+            limit=max(0, int(max_items)),
+            platform=resolved_platform,
+        )
+    except BaseException as err:
+        if isinstance(err, fatal_exceptions):
+            raise
+        if verbose:
+            print(
+                f"[redis] load_unprocessed_posts_error {type(err).__name__}: {err}",
+                flush=True,
+            )
+        return 0, True
+
+    pushed = 0
+    ttl_seconds = max(1, int(resolve_redis_dedup_ttl_seconds_fn()))
+    for row in rows:
+        payload = dict(row or {})
+        post_uid = str(payload.get("post_uid") or "").strip()
+        if not post_uid:
+            continue
+        try:
+            status = redis_try_push_ai_dedup_status_fn(
+                redis_client,
+                redis_queue_key,
+                post_uid=post_uid,
+                payload=payload,
+                ttl_seconds=ttl_seconds,
+                verbose=bool(verbose),
+            )
+        except BaseException as err:
+            if isinstance(err, fatal_exceptions):
+                raise
+            if verbose:
+                print(
+                    f"[redis] unprocessed_requeue_error post_uid={post_uid} "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
+            return pushed, True
+        if status == REDIS_PUSH_STATUS_ERROR:
+            return pushed, True
+        if status == REDIS_PUSH_STATUS_PUSHED:
+            pushed += 1
+    return pushed, False
+
+
 def run_turso_maintenance(
     *,
     engine: Any,
@@ -115,40 +226,45 @@ def run_turso_maintenance(
     spool_dir: Path | str,
     redis_client: Any,
     redis_queue_key: str,
-    stuck_seconds: int,
     verbose: bool,
     do_recovery: bool,
+    do_db_requeue: bool,
     now_fn: Callable[[], float],
-    recover_stuck_ai_tasks_fn: Callable[..., int],
-    recover_done_without_processed_at_fn: Callable[..., int],
+    recover_spool_to_turso_and_redis_fn: Callable[..., tuple[int, int, int, bool]],
+    load_unprocessed_posts_for_requeue_fn: Callable[..., list[dict[str, object]]],
+    redis_try_push_ai_dedup_status_fn: Callable[..., str],
+    resolve_redis_dedup_ttl_seconds_fn: Callable[[], int],
     maybe_dispose_turso_engine_on_transient_error_fn: Callable[..., None],
-    redis_ai_requeue_processing_fn: Callable[..., int],
-    pump_assertion_outbox_to_redis_fn: Callable[..., tuple[int, bool]],
+    redis_ai_requeue_processing_without_lease_fn: Callable[..., int],
     fatal_exceptions: tuple[type[BaseException], ...],
     redis_ai_requeue_max_items: int,
 ) -> tuple[int, int, bool]:
     if engine is None:
         return 0, 0, False
 
-    del spool_dir
     platform_name = str(platform or "").strip().lower() or None
 
     turso_error = False
     recovered = 0
+    flushed_redis = 0
     if bool(do_recovery):
         try:
-            recovered = recover_stuck_ai_tasks_fn(
-                engine,
-                now_epoch=int(now_fn()),
-                stuck_seconds=max(60, int(stuck_seconds)),
-                platform=platform_name,
+            (
+                restored_posts,
+                spool_queued,
+                deleted_done_spool,
+                spool_error,
+            ) = recover_spool_to_turso_and_redis_fn(
+                spool_dir=Path(spool_dir),
+                engine=engine,
+                max_items=int(redis_ai_requeue_max_items),
                 verbose=bool(verbose),
+                redis_client=redis_client,
+                redis_queue_key=redis_queue_key,
             )
-            recovered += recover_done_without_processed_at_fn(
-                engine,
-                platform=platform_name,
-                verbose=bool(verbose),
-            )
+            recovered += int(restored_posts) + int(deleted_done_spool)
+            flushed_redis += int(spool_queued)
+            turso_error = bool(turso_error or spool_error)
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
@@ -161,30 +277,38 @@ def run_turso_maintenance(
             if verbose:
                 print(f"[ai] recover_error {type(err).__name__}: {err}", flush=True)
 
-    flushed_redis = 0
     flush_redis_error = False
     if redis_client and str(redis_queue_key or "").strip():
         try:
-            requeued = redis_ai_requeue_processing_fn(
-                redis_client,
-                redis_queue_key,
-                max_items=int(redis_ai_requeue_max_items),
-                verbose=bool(verbose),
+            flushed_redis += int(
+                redis_ai_requeue_processing_without_lease_fn(
+                    redis_client,
+                    redis_queue_key,
+                    max_items=int(redis_ai_requeue_max_items),
+                    verbose=bool(verbose),
+                )
             )
-            pumped, pump_error = pump_assertion_outbox_to_redis_fn(
-                engine=engine,
-                redis_client=redis_client,
-                redis_queue_key=redis_queue_key,
-                verbose=bool(verbose),
-            )
-            flushed_redis = int(requeued) + int(pumped)
-            flush_redis_error = bool(pump_error)
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
             flush_redis_error = True
             if verbose:
                 print(f"[redis] flush_error {type(err).__name__}: {err}", flush=True)
+        if bool(do_recovery) and bool(do_db_requeue) and flushed_redis <= 0:
+            requeued_posts, requeue_posts_error = requeue_unprocessed_posts_to_redis(
+                engine=engine,
+                platform=platform_name or "",
+                redis_client=redis_client,
+                redis_queue_key=redis_queue_key,
+                verbose=bool(verbose),
+                max_items=int(redis_ai_requeue_max_items),
+                load_unprocessed_posts_for_requeue_fn=load_unprocessed_posts_for_requeue_fn,
+                redis_try_push_ai_dedup_status_fn=redis_try_push_ai_dedup_status_fn,
+                resolve_redis_dedup_ttl_seconds_fn=resolve_redis_dedup_ttl_seconds_fn,
+                fatal_exceptions=fatal_exceptions,
+            )
+            flushed_redis += int(requeued_posts)
+            flush_redis_error = bool(flush_redis_error or requeue_posts_error)
 
     turso_error = bool(turso_error or flush_redis_error)
     return recovered, flushed_redis, turso_error

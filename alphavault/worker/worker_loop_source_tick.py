@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 
 from alphavault.rss.utils import CST
-from alphavault.worker.assertion_outbox_consumer import rebuild_local_cache_from_outbox
 from alphavault.worker import cycle_runner
 from alphavault.worker import maintenance
 from alphavault.worker import periodic_jobs
@@ -20,12 +19,12 @@ from alphavault.worker.worker_loop_models import (
     SourceTickExecutors,
     SourceTickState,
 )
+from alphavault.worker.worker_loop_redis_enqueue import maybe_schedule_redis_enqueue
 from alphavault.worker.worker_loop_rss import maybe_schedule_rss_ingest
 from alphavault.worker.worker_loop_spool import maybe_schedule_spool_flush
 from alphavault.worker.worker_loop_turso import ensure_source_turso_ready
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-LOCAL_CACHE_REBUILD_RETRY_SECONDS = 300.0
 
 
 def _resolve_source_identity(source) -> tuple[str, str]:
@@ -71,6 +70,12 @@ def _schedule_rss_and_spool(
         spool_executor=execs.spool_executor,
         wakeup_event=state.wakeup_event,
     )
+    maybe_schedule_redis_enqueue(
+        source=source,
+        ctx=ctx,
+        redis_enqueue_executor=execs.redis_enqueue_executor,
+        wakeup_event=state.wakeup_event,
+    )
 
 
 def _collect_source_finished_jobs(
@@ -102,48 +107,31 @@ def _ensure_active_engine(
     )
 
 
-def _ensure_local_cache_ready(
-    *,
-    source,
-    active_engine,
-    source_name: str,
-    ctx: SourceTickContext,
-) -> None:
-    if active_engine is None:
-        return
-    if bool(getattr(source, "local_cache_ready", False)):
-        return
-    next_at = float(getattr(source, "local_cache_rebuild_next_at", 0.0) or 0.0)
-    if float(ctx.now) < next_at:
-        return
-    stats = rebuild_local_cache_from_outbox(
-        active_engine,
-        source_name=str(source_name or "").strip(),
-        verbose=ctx.verbose,
-    )
-    if not bool(stats.get("has_error", False)):
-        source.local_cache_ready = True
-        source.local_cache_rebuild_next_at = 0.0
-        return
-    source.local_cache_rebuild_next_at = float(ctx.now) + float(
-        LOCAL_CACHE_REBUILD_RETRY_SECONDS
-    )
-
-
 def _run_source_maintenance(
     *,
     source,
     source_name: str,
     active_engine,
     ctx: SourceTickContext,
+    state: SourceTickState,
 ) -> bool:
     platform = str(source.config.platform or "").strip()
+    inflight_owner = str(source_name or "").strip() or platform
+    source_has_running_jobs = bool(
+        getattr(source, "redis_enqueue_future", None) is not None
+        or getattr(source, "spool_flush_future", None) is not None
+        or any(
+            str(owner or "").strip() == inflight_owner
+            for owner in state.inflight_owner_by_future.values()
+        )
+    )
     return run_maintenance_if_due(
         source=source,
         active_engine=active_engine,
         source_name=source_name,
         platform=platform,
         ctx=ctx,
+        source_has_running_jobs=bool(source_has_running_jobs),
     )
 
 
@@ -190,17 +178,11 @@ def _any_inflight(*, source, state: SourceTickState) -> bool:
     return bool(
         cycle_runner.should_wait_with_event(
             ai_inflight=bool(state.inflight_futures),
-            any_alias_inflight=bool(
-                getattr(source, "alias_sync_future", None) is not None
-            ),
-            any_backfill_inflight=bool(
-                getattr(source, "backfill_cache_future", None) is not None
-            ),
-            any_relation_inflight=bool(
-                getattr(source, "relation_cache_future", None) is not None
-            ),
             any_stock_hot_inflight=bool(
                 getattr(source, "stock_hot_cache_future", None) is not None
+            ),
+            any_redis_enqueue_inflight=bool(
+                getattr(source, "redis_enqueue_future", None) is not None
             ),
             any_rss_inflight=bool(
                 getattr(source, "rss_ingest_future", None) is not None
@@ -228,9 +210,6 @@ def _save_cycle_progress(
         maintenance_error=bool(errors["maintenance_error"]),
         spool_flush_error=bool(errors["spool_flush_error"]),
         schedule_error=bool(errors["schedule_error"]),
-        alias_sync_error=bool(errors["alias_sync_error"]),
-        backfill_cache_error=bool(errors["backfill_cache_error"]),
-        relation_cache_error=bool(errors["relation_cache_error"]),
         stock_hot_error=bool(errors["stock_hot_error"]),
     )
     save_worker_progress_state(
@@ -241,7 +220,7 @@ def _save_cycle_progress(
             "running": bool(any_inflight),
             "next_run_at": next_run_at,
             "turso_error": bool(source_turso_error),
-            "rss_error": bool(rss_enqueue_error),
+            "rss_error": bool(rss_enqueue_error or errors["redis_enqueue_error"]),
         },
         verbose=ctx.verbose,
     )
@@ -257,12 +236,6 @@ def run_source_tick(
     source_name, _platform = _resolve_source_identity(source)
     active_engine = _ensure_active_engine(
         source=source, source_name=source_name, ctx=ctx
-    )
-    _ensure_local_cache_ready(
-        source=source,
-        active_engine=active_engine,
-        source_name=source_name,
-        ctx=ctx,
     )
     errors, rss_enqueue_error = _collect_source_finished_jobs(
         source=source, source_name=source_name, ctx=ctx
@@ -280,6 +253,7 @@ def run_source_tick(
         source_name=source_name,
         active_engine=active_engine,
         ctx=ctx,
+        state=state,
     )
     errors["schedule_error"] = _run_source_ai_schedule(
         source=source,

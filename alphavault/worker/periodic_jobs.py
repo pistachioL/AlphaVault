@@ -11,6 +11,53 @@ def mark_spool_item_ingested(*, source: Any, wakeup_event: Any) -> None:
     wakeup_event.set()
 
 
+def enqueue_redis_payload(
+    *, source: Any, payload: dict[str, Any], wakeup_event: Any
+) -> None:
+    with source.redis_enqueue_state_lock:
+        source.redis_enqueue_pending.append(dict(payload))
+    if wakeup_event is not None:
+        wakeup_event.set()
+
+
+def should_start_redis_enqueue(*, source: Any) -> bool:
+    with source.redis_enqueue_state_lock:
+        return bool(
+            source.redis_enqueue_need_retry or bool(source.redis_enqueue_pending)
+        )
+
+
+def mark_redis_enqueue_started(*, source: Any) -> None:
+    with source.redis_enqueue_state_lock:
+        source.redis_enqueue_need_retry = False
+
+
+def pop_next_redis_enqueue_payload(*, source: Any) -> dict[str, Any] | None:
+    with source.redis_enqueue_state_lock:
+        if not source.redis_enqueue_pending:
+            return None
+        return dict(source.redis_enqueue_pending.popleft())
+
+
+def restore_redis_enqueue_payload(
+    *,
+    source: Any,
+    payload: dict[str, Any],
+    wakeup_event: Any | None = None,
+) -> None:
+    with source.redis_enqueue_state_lock:
+        source.redis_enqueue_pending.appendleft(dict(payload))
+    if wakeup_event is not None:
+        wakeup_event.set()
+
+
+def mark_redis_enqueue_retry(*, source: Any, has_more: bool, has_error: bool) -> None:
+    if not (bool(has_more) or bool(has_error)):
+        return
+    with source.redis_enqueue_state_lock:
+        source.redis_enqueue_need_retry = True
+
+
 def should_start_spool_flush(*, source: Any) -> bool:
     with source.spool_state_lock:
         return bool(

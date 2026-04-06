@@ -47,11 +47,75 @@ def _manual_alias_card(row: rx.Var[dict[str, str]]) -> rx.Component:
             f"已尝试 {row['attempt_count']} 次",
             class_name="av-research-muted",
         ),
+        rx.cond(
+            row["sample_post_uid"] != "",
+            rx.text(
+                f"样例帖子：{row['sample_post_uid']}",
+                class_name="av-research-muted",
+            ),
+            rx.el.div(),
+        ),
+        rx.cond(
+            row["sample_evidence"] != "",
+            rx.text(row["sample_evidence"], class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
+            row["sample_raw_text_excerpt"] != "",
+            rx.text(
+                row["sample_raw_text_excerpt"],
+                class_name="av-research-muted",
+            ),
+            rx.el.div(),
+        ),
+        rx.cond(
+            row["ai_status"] != "",
+            rx.el.div(
+                rx.text(
+                    f"AI 状态：{row['ai_status']}",
+                    class_name="av-research-muted",
+                ),
+                rx.cond(
+                    row["ai_stock_code"] != "",
+                    rx.text(
+                        f"AI 代码：{row['ai_stock_code']}",
+                        class_name="av-research-muted",
+                    ),
+                    rx.el.div(),
+                ),
+                rx.cond(
+                    row["ai_official_name"] != "",
+                    rx.text(
+                        f"AI 全名：{row['ai_official_name']}",
+                        class_name="av-research-muted",
+                    ),
+                    rx.el.div(),
+                ),
+                rx.cond(
+                    row["ai_confidence"] != "",
+                    rx.text(
+                        f"AI 置信度：{row['ai_confidence']}",
+                        class_name="av-research-muted",
+                    ),
+                    rx.el.div(),
+                ),
+                rx.cond(
+                    row["ai_reason"] != "",
+                    rx.text(
+                        row["ai_reason"],
+                        class_name="av-research-muted",
+                    ),
+                    rx.el.div(),
+                ),
+            ),
+            rx.el.div(),
+        ),
         rx.hstack(
             rx.button(
                 "手动处理",
                 on_click=lambda: OrganizerState.open_alias_manual_dialog(
-                    row["alias_key"]
+                    row["alias_key"],
+                    row["ai_stock_code"],
                 ),
                 class_name="av-btn av-btn-small",
             ),
@@ -125,7 +189,7 @@ def organizer_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
             rx.heading("整理中心", size="6"),
-            rx.text("先看个股别名，再看个股到板块，最后看板块关系。"),
+            rx.text("先看未确认简称，再看个股别名候选，最后看板块关系。"),
             class_name="av-research-head",
         ),
         rx.hstack(
@@ -135,7 +199,7 @@ def organizer_page() -> rx.Component:
                 variant="soft",
             ),
             rx.button(
-                "别名超限",
+                "未确认简称",
                 on_click=lambda: OrganizerState.set_active_section(
                     SECTION_ALIAS_MANUAL
                 ),
@@ -156,6 +220,23 @@ def organizer_page() -> rx.Component:
                 variant="soft",
             ),
             spacing="3",
+        ),
+        rx.cond(
+            OrganizerState.active_section == SECTION_ALIAS_MANUAL,
+            rx.hstack(
+                rx.button(
+                    "AI预判前10条",
+                    on_click=OrganizerState.preview_alias_ai_batch,
+                    class_name="av-btn av-btn-small",
+                ),
+                rx.button(
+                    "再看30条",
+                    on_click=OrganizerState.load_more_alias_tasks,
+                    variant="soft",
+                ),
+                spacing="3",
+            ),
+            rx.el.div(),
         ),
         rx.cond(
             OrganizerState.load_error != "",

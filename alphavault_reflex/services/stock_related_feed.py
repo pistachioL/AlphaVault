@@ -2,15 +2,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+import re
 from typing import TypedDict
 
-import re
-
 from alphavault.domains.thread_tree.api import parse_weibo_csv_raw_fields
-from alphavault.weibo.display import build_weibo_display_lines
-from alphavault_reflex.services.research_data import _coerce_signal_timestamp
-from alphavault_reflex.services.research_data import _default_signal_reference_time
-from alphavault_reflex.services.research_data import _format_signal_created_at_line
+from alphavault.weibo.display import SEGMENT_SEPARATOR
+from alphavault.weibo.display import format_weibo_thread_text
+from alphavault.research_signal_view import coerce_signal_timestamp
+from alphavault.research_signal_view import default_signal_reference_time
+from alphavault.research_signal_view import format_signal_created_at_line
 from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 
 
@@ -22,6 +22,8 @@ DEFAULT_RELATED_LIMIT = 20
 RELATED_LIMIT_STEP = 20
 MAX_RELATED_LIMIT = 500
 TREE_ROOT_PREVIEW_CHAR_LIMIT = 88
+TREE_ROOT_EXPAND_LABEL = "展开原文"
+
 _WEIBO_REPLY_CHAIN_MARKERS = (
     "//@",
     "回复@",
@@ -34,8 +36,8 @@ _TREE_PREFIX_RE = re.compile(r"^(((?:│   |    )*)(?:├── |└── ))")
 _SPEAKER_LINE_RE = re.compile(r"^([^：:\s][^：:]{0,40})([：:])(.+)$", re.DOTALL)
 _TREE_ID_SUFFIX_RE = re.compile(r"\[(?:原帖|转发|源帖|帖子) ID: [^\]]+\]$")
 _META_MARKERS = ("[微博元信息]", "[转发原文]")
-_FORWARD_ORIGINAL_MARKER = "[转发原文]"
 _CSV_FIELDS_MARKER = "[CSV原始字段]"
+_FORWARD_ORIGINAL_MARKER = "[转发原文]"
 
 
 class StockRelatedPostRow(TypedDict):
@@ -49,7 +51,6 @@ class StockRelatedPostRow(TypedDict):
     created_at_line: str
     url: str
     raw_text: str
-    display_md: str
     preview: str
     tree_text: str
     tree_lines: list[dict[str, str]]
@@ -127,34 +128,6 @@ def _split_tree_prefix(line: object) -> tuple[str, str]:
     return prefix, text[len(prefix) :]
 
 
-def _with_at_speaker_prefix(tree_text: str) -> str:
-    out: list[str] = []
-    for raw_line in str(tree_text or "").splitlines():
-        prefix, content = _split_tree_prefix(raw_line)
-        line = str(content or "").strip()
-        if not line:
-            out.append(str(raw_line or ""))
-            continue
-        if line.startswith("📌") or line.startswith("@"):
-            out.append(str(raw_line or ""))
-            continue
-        suffix_match = _TREE_ID_SUFFIX_RE.search(line)
-        id_suffix = str(suffix_match.group(0) or "").strip() if suffix_match else ""
-        line_without_id = _TREE_ID_SUFFIX_RE.sub("", line).rstrip()
-        match = _SPEAKER_LINE_RE.match(line_without_id)
-        if match is None:
-            out.append(str(raw_line or ""))
-            continue
-        speaker = str(match.group(1) or "").strip()
-        sep = str(match.group(2) or "：")
-        rest = str(match.group(3) or "").lstrip()
-        normalized = prefix + f"@{speaker}{sep}{rest}"
-        if id_suffix:
-            normalized = f"{normalized} {id_suffix}".rstrip()
-        out.append(normalized)
-    return "\n".join(out).strip()
-
-
 def _format_dialogue_chain_line(line: str, *, author: str) -> str:
     text = str(line or "").strip()
     if not text:
@@ -207,21 +180,13 @@ def _extract_forward_original_post_id(raw_text: str) -> str:
     return value.strip()
 
 
-def _is_weibo_reply_like(
-    *,
-    post_uid: str,
-    raw_text: str,
-    display_md: str,
-) -> bool:
+def _is_weibo_reply_like(*, post_uid: str, raw_text: str) -> bool:
     uid = str(post_uid or "").strip().lower()
     if not uid.startswith("weibo:"):
         return False
-    if _extract_forward_original_post_id(raw_text or display_md):
+    if _extract_forward_original_post_id(raw_text):
         return True
-    return bool(
-        _contains_weibo_reply_chain_marker(raw_text)
-        or _contains_weibo_reply_chain_marker(display_md)
-    )
+    return _contains_weibo_reply_chain_marker(raw_text)
 
 
 def _strip_first_tree_level(line: str) -> str:
@@ -272,12 +237,12 @@ def _format_linear_tree_text(lines: list[str]) -> str:
 
 def _build_dialogue_chain_tree_text(row: Mapping[str, object]) -> str:
     raw_text = str(row.get("raw_text") or "").strip()
-    display_md = str(row.get("display_md") or "").strip()
     author = str(row.get("author") or "").strip()
-    if not (raw_text or display_md):
+    if not raw_text:
         return ""
-    original_block = _extract_forward_original_block(raw_text or display_md)
-    original_post_id = _extract_forward_original_post_id(raw_text or display_md)
+
+    original_block = _extract_forward_original_block(raw_text)
+    original_post_id = _extract_forward_original_post_id(raw_text)
     root_line = ""
     if original_block and author:
         root_line = f"📌{author}：{original_block}"
@@ -285,7 +250,13 @@ def _build_dialogue_chain_tree_text(row: Mapping[str, object]) -> str:
         root_line = original_block
     if root_line and original_post_id:
         root_line = f"{root_line} [原帖 ID: {original_post_id}]"
-    rebuilt_lines = build_weibo_display_lines(raw_text or display_md, author=author)
+
+    rendered_text = format_weibo_thread_text(raw_text, author=author)
+    rebuilt_lines = [
+        segment.strip()
+        for segment in rendered_text.split(SEGMENT_SEPARATOR)
+        if str(segment or "").strip()
+    ]
     rendered_lines_raw = [
         _format_dialogue_chain_line(line, author=author)
         for line in rebuilt_lines
@@ -302,41 +273,6 @@ def _build_dialogue_chain_tree_text(row: Mapping[str, object]) -> str:
     else:
         chain = rendered_lines_raw
     return _format_linear_tree_text(chain)
-
-
-def _resolve_tree_text(row: Mapping[str, object]) -> str:
-    post_uid = str(row.get("post_uid") or "").strip().lower()
-    raw_text = str(row.get("raw_text") or "").strip()
-    display_md = str(row.get("display_md") or "").strip()
-    existing_tree_text = str(row.get("tree_text") or "").strip()
-    is_reply_like = _is_weibo_reply_like(
-        post_uid=post_uid,
-        raw_text=raw_text,
-        display_md=display_md,
-    )
-    has_chain_markers = bool(
-        _contains_weibo_reply_chain_marker(raw_text)
-        or _contains_weibo_reply_chain_marker(display_md)
-    )
-    should_rebuild = bool(
-        is_reply_like
-        and (raw_text or display_md)
-        and (has_chain_markers or (not existing_tree_text))
-    )
-    if should_rebuild:
-        rebuilt = _build_dialogue_chain_tree_text(row)
-        if rebuilt:
-            return rebuilt
-
-    tree_text = existing_tree_text
-    if not tree_text:
-        return ""
-    cleaned = tree_text
-    cleaned = _strip_meta_lines(cleaned)
-    if is_reply_like:
-        cleaned = _remove_source_root_if_present(cleaned)
-        return _normalize_context_tree_text(cleaned)
-    return _normalize_root_only_tree_text(cleaned)
 
 
 def _empty_tree_line() -> dict[str, str]:
@@ -363,7 +299,6 @@ def _build_root_expand_line(
     full_content = str(root_line.get("content") or "")
     if not full_content:
         return _empty_tree_line()
-    # Remove the exact preview prefix (without the trailing ellipsis) from full content.
     preview_prefix = str(preview_content or "").rstrip("…").rstrip()
     remainder = full_content
     if preview_prefix and full_content.startswith(preview_prefix):
@@ -396,8 +331,9 @@ def _split_tree_for_root_expand(
         else _empty_tree_line()
     )
     tail_lines = [dict(line) for line in tree_lines[1:]]
-    # Allow root inline expand even when reply-chain context exists.
-    can_expand_final = bool(can_expand and str(root_expand_line.get("content") or "").strip())
+    can_expand_final = bool(
+        can_expand and str(root_expand_line.get("content") or "").strip()
+    )
     return (
         root_preview,
         root_expand_line if can_expand_final else _empty_tree_line(),
@@ -415,7 +351,6 @@ def _normalize_context_tree_text(tree_text: str) -> str:
         prefix = str(line.get("prefix") or "")
         content = str(line.get("content") or "").rstrip()
         suffix = str(line.get("id_suffix") or "").strip()
-        # Context-only mode: drop orphan free-text lines after the root.
         if idx > 0 and not prefix:
             continue
         if idx > 0:
@@ -429,7 +364,6 @@ def _normalize_context_tree_text(tree_text: str) -> str:
         merged = content
         if suffix:
             merged = f"{merged} {suffix}".rstrip()
-        # Defensive: strip any legacy id suffix left in child content.
         if idx > 0:
             merged = _TREE_ID_SUFFIX_RE.sub("", merged).rstrip()
         rebuilt.append(prefix + merged)
@@ -451,6 +385,26 @@ def _normalize_root_only_tree_text(tree_text: str) -> str:
     return merged.strip()
 
 
+def _resolve_tree_text(row: Mapping[str, object]) -> str:
+    post_uid = str(row.get("post_uid") or "").strip().lower()
+    raw_text = str(row.get("raw_text") or "").strip()
+    existing_tree_text = str(row.get("tree_text") or "").strip()
+    is_reply_like = _is_weibo_reply_like(post_uid=post_uid, raw_text=raw_text)
+    should_rebuild = bool(is_reply_like and raw_text)
+    if should_rebuild:
+        rebuilt = _build_dialogue_chain_tree_text(row)
+        if rebuilt:
+            return rebuilt
+
+    tree_text = _strip_meta_lines(existing_tree_text)
+    if not tree_text:
+        return ""
+    if is_reply_like:
+        cleaned = _remove_source_root_if_present(tree_text)
+        return _normalize_context_tree_text(cleaned)
+    return _normalize_root_only_tree_text(tree_text)
+
+
 def _ensure_created_at_line(row: Mapping[str, object], *, now) -> str:
     """Return a stable `created_at_line` with relative age ("· xx小时前")."""
     existing = str(row.get("created_at_line") or "").strip()
@@ -462,26 +416,25 @@ def _ensure_created_at_line(row: Mapping[str, object], *, now) -> str:
     if not source:
         return existing
 
-    filled = _format_signal_created_at_line(source, now=now)
+    filled = format_signal_created_at_line(source, now=now)
     return filled or existing
 
 
 def build_related_feed(
     *,
     signals: list[dict[str, str]] | list[object],
-    backfill_posts: list[dict[str, str]] | list[object],
     related_filter: object,
     limit: object,
     now: object | None = None,
 ) -> RelatedFeed:
     """
-    Merge stock signals + backfill candidates into one feed.
+    Build the stock feed from resolved signal rows only.
 
     This is UI-focused: keep it deterministic and cheap (no DB calls).
     """
     wanted_filter = normalize_related_filter(related_filter)
     wanted_limit = normalize_related_limit(limit)
-    reference_now = _coerce_signal_timestamp(now) or _default_signal_reference_time()
+    reference_now = coerce_signal_timestamp(now) or default_signal_reference_time()
 
     items: list[StockRelatedPostRow] = []
     seen: set[str] = set()
@@ -516,60 +469,17 @@ def build_related_feed(
                 "tree_lines": tree_lines,
                 "tree_preview_lines": preview_lines,
                 "tree_can_expand": "1" if root_can_expand else "",
-                "tree_expand_label": "展开原文" if root_can_expand else "",
+                "tree_expand_label": TREE_ROOT_EXPAND_LABEL if root_can_expand else "",
                 "tree_root_preview_line": root_preview_line,
                 "tree_root_full_line": root_full_line,
                 "tree_root_expand_line": root_expand_line,
                 "tree_tail_lines": tree_tail_lines,
                 "tree_root_can_expand": "1" if root_can_expand else "",
-                "tree_root_expand_label": "展开原文" if root_can_expand else "",
+                "tree_root_expand_label": (
+                    TREE_ROOT_EXPAND_LABEL if root_can_expand else ""
+                ),
                 "url": str(row.get("url") or "").strip(),
                 "raw_text": str(row.get("raw_text") or "").strip(),
-                "display_md": str(row.get("display_md") or "").strip(),
-            }
-        )
-
-    for raw in backfill_posts or []:
-        row = _coerce_row_dict(raw)
-        post_uid = str(row.get("post_uid") or "").strip()
-        if not post_uid or post_uid in seen:
-            continue
-        seen.add(post_uid)
-        created_at = str(row.get("created_at") or "").strip()
-        title = str(row.get("matched_terms") or "").strip() or "相关帖子"
-        tree_text = _resolve_tree_text(row)
-        tree_lines = build_tree_render_lines(tree_text)
-        root_preview_line, root_expand_line, tree_tail_lines, root_can_expand = (
-            _split_tree_for_root_expand(tree_lines)
-        )
-        root_full_line = dict(tree_lines[0]) if tree_lines else _empty_tree_line()
-        preview_lines = [root_preview_line, *tree_tail_lines] if tree_lines else []
-        preview = str(row.get("preview") or "").strip()
-        items.append(
-            {
-                "post_uid": post_uid,
-                "is_signal": "",
-                "signal_badge": "",
-                "created_at_sort": _as_time_sort_text(created_at),
-                "created_at_line": _ensure_created_at_line(row, now=reference_now),
-                "title": title,
-                "action": "",
-                "author": str(row.get("author") or "").strip(),
-                "url": str(row.get("url") or "").strip(),
-                "raw_text": "",
-                "display_md": "",
-                "preview": preview,
-                "tree_text": tree_text,
-                "tree_lines": tree_lines,
-                "tree_preview_lines": preview_lines,
-                "tree_can_expand": "1" if root_can_expand else "",
-                "tree_expand_label": "展开原文" if root_can_expand else "",
-                "tree_root_preview_line": root_preview_line,
-                "tree_root_full_line": root_full_line,
-                "tree_root_expand_line": root_expand_line,
-                "tree_tail_lines": tree_tail_lines,
-                "tree_root_can_expand": "1" if root_can_expand else "",
-                "tree_root_expand_label": "展开原文" if root_can_expand else "",
             }
         )
 

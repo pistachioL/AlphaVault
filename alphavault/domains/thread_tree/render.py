@@ -13,7 +13,7 @@ import pandas as pd
 from alphavault.domains.thread_tree.parse import (
     content_key_for_compare,
     extract_speaker_name,
-    parse_display_md_segments,
+    parse_thread_segments,
     strip_csv_raw_fields,
     to_one_line_text,
 )
@@ -150,7 +150,7 @@ def _segment_dedup_key(text: str, *, author_hint: str = "") -> str:
     """
     Build a stable key for comparing content across:
     - real node lines (with ID)
-    - virtual '[回复]' lines (from display_md segments)
+    - virtual '[回复]' lines (from thread segments)
 
     Key = "speaker|content_key" (speaker optional).
     """
@@ -486,19 +486,18 @@ def _node_display_kind(node_id: str, *, nodes: dict[str, dict]) -> str:
     if kind != "status":
         return kind
     raw_text = str(node.get("raw_text") or "")
-    display_md = str(node.get("display_md") or "")
-    text = f"{raw_text}\n{display_md}"
-    if "转发 @" in text or "转发@" in text:
+    if "转发 @" in raw_text or "转发@" in raw_text:
         return "repost"
     return kind
 
 
 def _node_segments(node_id: str, *, nodes: dict[str, dict]) -> list[str]:
     node = nodes.get(node_id) or {}
-    return parse_display_md_segments(
-        str(node.get("display_md") or "").strip(),
+    raw_text = str(node.get("raw_text") or "")
+    return parse_thread_segments(
+        raw_text,
         author=str(node.get("author") or "").strip(),
-        raw_text=str(node.get("raw_text") or ""),
+        raw_text=raw_text,
     )
 
 

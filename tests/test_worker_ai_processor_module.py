@@ -5,6 +5,7 @@ import json
 import threading
 
 from alphavault.worker import scheduler as scheduler_module
+from alphavault.worker import worker_loop_ai
 
 
 def test_dedup_post_uids_keeps_order_and_removes_empty() -> None:
@@ -65,3 +66,52 @@ def test_schedule_ai_from_redis_acks_bad_payload_and_schedules_valid_one() -> No
     assert acked == ["not json"]
     assert len(executor.scheduled_payloads) == 1
     assert str(executor.scheduled_payloads[0].get("post_uid") or "") == "weibo:1"
+
+
+def test_schedule_ai_for_source_tracks_inflight_owner_by_source_name(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_schedule_ai(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return 0, False
+
+    monkeypatch.setattr(worker_loop_ai.scheduler, "schedule_ai", _fake_schedule_ai)
+
+    has_error = worker_loop_ai.schedule_ai_for_source(
+        source=type(
+            "_Source",
+            (),
+            {
+                "config": type(
+                    "_Config",
+                    (),
+                    {"name": "weibo-main", "platform": "weibo"},
+                )(),
+                "redis_queue_key": "queue",
+                "spool_dir": "/tmp",
+            },
+        )(),
+        active_engine=None,
+        platform="weibo",
+        ctx=type(
+            "_Ctx",
+            (),
+            {
+                "ai_cap": 4,
+                "config": object(),
+                "limiter": object(),
+                "verbose": False,
+                "redis_client": object(),
+                "stuck_seconds": 60,
+            },
+        )(),
+        ai_executor=object(),  # type: ignore[arg-type]
+        inflight_futures=set(),
+        inflight_owner_by_future={},
+        wakeup_event=threading.Event(),
+    )
+
+    assert has_error is False
+    assert captured["inflight_owner"] == "weibo-main"
