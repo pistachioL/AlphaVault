@@ -167,9 +167,6 @@ def _any_inflight(*, source, state: SourceTickState) -> bool:
     return bool(
         cycle_runner.should_wait_with_event(
             ai_inflight=bool(state.inflight_futures),
-            any_backfill_inflight=bool(
-                getattr(source, "backfill_cache_future", None) is not None
-            ),
             any_stock_hot_inflight=bool(
                 getattr(source, "stock_hot_cache_future", None) is not None
             ),
@@ -202,7 +199,6 @@ def _save_cycle_progress(
         maintenance_error=bool(errors["maintenance_error"]),
         spool_flush_error=bool(errors["spool_flush_error"]),
         schedule_error=bool(errors["schedule_error"]),
-        backfill_cache_error=bool(errors["backfill_cache_error"]),
         stock_hot_error=bool(errors["stock_hot_error"]),
     )
     save_worker_progress_state(

@@ -9,10 +9,7 @@ import pandas as pd
 from alphavault.db.turso_db import ensure_turso_engine
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.env import load_dotenv_if_present
-from alphavault.research_stock_cache import (
-    load_entity_page_backfill_snapshot,
-    load_entity_page_signal_snapshot,
-)
+from alphavault.research_stock_cache import load_entity_page_signal_snapshot
 from alphavault_reflex.services.turso_read import (
     MISSING_TURSO_SOURCES_ERROR,
     load_stock_alias_relations_from_env,
@@ -27,7 +24,6 @@ from alphavault.worker.job_state import (
 )
 
 _STOCK_SIGNAL_CAP = 500
-_EMPTY_EXTRAS = {"backfill_posts": [], "updated_at": ""}
 
 
 def _normalize_stock_key(value: str) -> str:
@@ -43,10 +39,9 @@ def _load_stock_hot_payload_cached(
     auth_token: str,
     source_name: str,
     stock_key: str,
-) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+) -> tuple[dict[str, object], dict[str, object]]:
     engine = ensure_turso_engine(db_url, auth_token)
     hot = load_entity_page_signal_snapshot(engine, stock_key=stock_key)
-    extras = load_entity_page_backfill_snapshot(engine, stock_key=stock_key)
     progress: dict[str, object] = {}
     cycle_state_key = worker_progress_state_key(
         source_name=source_name,
@@ -66,7 +61,7 @@ def _load_stock_hot_payload_cached(
                     for key, value in parsed.items()
                     if str(key or "").strip()
                 }
-    return hot, extras, progress
+    return hot, progress
 
 
 def _resolve_stock_key_candidates(stock_key: str) -> list[str]:
@@ -170,29 +165,6 @@ def _merge_related_sectors(hot_rows: list[dict[str, object]]) -> list[dict[str, 
     ]
 
 
-def _merge_extras(extras_rows: list[dict[str, object]]) -> dict[str, object]:
-    backfill: list[dict[str, str]] = []
-    seen_backfill: set[str] = set()
-    updated_at = ""
-    for payload in extras_rows:
-        current_updated = str(payload.get("updated_at") or "").strip()
-        if current_updated > updated_at:
-            updated_at = current_updated
-        for row in _dict_rows(payload.get("backfill_posts")):
-            post_uid = str(row.get("post_uid") or "").strip()
-            key = post_uid or str(row)
-            if key in seen_backfill:
-                continue
-            seen_backfill.add(key)
-            backfill.append(
-                {str(k): str(v or "").strip() for k, v in row.items() if str(k).strip()}
-            )
-    return {
-        "backfill_posts": backfill,
-        "updated_at": updated_at,
-    }
-
-
 def _slice_signals(
     rows: list[dict[str, str]],
     *,
@@ -256,8 +228,6 @@ def load_stock_cached_view_from_env(
             "signal_page": 1,
             "signal_page_size": max(int(signal_page_size or 1), 1),
             "related_sectors": [],
-            "backfill_posts": [],
-            "extras_updated_at": "",
             "load_error": "",
             "load_warning": "",
             "worker_status_text": "",
@@ -276,8 +246,6 @@ def load_stock_cached_view_from_env(
             "signal_page": 1,
             "signal_page_size": max(int(signal_page_size or 1), 1),
             "related_sectors": [],
-            "backfill_posts": [],
-            "extras_updated_at": "",
             "load_error": MISSING_TURSO_SOURCES_ERROR,
             "load_warning": "",
             "worker_status_text": "",
@@ -288,13 +256,11 @@ def load_stock_cached_view_from_env(
     key_candidates = _resolve_stock_key_candidates(normalized)
     errors: list[str] = []
     selected_hot_rows: list[dict[str, object]] = []
-    selected_extras_rows: list[dict[str, object]] = []
     selected_progress_rows: list[dict[str, object]] = []
     selected_key = normalized
 
     for candidate in key_candidates:
         hot_rows: list[dict[str, object]] = []
-        extras_rows: list[dict[str, object]] = []
         progress_rows: list[dict[str, object]] = []
         max_workers = max(1, min(4, int(len(sources))))
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -311,7 +277,7 @@ def load_stock_cached_view_from_env(
             for fut in as_completed(futures):
                 source_name = futures.get(fut, "")
                 try:
-                    hot, extras, progress = fut.result()
+                    hot, progress = fut.result()
                 except BaseException as err:
                     errors.append(
                         f"turso_connect_error:{source_name}:{type(err).__name__}"
@@ -319,8 +285,6 @@ def load_stock_cached_view_from_env(
                     continue
                 if hot:
                     hot_rows.append(hot)
-                if extras:
-                    extras_rows.append(extras)
                 if progress:
                     progress_rows.append(progress)
         merged_signals = _sort_signal_rows(
@@ -328,13 +292,11 @@ def load_stock_cached_view_from_env(
         )
         if merged_signals:
             selected_hot_rows = hot_rows
-            selected_extras_rows = extras_rows
             selected_progress_rows = progress_rows
             selected_key = candidate
             break
-        if not selected_hot_rows and (hot_rows or extras_rows or progress_rows):
+        if not selected_hot_rows and (hot_rows or progress_rows):
             selected_hot_rows = hot_rows
-            selected_extras_rows = extras_rows
             selected_progress_rows = progress_rows
             selected_key = candidate
 
@@ -364,11 +326,6 @@ def load_stock_cached_view_from_env(
         signal_page_size=signal_page_size,
     )
     related_sectors = _merge_related_sectors(selected_hot_rows)
-    merged_extras = (
-        _merge_extras(selected_extras_rows)
-        if selected_extras_rows
-        else dict(_EMPTY_EXTRAS)
-    )
     worker_progress = _merge_worker_cycle_progress(selected_progress_rows)
     worker_running = bool(worker_progress.get("worker_running"))
     warning = ""
@@ -385,8 +342,6 @@ def load_stock_cached_view_from_env(
         "signal_page": safe_page,
         "signal_page_size": max(int(signal_page_size or 1), 1),
         "related_sectors": related_sectors,
-        "backfill_posts": merged_extras.get("backfill_posts", []),
-        "extras_updated_at": str(merged_extras.get("updated_at") or "").strip(),
         "load_error": "",
         "load_warning": warning,
         "worker_status_text": str(

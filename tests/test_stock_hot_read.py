@@ -35,11 +35,6 @@ def test_load_stock_cached_view_without_running_worker_has_no_processing_warning
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_entity_page_backfill_snapshot",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
         "load_worker_job_cursor",
         lambda *_args, **_kwargs: "",
     )
@@ -65,8 +60,8 @@ def test_load_stock_cached_view_with_running_worker_includes_status(
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_entity_page_backfill_snapshot",
-        lambda *_args, **_kwargs: {},
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
     )
 
     def _fake_state(_engine, *, state_key: str) -> str:
@@ -119,11 +114,6 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     )
     monkeypatch.setattr(
         stock_hot_read,
-        "load_entity_page_backfill_snapshot",
-        lambda *_args, **_kwargs: {},
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
         "load_worker_job_cursor",
         lambda *_args, **_kwargs: "",
     )
@@ -142,7 +132,7 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
     assert first.get("created_at") == ""
 
 
-def test_load_stock_cached_view_does_not_expose_pending_candidates(monkeypatch) -> None:
+def test_load_stock_cached_view_has_no_backfill_posts(monkeypatch) -> None:
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
         stock_hot_read,
@@ -153,15 +143,6 @@ def test_load_stock_cached_view_does_not_expose_pending_candidates(monkeypatch) 
             "signals": [],
             "signal_total": 0,
             "related_sectors": [{"sector_key": "white_liquor"}],
-        },
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
-        "load_entity_page_backfill_snapshot",
-        lambda *_args, **_kwargs: {
-            "pending_candidates": [{"candidate_id": "cand-1"}],
-            "backfill_posts": [{"post_uid": "p1"}],
-            "updated_at": "2026-04-04 10:00:00",
         },
     )
     monkeypatch.setattr(
@@ -177,4 +158,4 @@ def test_load_stock_cached_view_does_not_expose_pending_candidates(monkeypatch) 
     )
 
     assert "pending_candidates" not in payload
-    assert payload["backfill_posts"] == [{"post_uid": "p1"}]
+    assert "backfill_posts" not in payload

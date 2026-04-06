@@ -144,7 +144,6 @@ CREATE TABLE IF NOT EXISTS entity_page_snapshot (
     signals_json TEXT NOT NULL DEFAULT '[]',
     related_sectors_json TEXT NOT NULL DEFAULT '[]',
     related_stocks_json TEXT NOT NULL DEFAULT '[]',
-    backfill_posts_json TEXT NOT NULL DEFAULT '[]',
     content_hash TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
@@ -167,32 +166,6 @@ CREATE TABLE IF NOT EXISTS homework_trade_feed (
     items_json TEXT NOT NULL DEFAULT '[]',
     counters_json TEXT NOT NULL DEFAULT '{}',
     content_hash TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS research_stock_backfill_posts (
-    stock_key TEXT NOT NULL,
-    post_uid TEXT NOT NULL,
-    author TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT '',
-    url TEXT NOT NULL DEFAULT '',
-    matched_terms TEXT NOT NULL DEFAULT '',
-    preview TEXT NOT NULL DEFAULT '',
-    tree_text TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL,
-    PRIMARY KEY (stock_key, post_uid)
-);
-
-CREATE TABLE IF NOT EXISTS research_stock_backfill_meta (
-    stock_key TEXT PRIMARY KEY,
-    signature TEXT NOT NULL DEFAULT '',
-    row_count INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS research_stock_backfill_dirty_keys (
-    stock_key TEXT PRIMARY KEY,
-    reason TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
 
@@ -288,15 +261,6 @@ CREATE INDEX IF NOT EXISTS idx_projection_dirty_claimable
 
 CREATE INDEX IF NOT EXISTS idx_homework_trade_feed_updated
     ON homework_trade_feed(updated_at);
-
-CREATE INDEX IF NOT EXISTS idx_research_stock_backfill_posts_stock_created
-    ON research_stock_backfill_posts(stock_key, created_at, post_uid);
-
-CREATE INDEX IF NOT EXISTS idx_research_stock_backfill_meta_updated
-    ON research_stock_backfill_meta(updated_at);
-
-CREATE INDEX IF NOT EXISTS idx_research_stock_backfill_dirty_keys_updated
-    ON research_stock_backfill_dirty_keys(updated_at, stock_key);
 
 CREATE INDEX IF NOT EXISTS idx_follow_pages_follow_type_key
     ON follow_pages(follow_type, follow_key);

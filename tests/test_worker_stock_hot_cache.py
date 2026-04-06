@@ -92,11 +92,6 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         stock_hot_cache,
-        "refresh_stock_extras_snapshot_for_key",
-        lambda *_args, **_kwargs: True,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
         "remove_entity_page_dirty_keys",
         _remove_entity_page_dirty_keys,
     )
@@ -115,103 +110,6 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     assert int(stats.get("processed", 0)) == 1
     assert bool(stats.get("has_more", True)) is False
     assert removed == [(["stock:601899.SH"], "2026-04-04 10:10:00+08:00")]
-
-
-def test_refresh_stock_extras_snapshot_respects_min_interval(monkeypatch) -> None:
-    saved: list[str] = []
-
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "load_entity_page_backfill_snapshot",
-        lambda *_args, **_kwargs: {"updated_at": "2099-01-01 00:00:00"},
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_pending_candidates_for_left_key",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("stock extras 不该再读 pending candidates")
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_backfill_posts",
-        lambda *_args, **_kwargs: [{"post_uid": "weibo:1"}],
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "save_entity_page_backfill_snapshot",
-        lambda _conn, *, stock_key, **_kwargs: saved.append(stock_key),
-    )
-
-    skipped = stock_hot_cache.refresh_stock_extras_snapshot_for_key(
-        cast(TursoConnection, _FakeConn()),
-        stock_key="stock:601899.SH",
-        min_refresh_seconds=900,
-        force=False,
-    )
-    forced = stock_hot_cache.refresh_stock_extras_snapshot_for_key(
-        cast(TursoConnection, _FakeConn()),
-        stock_key="stock:601899.SH",
-        min_refresh_seconds=900,
-        force=True,
-    )
-
-    assert skipped is False
-    assert forced is True
-    assert saved == ["stock:601899.SH"]
-
-
-def test_refresh_stock_extras_snapshot_for_key_writes_payload(monkeypatch) -> None:
-    saved_args: list[tuple[str, list[dict[str, object]]]] = []
-
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "load_entity_page_backfill_snapshot",
-        lambda *_args, **_kwargs: {"updated_at": ""},
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_pending_candidates_for_left_key",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("stock extras 不该再读 pending candidates")
-        ),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "list_stock_backfill_posts",
-        lambda *_args, **_kwargs: [{"post_uid": "weibo:2"}],
-    )
-
-    def _capture_save(
-        _conn,
-        *,
-        stock_key: str,
-        backfill_posts: list[dict[str, object]],
-    ) -> None:
-        saved_args.append((stock_key, backfill_posts))
-
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "save_entity_page_backfill_snapshot",
-        _capture_save,
-    )
-
-    refreshed = stock_hot_cache.refresh_stock_extras_snapshot_for_key(
-        cast(TursoConnection, _FakeConn()),
-        stock_key="stock:601899.SH",
-        min_refresh_seconds=900,
-        force=False,
-    )
-
-    assert refreshed is True
-    assert saved_args == [
-        (
-            "stock:601899.SH",
-            [{"post_uid": "weibo:2"}],
-        )
-    ]
 
 
 def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
@@ -243,11 +141,6 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
         stock_hot_cache,
         "refresh_stock_hot_for_key",
         lambda _conn, **kwargs: str(kwargs.get("stock_key") or ""),
-    )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "refresh_stock_extras_snapshot_for_key",
-        lambda *_args, **_kwargs: True,
     )
 
     def _remove_entity_page_dirty_keys(
@@ -318,11 +211,6 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
         "refresh_stock_hot_for_key",
         lambda _conn, **kwargs: str(kwargs.get("stock_key") or ""),
     )
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "refresh_stock_extras_snapshot_for_key",
-        lambda *_args, **_kwargs: False,
-    )
 
     def _remove_entity_page_dirty_keys(
         _conn: object,
@@ -372,10 +260,9 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
     assert released == [(["stock:2"], "2026-04-04 10:10:00+08:00")]
 
 
-def test_sync_stock_hot_cache_skips_extras_for_sector_keys(monkeypatch) -> None:
+def test_sync_stock_hot_cache_handles_sector_keys(monkeypatch) -> None:
     removed: list[tuple[list[str], str]] = []
     hot_calls: list[str] = []
-    extras_calls: list[str] = []
 
     monkeypatch.setattr(
         stock_hot_cache,
@@ -411,19 +298,6 @@ def test_sync_stock_hot_cache_skips_extras_for_sector_keys(monkeypatch) -> None:
         _refresh_stock_hot_for_key,
     )
 
-    def _refresh_stock_extras_snapshot_for_key(
-        _conn: object,
-        **kwargs: object,
-    ) -> bool:
-        extras_calls.append(str(kwargs.get("stock_key") or ""))
-        return False
-
-    monkeypatch.setattr(
-        stock_hot_cache,
-        "refresh_stock_extras_snapshot_for_key",
-        _refresh_stock_extras_snapshot_for_key,
-    )
-
     def _remove_entity_page_dirty_keys(
         _conn: object,
         *,
@@ -452,7 +326,6 @@ def test_sync_stock_hot_cache_skips_extras_for_sector_keys(monkeypatch) -> None:
 
     assert int(stats.get("processed", 0)) == 1
     assert hot_calls == ["cluster:white_liquor"]
-    assert extras_calls == []
     assert removed == [(["cluster:white_liquor"], "2026-04-04 10:10:00+08:00")]
 
 

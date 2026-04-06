@@ -28,7 +28,6 @@ def _empty_stock_page_view(
         "signal_page": 1,
         "signal_page_size": normalize_signal_page_size(signal_page_size),
         "related_sectors": [],
-        "backfill_posts": [],
         "load_error": str(load_error or "").strip(),
     }
 
@@ -75,7 +74,6 @@ def load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
         )
     return {
         "related_sectors": view.get("related_sectors") or [],
-        "extras_updated_at": str(view.get("extras_updated_at") or "").strip(),
         "load_error": str(view.get("load_error") or "").strip(),
     }
 

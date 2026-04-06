@@ -8,7 +8,7 @@ from alphavault.worker import worker_loop_low_priority
 from alphavault.worker.worker_loop_models import SourceTickContext, SourceTickExecutors
 
 
-def test_schedule_low_priority_jobs_skips_alias_and_relation_tasks(
+def test_schedule_low_priority_jobs_only_runs_stock_hot_task(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
@@ -17,11 +17,6 @@ def test_schedule_low_priority_jobs_skips_alias_and_relation_tasks(
         worker_loop_low_priority,
         "_build_should_continue_low_priority",
         lambda **_kwargs: (lambda: True),
-    )
-    monkeypatch.setattr(
-        worker_loop_low_priority,
-        "_schedule_backfill_cache",
-        lambda **_kwargs: calls.append("backfill"),
     )
     monkeypatch.setattr(
         worker_loop_low_priority,
@@ -43,4 +38,4 @@ def test_schedule_low_priority_jobs_skips_alias_and_relation_tasks(
         inflight_futures=set(),
     )
 
-    assert calls == ["backfill", "stock_hot"]
+    assert calls == ["stock_hot"]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 
 import pandas as pd
 
@@ -10,7 +9,6 @@ from alphavault.research_sector_view import (
     build_sector_research_view,
 )
 from alphavault.research_signal_view import build_signal_rows, merge_post_fields
-from alphavault.weibo.display import strip_image_label_lines
 from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
@@ -24,9 +22,6 @@ from alphavault.domains.stock.object_index import (
 
 STOCK_KEY_PREFIX = "stock:"
 MAX_SIGNAL_ROWS = 60
-MAX_BACKFILL_SCAN_ROWS = 2000
-MAX_BACKFILL_TERM_COUNT = 12
-MAX_BACKFILL_ROWS = 12
 
 
 @dataclass(frozen=True)
@@ -38,7 +33,6 @@ class StockResearchView:
     signal_page: int
     signal_page_size: int
     related_sectors: list[dict[str, str]]
-    backfill_posts: list[dict[str, str]]
 
 
 def build_search_index(
@@ -105,7 +99,6 @@ def build_stock_research_view(
             signal_page=1,
             signal_page_size=_clamp_signal_page_size(signal_page_size),
             related_sectors=[],
-            backfill_posts=[],
         )
 
     stock_index = build_stock_object_index(
@@ -135,7 +128,6 @@ def build_stock_research_view(
         signal_page=signal_page,
         signal_page_size=_clamp_signal_page_size(signal_page_size),
         related_sectors=_build_related_sector_rows(stock_view),
-        backfill_posts=[],
     )
 
 
@@ -193,72 +185,6 @@ def _build_related_sector_rows(view: pd.DataFrame) -> list[dict[str, str]]:
         {"sector_key": sector_key, "mention_count": str(count)}
         for sector_key, count in ranked
     ]
-
-
-def _build_stock_backfill_rows(
-    posts: pd.DataFrame,
-    stock_view: pd.DataFrame,
-    *,
-    object_terms: list[str],
-) -> list[dict[str, str]]:
-    if posts.empty or not object_terms:
-        return []
-    cleaned_terms = [str(term or "").strip() for term in object_terms]
-    scan_terms = [term for term in cleaned_terms if term][:MAX_BACKFILL_TERM_COUNT]
-    if not scan_terms:
-        return []
-    scan_terms_lower = [term.lower() for term in scan_terms]
-    existing_post_uids = {
-        str(uid or "").strip()
-        for uid in stock_view.get("post_uid", pd.Series(dtype=str)).tolist()
-        if str(uid or "").strip()
-    }
-    rows = posts.copy()
-    if "post_uid" in rows.columns:
-        rows["post_uid"] = rows["post_uid"].fillna("").astype(str).str.strip()
-        rows = rows[rows["post_uid"].ne("")]
-        rows = rows[~rows["post_uid"].isin(existing_post_uids)]
-    if rows.empty:
-        return []
-    if "created_at" in rows.columns:
-        rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
-        rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
-    rows = rows.head(MAX_BACKFILL_SCAN_ROWS)
-
-    out: list[dict[str, str]] = []
-    for _, row in rows.iterrows():
-        raw_text = str(row.get("raw_text") or "").strip()
-        haystack = strip_image_label_lines(raw_text).strip()
-        if not haystack:
-            continue
-        haystack_lower = haystack.lower()
-        matched_terms = [
-            term
-            for term, term_lower in zip(scan_terms, scan_terms_lower)
-            if term_lower and term_lower in haystack_lower
-        ]
-        if not matched_terms:
-            continue
-        preview = re.sub(r"\s+", " ", haystack).strip()
-        if len(preview) > 180:
-            preview = f"{preview[:177]}..."
-        created_text = ""
-        created = row.get("created_at")
-        if pd.notna(created):
-            created_text = str(pd.Timestamp(created))
-        out.append(
-            {
-                "post_uid": str(row.get("post_uid") or "").strip(),
-                "author": str(row.get("author") or "").strip(),
-                "created_at": created_text,
-                "url": str(row.get("url") or "").strip(),
-                "matched_terms": ", ".join(matched_terms[:3]),
-                "preview": preview,
-            }
-        )
-        if len(out) >= MAX_BACKFILL_ROWS:
-            break
-    return out
 
 
 def _coerce_list(value: object) -> list[str]:

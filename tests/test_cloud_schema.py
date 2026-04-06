@@ -39,14 +39,14 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             "entity_page_snapshot",
             "projection_dirty",
             "homework_trade_feed",
-            "research_stock_backfill_posts",
-            "research_stock_backfill_meta",
-            "research_stock_backfill_dirty_keys",
             "follow_pages",
             "worker_cursor",
             "worker_locks",
         }.issubset(table_names)
         assert "research_assertion_outbox" not in table_names
+        assert "research_stock_backfill_posts" not in table_names
+        assert "research_stock_backfill_meta" not in table_names
+        assert "research_stock_backfill_dirty_keys" not in table_names
 
         projection_dirty_columns = {
             str(row["name"])
@@ -78,18 +78,9 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             "signals_json",
             "related_sectors_json",
             "related_stocks_json",
-            "backfill_posts_json",
             "content_hash",
             "updated_at",
         } == snapshot_columns
-
-        backfill_columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(research_stock_backfill_posts)")
-            .mappings()
-            .all()
-        }
-        assert "tree_text" in backfill_columns
 
         follow_page_columns = {
             str(row["name"])

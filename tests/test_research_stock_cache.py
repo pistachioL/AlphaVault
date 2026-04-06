@@ -12,12 +12,10 @@ from alphavault.research_stock_cache import (
     dirty_reason_mask_for,
     fail_entity_page_dirty_claims,
     list_entity_page_dirty_keys,
-    load_entity_page_backfill_snapshot,
     load_entity_page_signal_snapshot,
     mark_entity_page_dirty,
     mark_entity_page_dirty_from_assertions,
     remove_entity_page_dirty_keys,
-    save_entity_page_backfill_snapshot,
     save_entity_page_signal_snapshot,
 )
 
@@ -116,27 +114,6 @@ def test_save_and_load_entity_page_signal_snapshot_for_sector() -> None:
         conn.close()
 
 
-def test_save_and_load_entity_page_backfill_snapshot() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        ensure_research_stock_cache_schema(conn)
-        save_entity_page_backfill_snapshot(
-            conn,
-            stock_key="stock:601899.SH",
-            backfill_posts=[{"post_uid": "weibo:9"}],
-        )
-        loaded = load_entity_page_backfill_snapshot(
-            conn,
-            stock_key="stock:601899.SH",
-        )
-        backfill_posts = cast(list[dict[str, str]], loaded["backfill_posts"])
-        assert "pending_candidates" not in loaded
-        assert backfill_posts[0]["post_uid"] == "weibo:9"
-        assert str(loaded["updated_at"]).strip() != ""
-    finally:
-        conn.close()
-
-
 def test_entity_page_signal_snapshot_skips_write_when_content_unchanged(
     monkeypatch,
 ) -> None:
@@ -230,89 +207,6 @@ WHERE entity_key = :entity_key
         conn.close()
 
 
-def test_entity_page_backfill_snapshot_skips_write_when_content_unchanged(
-    monkeypatch,
-) -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        ensure_research_stock_cache_schema(conn)
-        timestamps = iter(
-            [
-                "2026-04-04 11:00:00",
-                "2026-04-04 11:00:01",
-                "2026-04-04 11:00:02",
-            ]
-        )
-        monkeypatch.setattr(
-            "alphavault.research_stock_cache._now_str",
-            lambda: next(timestamps),
-        )
-        rows = [{"post_uid": "weibo:9", "summary": "补找结果"}]
-        save_entity_page_backfill_snapshot(
-            conn,
-            stock_key="stock:601899.SH",
-            backfill_posts=rows,
-        )
-        first = (
-            conn.execute(
-                """
-SELECT updated_at, content_hash
-FROM entity_page_snapshot
-WHERE entity_key = :entity_key
-""",
-                {"entity_key": "stock:601899.SH"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert first is not None
-
-        save_entity_page_backfill_snapshot(
-            conn,
-            stock_key="stock:601899.SH",
-            backfill_posts=rows,
-        )
-        second = (
-            conn.execute(
-                """
-SELECT updated_at, content_hash
-FROM entity_page_snapshot
-WHERE entity_key = :entity_key
-""",
-                {"entity_key": "stock:601899.SH"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert second == first
-
-        save_entity_page_backfill_snapshot(
-            conn,
-            stock_key="stock:601899.SH",
-            backfill_posts=[
-                {"post_uid": "weibo:9", "summary": "补找结果"},
-                {"post_uid": "weibo:10", "summary": "第二条"},
-            ],
-        )
-        third = (
-            conn.execute(
-                """
-SELECT updated_at, content_hash
-FROM entity_page_snapshot
-WHERE entity_key = :entity_key
-""",
-                {"entity_key": "stock:601899.SH"},
-            )
-            .mappings()
-            .fetchone()
-        )
-        assert third is not None
-        assert third["updated_at"] == "2026-04-04 11:00:01"
-        assert third["content_hash"] != first["content_hash"]
-    finally:
-        conn.close()
-
-
 def test_stock_page_snapshot_uses_single_entity_page_snapshot_table() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
@@ -327,11 +221,6 @@ def test_stock_page_snapshot_uses_single_entity_page_snapshot_table() -> None:
                 "signals": [{"post_uid": "weibo:1"}],
                 "related_sectors": [{"sector_key": "gold"}],
             },
-        )
-        save_entity_page_backfill_snapshot(
-            conn,
-            stock_key="stock:601899.SH",
-            backfill_posts=[{"post_uid": "weibo:9"}],
         )
 
         table_names = {
@@ -353,7 +242,7 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
         rows = (
             conn.execute(
                 """
-SELECT entity_key, signal_total, backfill_posts_json
+SELECT entity_key, signal_total
 FROM entity_page_snapshot
 ORDER BY entity_key ASC
 """
@@ -366,15 +255,8 @@ ORDER BY entity_key ASC
         assert rows[0]["signal_total"] == 1
 
         hot = load_entity_page_signal_snapshot(conn, stock_key="stock:601899.SH")
-        extras = load_entity_page_backfill_snapshot(
-            conn,
-            stock_key="stock:601899.SH",
-        )
         assert cast(int, hot["signal_total"]) == 1
         assert cast(list[dict[str, str]], hot["signals"])[0]["post_uid"] == "weibo:1"
-        assert cast(list[dict[str, str]], extras["backfill_posts"])[0]["post_uid"] == (
-            "weibo:9"
-        )
     finally:
         conn.close()
 
@@ -400,7 +282,7 @@ def test_mark_entity_page_dirty_merges_reason_mask_and_keeps_dirty_since(
         mark_entity_page_dirty(
             conn,
             stock_key="stock:601899.SH",
-            reason="backfill_cache",
+            reason="relation_candidates_cache",
         )
 
         row = (
@@ -416,7 +298,8 @@ WHERE job_type = 'entity_page' AND target_key = 'stock:601899.SH'
         )
         assert row is not None
         assert int(row["reason_mask"] or 0) == (
-            dirty_reason_mask_for("ai_done") | dirty_reason_mask_for("backfill_cache")
+            dirty_reason_mask_for("ai_done")
+            | dirty_reason_mask_for("relation_candidates_cache")
         )
         assert str(row["dirty_since"]) == "2026-04-04 10:00:00+08:00"
         assert str(row["last_dirty_at"]) == "2026-04-04 10:05:00+08:00"

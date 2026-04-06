@@ -100,13 +100,12 @@ def _ensure_created_at_line(row: Mapping[str, object], *, now) -> str:
 def build_related_feed(
     *,
     signals: list[dict[str, str]] | list[object],
-    backfill_posts: list[dict[str, str]] | list[object],
     related_filter: object,
     limit: object,
     now: object | None = None,
 ) -> RelatedFeed:
     """
-    Merge stock signals + backfill candidates into one feed.
+    Build the stock feed from resolved signal rows only.
 
     This is UI-focused: keep it deterministic and cheap (no DB calls).
     """
@@ -142,35 +141,6 @@ def build_related_feed(
                 "tree_lines": tree_lines,
                 "url": str(row.get("url") or "").strip(),
                 "raw_text": str(row.get("raw_text") or "").strip(),
-            }
-        )
-
-    for raw in backfill_posts or []:
-        row = _coerce_row_dict(raw)
-        post_uid = str(row.get("post_uid") or "").strip()
-        if not post_uid or post_uid in seen:
-            continue
-        seen.add(post_uid)
-        created_at = str(row.get("created_at") or "").strip()
-        title = str(row.get("matched_terms") or "").strip() or "相关帖子"
-        tree_text = str(row.get("tree_text") or "").strip()
-        tree_lines = build_tree_render_lines(tree_text)
-        preview = str(row.get("preview") or "").strip()
-        items.append(
-            {
-                "post_uid": post_uid,
-                "is_signal": "",
-                "signal_badge": "",
-                "created_at_sort": _as_time_sort_text(created_at),
-                "created_at_line": _ensure_created_at_line(row, now=reference_now),
-                "title": title,
-                "action": "",
-                "author": str(row.get("author") or "").strip(),
-                "url": str(row.get("url") or "").strip(),
-                "raw_text": "",
-                "preview": preview,
-                "tree_text": tree_text,
-                "tree_lines": tree_lines,
             }
         )
 

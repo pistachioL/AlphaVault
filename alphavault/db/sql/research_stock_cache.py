@@ -35,27 +35,6 @@ ON CONFLICT(entity_key) DO UPDATE SET
 """
 
 
-def upsert_entity_page_snapshot_extras(table: str) -> str:
-    return f"""
-INSERT INTO {table}(
-    entity_key,
-    backfill_posts_json,
-    content_hash,
-    updated_at
-)
-VALUES(
-    :entity_key,
-    :backfill_posts_json,
-    :content_hash,
-    :updated_at
-)
-ON CONFLICT(entity_key) DO UPDATE SET
-    backfill_posts_json = excluded.backfill_posts_json,
-    content_hash = excluded.content_hash,
-    updated_at = excluded.updated_at
-"""
-
-
 def select_entity_page_snapshot(table: str) -> str:
     return f"""
 SELECT entity_key,
@@ -64,7 +43,6 @@ SELECT entity_key,
        signals_json,
        related_sectors_json,
        related_stocks_json,
-       backfill_posts_json,
        content_hash,
        updated_at
 FROM {table}

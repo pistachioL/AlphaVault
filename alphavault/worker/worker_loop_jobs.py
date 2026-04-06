@@ -179,7 +179,6 @@ def collect_finished_jobs(
         "redis_enqueue_error": False,
         "spool_flush_error": False,
         "schedule_error": False,
-        "backfill_cache_error": False,
         "stock_hot_error": False,
     }
 
@@ -201,15 +200,6 @@ def collect_finished_jobs(
         source_name=source_name,
         now=float(now),
         verbose=bool(verbose),
-    )
-    errors["backfill_cache_error"] = _collect_periodic_job(
-        job_name=f"backfill_cache:{source_name}",
-        source=source,
-        future_attr="backfill_cache_future",
-        next_at_attr="backfill_cache_next_at",
-        now=float(now),
-        verbose=bool(verbose),
-        attempted_key="processed",
     )
     errors["stock_hot_error"] = _collect_periodic_job(
         job_name=f"stock_hot_cache:{source_name}",

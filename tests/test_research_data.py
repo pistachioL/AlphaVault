@@ -155,7 +155,7 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
     assert "display_md" not in view.signals[0]
 
 
-def test_build_stock_research_view_does_not_scan_backfill_posts_on_page_load() -> None:
+def test_build_stock_research_view_has_no_backfill_field() -> None:
     posts = pd.DataFrame(
         [
             {
@@ -192,7 +192,7 @@ def test_build_stock_research_view_does_not_scan_backfill_posts_on_page_load() -
 
     view = build_stock_research_view(posts, assertions, stock_key="stock:601899.SH")
 
-    assert view.backfill_posts == []
+    assert not hasattr(view, "backfill_posts")
 
 
 def test_build_stock_research_view_paginates_signals_and_returns_total() -> None:
@@ -310,7 +310,7 @@ def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() ->
     )
 
 
-def test_build_stock_research_view_backfill_preview_drops_image_label_lines() -> None:
+def test_build_stock_research_view_without_assertions_has_no_backfill_field() -> None:
     posts = pd.DataFrame(
         [
             {
@@ -326,7 +326,7 @@ def test_build_stock_research_view_backfill_preview_drops_image_label_lines() ->
 
     view = build_stock_research_view(posts, assertions, stock_key="stock:601899.SH")
 
-    assert view.backfill_posts == []
+    assert not hasattr(view, "backfill_posts")
 
 
 def test_build_search_index_returns_stock_and_sector_hits() -> None:

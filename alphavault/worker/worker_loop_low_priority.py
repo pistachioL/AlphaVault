@@ -4,9 +4,7 @@ import threading
 
 from alphavault.worker import periodic_jobs
 from alphavault.worker import scheduler
-from alphavault.worker.research_backfill_cache import sync_stock_backfill_cache
 from alphavault.worker.research_stock_cache import sync_stock_hot_cache
-from alphavault.worker.worker_constants import BACKFILL_CACHE_FALLBACK_INTERVAL_SECONDS
 from alphavault.worker.worker_loop_models import SourceTickContext, SourceTickExecutors
 from alphavault.worker.worker_loop_runtime import (
     resolve_stock_hot_cache_interval_seconds,
@@ -23,44 +21,6 @@ def _build_should_continue_low_priority(
         ai_cap=int(ctx.ai_cap),
         rss_inflight_now_get=lambda: int(rss_inflight_now(inflight_futures)),
         has_due_ai_pending_get=ctx.due_ai_pending_get,
-    )
-
-
-def _schedule_backfill_cache(
-    *,
-    source,
-    active_engine,
-    ctx: SourceTickContext,
-    execs: SourceTickExecutors,
-    wakeup_event: threading.Event,
-    inflight_futures: set,
-    should_continue_low_priority,
-) -> None:
-    low_budget = scheduler.compute_low_priority_budget(
-        ai_cap=int(ctx.ai_cap),
-        rss_inflight_now=int(rss_inflight_now(inflight_futures)),
-    )
-    max_stocks = scheduler.compute_backfill_max_stocks_per_run(
-        low_budget=int(low_budget)
-    )
-    source.backfill_cache_future, source.backfill_cache_next_at, _ = (
-        periodic_jobs.maybe_start_periodic_job(
-            executor=execs.backfill_executor,
-            future=source.backfill_cache_future,
-            active_engine=active_engine,
-            trigger=ctx.now
-            >= float(getattr(source, "backfill_cache_next_at", 0.0) or 0.0),
-            now=float(ctx.now),
-            next_run_at=float(getattr(source, "backfill_cache_next_at", 0.0) or 0.0),
-            interval_seconds=float(BACKFILL_CACHE_FALLBACK_INTERVAL_SECONDS),
-            wakeup_event=wakeup_event,
-            submit_fn=sync_stock_backfill_cache,
-            submit_kwargs={
-                "max_stocks_per_run": int(max_stocks),
-                "should_continue": should_continue_low_priority,
-                "verbose": ctx.verbose,
-            },
-        )
     )
 
 
@@ -119,7 +79,6 @@ def schedule_low_priority_jobs(
         "wakeup_event": wakeup_event,
         "should_continue_low_priority": should_continue_low_priority,
     }
-    _schedule_backfill_cache(**common, inflight_futures=inflight_futures)
     stock_hot_interval = float(resolve_stock_hot_cache_interval_seconds())
     _schedule_stock_hot_cache(**common, interval_seconds=float(stock_hot_interval))
 

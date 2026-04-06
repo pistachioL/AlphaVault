@@ -76,15 +76,6 @@ def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
         ),
         rx.hstack(
             rx.cond(
-                row["is_signal"] != "1",
-                rx.button(
-                    "排队 AI 回补",
-                    on_click=lambda: ResearchState.queue_backfill_post(row["post_uid"]),
-                    class_name="av-btn av-btn-small",
-                ),
-                rx.el.span(""),
-            ),
-            rx.cond(
                 row["url"] != "",
                 rx.link(
                     "原文链",
@@ -179,11 +170,6 @@ def _stock_sidebar_sections() -> rx.Component:
                     ),
                 ),
             ),
-        ),
-        rx.cond(
-            ResearchState.backfill_notice != "",
-            rx.text(ResearchState.backfill_notice, class_name="av-research-muted"),
-            rx.el.div(),
         ),
     )
 

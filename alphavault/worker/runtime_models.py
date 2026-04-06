@@ -60,8 +60,6 @@ class WorkerSourceRuntime:
     spool_state_lock: threading.Lock = field(default_factory=threading.Lock)
     turso_ready: bool = False
     turso_next_ready_check_at: float = 0.0
-    backfill_cache_future: Future | None = None
-    backfill_cache_next_at: float = 0.0
     stock_hot_cache_future: Future | None = None
     stock_hot_cache_next_at: float = 0.0
     progress_state_cache: dict[str, dict] = field(default_factory=dict)

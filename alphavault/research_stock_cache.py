@@ -13,7 +13,6 @@ from alphavault.db.sql.research_stock_cache import (
     select_claimable_research_stock_dirty_keys,
     select_entity_page_snapshot,
     select_research_stock_dirty_keys,
-    upsert_entity_page_snapshot_extras,
     upsert_entity_page_snapshot_hot,
     upsert_research_stock_dirty_key,
 )
@@ -36,9 +35,7 @@ DIRTY_REASON_MASK_AI = 1 << 2
 DIRTY_REASON_MASK_AI_DONE = 1 << 3
 DIRTY_REASON_MASK_ALIAS_RELATION = 1 << 4
 DIRTY_REASON_MASK_RELATION_CANDIDATES_CACHE = 1 << 5
-DIRTY_REASON_MASK_BACKFILL_CACHE = 1 << 6
-DIRTY_REASON_MASK_QUEUE_BACKFILL = 1 << 7
-DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT = 1 << 8
+DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT = 1 << 6
 
 _DIRTY_REASON_MASKS = {
     "rss": DIRTY_REASON_MASK_RSS,
@@ -46,8 +43,6 @@ _DIRTY_REASON_MASKS = {
     "ai_done": DIRTY_REASON_MASK_AI_DONE,
     "alias_relation": DIRTY_REASON_MASK_ALIAS_RELATION,
     "relation_candidates_cache": DIRTY_REASON_MASK_RELATION_CANDIDATES_CACHE,
-    "backfill_cache": DIRTY_REASON_MASK_BACKFILL_CACHE,
-    "queue_backfill": DIRTY_REASON_MASK_QUEUE_BACKFILL,
     "bootstrap_missing_hot": DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT,
 }
 
@@ -175,7 +170,6 @@ def _entity_page_snapshot_content_hash(
     signals: list[dict[str, str]],
     related_sectors: list[dict[str, str]],
     related_stocks: list[dict[str, str]],
-    backfill_posts: list[dict[str, str]],
 ) -> str:
     return build_content_hash(
         {
@@ -184,7 +178,6 @@ def _entity_page_snapshot_content_hash(
             "signals": _clean_json_rows(signals),
             "related_sectors": _clean_json_rows(related_sectors),
             "related_stocks": _clean_json_rows(related_stocks),
-            "backfill_posts": _clean_json_rows(backfill_posts),
         }
     )
 
@@ -201,7 +194,6 @@ def _entity_page_snapshot_row_hash(row: dict[str, object]) -> str:
         signals=_json_list(row.get("signals_json")),
         related_sectors=_json_list(row.get("related_sectors_json")),
         related_stocks=_json_list(row.get("related_stocks_json")),
-        backfill_posts=_json_list(row.get("backfill_posts_json")),
     )
 
 
@@ -232,7 +224,6 @@ def save_entity_page_signal_snapshot(
                 signals=signals,
                 related_sectors=related_sectors,
                 related_stocks=related_stocks,
-                backfill_posts=_json_list(existing_row.get("backfill_posts_json")),
             )
             if (
                 existing_row
@@ -278,70 +269,6 @@ def load_entity_page_signal_snapshot(
         "signals": _json_list(row.get("signals_json")),
         "related_sectors": _json_list(row.get("related_sectors_json")),
         "related_stocks": _json_list(row.get("related_stocks_json")),
-        "updated_at": str(row.get("updated_at") or "").strip(),
-    }
-
-
-def save_entity_page_backfill_snapshot(
-    engine_or_conn: TursoEngine | TursoConnection,
-    *,
-    stock_key: str,
-    backfill_posts: list[dict[str, object]] | list[dict[str, str]],
-) -> None:
-    key = str(stock_key or "").strip()
-    if not key:
-        return
-    backfill_rows = _clean_json_rows(backfill_posts)
-    try:
-        with _use_conn(engine_or_conn) as conn:
-            existing_row = _select_entity_page_snapshot_row(conn, entity_key=key)
-            content_hash = _entity_page_snapshot_content_hash(
-                header_title=str(existing_row.get("header_title") or "").strip(),
-                signal_total=_coerce_non_negative_int(
-                    existing_row.get("signal_total"),
-                    default=0,
-                ),
-                signals=_json_list(existing_row.get("signals_json")),
-                related_sectors=_json_list(existing_row.get("related_sectors_json")),
-                related_stocks=_json_list(existing_row.get("related_stocks_json")),
-                backfill_posts=backfill_rows,
-            )
-            if (
-                existing_row
-                and _entity_page_snapshot_row_hash(existing_row) == content_hash
-            ):
-                return
-            conn.execute(
-                upsert_entity_page_snapshot_extras(ENTITY_PAGE_SNAPSHOT_TABLE),
-                {
-                    "entity_key": key,
-                    "backfill_posts_json": _json_dumps(backfill_rows),
-                    "content_hash": content_hash,
-                    "updated_at": _now_str(),
-                },
-            )
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
-
-
-def load_entity_page_backfill_snapshot(
-    engine_or_conn: TursoEngine | TursoConnection,
-    *,
-    stock_key: str,
-) -> dict[str, object]:
-    key = str(stock_key or "").strip()
-    if not key:
-        return {}
-    try:
-        with _use_conn(engine_or_conn) as conn:
-            row = _select_entity_page_snapshot_row(conn, entity_key=key)
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
-    if not row:
-        return {}
-    return {
-        "stock_key": str(row.get("entity_key") or "").strip(),
-        "backfill_posts": _json_list(row.get("backfill_posts_json")),
         "updated_at": str(row.get("updated_at") or "").strip(),
     }
 
@@ -689,9 +616,7 @@ def mark_entity_page_dirty_from_assertions(
 
 
 __all__ = [
-    "DIRTY_REASON_MASK_BACKFILL_CACHE",
     "DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT",
-    "DIRTY_REASON_MASK_QUEUE_BACKFILL",
     "EntityPageDirtyEntry",
     "ENTITY_PAGE_SNAPSHOT_TABLE",
     "PROJECTION_DIRTY_TABLE",
@@ -701,13 +626,11 @@ __all__ = [
     "fail_entity_page_dirty_claims",
     "list_entity_page_dirty_entries",
     "list_entity_page_dirty_keys",
-    "load_entity_page_backfill_snapshot",
     "load_entity_page_signal_snapshot",
     "mark_entity_page_dirty",
     "mark_entity_page_dirty_from_assertions",
     "pop_entity_page_dirty_keys",
     "release_entity_page_dirty_claims",
     "remove_entity_page_dirty_keys",
-    "save_entity_page_backfill_snapshot",
     "save_entity_page_signal_snapshot",
 ]
