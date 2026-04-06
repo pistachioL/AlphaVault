@@ -6,8 +6,8 @@ import re
 from typing import TypedDict
 
 from alphavault.domains.thread_tree.api import parse_weibo_csv_raw_fields
-from alphavault.weibo.display import SEGMENT_SEPARATOR
-from alphavault.weibo.display import format_weibo_thread_text
+from alphavault.weibo.thread_text import SEGMENT_SEPARATOR
+from alphavault.weibo.thread_text import format_weibo_thread_text
 from alphavault.research_signal_view import coerce_signal_timestamp
 from alphavault.research_signal_view import default_signal_reference_time
 from alphavault.research_signal_view import format_signal_created_at_line
@@ -149,6 +149,7 @@ def _normalize_compare_key(line: str) -> str:
     text = str(line or "").strip()
     if not text:
         return ""
+    text = _TREE_ID_SUFFIX_RE.sub("", text).rstrip()
     if text.startswith("📌") or text.startswith("@"):
         text = text[1:].strip()
     match = _SPEAKER_LINE_RE.match(text)

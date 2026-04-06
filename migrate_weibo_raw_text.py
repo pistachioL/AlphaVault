@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from pathlib import Path
 import re
 import time
 from datetime import datetime
+from typing import Iterator
+
+import libsql
 
 from alphavault.constants import DATETIME_FMT, PLATFORM_WEIBO
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
@@ -27,8 +32,9 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
     turso_savepoint,
 )
+from alphavault.domains.thread_tree.api import parse_weibo_csv_raw_fields
 from alphavault.env import load_dotenv_if_present
-from alphavault.weibo.display import (
+from alphavault.weibo.thread_text import (
     IMAGE_LABEL_PREFIX,
     SEGMENT_SEPARATOR,
     format_weibo_thread_text,
@@ -45,6 +51,11 @@ REASON_EMPTY_MIGRATED_TEXT = "empty_migrated_text"
 REASON_RAW_TEXT_CHANGED = "raw_text_changed"
 LEGACY_MARKERS = ("//@", "回复@", "[微博元信息]", "[转发原文]", "[CSV原始字段]")
 SINGLE_SEGMENT_MIGRATED_RE = re.compile(r"^[^：\s\n][^：\n]{0,40}：\S")
+UPDATE_LOCAL_POST_RAW_TEXT = """
+UPDATE posts
+SET raw_text = :new_raw_text
+WHERE post_uid = :post_uid
+"""
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +78,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="只把临时迁移表里 pending 行安全写回 posts.raw_text",
     )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default="",
+        help="直接迁移本地 sqlite/libsql 文件，不走 Turso 环境变量",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只打印进度，不写 DB")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
@@ -74,6 +91,27 @@ def parse_args() -> argparse.Namespace:
 
 def _now_text() -> str:
     return datetime.now().strftime(DATETIME_FMT)
+
+
+def _resolve_local_db_path(db_path: str) -> str:
+    raw = str(db_path or "").strip()
+    if not raw:
+        raise RuntimeError("missing_db_path")
+    path = Path(raw).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"local_db_not_found:{path}")
+    return str(path.resolve())
+
+
+@contextmanager
+def _connect_local_db(db_path: str) -> Iterator[TursoConnection]:
+    conn = TursoConnection(
+        libsql.connect(_resolve_local_db_path(db_path), isolation_level=None)
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _select_batch(
@@ -147,13 +185,26 @@ def _resolve_platform(row: dict) -> str:
 
 def _extract_image_urls_from_raw_text(raw_text: str) -> list[str]:
     urls: list[str] = []
+    seen: set[str] = set()
+
+    def _append_url(value: object) -> None:
+        url = str(value or "").strip()
+        if not url or url in seen:
+            return
+        seen.add(url)
+        urls.append(url)
+
     for raw_line in str(raw_text or "").splitlines():
         line = str(raw_line or "").strip()
         if not line.startswith(IMAGE_LABEL_PREFIX):
             continue
-        url = line[len(IMAGE_LABEL_PREFIX) :].strip()
-        if url:
-            urls.append(url)
+        _append_url(line[len(IMAGE_LABEL_PREFIX) :].strip())
+
+    csv_fields = parse_weibo_csv_raw_fields(raw_text)
+    raw_image_urls = str(csv_fields.get("原始图片url") or "").strip()
+    for part in re.split(r"[\r\n,]+", raw_image_urls):
+        _append_url(part)
+
     return urls
 
 
@@ -326,6 +377,10 @@ def _count_status(rows: list[dict], *, status: str) -> int:
     return sum(1 for item in rows if str(item.get("status") or "") == status)
 
 
+def _pending_updates(rows: list[dict]) -> list[dict]:
+    return [item for item in rows if str(item.get("status") or "") == STATUS_PENDING]
+
+
 def _count_targets(
     conn: TursoConnection, *, batch_size: int, stop_post_uid: str
 ) -> int:
@@ -365,6 +420,21 @@ def _collect_scan_updates(
             break
 
     return updates, last_post_uid
+
+
+def _apply_local_raw_text_updates(conn: TursoConnection, *, rows: list[dict]) -> int:
+    applied = 0
+    for item in rows:
+        res = conn.execute(
+            UPDATE_LOCAL_POST_RAW_TEXT,
+            {
+                "post_uid": str(item.get("post_uid") or "").strip(),
+                "new_raw_text": str(item.get("new_raw_text") or ""),
+            },
+        )
+        if int(res.rowcount or 0) > 0:
+            applied += 1
+    return applied
 
 
 def _prepare_by_post_uids(
@@ -531,6 +601,166 @@ def _prepare_scan(
     )
 
 
+def _prepare_local_by_post_uids(
+    conn: TursoConnection,
+    *,
+    post_uids: list[str],
+    batch_size: int,
+    dry_run: bool,
+    sleep_sec: float,
+    verbose: bool,
+) -> None:
+    processed = 0
+    prepared = 0
+    skipped = 0
+    applied = 0
+    found_uids: set[str] = set()
+    total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
+
+    print(
+        f"[migrate] local start total_posts={total_posts} target={len(post_uids)} by_post_uids=True"
+    )
+
+    for chunk in _chunks(post_uids, batch_size):
+        rows = _select_rows_by_post_uids(conn, chunk)
+        updates, found_this_batch = _build_migration_rows(rows)
+        found_uids.update(found_this_batch)
+        processed += len(rows)
+        pending_rows = _pending_updates(updates)
+        prepared_this_batch = len(pending_rows)
+        skipped_this_batch = _count_status(updates, status=STATUS_SKIPPED)
+        prepared += prepared_this_batch
+        skipped += skipped_this_batch
+
+        if dry_run:
+            print(
+                "[dry-run] local batch "
+                f"rows={len(rows)} pending={prepared_this_batch} skipped={skipped_this_batch} "
+                f"total_processed={processed}"
+            )
+        else:
+            with turso_savepoint(conn):
+                applied_this_batch = _apply_local_raw_text_updates(
+                    conn, rows=pending_rows
+                )
+            applied += applied_this_batch
+            print(
+                "[migrate] local batch "
+                f"applied={applied_this_batch} pending={prepared_this_batch} skipped={skipped_this_batch} "
+                f"total_processed={processed}"
+            )
+
+        if sleep_sec > 0:
+            time.sleep(float(sleep_sec))
+
+    missing = [uid for uid in post_uids if uid not in found_uids]
+    if missing and verbose:
+        head = ", ".join(missing[:10])
+        tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
+        print(f"[migrate] missing_post_uids={len(missing)} {head}{tail}")
+
+    if dry_run:
+        print(
+            f"[migrate] local dry-run done pending={prepared} skipped={skipped} processed={processed}"
+        )
+        return
+
+    print(
+        f"[migrate] local done applied={applied} pending={prepared} skipped={skipped} processed={processed}"
+    )
+
+
+def _prepare_local_scan(
+    conn: TursoConnection,
+    *,
+    batch_size: int,
+    limit: int,
+    sleep_sec: float,
+    dry_run: bool,
+    verbose: bool,
+) -> None:
+    processed = 0
+    prepared = 0
+    skipped = 0
+    applied = 0
+    last_post_uid = ""
+    total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
+    stop_post_uid = _max_target_post_uid(conn)
+    target_total = _count_targets(
+        conn,
+        batch_size=max(1, int(batch_size)),
+        stop_post_uid=stop_post_uid,
+    )
+
+    if not stop_post_uid or target_total <= 0:
+        print(
+            f"[migrate] nothing_to_prepare total_posts={total_posts} target={target_total}"
+        )
+        return
+
+    print(
+        f"[migrate] local start total_posts={total_posts} source_target={target_total}"
+    )
+
+    while True:
+        remaining = None
+        if limit > 0:
+            remaining = max(0, int(limit) - processed)
+            if remaining <= 0:
+                break
+
+        rows = _select_batch(
+            conn,
+            batch_size=max(1, int(batch_size)),
+            last_post_uid=last_post_uid,
+            stop_post_uid=stop_post_uid,
+        )
+        if not rows:
+            break
+
+        updates, last_post_uid = _collect_scan_updates(rows, remaining=remaining)
+        processed += len(updates)
+        pending_rows = _pending_updates(updates)
+        prepared_this_batch = len(pending_rows)
+        skipped_this_batch = _count_status(updates, status=STATUS_SKIPPED)
+        prepared += prepared_this_batch
+        skipped += skipped_this_batch
+
+        if dry_run:
+            print(
+                "[dry-run] local batch "
+                f"rows={len(rows)} pending={prepared_this_batch} skipped={skipped_this_batch} "
+                f"total_processed={processed}"
+            )
+        else:
+            with turso_savepoint(conn):
+                applied_this_batch = _apply_local_raw_text_updates(
+                    conn, rows=pending_rows
+                )
+            applied += applied_this_batch
+            print(
+                "[migrate] local batch "
+                f"applied={applied_this_batch} pending={prepared_this_batch} skipped={skipped_this_batch} "
+                f"total_processed={processed}"
+            )
+
+        if sleep_sec > 0:
+            time.sleep(float(sleep_sec))
+
+    if verbose and dry_run:
+        print(
+            f"[migrate] local summary pending={prepared} skipped={skipped} processed={processed}"
+        )
+    if dry_run:
+        print(
+            f"[migrate] local dry-run done pending={prepared} skipped={skipped} processed={processed}"
+        )
+        return
+    print(
+        f"[migrate] local done applied={applied} pending={prepared} skipped={skipped} processed={processed}"
+    )
+
+
 def _apply_by_post_uids(
     engine,
     *,
@@ -676,9 +906,36 @@ def _apply_scan(
 def main() -> None:
     load_dotenv_if_present()
     args = parse_args()
+    post_uids = _parse_post_uids(getattr(args, "post_uids", ""))
+    db_path = str(getattr(args, "db_path", "") or "").strip()
+
+    if db_path:
+        if bool(args.apply_only):
+            raise SystemExit("缺参数组合：--db-path 模式不支持 --apply-only")
+        with _connect_local_db(db_path) as conn:
+            if post_uids:
+                _prepare_local_by_post_uids(
+                    conn,
+                    post_uids=post_uids,
+                    batch_size=max(1, int(args.batch_size)),
+                    dry_run=bool(args.dry_run),
+                    sleep_sec=float(args.sleep_sec or 0.0),
+                    verbose=bool(args.verbose),
+                )
+                return
+
+            _prepare_local_scan(
+                conn,
+                batch_size=max(1, int(args.batch_size)),
+                limit=int(args.limit or 0),
+                sleep_sec=float(args.sleep_sec or 0.0),
+                dry_run=bool(args.dry_run),
+                verbose=bool(args.verbose),
+            )
+        return
+
     engine = get_turso_engine_from_env()
 
-    post_uids = _parse_post_uids(getattr(args, "post_uids", ""))
     if bool(args.apply_only):
         if post_uids:
             _apply_by_post_uids(

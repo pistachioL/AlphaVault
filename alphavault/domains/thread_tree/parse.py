@@ -15,7 +15,7 @@ import re
 from typing import Any, Dict
 
 from alphavault.text.html import html_to_text
-from alphavault.weibo.display import strip_image_label_lines
+from alphavault.weibo.thread_text import strip_image_label_lines
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
 FORWARD_ORIGINAL_MARKER = "[转发原文]"

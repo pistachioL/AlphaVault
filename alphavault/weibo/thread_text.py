@@ -1,5 +1,5 @@
 """
-Weibo thread-text helpers.
+Weibo thread-text normalization helpers.
 
 This project stores the normalized root-to-current thread text in posts.raw_text.
 
@@ -12,10 +12,11 @@ Goal: convert noisy Weibo reply/repost chains into readable thread text:
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
@@ -58,6 +59,112 @@ def _strip_csv_raw_fields(raw_text: str) -> str:
     if idx < 0:
         return text.strip()
     return text[:idx].strip()
+
+
+def _extract_forward_original_text(raw_text: str) -> str:
+    text = str(raw_text or "")
+    idx = text.find(FORWARD_ORIGINAL_MARKER)
+    if idx < 0:
+        return ""
+    tail = text[idx + len(FORWARD_ORIGINAL_MARKER) :]
+    stop = tail.find(CSV_RAW_FIELDS_MARKER)
+    if stop >= 0:
+        tail = tail[:stop]
+    return tail.strip()
+
+
+def _is_escaped(text: str, idx: int) -> bool:
+    if idx <= 0 or idx >= len(text):
+        return False
+    backslashes = 0
+    cursor = idx - 1
+    while cursor >= 0 and text[cursor] == "\\":
+        backslashes += 1
+        cursor -= 1
+    return (backslashes % 2) == 1
+
+
+def _extract_json_object_text(text: str, *, after_idx: int) -> str:
+    start = text.find("{", max(0, int(after_idx)))
+    if start < 0:
+        return ""
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"' and not _is_escaped(text, idx):
+            in_string = True
+            continue
+        if ch == "{":
+            depth += 1
+            continue
+        if ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return ""
+
+
+def _parse_weibo_csv_raw_fields(raw_text: str) -> dict[str, Any]:
+    text = str(raw_text or "")
+    marker_idx = text.find(CSV_RAW_FIELDS_MARKER)
+    if marker_idx < 0:
+        return {}
+
+    json_text = _extract_json_object_text(text, after_idx=marker_idx)
+    candidate = json_text.strip()
+    if not candidate:
+        return {}
+
+    try:
+        obj = json.loads(candidate)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        pass
+
+    try:
+        wrapped = '"' + candidate.replace("\r", "\\r").replace("\n", "\\n") + '"'
+        unescaped = json.loads(wrapped)
+        obj = json.loads(unescaped)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _extract_forward_original_segment(raw_text: str) -> Optional["WeiboDisplaySegment"]:
+    csv_fields = _parse_weibo_csv_raw_fields(raw_text)
+    source_text = normalize_weibo_text(
+        str(
+            csv_fields.get("源微博正文")
+            or _extract_forward_original_text(raw_text)
+            or ""
+        )
+    )
+    source_image_urls = _extract_csv_image_urls(csv_fields.get("源微博原始图片url"))
+    if not source_text and not source_image_urls:
+        return None
+
+    speaker = normalize_weibo_text(str(csv_fields.get("源用户昵称") or "")).strip()
+    speaker = speaker or DEFAULT_UNKNOWN_AUTHOR
+    return WeiboDisplaySegment(
+        speaker=speaker,
+        text=source_text,
+        is_current=False,
+        image_urls=source_image_urls,
+    )
 
 
 def _strip_weibo_trailing_meta_sections(text: str) -> str:
@@ -150,6 +257,19 @@ class WeiboDisplaySegment:
     speaker: str
     text: str
     is_current: bool
+    image_urls: tuple[str, ...] = ()
+
+
+def _extract_csv_image_urls(value: Any) -> tuple[str, ...]:
+    raw = str(value or "").strip()
+    if not raw:
+        return ()
+    parts = [
+        str(part or "").strip()
+        for part in re.split(r"[\r\n,]+", raw)
+        if str(part or "").strip()
+    ]
+    return tuple(_dedup_keep_order(parts))
 
 
 def _strip_reply_prefix(text: str) -> str:
@@ -251,6 +371,16 @@ def parse_weibo_reply_chain(
         speaker = (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
         ordered.append(
             WeiboDisplaySegment(speaker=speaker, text=current_text, is_current=True)
+        )
+    elif quoted_segments:
+        # For compact pure forwards like "//@A:内容", keep the current repost node.
+        speaker = (default_author or "").strip() or DEFAULT_UNKNOWN_AUTHOR
+        ordered.append(
+            WeiboDisplaySegment(
+                speaker=speaker,
+                text=REPOST_ONLY_TEXT,
+                is_current=True,
+            )
         )
 
     if not ordered and text:
@@ -386,17 +516,41 @@ def _build_normalized_segments(
     for seg in segments:
         expanded_segments.extend(_expand_repost_segments(seg, max_depth=max_depth))
 
+    source_segment = _extract_forward_original_segment(raw_text)
+    if source_segment is not None:
+        first_segment = expanded_segments[0] if expanded_segments else None
+        source_text = normalize_weibo_text(source_segment.text or "")
+        source_images = tuple(_dedup_keep_order(source_segment.image_urls))
+        first_text = (
+            normalize_weibo_text(first_segment.text or "") if first_segment else ""
+        )
+        first_images = (
+            tuple(_dedup_keep_order(first_segment.image_urls))
+            if first_segment is not None
+            else ()
+        )
+        if (source_text or source_images) and (
+            source_text != first_text or source_images != first_images
+        ):
+            expanded_segments = [source_segment] + expanded_segments
+
     normalized_segments: List[WeiboDisplaySegment] = []
     prev_speaker = ""
     for seg in expanded_segments:
         speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
         text = normalize_weibo_text(seg.text or "")
-        if not text:
+        image_urls = tuple(_dedup_keep_order(seg.image_urls))
+        if not text and not image_urls:
             continue
         if prev_speaker:
             text = _strip_leading_at_mention(text, target=prev_speaker)
         normalized_segments.append(
-            WeiboDisplaySegment(speaker=speaker, text=text, is_current=seg.is_current)
+            WeiboDisplaySegment(
+                speaker=speaker,
+                text=text,
+                is_current=seg.is_current,
+                image_urls=image_urls,
+            )
         )
         prev_speaker = speaker
     return normalized_segments
@@ -422,10 +576,23 @@ def format_weibo_thread_text(
     for seg in normalized_segments:
         speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
         text = normalize_weibo_text(seg.text or "")
-        if not text:
+        seg_img_lines = [
+            IMAGE_LINE_TEMPLATE.format(url=url)
+            for url in _dedup_keep_order(seg.image_urls)
+        ]
+        if not text and not seg_img_lines:
             continue
 
-        block = f"{_sanitize_visible_text(speaker)}：{_sanitize_visible_text(text)}"
+        if text:
+            block = f"{_sanitize_visible_text(speaker)}：{_sanitize_visible_text(text)}"
+            if seg_img_lines:
+                block = block.rstrip() + "\n" + "\n".join(seg_img_lines)
+        else:
+            first_img = seg_img_lines[0]
+            rest_imgs = seg_img_lines[1:]
+            block = f"{_sanitize_visible_text(speaker)}：{first_img}"
+            if rest_imgs:
+                block = block.rstrip() + "\n" + "\n".join(rest_imgs)
 
         if seg.is_current and img_lines:
             block = block.rstrip() + "\n" + "\n".join(img_lines)

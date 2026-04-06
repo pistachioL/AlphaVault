@@ -24,7 +24,7 @@ from alphavault.rss.utils import (
     split_xueqiu_context_segments,
 )
 from alphavault.text.html import html_to_text
-from alphavault.weibo.display import (
+from alphavault.weibo.thread_text import (
     SEGMENT_SEPARATOR,
     extract_image_urls_from_html,
     format_weibo_thread_text,

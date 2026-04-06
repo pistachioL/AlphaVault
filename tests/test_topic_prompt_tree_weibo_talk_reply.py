@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from alphavault.weibo.display import SEGMENT_SEPARATOR
+from alphavault.weibo.thread_text import SEGMENT_SEPARATOR
 from alphavault.weibo.topic_prompt_tree import (
     build_topic_runtime_context,
     thread_root_info_for_post,
