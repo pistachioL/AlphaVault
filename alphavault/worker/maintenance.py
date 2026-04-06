@@ -84,15 +84,12 @@ def maybe_run_redis_due_maintenance(
 def should_run_maintenance_recovery(
     *,
     source: Any,
-    force_maintenance: bool,
     maintenance_recovery_interval_cycles: int,
 ) -> bool:
     cycle_count = (
         max(0, int(getattr(source, "maintenance_recovery_cycle_count", 0))) + 1
     )
     source.maintenance_recovery_cycle_count = int(cycle_count)
-    if bool(force_maintenance):
-        return True
     if cycle_count <= 1:
         return True
     if bool(getattr(source, "maintenance_recovery_force_next", False)):
@@ -110,6 +107,46 @@ def update_maintenance_recovery_state(
     source.maintenance_recovery_force_next = bool(
         int(max(0, int(recovered))) > 0 or bool(maintenance_error)
     )
+
+
+def should_requeue_unprocessed_posts_from_db(
+    *,
+    source: Any,
+    do_recovery: bool,
+    redis_queue_has_pending_work: bool,
+    source_has_running_jobs: bool,
+) -> bool:
+    if not bool(do_recovery):
+        return False
+    cycle_count = max(0, int(getattr(source, "maintenance_recovery_cycle_count", 0)))
+    if cycle_count <= 1:
+        return True
+    return not bool(redis_queue_has_pending_work) and not bool(source_has_running_jobs)
+
+
+def has_pending_ai_queue_work(
+    *,
+    redis_client: Any,
+    redis_queue_key: str,
+    verbose: bool,
+    pending_count_fn: Callable[..., int],
+    fatal_exceptions: tuple[type[BaseException], ...],
+) -> bool:
+    resolved_queue_key = str(redis_queue_key or "").strip()
+    if not redis_client or not resolved_queue_key:
+        return False
+    try:
+        return bool(pending_count_fn(redis_client, resolved_queue_key))
+    except BaseException as err:
+        if isinstance(err, fatal_exceptions):
+            raise
+        if verbose:
+            print(
+                f"[redis] ai_pending_count_error queue={resolved_queue_key} "
+                f"{type(err).__name__}: {err}",
+                flush=True,
+            )
+        return True
 
 
 def requeue_unprocessed_posts_to_redis(
@@ -191,6 +228,7 @@ def run_turso_maintenance(
     redis_queue_key: str,
     verbose: bool,
     do_recovery: bool,
+    do_db_requeue: bool,
     now_fn: Callable[[], float],
     recover_spool_to_turso_and_redis_fn: Callable[..., tuple[int, int, int, bool]],
     load_unprocessed_posts_for_requeue_fn: Callable[..., list[dict[str, object]]],
@@ -256,7 +294,7 @@ def run_turso_maintenance(
             flush_redis_error = True
             if verbose:
                 print(f"[redis] flush_error {type(err).__name__}: {err}", flush=True)
-        if bool(do_recovery):
+        if bool(do_recovery) and bool(do_db_requeue) and flushed_redis <= 0:
             requeued_posts, requeue_posts_error = requeue_unprocessed_posts_to_redis(
                 engine=engine,
                 platform=platform_name or "",

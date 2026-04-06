@@ -6,18 +6,8 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 
-BACKFILL_MAX_STOCKS_PER_RUN_CAP = 32
-
-
 def compute_low_priority_budget(*, ai_cap: int, rss_inflight_now: int) -> int:
     return max(0, int(ai_cap) - max(0, int(rss_inflight_now)))
-
-
-def compute_backfill_max_stocks_per_run(*, low_budget: int) -> int:
-    return max(
-        1,
-        min(BACKFILL_MAX_STOCKS_PER_RUN_CAP, max(0, int(low_budget))),
-    )
 
 
 def compute_rss_available_slots(
@@ -224,9 +214,7 @@ def schedule_ai(
 
 
 __all__ = [
-    "BACKFILL_MAX_STOCKS_PER_RUN_CAP",
     "build_low_priority_should_continue",
-    "compute_backfill_max_stocks_per_run",
     "compute_low_priority_budget",
     "compute_rss_available_slots",
     "dedup_post_uids",

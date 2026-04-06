@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import importlib
 
 import libsql
@@ -12,6 +13,19 @@ def _make_conn() -> TursoConnection:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     apply_cloud_schema(conn)
     return conn
+
+
+def _migration_table_exists(conn: TursoConnection) -> bool:
+    return bool(
+        conn.execute(
+            """
+SELECT 1
+FROM sqlite_schema
+WHERE type = 'table' AND name = 'weibo_raw_text_migration'
+LIMIT 1
+"""
+        ).fetchone()
+    )
 
 
 def _insert_post(
@@ -197,5 +211,181 @@ ORDER BY post_uid ASC
                 "reason": "raw_text_changed",
             },
         ]
+    finally:
+        conn.close()
+
+
+def test_prepare_scan_only_saves_legacy_weibo_rows_to_migration_table(
+    monkeypatch,
+) -> None:
+    script = importlib.import_module("migrate_weibo_raw_text")
+    conn = _make_conn()
+
+    @contextmanager
+    def _fake_connect(_engine):  # type: ignore[no-untyped-def]
+        yield conn
+
+    monkeypatch.setattr(script, "turso_connect_autocommit", _fake_connect)
+
+    try:
+        _insert_post(
+            conn,
+            post_uid="weibo:1",
+            platform="weibo",
+            author="作者",
+            raw_text="回复@甲:叶//@乙:根",
+        )
+        _insert_post(
+            conn,
+            post_uid="weibo:2",
+            platform="weibo",
+            author="作者",
+            raw_text="乙：根\n\n---\n\n作者：叶",
+        )
+
+        script._prepare_scan(
+            object(),
+            batch_size=10,
+            limit=0,
+            sleep_sec=0.0,
+            dry_run=False,
+            verbose=False,
+        )
+
+        migration_rows = (
+            conn.execute(
+                """
+SELECT post_uid, status, reason
+FROM weibo_raw_text_migration
+ORDER BY post_uid ASC
+"""
+            )
+            .mappings()
+            .all()
+        )
+        assert migration_rows == [
+            {
+                "post_uid": "weibo:1",
+                "status": "pending",
+                "reason": "",
+            }
+        ]
+    finally:
+        conn.close()
+
+
+def test_prepare_scan_limit_counts_only_legacy_targets(
+    monkeypatch,
+    capsys,
+) -> None:
+    script = importlib.import_module("migrate_weibo_raw_text")
+    conn = _make_conn()
+
+    @contextmanager
+    def _fake_connect(_engine):  # type: ignore[no-untyped-def]
+        yield conn
+
+    monkeypatch.setattr(script, "turso_connect_autocommit", _fake_connect)
+
+    try:
+        _insert_post(
+            conn,
+            post_uid="weibo:1",
+            platform="weibo",
+            author="作者",
+            raw_text="乙：根\n\n---\n\n作者：叶",
+        )
+        _insert_post(
+            conn,
+            post_uid="weibo:2",
+            platform="weibo",
+            author="作者",
+            raw_text="回复@甲:叶//@乙:根",
+        )
+
+        script._prepare_scan(
+            object(),
+            batch_size=1,
+            limit=1,
+            sleep_sec=0.0,
+            dry_run=False,
+            verbose=False,
+        )
+
+        out = capsys.readouterr().out
+        assert "source_target=1" in out
+        migration_rows = (
+            conn.execute(
+                """
+SELECT post_uid, status, reason
+FROM weibo_raw_text_migration
+ORDER BY post_uid ASC
+"""
+            )
+            .mappings()
+            .all()
+        )
+        assert migration_rows == [
+            {
+                "post_uid": "weibo:2",
+                "status": "pending",
+                "reason": "",
+            }
+        ]
+    finally:
+        conn.close()
+
+
+def test_apply_scan_dry_run_does_not_create_migration_table(monkeypatch) -> None:
+    script = importlib.import_module("migrate_weibo_raw_text")
+    conn = _make_conn()
+
+    @contextmanager
+    def _fake_connect(_engine):  # type: ignore[no-untyped-def]
+        yield conn
+
+    monkeypatch.setattr(script, "turso_connect_autocommit", _fake_connect)
+
+    try:
+        assert _migration_table_exists(conn) is False
+
+        script._apply_scan(
+            object(),
+            batch_size=10,
+            limit=0,
+            dry_run=True,
+            sleep_sec=0.0,
+        )
+
+        assert _migration_table_exists(conn) is False
+    finally:
+        conn.close()
+
+
+def test_apply_by_post_uids_dry_run_does_not_create_migration_table(
+    monkeypatch,
+) -> None:
+    script = importlib.import_module("migrate_weibo_raw_text")
+    conn = _make_conn()
+
+    @contextmanager
+    def _fake_connect(_engine):  # type: ignore[no-untyped-def]
+        yield conn
+
+    monkeypatch.setattr(script, "turso_connect_autocommit", _fake_connect)
+
+    try:
+        assert _migration_table_exists(conn) is False
+
+        script._apply_by_post_uids(
+            object(),
+            post_uids=["weibo:1"],
+            batch_size=10,
+            dry_run=True,
+            sleep_sec=0.0,
+            verbose=False,
+        )
+
+        assert _migration_table_exists(conn) is False
     finally:
         conn.close()

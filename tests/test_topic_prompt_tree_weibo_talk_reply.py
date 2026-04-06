@@ -42,3 +42,12 @@ def test_build_topic_runtime_context_keeps_focus_virtual_replies_as_talk_reply()
         if kind == "talk_reply" and isinstance(node, dict)
     ]
     assert "答" in talk_reply_texts
+
+
+def test_thread_root_info_for_post_keeps_compact_weibo_raw_text() -> None:
+    _root_key, root_segment, _root_content_key = thread_root_info_for_post(
+        raw_text="回复@甲:叶//@乙:根",
+        author="作者",
+    )
+
+    assert root_segment == "回复@甲:叶//@乙:根"

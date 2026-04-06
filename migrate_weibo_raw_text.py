@@ -15,7 +15,7 @@ from alphavault.db.sql.scripts import (
     UPDATE_POST_RAW_TEXT_IF_UNCHANGED,
     UPDATE_WEIBO_RAW_TEXT_MIGRATION_STATUS,
     UPSERT_WEIBO_RAW_TEXT_MIGRATION_ROW,
-    count_legacy_weibo_raw_text_source_posts,
+    WEIBO_RAW_TEXT_MIGRATION_TABLE,
     max_legacy_weibo_raw_text_post_uid,
     select_legacy_weibo_raw_text_batch,
     select_legacy_weibo_raw_text_rows_by_post_uids,
@@ -92,11 +92,6 @@ def _select_batch(
     }
     rows = conn.execute(query, params).mappings().fetchall()
     return [dict(row) for row in rows]
-
-
-def _count_targets(conn: TursoConnection) -> int:
-    query = count_legacy_weibo_raw_text_source_posts()
-    return int(conn.execute(query).scalar() or 0)
 
 
 def _max_target_post_uid(conn: TursoConnection) -> str:
@@ -234,9 +229,38 @@ def _build_migration_rows(rows: list[dict]) -> tuple[list[dict], set[str]]:
     return updates, found_uids
 
 
+def _is_legacy_weibo_scan_target(row: dict) -> bool:
+    post_uid = str(row.get("post_uid") or "").strip()
+    if not post_uid:
+        return False
+    if _resolve_platform(row) != PLATFORM_WEIBO:
+        return False
+    raw_text = str(row.get("raw_text") or "")
+    if not raw_text.strip():
+        return False
+    return not _looks_like_migrated_raw_text(raw_text)
+
+
 def _ensure_migration_table(conn: TursoConnection) -> None:
     conn.execute(CREATE_WEIBO_RAW_TEXT_MIGRATION_TABLE)
     conn.execute(CREATE_WEIBO_RAW_TEXT_MIGRATION_STATUS_INDEX)
+
+
+def _migration_table_exists(conn: TursoConnection) -> bool:
+    row = (
+        conn.execute(
+            """
+SELECT 1
+FROM sqlite_schema
+WHERE type = 'table' AND name = :table_name
+LIMIT 1
+""",
+            {"table_name": WEIBO_RAW_TEXT_MIGRATION_TABLE},
+        )
+        .mappings()
+        .fetchone()
+    )
+    return bool(row)
 
 
 def _upsert_migration_rows(
@@ -300,6 +324,47 @@ def _apply_pending_migration_rows(
 
 def _count_status(rows: list[dict], *, status: str) -> int:
     return sum(1 for item in rows if str(item.get("status") or "") == status)
+
+
+def _count_targets(
+    conn: TursoConnection, *, batch_size: int, stop_post_uid: str
+) -> int:
+    if not stop_post_uid:
+        return 0
+
+    total = 0
+    last_post_uid = ""
+    while True:
+        rows = _select_batch(
+            conn,
+            batch_size=batch_size,
+            last_post_uid=last_post_uid,
+            stop_post_uid=stop_post_uid,
+        )
+        if not rows:
+            return total
+        total += sum(1 for row in rows if _is_legacy_weibo_scan_target(row))
+        last_post_uid = str(rows[-1].get("post_uid") or last_post_uid)
+
+
+def _collect_scan_updates(
+    rows: list[dict], *, remaining: int | None
+) -> tuple[list[dict], str]:
+    updates: list[dict] = []
+    last_post_uid = ""
+
+    for row in rows:
+        last_post_uid = str(row.get("post_uid") or last_post_uid)
+        if not _is_legacy_weibo_scan_target(row):
+            continue
+        row_updates, _found = _build_migration_rows([row])
+        if not row_updates:
+            continue
+        updates.extend(row_updates)
+        if remaining is not None and len(updates) >= remaining:
+            break
+
+    return updates, last_post_uid
 
 
 def _prepare_by_post_uids(
@@ -389,8 +454,12 @@ def _prepare_scan(
 
     with turso_connect_autocommit(engine) as conn:
         total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
-        target_total = _count_targets(conn)
         stop_post_uid = _max_target_post_uid(conn)
+        target_total = _count_targets(
+            conn,
+            batch_size=max(1, int(batch_size)),
+            stop_post_uid=stop_post_uid,
+        )
 
     if not stop_post_uid or target_total <= 0:
         print(
@@ -415,12 +484,9 @@ def _prepare_scan(
                 break
 
         with turso_connect_autocommit(engine) as conn:
-            effective_batch_size = int(batch_size)
-            if remaining is not None:
-                effective_batch_size = min(effective_batch_size, remaining)
             rows = _select_batch(
                 conn,
-                batch_size=effective_batch_size,
+                batch_size=max(1, int(batch_size)),
                 last_post_uid=last_post_uid,
                 stop_post_uid=stop_post_uid,
             )
@@ -428,11 +494,8 @@ def _prepare_scan(
         if not rows:
             break
 
-        updates, _found = _build_migration_rows(rows)
-
-        last_row = rows[-1]
-        last_post_uid = str(last_row.get("post_uid") or last_post_uid)
-        processed += len(rows)
+        updates, last_post_uid = _collect_scan_updates(rows, remaining=remaining)
+        processed += len(updates)
         prepared_this_batch = _count_status(updates, status=STATUS_PENDING)
         skipped_this_batch = _count_status(updates, status=STATUS_SKIPPED)
         prepared += prepared_this_batch
@@ -485,8 +548,13 @@ def _apply_by_post_uids(
     print(f"[migrate] apply start target={len(post_uids)} by_post_uids=True")
 
     with turso_connect_autocommit(engine) as conn:
-        with turso_savepoint(conn):
-            _ensure_migration_table(conn)
+        if dry_run:
+            if not _migration_table_exists(conn):
+                print("[migrate] apply dry-run done pending_rows=0")
+                return
+        else:
+            with turso_savepoint(conn):
+                _ensure_migration_table(conn)
 
     for chunk in _chunks(post_uids, batch_size):
         with turso_connect_autocommit(engine) as conn:
@@ -550,8 +618,13 @@ def _apply_scan(
     print("[migrate] apply start")
 
     with turso_connect_autocommit(engine) as conn:
-        with turso_savepoint(conn):
-            _ensure_migration_table(conn)
+        if dry_run:
+            if not _migration_table_exists(conn):
+                print("[migrate] apply dry-run done pending_rows=0")
+                return
+        else:
+            with turso_savepoint(conn):
+                _ensure_migration_table(conn)
 
     while True:
         remaining = None

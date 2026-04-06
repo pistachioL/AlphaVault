@@ -38,5 +38,11 @@ def test_parse_thread_segments_drops_image_label_lines() -> None:
     assert parse_thread_segments(thread_text) == ["甲：根", "乙：叶"]
 
 
+def test_parse_thread_segments_keeps_compact_weibo_chain_as_single_segment() -> None:
+    thread_text = "回复@甲:叶//@乙:根"
+
+    assert parse_thread_segments(thread_text) == ["回复@甲:叶//@乙:根"]
+
+
 def test_extract_platform_post_id_keeps_full_xueqiu_guid_suffix() -> None:
     assert extract_platform_post_id("xueqiu:status:381213336") == "status:381213336"

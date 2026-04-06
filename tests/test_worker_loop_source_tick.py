@@ -61,3 +61,38 @@ def test_schedule_rss_and_spool_also_schedules_redis_enqueue(monkeypatch) -> Non
     )
 
     assert calls == ["rss", "spool", "redis"]
+
+
+def test_run_source_maintenance_only_treats_same_source_ai_as_running(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run_maintenance_if_due(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return False
+
+    monkeypatch.setattr(
+        worker_loop_source_tick,
+        "run_maintenance_if_due",
+        _fake_run_maintenance_if_due,
+    )
+
+    worker_loop_source_tick._run_source_maintenance(
+        source=SimpleNamespace(
+            config=SimpleNamespace(name="weibo-main", platform="weibo"),
+            redis_enqueue_future=None,
+            spool_flush_future=None,
+        ),
+        source_name="weibo-main",
+        active_engine=object(),
+        ctx=cast(SourceTickContext, SimpleNamespace()),
+        state=cast(
+            SourceTickState,
+            SimpleNamespace(
+                inflight_owner_by_future={object(): "weibo-main"},
+            ),
+        ),
+    )
+
+    assert captured["source_has_running_jobs"] is True

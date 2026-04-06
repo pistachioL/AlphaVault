@@ -31,6 +31,7 @@ def test_run_turso_maintenance_skips_recovery_and_uses_injected_redis_steps() ->
         redis_queue_key="queue",
         verbose=False,
         do_recovery=False,
+        do_db_requeue=False,
         now_fn=lambda: 100.0,
         recover_spool_to_turso_and_redis_fn=lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("recovery should be skipped")
@@ -53,12 +54,12 @@ def test_run_turso_maintenance_skips_recovery_and_uses_injected_redis_steps() ->
     assert has_error is False
 
 
-def test_run_turso_maintenance_recovers_spool_before_requeueing_posts() -> None:
+def test_run_turso_maintenance_requeues_db_posts_when_queue_stays_empty() -> None:
     call_order: list[str] = []
 
     def _fake_recover_spool(**_kwargs):
         call_order.append("spool")
-        return 1, 1, 0, False
+        return 1, 0, 0, False
 
     def _fake_load_posts(*_args, **_kwargs) -> list[dict[str, object]]:
         call_order.append("load_posts")
@@ -82,7 +83,7 @@ def test_run_turso_maintenance_recovers_spool_before_requeueing_posts() -> None:
 
     def _fake_requeue_processing(*_args, **_kwargs) -> int:
         call_order.append("requeue_processing")
-        return 4
+        return 0
 
     recovered, flushed_redis, has_error = maintenance_module.run_turso_maintenance(
         engine=object(),
@@ -92,6 +93,7 @@ def test_run_turso_maintenance_recovers_spool_before_requeueing_posts() -> None:
         redis_queue_key="queue",
         verbose=False,
         do_recovery=True,
+        do_db_requeue=True,
         now_fn=lambda: 100.0,
         recover_spool_to_turso_and_redis_fn=_fake_recover_spool,
         load_unprocessed_posts_for_requeue_fn=_fake_load_posts,
@@ -110,7 +112,7 @@ def test_run_turso_maintenance_recovers_spool_before_requeueing_posts() -> None:
         "push_posts",
     ]
     assert recovered == 1
-    assert flushed_redis == 6
+    assert flushed_redis == 1
     assert has_error is False
 
 
@@ -133,6 +135,7 @@ def test_run_turso_maintenance_no_longer_uses_turso_ai_state_recovery() -> None:
         redis_queue_key="queue",
         verbose=False,
         do_recovery=True,
+        do_db_requeue=True,
         now_fn=lambda: 100.0,
         recover_spool_to_turso_and_redis_fn=_fake_recover_spool,
         load_unprocessed_posts_for_requeue_fn=_fake_load_posts,
@@ -149,6 +152,47 @@ def test_run_turso_maintenance_no_longer_uses_turso_ai_state_recovery() -> None:
     assert call_order == ["spool", "load_posts"]
     assert recovered == 1
     assert flushed_redis == 0
+    assert has_error is False
+
+
+def test_run_turso_maintenance_can_skip_db_requeue_during_recovery() -> None:
+    call_order: list[str] = []
+
+    def _fake_recover_spool(**_kwargs):
+        call_order.append("spool")
+        return 1, 1, 0, False
+
+    def _fake_requeue_processing(*_args, **_kwargs) -> int:
+        call_order.append("requeue_processing")
+        return 2
+
+    recovered, flushed_redis, has_error = maintenance_module.run_turso_maintenance(
+        engine=object(),
+        platform="weibo",
+        spool_dir="unused",
+        redis_client=object(),
+        redis_queue_key="queue",
+        verbose=False,
+        do_recovery=True,
+        do_db_requeue=False,
+        now_fn=lambda: 100.0,
+        recover_spool_to_turso_and_redis_fn=_fake_recover_spool,
+        load_unprocessed_posts_for_requeue_fn=lambda *_args, **_kwargs: (
+            _ for _ in ()
+        ).throw(AssertionError("db requeue should be skipped")),
+        redis_try_push_ai_dedup_status_fn=lambda *_args, **_kwargs: (
+            _ for _ in ()
+        ).throw(AssertionError("db requeue should be skipped")),
+        resolve_redis_dedup_ttl_seconds_fn=lambda: 123,
+        maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: None,
+        redis_ai_requeue_processing_without_lease_fn=_fake_requeue_processing,
+        fatal_exceptions=(KeyboardInterrupt, SystemExit, GeneratorExit),
+        redis_ai_requeue_max_items=200,
+    )
+
+    assert call_order == ["spool", "requeue_processing"]
+    assert recovered == 1
+    assert flushed_redis == 3
     assert has_error is False
 
 
@@ -190,3 +234,66 @@ def test_maybe_run_redis_due_maintenance_uses_backoff_and_resets_on_success() ->
     assert has_error is False
     assert source.redis_due_maintenance_empty_checks == 0
     assert source.redis_due_maintenance_next_at == 100.0
+
+
+def test_should_requeue_unprocessed_posts_from_db_on_startup() -> None:
+    startup_source = _source_runtime()
+    startup_source.maintenance_recovery_cycle_count = 1
+    assert (
+        maintenance_module.should_requeue_unprocessed_posts_from_db(
+            source=startup_source,
+            do_recovery=True,
+            redis_queue_has_pending_work=True,
+            source_has_running_jobs=True,
+        )
+        is True
+    )
+
+
+def test_should_requeue_unprocessed_posts_from_db_only_when_queue_idle() -> None:
+    source = _source_runtime()
+    source.maintenance_recovery_cycle_count = 6
+
+    assert (
+        maintenance_module.should_requeue_unprocessed_posts_from_db(
+            source=source,
+            do_recovery=True,
+            redis_queue_has_pending_work=False,
+            source_has_running_jobs=False,
+        )
+        is True
+    )
+    assert (
+        maintenance_module.should_requeue_unprocessed_posts_from_db(
+            source=source,
+            do_recovery=True,
+            redis_queue_has_pending_work=True,
+            source_has_running_jobs=False,
+        )
+        is False
+    )
+    assert (
+        maintenance_module.should_requeue_unprocessed_posts_from_db(
+            source=source,
+            do_recovery=True,
+            redis_queue_has_pending_work=False,
+            source_has_running_jobs=True,
+        )
+        is False
+    )
+
+
+def test_should_not_treat_recovery_force_next_as_db_requeue_force() -> None:
+    source = _source_runtime()
+    source.maintenance_recovery_cycle_count = 8
+    source.maintenance_recovery_force_next = True
+
+    assert (
+        maintenance_module.should_requeue_unprocessed_posts_from_db(
+            source=source,
+            do_recovery=True,
+            redis_queue_has_pending_work=True,
+            source_has_running_jobs=True,
+        )
+        is False
+    )

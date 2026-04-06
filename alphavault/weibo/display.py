@@ -402,27 +402,6 @@ def _build_normalized_segments(
     return normalized_segments
 
 
-def build_weibo_display_lines(
-    raw_text: str,
-    *,
-    author: str = "",
-    max_depth: int = 3,
-) -> List[str]:
-    segments = _build_normalized_segments(
-        raw_text,
-        author=author,
-        max_depth=max_depth,
-    )
-    lines: List[str] = []
-    for seg in segments:
-        speaker = (seg.speaker or "").strip() or DEFAULT_UNKNOWN_AUTHOR
-        text = normalize_weibo_text(seg.text or "")
-        if not text:
-            continue
-        lines.append(f"{speaker}：{text}")
-    return lines
-
-
 def format_weibo_thread_text(
     raw_text: str,
     *,

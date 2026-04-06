@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from alphavault.worker import ai_processor as ai_processor_module
 from alphavault.worker import runtime_cache as runtime_cache_module
 from alphavault.worker import scheduler as scheduler_module
+from alphavault.worker import worker_constants as worker_constants_module
 from alphavault.worker.runtime_models import LLMConfig
 from alphavault.worker.topic_prompt_v4 import build_topic_prompt_v4_llm_log_line
 
@@ -49,10 +50,13 @@ def test_compute_low_priority_budget_uses_remaining_slots() -> None:
     )
 
 
-def test_compute_backfill_max_stocks_per_run_follows_low_budget() -> None:
-    assert scheduler_module.compute_backfill_max_stocks_per_run(low_budget=0) == 1
-    assert scheduler_module.compute_backfill_max_stocks_per_run(low_budget=3) == 3
-    assert scheduler_module.compute_backfill_max_stocks_per_run(low_budget=100) == 32
+def test_scheduler_does_not_keep_backfill_budget_api() -> None:
+    assert not hasattr(scheduler_module, "BACKFILL_MAX_STOCKS_PER_RUN_CAP")
+    assert not hasattr(scheduler_module, "compute_backfill_max_stocks_per_run")
+    assert not hasattr(
+        worker_constants_module,
+        "BACKFILL_CACHE_FALLBACK_INTERVAL_SECONDS",
+    )
 
 
 def test_compute_rss_available_slots_subtracts_low_inflight() -> None:

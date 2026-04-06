@@ -15,7 +15,7 @@ import re
 from typing import Any, Dict
 
 from alphavault.text.html import html_to_text
-from alphavault.weibo.display import build_weibo_display_lines, strip_image_label_lines
+from alphavault.weibo.display import strip_image_label_lines
 
 CSV_RAW_FIELDS_MARKER = "[CSV原始字段]"
 FORWARD_ORIGINAL_MARKER = "[转发原文]"
@@ -100,18 +100,6 @@ def _parse_segmented_thread_text(thread_text: str) -> list[str]:
     return segments
 
 
-def _looks_like_compact_weibo_chain(text: str) -> bool:
-    value = html_to_text(str(text or ""))
-    if not value.strip():
-        return False
-    return (
-        "//@" in value
-        or "转发 @" in value
-        or "转发@" in value
-        or value.lstrip().startswith("回复@")
-    )
-
-
 def parse_thread_segments(
     thread_text: str,
     *,
@@ -121,17 +109,13 @@ def parse_thread_segments(
     """
     Parse segmented thread text into tree-ready message segments.
 
-    Prefer the stored '---' split format. If the content still looks like a
-    compact Weibo reply/repost chain, rebuild it with the shared Weibo parser.
+    Only read the stored thread text format.
+
+    Compact legacy Weibo chains are migrated separately; tree rendering should
+    not rebuild them on the fly.
     """
-    segments = _parse_segmented_thread_text(thread_text)
-    candidate_text = str(raw_text or "").strip() or str(thread_text or "").strip()
-    if not _looks_like_compact_weibo_chain(candidate_text):
-        return segments
-    rebuilt = build_weibo_display_lines(candidate_text, author=author)
-    if len(rebuilt) > len(segments):
-        return rebuilt
-    return segments
+    del author, raw_text
+    return _parse_segmented_thread_text(thread_text)
 
 
 def _strip_leading_speaker(text: str, *, author_hint: str = "") -> str:

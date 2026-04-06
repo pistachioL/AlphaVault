@@ -89,15 +89,6 @@ LIMIT :limit
 """
 
 
-def count_legacy_weibo_raw_text_source_posts() -> str:
-    return """
-SELECT COUNT(*)
-FROM posts
-WHERE LOWER(COALESCE(platform, '')) = 'weibo'
-  AND TRIM(raw_text) <> ''
-"""
-
-
 def max_legacy_weibo_raw_text_post_uid() -> str:
     return """
 SELECT MAX(post_uid)

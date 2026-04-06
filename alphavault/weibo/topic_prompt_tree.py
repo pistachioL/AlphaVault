@@ -21,7 +21,6 @@ from alphavault.domains.thread_tree.parse import (
     strip_leading_speaker,
     to_one_line_text,
 )
-from alphavault.weibo.display import SEGMENT_SEPARATOR, format_weibo_thread_text
 
 # Hard limits to prevent huge prompts.
 MAX_THREAD_POSTS = 60
@@ -45,10 +44,8 @@ def _truncate_text(text: str, *, max_chars: int) -> tuple[str, bool]:
 
 
 def _ensure_thread_text(*, raw_text: str, author: str) -> str:
-    raw_value = str(raw_text or "")
-    if SEGMENT_SEPARATOR in raw_value:
-        return raw_value
-    return format_weibo_thread_text(raw_value, author=str(author or "").strip())
+    del author
+    return str(raw_text or "")
 
 
 def thread_root_info_for_post(

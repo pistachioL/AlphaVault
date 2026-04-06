@@ -113,14 +113,25 @@ def _run_source_maintenance(
     source_name: str,
     active_engine,
     ctx: SourceTickContext,
+    state: SourceTickState,
 ) -> bool:
     platform = str(source.config.platform or "").strip()
+    inflight_owner = str(source_name or "").strip() or platform
+    source_has_running_jobs = bool(
+        getattr(source, "redis_enqueue_future", None) is not None
+        or getattr(source, "spool_flush_future", None) is not None
+        or any(
+            str(owner or "").strip() == inflight_owner
+            for owner in state.inflight_owner_by_future.values()
+        )
+    )
     return run_maintenance_if_due(
         source=source,
         active_engine=active_engine,
         source_name=source_name,
         platform=platform,
         ctx=ctx,
+        source_has_running_jobs=bool(source_has_running_jobs),
     )
 
 
@@ -242,6 +253,7 @@ def run_source_tick(
         source_name=source_name,
         active_engine=active_engine,
         ctx=ctx,
+        state=state,
     )
     errors["schedule_error"] = _run_source_ai_schedule(
         source=source,

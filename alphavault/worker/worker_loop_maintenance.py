@@ -8,6 +8,7 @@ from alphavault.db.turso_queue import (
 )
 from alphavault.worker import maintenance
 from alphavault.worker.redis_queue import (
+    redis_ai_pending_count,
     redis_ai_requeue_processing_without_lease,
     redis_try_push_ai_dedup_status,
     resolve_redis_dedup_ttl_seconds,
@@ -32,13 +33,26 @@ def run_maintenance_if_due(
     source_name: str,
     platform: str,
     ctx: SourceTickContext,
+    source_has_running_jobs: bool,
 ) -> bool:
     if not (ctx.do_maintenance and active_engine is not None):
         return False
     do_recovery = maintenance.should_run_maintenance_recovery(
         source=source,
-        force_maintenance=False,
         maintenance_recovery_interval_cycles=int(MAINTENANCE_RECOVERY_INTERVAL_CYCLES),
+    )
+    redis_queue_has_pending_work = maintenance.has_pending_ai_queue_work(
+        redis_client=ctx.redis_client,
+        redis_queue_key=str(source.redis_queue_key or ""),
+        verbose=ctx.verbose,
+        pending_count_fn=redis_ai_pending_count,
+        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
+    )
+    do_db_requeue = maintenance.should_requeue_unprocessed_posts_from_db(
+        source=source,
+        do_recovery=bool(do_recovery),
+        redis_queue_has_pending_work=bool(redis_queue_has_pending_work),
+        source_has_running_jobs=bool(source_has_running_jobs),
     )
     recovered, flushed_redis, turso_error = maintenance.run_turso_maintenance(
         engine=active_engine,
@@ -48,6 +62,7 @@ def run_maintenance_if_due(
         redis_queue_key=str(source.redis_queue_key or ""),
         verbose=ctx.verbose,
         do_recovery=bool(do_recovery),
+        do_db_requeue=bool(do_db_requeue),
         now_fn=time.time,
         recover_spool_to_turso_and_redis_fn=recover_spool_to_turso_and_redis,
         load_unprocessed_posts_for_requeue_fn=load_unprocessed_post_queue_rows,

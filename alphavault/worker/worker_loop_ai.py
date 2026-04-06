@@ -40,6 +40,7 @@ def schedule_ai_for_source(
     wakeup_event: threading.Event,
 ) -> bool:
     source_name = str(getattr(source.config, "name", "") or "").strip()
+    inflight_owner = source_name or str(platform or "").strip()
     scheduled, schedule_error = scheduler.schedule_ai(
         executor=ai_executor,
         engine=active_engine,
@@ -48,7 +49,7 @@ def schedule_ai_for_source(
         low_inflight_now_get=lambda: 0,
         inflight_futures=inflight_futures,
         inflight_owner_by_future=inflight_owner_by_future,
-        inflight_owner=platform,
+        inflight_owner=inflight_owner,
         wakeup_event=wakeup_event,
         config=ctx.config,
         limiter=ctx.limiter,
