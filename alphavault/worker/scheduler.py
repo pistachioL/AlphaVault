@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 import json
-import threading
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -59,35 +58,6 @@ def build_low_priority_should_continue(
         return not bool(has_due_ai_pending_get())
 
     return _should_continue
-
-
-class LowPriorityAiSlotGate:
-    def __init__(self, *, cap_getter: Callable[[], int]) -> None:
-        self._cap_getter = cap_getter
-        self._lock = threading.Lock()
-        self._inflight = 0
-
-    def try_acquire(self) -> bool:
-        try:
-            cap_now = max(0, int(self._cap_getter()))
-        except Exception:
-            cap_now = 0
-        with self._lock:
-            if cap_now <= 0 or int(self._inflight) >= int(cap_now):
-                return False
-            self._inflight += 1
-            return True
-
-    def release(self) -> None:
-        with self._lock:
-            if self._inflight <= 0:
-                self._inflight = 0
-                return
-            self._inflight -= 1
-
-    def inflight(self) -> int:
-        with self._lock:
-            return int(self._inflight)
 
 
 def dedup_post_uids(post_uids: Sequence[object]) -> list[str]:
@@ -255,7 +225,6 @@ def schedule_ai(
 
 __all__ = [
     "BACKFILL_MAX_STOCKS_PER_RUN_CAP",
-    "LowPriorityAiSlotGate",
     "build_low_priority_should_continue",
     "compute_backfill_max_stocks_per_run",
     "compute_low_priority_budget",

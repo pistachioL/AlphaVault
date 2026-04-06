@@ -24,7 +24,6 @@ def process_one_post_uid(
     prefetched_post: CloudPost | None = None,
     prefetched_recent: list[dict[str, object]] | None = None,
     source_name: str = "",
-    outbox_source: str = "",
 ) -> bool:
     resolved_config = config
     if str(config.prompt_version or "").strip() != TOPIC_PROMPT_VERSION:
@@ -38,7 +37,6 @@ def process_one_post_uid(
             prefetched_post=prefetched_post,
             prefetched_recent=prefetched_recent,
             source_name=str(source_name or "").strip(),
-            outbox_source=outbox_source,
         )
     except Exception as err:
         base_url_for_log = (resolved_config.base_url or "").strip()

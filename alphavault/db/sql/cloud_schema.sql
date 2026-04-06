@@ -67,15 +67,6 @@ CREATE TABLE IF NOT EXISTS assertion_entities (
     PRIMARY KEY (post_uid, assertion_idx, entity_idx)
 );
 
-CREATE TABLE IF NOT EXISTS research_assertion_outbox (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source TEXT NOT NULL DEFAULT '',
-    post_uid TEXT NOT NULL,
-    author TEXT NOT NULL DEFAULT '',
-    event_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS topic_clusters (
     cluster_key TEXT PRIMARY KEY,
     cluster_name TEXT NOT NULL,
@@ -264,9 +255,6 @@ CREATE INDEX IF NOT EXISTS idx_assertion_entities_key
 
 CREATE INDEX IF NOT EXISTS idx_assertion_entities_type_key
     ON assertion_entities(entity_type, entity_key);
-
-CREATE INDEX IF NOT EXISTS idx_research_assertion_outbox_created_at
-    ON research_assertion_outbox(created_at);
 
 CREATE INDEX IF NOT EXISTS idx_topic_cluster_topics_cluster_key
     ON topic_cluster_topics(cluster_key);

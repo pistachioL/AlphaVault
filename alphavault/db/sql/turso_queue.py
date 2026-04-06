@@ -1,18 +1,5 @@
 from __future__ import annotations
 
-INSERT_ASSERTION_OUTBOX = """
-INSERT INTO research_assertion_outbox(source, post_uid, author, event_json, created_at)
-VALUES (:source, :post_uid, :author, :event_json, :created_at)
-"""
-
-SELECT_ASSERTION_OUTBOX_AFTER_ID = """
-SELECT id, source, post_uid, author, event_json, created_at
-FROM research_assertion_outbox
-WHERE id > :after_id
-ORDER BY id ASC
-LIMIT :limit
-"""
-
 SELECT_POST_COUNT_ALL = "SELECT COUNT(*) FROM posts"
 SELECT_ASSERTION_COUNT_ALL = "SELECT COUNT(*) FROM assertions"
 

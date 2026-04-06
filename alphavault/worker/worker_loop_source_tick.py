@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 
 from alphavault.rss.utils import CST
-from alphavault.worker.assertion_outbox_consumer import rebuild_local_cache_from_outbox
 from alphavault.worker import cycle_runner
 from alphavault.worker import maintenance
 from alphavault.worker import periodic_jobs
@@ -26,7 +25,6 @@ from alphavault.worker.worker_loop_spool import maybe_schedule_spool_flush
 from alphavault.worker.worker_loop_turso import ensure_source_turso_ready
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-LOCAL_CACHE_REBUILD_RETRY_SECONDS = 300.0
 
 
 def _resolve_source_identity(source) -> tuple[str, str]:
@@ -109,34 +107,6 @@ def _ensure_active_engine(
     )
 
 
-def _ensure_local_cache_ready(
-    *,
-    source,
-    active_engine,
-    source_name: str,
-    ctx: SourceTickContext,
-) -> None:
-    if active_engine is None:
-        return
-    if bool(getattr(source, "local_cache_ready", False)):
-        return
-    next_at = float(getattr(source, "local_cache_rebuild_next_at", 0.0) or 0.0)
-    if float(ctx.now) < next_at:
-        return
-    stats = rebuild_local_cache_from_outbox(
-        active_engine,
-        source_name=str(source_name or "").strip(),
-        verbose=ctx.verbose,
-    )
-    if not bool(stats.get("has_error", False)):
-        source.local_cache_ready = True
-        source.local_cache_rebuild_next_at = 0.0
-        return
-    source.local_cache_rebuild_next_at = float(ctx.now) + float(
-        LOCAL_CACHE_REBUILD_RETRY_SECONDS
-    )
-
-
 def _run_source_maintenance(
     *,
     source,
@@ -197,14 +167,8 @@ def _any_inflight(*, source, state: SourceTickState) -> bool:
     return bool(
         cycle_runner.should_wait_with_event(
             ai_inflight=bool(state.inflight_futures),
-            any_alias_inflight=bool(
-                getattr(source, "alias_sync_future", None) is not None
-            ),
             any_backfill_inflight=bool(
                 getattr(source, "backfill_cache_future", None) is not None
-            ),
-            any_relation_inflight=bool(
-                getattr(source, "relation_cache_future", None) is not None
             ),
             any_stock_hot_inflight=bool(
                 getattr(source, "stock_hot_cache_future", None) is not None
@@ -238,9 +202,7 @@ def _save_cycle_progress(
         maintenance_error=bool(errors["maintenance_error"]),
         spool_flush_error=bool(errors["spool_flush_error"]),
         schedule_error=bool(errors["schedule_error"]),
-        alias_sync_error=bool(errors["alias_sync_error"]),
         backfill_cache_error=bool(errors["backfill_cache_error"]),
-        relation_cache_error=bool(errors["relation_cache_error"]),
         stock_hot_error=bool(errors["stock_hot_error"]),
     )
     save_worker_progress_state(
@@ -267,12 +229,6 @@ def run_source_tick(
     source_name, _platform = _resolve_source_identity(source)
     active_engine = _ensure_active_engine(
         source=source, source_name=source_name, ctx=ctx
-    )
-    _ensure_local_cache_ready(
-        source=source,
-        active_engine=active_engine,
-        source_name=source_name,
-        ctx=ctx,
     )
     errors, rss_enqueue_error = _collect_source_finished_jobs(
         source=source, source_name=source_name, ctx=ctx

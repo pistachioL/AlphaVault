@@ -179,9 +179,7 @@ def collect_finished_jobs(
         "redis_enqueue_error": False,
         "spool_flush_error": False,
         "schedule_error": False,
-        "alias_sync_error": False,
         "backfill_cache_error": False,
-        "relation_cache_error": False,
         "stock_hot_error": False,
     }
 
@@ -204,29 +202,11 @@ def collect_finished_jobs(
         now=float(now),
         verbose=bool(verbose),
     )
-    errors["alias_sync_error"] = _collect_periodic_job(
-        job_name=f"alias_sync:{source_name}",
-        source=source,
-        future_attr="alias_sync_future",
-        next_at_attr="alias_sync_next_at",
-        now=float(now),
-        verbose=bool(verbose),
-        attempted_key="attempted",
-    )
     errors["backfill_cache_error"] = _collect_periodic_job(
         job_name=f"backfill_cache:{source_name}",
         source=source,
         future_attr="backfill_cache_future",
         next_at_attr="backfill_cache_next_at",
-        now=float(now),
-        verbose=bool(verbose),
-        attempted_key="processed",
-    )
-    errors["relation_cache_error"] = _collect_periodic_job(
-        job_name=f"relation_cache:{source_name}",
-        source=source,
-        future_attr="relation_cache_future",
-        next_at_attr="relation_cache_next_at",
         now=float(now),
         verbose=bool(verbose),
         attempted_key="processed",

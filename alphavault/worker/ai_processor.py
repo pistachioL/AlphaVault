@@ -107,7 +107,6 @@ def process_one_redis_payload(
             prefetched_post=cloud_post,
             prefetched_recent=prefetched_recent,
             source_name=str(source_name or "").strip(),
-            outbox_source=str(redis_queue_key or "").strip(),
         )
         if success:
             redis_ai_ack_and_cleanup_fn(

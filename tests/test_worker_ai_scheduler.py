@@ -128,25 +128,6 @@ def test_memoize_bool_with_ttl_reuses_recent_result(monkeypatch) -> None:
     assert calls == ["call", "call"]
 
 
-def test_low_priority_slot_gate_respects_dynamic_cap() -> None:
-    state = {"cap": 2}
-    gate = scheduler_module.LowPriorityAiSlotGate(cap_getter=lambda: int(state["cap"]))
-
-    assert gate.try_acquire() is True
-    assert gate.try_acquire() is True
-    assert gate.try_acquire() is False
-    assert gate.inflight() == 2
-
-    gate.release()
-    assert gate.inflight() == 1
-    state["cap"] = 1
-    assert gate.try_acquire() is False
-
-    gate.release()
-    assert gate.inflight() == 0
-    assert gate.try_acquire() is True
-
-
 def test_build_topic_prompt_v4_llm_log_line_call_contains_id_and_author() -> None:
     line = build_topic_prompt_v4_llm_log_line(
         event="call",

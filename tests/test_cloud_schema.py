@@ -29,7 +29,6 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             "assertions",
             "assertion_mentions",
             "assertion_entities",
-            "research_assertion_outbox",
             "topic_clusters",
             "topic_cluster_topics",
             "topic_cluster_post_overrides",
@@ -47,6 +46,7 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             "worker_cursor",
             "worker_locks",
         }.issubset(table_names)
+        assert "research_assertion_outbox" not in table_names
 
         projection_dirty_columns = {
             str(row["name"])

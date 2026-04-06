@@ -23,12 +23,10 @@ from alphavault.db.sql.turso_queue import (
     INSERT_ASSERTION_ENTITY,
     RESET_ALL_POSTS_TO_PENDING,
     INSERT_ASSERTION_MENTION,
-    INSERT_ASSERTION_OUTBOX,
     SELECT_ASSERTION_COUNT_ALL,
     SELECT_POST_PROCESSED_AT,
     SELECT_POST_COUNT_ALL,
     SELECT_CLOUD_POST,
-    SELECT_ASSERTION_OUTBOX_AFTER_ID,
     SELECT_UNPROCESSED_POST_QUEUE_ROWS,
     SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM,
     UPDATE_POST_DONE,
@@ -67,16 +65,6 @@ class CloudPost:
     url: str
     raw_text: str
     ai_retry_count: int
-
-
-@dataclass(frozen=True)
-class AssertionOutboxEvent:
-    id: int
-    source: str
-    post_uid: str
-    author: str
-    event_json: str
-    created_at: str
 
 
 def _chunk_post_uids(post_uids: Iterable[str], *, chunk_size: int) -> list[list[str]]:
@@ -257,38 +245,6 @@ def load_unprocessed_post_queue_rows(
         return [dict(r) for r in rows if r]
 
 
-def load_assertion_outbox_events(
-    engine: TursoEngine,
-    *,
-    after_id: int,
-    limit: int,
-) -> list[AssertionOutboxEvent]:
-    with turso_connect_autocommit(engine) as conn:
-        rows = (
-            conn.execute(
-                SELECT_ASSERTION_OUTBOX_AFTER_ID,
-                {"after_id": max(0, int(after_id)), "limit": max(1, int(limit))},
-            )
-            .mappings()
-            .fetchall()
-        )
-        out: list[AssertionOutboxEvent] = []
-        for row in rows:
-            if not row:
-                continue
-            out.append(
-                AssertionOutboxEvent(
-                    id=int(row.get("id") or 0),
-                    source=str(row.get("source") or "").strip(),
-                    post_uid=str(row.get("post_uid") or "").strip(),
-                    author=str(row.get("author") or "").strip(),
-                    event_json=str(row.get("event_json") or ""),
-                    created_at=str(row.get("created_at") or "").strip(),
-                )
-            )
-        return out
-
-
 def reset_ai_results_all(
     engine: TursoEngine,
     *,
@@ -369,9 +325,6 @@ def write_assertions_and_mark_done(
     archived_at: str,
     assertions: Iterable[Dict[str, Any]],
     entity_match_results: Iterable["EntityMatchResult"] | None = None,
-    outbox_source: str = "",
-    outbox_author: str = "",
-    outbox_event_json: Optional[str] = None,
 ) -> None:
     """
     Commit AI outputs in a single atomic unit, without DBAPI commit/rollback.
@@ -469,19 +422,6 @@ def write_assertions_and_mark_done(
                 conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
             for match_result in resolved_entity_match_results:
                 persist_entity_match_followups(conn, match_result)
-
-            resolved_event_json = str(outbox_event_json or "").strip()
-            if resolved_event_json:
-                conn.execute(
-                    INSERT_ASSERTION_OUTBOX,
-                    {
-                        "source": str(outbox_source or "").strip(),
-                        "post_uid": str(post_uid or "").strip(),
-                        "author": str(outbox_author or "").strip(),
-                        "event_json": resolved_event_json,
-                        "created_at": str(processed_at or "").strip(),
-                    },
-                )
             conn.execute(
                 UPDATE_POST_DONE,
                 {

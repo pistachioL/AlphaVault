@@ -45,11 +45,7 @@ def schedule_ai_for_source(
         engine=active_engine,
         platform=platform,
         ai_cap=int(ctx.ai_cap),
-        low_inflight_now_get=(
-            ctx.low_priority_gate.inflight
-            if ctx.low_priority_gate is not None
-            else (lambda: 0)
-        ),
+        low_inflight_now_get=lambda: 0,
         inflight_futures=inflight_futures,
         inflight_owner_by_future=inflight_owner_by_future,
         inflight_owner=platform,

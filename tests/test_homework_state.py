@@ -129,47 +129,6 @@ def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
     assert state.rows[0]["stock_route"] == "/research/stocks/601899.SH"
 
 
-def test_homework_state_refresh_does_not_call_ai_alias_map(monkeypatch) -> None:
-    assertions = pd.DataFrame(
-        [
-            {
-                "post_uid": "p1",
-                "topic_key": "stock:600519.SH",
-                "action": "trade.buy",
-                "action_strength": 2,
-                "summary": "小仓试错",
-                "author": "alice",
-                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes_json": '["600519.SH"]',
-                "stock_names_json": '["贵州茅台"]',
-            }
-        ]
-    )
-
-    monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
-        lambda lookback_days: (assertions, pd.DataFrame(), ""),
-    )
-    monkeypatch.setattr(
-        "alphavault_reflex.homework_state.load_post_urls_from_env",
-        lambda post_uids: ({}, ""),
-    )
-
-    def _should_not_call(*args, **kwargs):
-        raise AssertionError("build_ai_stock_alias_map should not be called on refresh")
-
-    monkeypatch.setattr(
-        "alphavault.infra.ai.stock_alias.build_ai_stock_alias_map",
-        _should_not_call,
-    )
-
-    state = HomeworkState()
-    state._refresh()
-
-    assert len(state.rows) == 1
-    assert state.rows[0]["topic"] == "stock:600519.SH"
-
-
 def test_homework_state_refresh_uses_default_feed_when_hit(monkeypatch) -> None:
     calls: list[str] = []
     feed_rows = [
