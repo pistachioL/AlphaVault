@@ -168,6 +168,13 @@ def _confidence_from_mentions(assertion_mentions: list[dict[str, object]]) -> fl
     return max(values)
 
 
+def _clip_text(value: object, *, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, int(limit))].rstrip()
+
+
 def map_topic_prompt_assertions_to_rows(
     *,
     ai_result: dict[str, object],
@@ -272,6 +279,7 @@ def map_topic_prompt_assertions_to_rows(
             "keywords_json": json.dumps(keywords, ensure_ascii=False),
             "assertion_mentions": assertion_mentions,
             "assertion_entities": build_assertion_entities(assertion_mentions),
+            "source_text_excerpt": _clip_text(node_text, limit=220),
         }
         bucket = out.setdefault(post_uid, [])
         if len(bucket) < max(0, int(max_assertions_per_post)):
@@ -328,6 +336,13 @@ def resolve_rows_entity_matches(
                 assertion_mentions=assertion_mentions,
                 stock_name_targets=stock_name_targets,
                 stock_alias_targets=stock_alias_targets,
+                alias_task_sample={
+                    "sample_post_uid": post_uid,
+                    "sample_evidence": str(row.get("evidence") or "").strip(),
+                    "sample_raw_text_excerpt": str(
+                        row.get("source_text_excerpt") or row.get("evidence") or ""
+                    ).strip(),
+                },
             )
             row["assertion_entities"] = match_result.entities
             if match_result.relation_candidates or match_result.alias_task_keys:

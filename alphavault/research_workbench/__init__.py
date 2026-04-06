@@ -9,6 +9,7 @@ from .alias_task_repo import (
     get_alias_resolve_tasks_map,
     increment_alias_resolve_attempts,
     list_manual_alias_resolve_tasks,
+    list_pending_alias_resolve_tasks,
     set_alias_resolve_task_status,
 )
 from .candidate_repo import (
@@ -63,6 +64,7 @@ __all__ = [
     "increment_alias_resolve_attempts",
     "list_candidate_status_map",
     "list_manual_alias_resolve_tasks",
+    "list_pending_alias_resolve_tasks",
     "list_pending_candidates",
     "list_pending_candidates_for_left_key",
     "record_stock_alias_relation",

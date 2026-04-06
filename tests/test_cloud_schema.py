@@ -82,6 +82,23 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             "updated_at",
         } == snapshot_columns
 
+        alias_task_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(alias_resolve_tasks)")
+            .mappings()
+            .all()
+        }
+        assert {
+            "alias_key",
+            "status",
+            "attempt_count",
+            "sample_post_uid",
+            "sample_evidence",
+            "sample_raw_text_excerpt",
+            "created_at",
+            "updated_at",
+        } == alias_task_columns
+
         follow_page_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(follow_pages)").mappings().all()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from alphavault.db.turso_db import TursoConnection, TursoEngine
 from alphavault.domains.common.assertion_entities import (
@@ -14,6 +14,7 @@ from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
     ALIAS_TASK_STATUS_PENDING,
     ALIAS_TASK_STATUS_RESOLVED,
+    AliasResolveTaskInfo,
     RESEARCH_RELATIONS_TABLE,
     get_stock_keys_by_official_names,
     get_alias_resolve_tasks_map,
@@ -39,6 +40,7 @@ class EntityMatchResult:
     entities: list[dict[str, object]]
     relation_candidates: list[dict[str, object]]
     alias_task_keys: list[str]
+    alias_task_samples: list[dict[str, str]] = field(default_factory=list)
 
 
 def _clean_text(value: object) -> str:
@@ -54,6 +56,42 @@ def _clamp_confidence(value: object) -> float:
         return max(0.0, min(float(str(value or "").strip() or "0"), 1.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _clip_text(value: object, *, limit: int) -> str:
+    text = _clean_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, int(limit))].rstrip()
+
+
+def _clean_alias_task_sample(
+    sample: dict[str, object] | None,
+) -> dict[str, str]:
+    raw = sample if isinstance(sample, dict) else {}
+    return {
+        "sample_post_uid": _clean_text(raw.get("sample_post_uid")),
+        "sample_evidence": _clip_text(raw.get("sample_evidence"), limit=120),
+        "sample_raw_text_excerpt": _clip_text(
+            raw.get("sample_raw_text_excerpt"),
+            limit=220,
+        ),
+    }
+
+
+def _has_alias_task_sample(
+    info: AliasResolveTaskInfo | dict[str, object] | None,
+) -> bool:
+    if not isinstance(info, dict):
+        return False
+    return any(
+        _clean_text(info.get(key))
+        for key in (
+            "sample_post_uid",
+            "sample_evidence",
+            "sample_raw_text_excerpt",
+        )
+    )
 
 
 def _clean_mentions(
@@ -274,6 +312,7 @@ def resolve_assertion_mentions(
     assertion_mentions: list[dict[str, object]],
     stock_name_targets: dict[str, str] | None = None,
     stock_alias_targets: dict[str, str] | None = None,
+    alias_task_sample: dict[str, object] | None = None,
 ) -> EntityMatchResult:
     cleaned_mentions = _clean_mentions(assertion_mentions)
     if not cleaned_mentions:
@@ -322,7 +361,9 @@ def resolve_assertion_mentions(
     relation_candidates: list[dict[str, object]] = []
     seen_candidate_ids: set[str] = set()
     alias_task_keys: list[str] = []
+    alias_task_samples: list[dict[str, str]] = []
     seen_alias_task_keys: set[str] = set()
+    cleaned_alias_task_sample = _clean_alias_task_sample(alias_task_sample)
 
     for item in cleaned_mentions:
         mention_text = _clean_text(item.get("mention_text"))
@@ -378,12 +419,19 @@ def resolve_assertion_mentions(
         if alias_key not in seen_alias_task_keys:
             seen_alias_task_keys.add(alias_key)
             alias_task_keys.append(alias_key)
+            alias_task_samples.append(
+                {
+                    "alias_key": alias_key,
+                    **cleaned_alias_task_sample,
+                }
+            )
 
     alias_task_keys.sort()
     return EntityMatchResult(
         entities=entities,
         relation_candidates=relation_candidates,
         alias_task_keys=alias_task_keys,
+        alias_task_samples=alias_task_samples,
     )
 
 
@@ -403,15 +451,33 @@ def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) ->
         )
 
     tasks_map = get_alias_resolve_tasks_map(engine_or_conn, result.alias_task_keys)
+    sample_map = {
+        _clean_text(item.get("alias_key")): item
+        for item in result.alias_task_samples
+        if _clean_text(item.get("alias_key"))
+    }
     for alias_key in result.alias_task_keys:
         info = tasks_map.get(alias_key)
-        if info and _clean_text(info.get("status")) in _RESOLVED_ALIAS_TASK_STATUSES:
+        if (
+            info
+            and _clean_text(info.get("status")) in _RESOLVED_ALIAS_TASK_STATUSES
+            and _has_alias_task_sample(info)
+        ):
             continue
+        sample = sample_map.get(alias_key, {})
+        status = (
+            _clean_text(info.get("status"))
+            if isinstance(info, dict)
+            else ALIAS_TASK_STATUS_PENDING
+        )
         set_alias_resolve_task_status(
             engine_or_conn,
             alias_key=alias_key,
-            status=ALIAS_TASK_STATUS_PENDING,
+            status=status or ALIAS_TASK_STATUS_PENDING,
             attempt_count=0,
+            sample_post_uid=_clean_text(sample.get("sample_post_uid")),
+            sample_evidence=_clean_text(sample.get("sample_evidence")),
+            sample_raw_text_excerpt=_clean_text(sample.get("sample_raw_text_excerpt")),
         )
 
 

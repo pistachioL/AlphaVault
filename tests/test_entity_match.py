@@ -330,6 +330,11 @@ def test_persist_entity_match_followups_writes_candidate_and_alias_task() -> Non
                     "confidence": 0.8,
                 }
             ],
+            alias_task_sample={
+                "sample_post_uid": "weibo:1",
+                "sample_evidence": "长电今天继续涨",
+                "sample_raw_text_excerpt": "原文里提到长电、封测和景气度。",
+            },
         )
         persist_entity_match_followups(conn, candidate_result)
         persist_entity_match_followups(conn, task_result)
@@ -359,7 +364,7 @@ ORDER BY candidate_id
         alias_rows = (
             conn.execute(
                 f"""
-SELECT alias_key, status
+SELECT alias_key, status, sample_post_uid, sample_evidence, sample_raw_text_excerpt
 FROM {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE}
 ORDER BY alias_key
 """
@@ -371,6 +376,9 @@ ORDER BY alias_key
             {
                 "alias_key": "stock:长电",
                 "status": "pending",
+                "sample_post_uid": "weibo:1",
+                "sample_evidence": "长电今天继续涨",
+                "sample_raw_text_excerpt": "原文里提到长电、封测和景气度。",
             }
         ]
     finally:

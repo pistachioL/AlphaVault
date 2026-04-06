@@ -222,10 +222,40 @@ ON CONFLICT(alias_key) DO UPDATE SET
 
 def upsert_alias_resolve_task_status(table: str) -> str:
     return f"""
-INSERT INTO {table}(alias_key, status, attempt_count, created_at, updated_at)
-VALUES (:alias_key, :status, :attempt_count, :now, :now)
+INSERT INTO {table}(
+    alias_key,
+    status,
+    attempt_count,
+    sample_post_uid,
+    sample_evidence,
+    sample_raw_text_excerpt,
+    created_at,
+    updated_at
+)
+VALUES (
+    :alias_key,
+    :status,
+    :attempt_count,
+    :sample_post_uid,
+    :sample_evidence,
+    :sample_raw_text_excerpt,
+    :now,
+    :now
+)
 ON CONFLICT(alias_key) DO UPDATE SET
     status = excluded.status,
+    sample_post_uid = CASE
+        WHEN COALESCE({table}.sample_post_uid, '') <> '' THEN {table}.sample_post_uid
+        ELSE excluded.sample_post_uid
+    END,
+    sample_evidence = CASE
+        WHEN COALESCE({table}.sample_evidence, '') <> '' THEN {table}.sample_evidence
+        ELSE excluded.sample_evidence
+    END,
+    sample_raw_text_excerpt = CASE
+        WHEN COALESCE({table}.sample_raw_text_excerpt, '') <> '' THEN {table}.sample_raw_text_excerpt
+        ELSE excluded.sample_raw_text_excerpt
+    END,
     updated_at = excluded.updated_at
 """
 
@@ -234,16 +264,26 @@ def select_alias_resolve_tasks_by_keys(table: str, *, key_count: int) -> str:
     count = max(1, int(key_count or 0))
     placeholders = ", ".join(["?"] * count)
     return f"""
-SELECT alias_key, status, attempt_count
+SELECT alias_key, status, attempt_count,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt
 FROM {table}
 WHERE alias_key IN ({placeholders})
 """
 
 
-def select_alias_resolve_tasks_by_status(table: str) -> str:
+def select_alias_resolve_tasks_by_status(
+    table: str,
+    *,
+    limit_count: int | None = None,
+) -> str:
+    limit_clause = ""
+    if limit_count is not None:
+        limit_clause = "\nLIMIT :limit"
     return f"""
-SELECT alias_key, status, attempt_count, created_at, updated_at
+SELECT alias_key, status, attempt_count,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt,
+       created_at, updated_at
 FROM {table}
 WHERE status = :status
-ORDER BY updated_at DESC, alias_key ASC
+ORDER BY updated_at DESC, alias_key ASC{limit_clause}
 """

@@ -357,8 +357,10 @@ def test_resolve_rows_entity_matches_prefetches_thread_lookups_once(
         assertion_mentions,
         stock_name_targets=None,
         stock_alias_targets=None,
+        alias_task_sample=None,
     ) -> EntityMatchResult:
         del assertion_mentions
+        del alias_task_sample
         resolve_calls.append((stock_name_targets, stock_alias_targets))
         return EntityMatchResult([], [], [])
 
@@ -388,3 +390,44 @@ def test_resolve_rows_entity_matches_prefetches_thread_lookups_once(
         ({"贵州茅台": "stock:600519.SH"}, {"茅台": "stock:600519.SH"}),
     ]
     assert followups_by_post_uid == {"weibo:1": []}
+
+
+def test_resolve_rows_entity_matches_attaches_alias_task_sample_context() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        apply_cloud_schema(conn)
+        rows_by_post_uid: dict[str, list[dict[str, object]]] = {
+            "weibo:7": [
+                {
+                    "evidence": "长电今天继续走强",
+                    "source_text_excerpt": "原文里说长电科技和封测景气度继续上行。",
+                    "assertion_mentions": cast(
+                        list[dict[str, Any]],
+                        [
+                            {
+                                "mention_text": "长电",
+                                "mention_type": "stock_alias",
+                                "confidence": 0.8,
+                            }
+                        ],
+                    ),
+                    "assertion_entities": [],
+                }
+            ]
+        }
+
+        followups_by_post_uid = resolve_rows_entity_matches(conn, rows_by_post_uid)
+
+        followups = followups_by_post_uid["weibo:7"]
+        assert len(followups) == 1
+        assert followups[0].alias_task_keys == ["stock:长电"]
+        assert followups[0].alias_task_samples == [
+            {
+                "alias_key": "stock:长电",
+                "sample_post_uid": "weibo:7",
+                "sample_evidence": "长电今天继续走强",
+                "sample_raw_text_excerpt": "原文里说长电科技和封测景气度继续上行。",
+            }
+        ]
+    finally:
+        conn.close()

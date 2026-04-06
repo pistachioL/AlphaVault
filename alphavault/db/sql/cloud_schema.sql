@@ -133,6 +133,9 @@ CREATE TABLE IF NOT EXISTS alias_resolve_tasks (
     alias_key TEXT PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'pending',
     attempt_count INTEGER NOT NULL DEFAULT 0,
+    sample_post_uid TEXT NOT NULL DEFAULT '',
+    sample_evidence TEXT NOT NULL DEFAULT '',
+    sample_raw_text_excerpt TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
