@@ -72,7 +72,6 @@ def test_run_turso_maintenance_requeues_db_posts_when_queue_stays_empty() -> Non
                 "created_at": "2026-04-04 10:00:00",
                 "url": "https://example.com/1",
                 "raw_text": "文本1",
-                "display_md": "文本1",
                 "ai_retry_count": 0,
             }
         ]

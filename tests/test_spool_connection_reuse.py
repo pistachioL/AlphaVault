@@ -22,7 +22,6 @@ def _build_payload(
         "created_at": "2026-03-28 10:00:00",
         "url": f"https://example.com/post/{platform_post_id}",
         "raw_text": f"文本{platform_post_id}",
-        "display_md": "",
         "ingested_at": ingested_at,
     }
 

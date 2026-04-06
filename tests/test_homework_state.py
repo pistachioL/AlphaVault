@@ -256,7 +256,6 @@ def test_open_tree_dialog_keeps_xueqiu_post_uid_for_loader(monkeypatch) -> None:
                         "platform_post_id": "status:381213336",
                         "author": "雪球作者",
                         "raw_text": "A：叶子",
-                        "display_md": "A：叶子",
                         "created_at": "2026-03-25 10:23:48",
                     }
                 ]
