@@ -96,13 +96,21 @@ def _chunk_post_uids(post_uids: Iterable[str], *, chunk_size: int) -> list[list[
 
 
 def persist_entity_match_followups(
-    conn: TursoConnection, result: "EntityMatchResult"
+    engine_or_conn: TursoConnection | TursoEngine, result: "EntityMatchResult"
 ) -> None:
     from alphavault.domains.entity_match.resolve import (
         persist_entity_match_followups as persist_followups,
     )
 
-    persist_followups(conn, result)
+    persist_followups(engine_or_conn, result)
+
+
+def get_research_workbench_engine_from_env() -> TursoEngine:
+    from alphavault.research_workbench.service import (
+        get_research_workbench_engine_from_env as load_engine,
+    )
+
+    return load_engine()
 
 
 def _execute_upsert_pending_post(
@@ -373,6 +381,11 @@ def write_assertions_and_mark_done(
     - mark posts row as done
     """
     resolved_entity_match_results = list(entity_match_results or [])
+    research_workbench_engine = (
+        get_research_workbench_engine_from_env()
+        if resolved_entity_match_results
+        else None
+    )
     with turso_connect_autocommit(engine) as conn:
         with turso_savepoint(conn):
             _ensure_post_row_exists_for_done(
@@ -459,7 +472,9 @@ def write_assertions_and_mark_done(
             if entity_payloads:
                 conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
             for match_result in resolved_entity_match_results:
-                persist_entity_match_followups(conn, match_result)
+                if research_workbench_engine is None:
+                    raise AssertionError("missing_research_workbench_engine")
+                persist_entity_match_followups(research_workbench_engine, match_result)
             conn.execute(
                 UPDATE_POST_DONE,
                 {

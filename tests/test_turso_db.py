@@ -673,6 +673,7 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
 ) -> None:
     calls: list[str] = []
     followup_calls: list[EntityMatchResult] = []
+    standard_engine = object()
 
     class _FakeConn:
         def __enter__(self):  # type: ignore[no-untyped-def]
@@ -690,7 +691,8 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
     def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
         yield
 
-    def _fake_persist(_conn, result):  # type: ignore[no-untyped-def]
+    def _fake_persist(_engine, result):  # type: ignore[no-untyped-def]
+        assert _engine is standard_engine
         followup_calls.append(result)
         calls.append("__persist_entity_match_followups__")
 
@@ -698,6 +700,12 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
         turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
     )
     monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(
+        turso_queue,
+        "get_research_workbench_engine_from_env",
+        lambda: standard_engine,
+        raising=False,
+    )
     monkeypatch.setattr(
         turso_queue,
         "persist_entity_match_followups",
@@ -787,6 +795,12 @@ def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
         turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
     )
     monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(
+        turso_queue,
+        "get_research_workbench_engine_from_env",
+        lambda: object(),
+        raising=False,
+    )
     monkeypatch.setattr(
         turso_queue,
         "persist_entity_match_followups",
