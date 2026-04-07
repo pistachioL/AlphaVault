@@ -32,6 +32,8 @@ xueqiu_batch.sqlite3-wal
 /weibo/
 /weibo1/
 *.csv
+!data/
+!data/security_master.csv
 
 # Trace files
 trace.txt

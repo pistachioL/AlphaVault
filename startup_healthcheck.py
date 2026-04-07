@@ -9,6 +9,8 @@ from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_REDIS_URL,
     ENV_SPOOL_DIR,
+    ENV_STANDARD_TURSO_AUTH_TOKEN,
+    ENV_STANDARD_TURSO_DATABASE_URL,
     ENV_WEIBO_TURSO_AUTH_TOKEN,
     ENV_WEIBO_TURSO_DATABASE_URL,
     ENV_XUEQIU_TURSO_AUTH_TOKEN,
@@ -72,7 +74,7 @@ def _check_spool_dir() -> None:
 
 
 def _check_turso() -> None:
-    def resolve_targets() -> list[tuple[str, str, str]]:
+    def resolve_source_targets() -> list[tuple[str, str, str]]:
         targets: list[tuple[str, str, str]] = []
         for name, url_env, token_env in (
             ("weibo", ENV_WEIBO_TURSO_DATABASE_URL, ENV_WEIBO_TURSO_AUTH_TOKEN),
@@ -85,11 +87,18 @@ def _check_turso() -> None:
             targets.append((name, url, token))
         return targets
 
-    targets = resolve_targets()
-    if not targets:
+    source_targets = resolve_source_targets()
+    if not source_targets:
         raise RuntimeError(
             f"missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}"
         )
+    standard_url = _env_text(ENV_STANDARD_TURSO_DATABASE_URL)
+    if not standard_url:
+        raise RuntimeError(f"missing {ENV_STANDARD_TURSO_DATABASE_URL}")
+    targets = [
+        *source_targets,
+        ("standard", standard_url, _env_text(ENV_STANDARD_TURSO_AUTH_TOKEN)),
+    ]
 
     for name, url, token in targets:
         prefix = f"[healthcheck] turso[{name}]"

@@ -5,9 +5,11 @@ description = "AlphaVault"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+  "akshare",
   "feedparser",
   "libsql>=0.1.11",
   "litellm",
+  "opencc",
   "pandas",
   "python-dotenv",
   "redis",
