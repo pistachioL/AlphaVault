@@ -296,7 +296,7 @@ def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
     needle = str(query or "").strip()
     stock_relations, relation_err = load_stock_alias_relations_from_env()
     if relation_err:
-        stock_relations = None
+        return [], relation_err
     rows = build_search_index(
         posts,
         assertions,

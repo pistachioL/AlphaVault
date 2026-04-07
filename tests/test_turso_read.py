@@ -8,6 +8,28 @@ from alphavault_reflex.services import trade_board_loader
 from alphavault_reflex.services import turso_read
 
 
+def test_query_stock_alias_relations_uses_formal_relations_table(monkeypatch) -> None:
+    captured_sql: list[str] = []
+
+    def _fake_turso_read_sql_df(conn, sql, params=None):  # type: ignore[no-untyped-def]
+        del conn, params
+        captured_sql.append(str(sql))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        trade_board_loader,
+        "turso_read_sql_df",
+        _fake_turso_read_sql_df,
+    )
+
+    df = trade_board_loader.query_stock_alias_relations(conn=object(), source_name="")
+
+    assert df.empty
+    assert captured_sql
+    assert "FROM relations" in captured_sql[0]
+    assert "research_relations" not in captured_sql[0]
+
+
 def test_resolve_homework_source_workers_uses_default_when_env_missing(
     monkeypatch,
 ) -> None:
@@ -181,6 +203,36 @@ def test_load_homework_board_payload_from_env_keeps_partial_success(
     } == {"weibo"}
 
 
+def test_load_homework_board_payload_from_env_fails_on_standard_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        trade_board_loader,
+        "load_configured_turso_sources_from_env",
+        lambda: [TursoSource(name="weibo", url="u1", token="t1")],
+    )
+
+    def _raise_standard_error(
+        db_url: str,
+        auth_token: str,
+        source_name: str,
+        lookback_days: int,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        del db_url, auth_token, source_name, lookback_days
+        raise RuntimeError("turso_connect_error:standard:RuntimeError")
+
+    assertions, relations, err = (
+        trade_board_loader.load_homework_board_payload_from_env(
+            3,
+            load_cached_fn=_raise_standard_error,
+        )
+    )
+
+    assert assertions.empty
+    assert relations.empty
+    assert err == "turso_connect_error:standard:RuntimeError"
+
+
 def test_load_homework_board_payload_from_env_serial_parallel_same(
     monkeypatch,
 ) -> None:
@@ -239,6 +291,103 @@ def test_load_homework_board_payload_from_env_serial_parallel_same(
         str(item).strip()
         for item in parallel_relations.get("source", pd.Series(dtype=str)).tolist()
     }
+
+
+def test_load_homework_board_payload_from_env_dedupes_global_relations(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        trade_board_loader,
+        "load_configured_turso_sources_from_env",
+        lambda: [
+            TursoSource(name="weibo", url="u1", token="t1"),
+            TursoSource(name="xueqiu", url="u2", token="t2"),
+        ],
+    )
+
+    def _fake_cached(
+        db_url: str,
+        auth_token: str,
+        source_name: str,
+        lookback_days: int,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        del db_url, auth_token
+        assert lookback_days == 3
+        return (
+            pd.DataFrame([{"post_uid": f"{source_name}:p1"}]),
+            pd.DataFrame(
+                [
+                    {
+                        "relation_type": "stock_alias",
+                        "left_key": "stock:600519.SH",
+                        "right_key": "stock:茅台",
+                        "relation_label": "alias_of",
+                        "source": "standard",
+                    }
+                ]
+            ),
+        )
+
+    assertions, relations, err = (
+        trade_board_loader.load_homework_board_payload_from_env(
+            3,
+            load_cached_fn=_fake_cached,
+        )
+    )
+
+    assert err == ""
+    assert len(assertions) == 2
+    assert len(relations) == 1
+
+
+def test_load_stock_alias_relations_from_env_uses_workbench_engine(monkeypatch) -> None:
+    fake_engine = object()
+    seen: list[object] = []
+
+    monkeypatch.setattr(
+        trade_board_loader,
+        "load_configured_turso_sources_from_env",
+        lambda: (_ for _ in ()).throw(AssertionError("should_not_read_source_env")),
+    )
+    monkeypatch.setattr(
+        trade_board_loader,
+        "get_research_workbench_engine_from_env",
+        lambda: fake_engine,
+        raising=False,
+    )
+
+    class _FakeConn:
+        pass
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_connect(engine):  # type: ignore[no-untyped-def]
+        seen.append(engine)
+        yield _FakeConn()
+
+    def _fake_query_stock_alias_relations(*, conn, source_name):  # type: ignore[no-untyped-def]
+        seen.extend([conn, source_name])
+        return pd.DataFrame([{"left_key": "stock:600519.SH"}])
+
+    trade_board_loader.load_stock_alias_relations_cached.cache_clear()
+    monkeypatch.setattr(
+        trade_board_loader,
+        "turso_connect_autocommit",
+        _fake_connect,
+    )
+    monkeypatch.setattr(
+        trade_board_loader,
+        "query_stock_alias_relations",
+        _fake_query_stock_alias_relations,
+    )
+
+    relations, err = trade_board_loader.load_stock_alias_relations_from_env()
+
+    assert err == ""
+    assert len(relations) == 1
+    assert seen[0] is fake_engine
+    assert seen[2] == "standard"
 
 
 def test_load_homework_trade_feed_from_env_uses_workbench_engine(monkeypatch) -> None:

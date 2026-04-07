@@ -336,6 +336,7 @@ uv run reflex run
 启动时会先做一次 startup check（失败就直接退出容器）：
 - 本地缓存：`SPOOL_DIR`（默认 `/tmp/alphavault-spool`）需要可写
 - Turso：必须配置 `WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`，并且也必须配置 `STANDARD_TURSO_DATABASE_URL`；healthcheck 会把这些库都做只读连通检查
+- 标准库：还会直接检查 `security_master`、`relations`、`relation_candidates`、`alias_resolve_tasks` 这 4 张关键表；没先执行 `alphavault/db/sql/cloud_schema.sql` 就会直接 fail
 - Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
 
 定时（通过 env 配）：

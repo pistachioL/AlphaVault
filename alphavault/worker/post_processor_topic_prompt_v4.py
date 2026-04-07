@@ -24,6 +24,9 @@ from alphavault.domains.entity_match import (
     resolve_assertion_mentions,
 )
 from alphavault.rss.utils import RateLimiter, now_str
+from alphavault.research_workbench.service import (
+    get_research_workbench_engine_from_env,
+)
 from alphavault.research_stock_cache import mark_entity_page_dirty_from_assertions
 from alphavault.weibo.topic_prompt_tree import (
     MAX_TOPIC_PROMPT_CHARS,
@@ -188,11 +191,15 @@ def resolve_rows_entity_matches(
                 ):
                     seen_stock_aliases.add(mention_text)
                     stock_alias_texts.append(mention_text)
-    stock_name_targets, stock_alias_targets = load_entity_match_lookup_maps(
-        engine_or_conn,
-        stock_name_texts=stock_name_texts,
-        stock_alias_texts=stock_alias_texts,
-    )
+    stock_name_targets: dict[str, str] = {}
+    stock_alias_targets: dict[str, str] = {}
+    if stock_name_texts or stock_alias_texts:
+        standard_engine = get_research_workbench_engine_from_env()
+        stock_name_targets, stock_alias_targets = load_entity_match_lookup_maps(
+            standard_engine,
+            stock_name_texts=stock_name_texts,
+            stock_alias_texts=stock_alias_texts,
+        )
     followups_by_post_uid: dict[str, list[EntityMatchResult]] = {}
     for post_uid, rows in rows_by_post_uid.items():
         post_followups: list[EntityMatchResult] = []

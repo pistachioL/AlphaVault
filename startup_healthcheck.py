@@ -24,10 +24,22 @@ from alphavault.db.turso_db import (
     turso_connect_autocommit,
 )
 from alphavault.env import load_dotenv_if_present
+from alphavault.research_workbench.schema import (
+    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
+    RESEARCH_RELATION_CANDIDATES_TABLE,
+    RESEARCH_RELATIONS_TABLE,
+    RESEARCH_SECURITY_MASTER_TABLE,
+)
 
 load_dotenv_if_present()
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_STANDARD_REQUIRED_TABLES = (
+    RESEARCH_SECURITY_MASTER_TABLE,
+    RESEARCH_RELATIONS_TABLE,
+    RESEARCH_RELATION_CANDIDATES_TABLE,
+    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
+)
 
 
 def _print(msg: str) -> None:
@@ -74,6 +86,10 @@ def _check_spool_dir() -> None:
 
 
 def _check_turso() -> None:
+    def check_standard_tables(conn) -> None:  # type: ignore[no-untyped-def]
+        for table_name in _STANDARD_REQUIRED_TABLES:
+            conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
+
     def resolve_source_targets() -> list[tuple[str, str, str]]:
         targets: list[tuple[str, str, str]] = []
         for name, url_env, token_env in (
@@ -108,9 +124,22 @@ def _check_turso() -> None:
         try:
             with turso_connect_autocommit(engine) as conn:
                 conn.execute(SELECT_ONE).fetchone()
+                try:
+                    if name == "standard":
+                        check_standard_tables(conn)
+                except BaseException as e:
+                    if isinstance(e, _FATAL_BASE_EXCEPTIONS):
+                        raise
+                    raise RuntimeError(
+                        f"turso[{name}] schema check failed: {type(e).__name__}: {e}"
+                    ) from e
         except BaseException as e:
             if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                 raise
+            if isinstance(e, RuntimeError) and str(e).startswith(
+                f"turso[{name}] schema check failed:"
+            ):
+                raise e
             raise RuntimeError(
                 f"turso[{name}] connect failed: {type(e).__name__}: {e}"
             ) from e

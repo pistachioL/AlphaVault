@@ -22,6 +22,7 @@ from alphavault_reflex.services.source_loader import (
 from alphavault_reflex.services.stock_fast_loader import (
     FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE,
     FAST_STOCK_TOTAL_TIMEOUT_SECONDS,
+    load_stock_alias_keys_cached,
     load_stock_sources_fast_from_env,
     load_stock_trade_sources_fast_cached,
 )
@@ -81,6 +82,7 @@ def clear_reflex_source_caches() -> None:
     clear_registered_caches(
         load_trade_sources_cached.cache_clear,
         load_trade_board_assertions_cached.cache_clear,
+        load_stock_alias_keys_cached.cache_clear,
         load_stock_trade_sources_fast_cached.cache_clear,
         load_homework_board_payload_cached.cache_clear,
         load_single_post_for_tree_cached.cache_clear,

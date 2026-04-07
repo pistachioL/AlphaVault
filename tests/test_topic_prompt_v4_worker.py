@@ -408,12 +408,20 @@ def test_map_topic_prompt_assertions_to_rows_supports_commodity_layer() -> None:
     ]
 
 
-def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates() -> (
-    None
-):
+def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates(
+    monkeypatch,
+) -> None:
+    from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
+
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         apply_cloud_schema(conn)
+        monkeypatch.setattr(
+            worker_module,
+            "get_research_workbench_engine_from_env",
+            lambda: conn,
+            raising=False,
+        )
         rows_by_post_uid: dict[str, list[dict[str, object]]] = {
             "weibo:1": [
                 {
@@ -494,15 +502,24 @@ def test_resolve_rows_entity_matches_prefetches_thread_lookups_once(
 ) -> None:
     from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
 
+    standard_engine = cast(Any, object())
     load_calls: list[tuple[list[str], list[str]]] = []
     resolve_calls: list[tuple[dict[str, str] | None, dict[str, str] | None]] = []
 
+    monkeypatch.setattr(
+        worker_module,
+        "get_research_workbench_engine_from_env",
+        lambda: standard_engine,
+        raising=False,
+    )
+
     def _fake_load_entity_match_lookup_maps(
-        _engine_or_conn,
+        engine_or_conn,
         *,
         stock_name_texts: list[str],
         stock_alias_texts: list[str],
     ) -> tuple[dict[str, str], dict[str, str]]:
+        assert engine_or_conn is standard_engine
         load_calls.append((list(stock_name_texts), list(stock_alias_texts)))
         return (
             {"贵州茅台": "stock:600519.SH"},
@@ -557,10 +574,161 @@ def test_resolve_rows_entity_matches_prefetches_thread_lookups_once(
     assert followups_by_post_uid == {"weibo:1": []}
 
 
-def test_resolve_rows_entity_matches_attaches_alias_task_sample_context() -> None:
+def test_resolve_rows_entity_matches_uses_standard_engine_for_lookup_prefetch(
+    monkeypatch,
+) -> None:
+    from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
+
+    source_engine = cast(Any, object())
+    standard_engine = cast(Any, object())
+    load_calls: list[tuple[list[str], list[str]]] = []
+    resolve_calls: list[str] = []
+
+    monkeypatch.setattr(
+        worker_module,
+        "get_research_workbench_engine_from_env",
+        lambda: standard_engine,
+        raising=False,
+    )
+
+    def _fake_load_entity_match_lookup_maps(
+        engine_or_conn,
+        *,
+        stock_name_texts: list[str],
+        stock_alias_texts: list[str],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        assert engine_or_conn is standard_engine
+        load_calls.append((list(stock_name_texts), list(stock_alias_texts)))
+        return (
+            {"贵州茅台": "stock:600519.SH"},
+            {"茅台": "stock:600519.SH"},
+        )
+
+    monkeypatch.setattr(
+        worker_module,
+        "load_entity_match_lookup_maps",
+        _fake_load_entity_match_lookup_maps,
+        raising=False,
+    )
+
+    def _fake_resolve(
+        engine_or_conn,
+        *,
+        assertion_mentions,
+        stock_name_targets=None,
+        stock_alias_targets=None,
+        alias_task_sample=None,
+    ) -> EntityMatchResult:
+        del assertion_mentions
+        del alias_task_sample
+        assert engine_or_conn is source_engine
+        resolve_calls.append("resolve")
+        assert stock_name_targets == {"贵州茅台": "stock:600519.SH"}
+        assert stock_alias_targets == {"茅台": "stock:600519.SH"}
+        return EntityMatchResult([], [], [])
+
+    monkeypatch.setattr(worker_module, "resolve_assertion_mentions", _fake_resolve)
+
+    rows_by_post_uid: dict[str, list[dict[str, object]]] = {
+        "weibo:1": [
+            {
+                "assertion_mentions": [
+                    {"mention_text": "贵州茅台", "mention_type": "stock_name"},
+                    {"mention_text": "茅台", "mention_type": "stock_alias"},
+                ]
+            }
+        ]
+    }
+
+    followups_by_post_uid = resolve_rows_entity_matches(source_engine, rows_by_post_uid)
+
+    assert load_calls == [(["贵州茅台"], ["茅台"])]
+    assert resolve_calls == ["resolve"]
+    assert followups_by_post_uid == {"weibo:1": []}
+
+
+def test_resolve_rows_entity_matches_skips_standard_lookup_without_stock_mentions(
+    monkeypatch,
+) -> None:
+    from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
+
+    source_engine = cast(Any, object())
+    resolve_calls: list[str] = []
+
+    def _fail_get_standard_engine():
+        raise AssertionError("should_not_load_standard_engine")
+
+    def _fail_load_entity_match_lookup_maps(
+        _engine_or_conn,
+        *,
+        stock_name_texts: list[str],
+        stock_alias_texts: list[str],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        del stock_name_texts
+        del stock_alias_texts
+        raise AssertionError("should_not_prefetch_lookup_maps")
+
+    monkeypatch.setattr(
+        worker_module,
+        "get_research_workbench_engine_from_env",
+        _fail_get_standard_engine,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        worker_module,
+        "load_entity_match_lookup_maps",
+        _fail_load_entity_match_lookup_maps,
+        raising=False,
+    )
+
+    def _fake_resolve(
+        engine_or_conn,
+        *,
+        assertion_mentions,
+        stock_name_targets=None,
+        stock_alias_targets=None,
+        alias_task_sample=None,
+    ) -> EntityMatchResult:
+        del assertion_mentions
+        del alias_task_sample
+        assert engine_or_conn is source_engine
+        assert stock_name_targets == {}
+        assert stock_alias_targets == {}
+        resolve_calls.append("resolve")
+        return EntityMatchResult([], [], [])
+
+    monkeypatch.setattr(worker_module, "resolve_assertion_mentions", _fake_resolve)
+
+    rows_by_post_uid: dict[str, list[dict[str, object]]] = {
+        "weibo:1": [
+            {
+                "assertion_mentions": [
+                    {"mention_text": "消费电子", "mention_type": "topic"},
+                ]
+            }
+        ]
+    }
+
+    followups_by_post_uid = resolve_rows_entity_matches(source_engine, rows_by_post_uid)
+
+    assert resolve_calls == ["resolve"]
+    assert followups_by_post_uid == {"weibo:1": []}
+
+
+def test_resolve_rows_entity_matches_attaches_alias_task_sample_context(
+    monkeypatch,
+) -> None:
+    from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
+
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         apply_cloud_schema(conn)
+        monkeypatch.setattr(
+            worker_module,
+            "get_research_workbench_engine_from_env",
+            lambda: conn,
+            raising=False,
+        )
         rows_by_post_uid: dict[str, list[dict[str, object]]] = {
             "weibo:7": [
                 {
