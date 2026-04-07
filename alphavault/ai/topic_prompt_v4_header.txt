@@ -79,7 +79,7 @@
   ],
   "mentions": [
     {
-      "mention_text": "string (提取纯原词，如 '茅台'、'鹅厂'、'600519'，绝不可自动转为全称或加代码后缀)",
+      "mention_text": "string (提取纯原词，如 '茅台'、'鹅厂'、'600519'，绝不可自动转为全称或加代码后缀；一个 mention_text 只能放一个对象)",
       "mention_type": "stock_code|stock_name|stock_alias|industry_name|commodity_name|index_name|keyword",
       "evidence": "string (原文中包含该提取词的具体句子短片段)",
       "confidence": 0.95
@@ -91,6 +91,9 @@
 - 如果没有提及具体的标的、行业、宏观事件，`mentions` 可空；这时 `assertions` 也必须是空数组。无明确指向的鸡汤不应生成 assertion。
 - 只要生成了 assertion，`assertions[*].mentions` 就必须至少有 1 个字符串。
 - `assertions.mentions` 里的字符串，必须能和顶层 `mentions.mention_text` 完全精准匹配（字符串完全相等）。
+- 一个 `mention_text` 只能放一个对象，不能把多个对象用顿号、逗号塞进同一个词。
+- 如果原文里同时提到多个对象，必须拆成多个 mentions；不要把“北、上、港”这种并列简称合并成一个 `mention_text`。
+- 如果原文是“北、上、港等国内枢纽机场”这种写法，但作者真正想说的是一个整体概念，就只保留“国内枢纽机场”，不要额外编造或拼接一个合并词。
 - 请再三确认：你只做文本字面提取！不要帮系统猜测别名背后的官方股票是谁！
 
 下面会有很多个话题块。每个话题块都提供一份 JSON 对话树，各话题之间用 `----` 分开。
