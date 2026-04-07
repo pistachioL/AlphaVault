@@ -22,7 +22,7 @@ def _empty_stock_page_view(
 ) -> dict[str, object]:
     return {
         "entity_key": stock_key,
-        "header_title": stock_key.removeprefix("stock:"),
+        "page_title": stock_key.removeprefix("stock:"),
         "signals": [],
         "signal_total": 0,
         "signal_page": 1,
@@ -83,7 +83,7 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
     cached_view = load_sector_cached_view_from_env(sector_key)
     if bool(cached_view.get("snapshot_hit")):
         return {
-            "header_title": str(cached_view.get("header_title") or "").strip(),
+            "page_title": str(cached_view.get("page_title") or "").strip(),
             "signals": cached_view.get("signals") or [],
             "related_stocks": cached_view.get("related_stocks") or [],
             "load_error": str(cached_view.get("load_error") or "").strip(),
@@ -91,7 +91,7 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
     cached_error = str(cached_view.get("load_error") or "").strip()
     if cached_error:
         return {
-            "header_title": str(cached_view.get("header_title") or sector_key).strip(),
+            "page_title": str(cached_view.get("page_title") or sector_key).strip(),
             "signals": [],
             "related_stocks": [],
             "load_error": cached_error,
@@ -99,7 +99,7 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
     posts, assertions, err = load_sources_from_env()
     if err:
         return {
-            "header_title": sector_key,
+            "page_title": sector_key,
             "signals": [],
             "related_stocks": [],
             "load_error": err,

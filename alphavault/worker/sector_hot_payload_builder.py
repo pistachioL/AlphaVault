@@ -8,19 +8,21 @@ import pandas as pd
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
-from alphavault.domains.common.json_list import parse_json_list
-from alphavault.research_sector_view import build_sector_research_view
+from alphavault.research_signal_view import (
+    build_related_stock_rows,
+    build_signal_rows,
+    merge_post_fields,
+)
 
 
 WANTED_ASSERTION_COLUMNS = [
+    "assertion_id",
     "post_uid",
-    "topic_key",
+    "stock_key",
     "action",
     "action_strength",
     "summary",
-    "author",
     "created_at",
-    "cluster_keys_json",
 ]
 
 WANTED_POST_COLUMNS = [
@@ -54,17 +56,32 @@ def _load_sector_assertions(
     max_rows: int,
 ) -> pd.DataFrame:
     params: dict[str, Any] = {
-        "cluster_like": f'%"{str(sector_slug or "").strip()}"%',
+        "cluster_key": str(sector_slug or "").strip(),
         "cutoff": _window_cutoff_str(window_days),
         "limit": max(1, int(max_rows)),
     }
 
-    query = f"""
-SELECT {", ".join(WANTED_ASSERTION_COLUMNS)}
-FROM assertions
-WHERE cluster_keys_json LIKE :cluster_like
-  AND created_at >= :cutoff
-ORDER BY created_at DESC
+    query = """
+SELECT
+  a.assertion_id,
+  a.post_uid,
+  stock_entities.entity_key AS stock_key,
+  a.action,
+  a.action_strength,
+  a.summary,
+  a.created_at
+FROM assertions a
+JOIN assertion_entities sector_entities
+  ON sector_entities.assertion_id = a.assertion_id
+JOIN topic_cluster_topics tct
+  ON tct.topic_key = sector_entities.entity_key
+LEFT JOIN assertion_entities stock_entities
+  ON stock_entities.assertion_id = a.assertion_id
+ AND stock_entities.entity_type = 'stock'
+WHERE sector_entities.entity_type = 'industry'
+  AND tct.cluster_key = :cluster_key
+  AND a.created_at >= :cutoff
+ORDER BY a.created_at DESC
 LIMIT :limit
 """
 
@@ -72,11 +89,10 @@ LIMIT :limit
     if assertions.empty:
         return assertions
     out = assertions.copy()
-    for col in ["post_uid", "topic_key", "summary", "author", "action"]:
+    for col in ["assertion_id", "post_uid", "stock_key", "summary", "action"]:
         if col in out.columns:
             out[col] = out[col].fillna("").astype(str)
-    out["cluster_keys"] = out["cluster_keys_json"].fillna("[]").astype(str)
-    out["cluster_keys"] = out["cluster_keys"].apply(parse_json_list)
+    out["sector_key"] = normalize_sector_key(sector_slug)
     return out
 
 
@@ -115,10 +131,11 @@ def build_sector_hot_payload(
     if not normalized_key:
         return {
             "entity_key": "",
-            "header_title": "",
-            "signals": [],
-            "signal_total": 0,
-            "related_stocks": [],
+            "entity_type": "",
+            "header": {},
+            "signal_top": [],
+            "related": [],
+            "counters": {"signal_total": 0},
         }
     sector_slug = normalized_key.removeprefix("cluster:")
     assertions = _load_sector_assertions(
@@ -130,10 +147,11 @@ def build_sector_hot_payload(
     if assertions.empty:
         return {
             "entity_key": normalized_key,
-            "header_title": sector_slug,
-            "signals": [],
-            "signal_total": 0,
-            "related_stocks": [],
+            "entity_type": "sector",
+            "header": {"title": sector_slug},
+            "signal_top": [],
+            "related": [],
+            "counters": {"signal_total": 0},
         }
 
     post_uids = [
@@ -142,14 +160,27 @@ def build_sector_hot_payload(
         if str(uid or "").strip()
     ]
     posts = _load_posts_for_assertions(conn, post_uids=post_uids)
-    view = build_sector_research_view(posts, assertions, sector_key=sector_slug)
-    all_signals = list(view.signals)
+    view = merge_post_fields(assertions, posts)
+    all_signals = build_signal_rows(view, posts=posts)
+    related_rows: list[dict[str, str]] = []
+    for row in build_related_stock_rows(view):
+        stock_key = str(row.get("stock_key") or "").strip()
+        if not stock_key:
+            continue
+        related_rows.append(
+            {
+                "entity_key": stock_key,
+                "entity_type": "stock",
+                "mention_count": str(row.get("mention_count") or "").strip(),
+            }
+        )
     return {
         "entity_key": normalized_key,
-        "header_title": view.header_title,
-        "signals": all_signals[: max(1, int(signal_cap))],
-        "signal_total": len(all_signals),
-        "related_stocks": list(view.related_stocks),
+        "entity_type": "sector",
+        "header": {"title": sector_slug},
+        "signal_top": all_signals[: max(1, int(signal_cap))],
+        "related": related_rows,
+        "counters": {"signal_total": len(all_signals)},
     }
 
 

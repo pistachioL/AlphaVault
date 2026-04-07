@@ -16,12 +16,12 @@ def test_build_stock_sector_candidates_prefers_high_overlap_entities() -> None:
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "cluster_keys": ["white_liquor", "consumer"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "cluster_keys": ["white_liquor"],
             },
         ]
@@ -40,19 +40,19 @@ def test_build_stock_alias_candidates_and_sector_relation_candidates() -> None:
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "stock_names": ["贵州茅台"],
                 "cluster_keys": ["white_liquor", "consumer"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:000858.SZ",
+                "entity_key": "stock:000858.SZ",
                 "stock_names": ["五粮液"],
                 "cluster_keys": ["white_liquor"],
             },
             {
                 "post_uid": "p3",
-                "topic_key": "stock:600887.SH",
+                "entity_key": "stock:600887.SH",
                 "stock_names": ["伊利股份"],
                 "cluster_keys": ["consumer"],
             },
@@ -74,16 +74,16 @@ def test_build_stock_alias_candidates_and_sector_candidates_use_stock_object_row
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:601899.SH",
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "entity_key": "stock:601899.SH",
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
                 "cluster_keys": ["gold"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:紫金",
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金"]',
+                "entity_key": "stock:紫金",
+                "stock_codes": [],
+                "stock_names": ["紫金"],
                 "cluster_keys": ["copper"],
             },
         ]

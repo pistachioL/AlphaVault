@@ -137,37 +137,40 @@ def _single_stock_code_key(cleaned_mentions: list[dict[str, object]]) -> str:
     return unique_keys[0] if len(unique_keys) == 1 else ""
 
 
-def _entity_dedupe_key(item: dict[str, object]) -> tuple[str, str, str, str]:
+def _entity_dedupe_key(item: dict[str, object]) -> tuple[str, str, str]:
     return (
         _clean_text(item.get("entity_key")),
         _clean_text(item.get("entity_type")),
-        _clean_text(item.get("source_mention_text")),
-        _clean_text(item.get("source_mention_type")),
+        _clean_text(item.get("match_source")),
     )
 
 
 def _append_entity(
     out: list[dict[str, object]],
     *,
-    seen: set[tuple[str, str, str, str]],
+    seen: set[tuple[str, str, str]],
     entity_key: str,
     entity_type: str,
-    mention_text: str,
-    mention_type: str,
-    confidence: float,
+    match_source: str,
 ) -> None:
     item = {
         "entity_key": entity_key,
         "entity_type": entity_type,
-        "source_mention_text": mention_text,
-        "source_mention_type": mention_type,
-        "confidence": confidence,
+        "match_source": match_source,
+        "is_primary": 0,
     }
     dedupe_key = _entity_dedupe_key(item)
     if not dedupe_key[0] or not dedupe_key[1] or dedupe_key in seen:
         return
     seen.add(dedupe_key)
     out.append(item)
+
+
+def _mark_primary_entity(entities: list[dict[str, object]]) -> None:
+    if not entities:
+        return
+    for idx, entity in enumerate(entities):
+        entity["is_primary"] = 1 if idx == 0 else 0
 
 
 def _select_unique_mapping(
@@ -320,18 +323,16 @@ def resolve_assertion_mentions(
 
     base_entities = build_assertion_entities(cleaned_mentions)
     entities: list[dict[str, object]] = []
-    seen_entities: set[tuple[str, str, str, str]] = set()
+    seen_entities: set[tuple[str, str, str]] = set()
     for item in base_entities:
-        if _clean_text(item.get("source_mention_type")) == "stock_name":
+        if _clean_text(item.get("match_source")) == "stock_name":
             continue
         _append_entity(
             entities,
             seen=seen_entities,
             entity_key=_clean_text(item.get("entity_key")),
             entity_type=_clean_text(item.get("entity_type")),
-            mention_text=_clean_text(item.get("source_mention_text")),
-            mention_type=_clean_text(item.get("source_mention_type")),
-            confidence=_clamp_confidence(item.get("confidence")),
+            match_source=_clean_text(item.get("match_source")),
         )
 
     single_stock_code_key = _single_stock_code_key(cleaned_mentions)
@@ -373,8 +374,7 @@ def resolve_assertion_mentions(
             continue
 
         already_resolved = any(
-            _clean_text(entity.get("source_mention_text")) == mention_text
-            and _clean_text(entity.get("source_mention_type")) == mention_type
+            _clean_text(entity.get("match_source")) == mention_type
             for entity in entities
         )
         if already_resolved:
@@ -395,9 +395,7 @@ def resolve_assertion_mentions(
                 seen=seen_entities,
                 entity_key=target_key,
                 entity_type=_STOCK_ENTITY_TYPE,
-                mention_text=mention_text,
-                mention_type=mention_type,
-                confidence=confidence,
+                match_source=mention_type,
             )
             continue
         if mention_type == "stock_name":
@@ -427,6 +425,7 @@ def resolve_assertion_mentions(
             )
 
     alias_task_keys.sort()
+    _mark_primary_entity(entities)
     return EntityMatchResult(
         entities=entities,
         relation_candidates=relation_candidates,

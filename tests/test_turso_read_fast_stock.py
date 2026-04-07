@@ -33,7 +33,7 @@ def test_load_stock_sources_fast_from_env_returns_partial_error(monkeypatch) -> 
             raise RuntimeError("boom")
         posts = pd.DataFrame([{"post_uid": "weibo:1"}])
         assertions = pd.DataFrame(
-            [{"post_uid": "weibo:1", "topic_key": "stock:03316.HK"}]
+            [{"post_uid": "weibo:1", "entity_key": "stock:03316.HK"}]
         )
         return posts, assertions
 
@@ -98,32 +98,51 @@ CREATE TABLE posts(
         conn.execute(
             """
 CREATE TABLE assertions(
+  assertion_id TEXT PRIMARY KEY,
   post_uid TEXT NOT NULL,
   idx INTEGER NOT NULL,
-  topic_key TEXT NOT NULL,
   action TEXT NOT NULL,
   action_strength INTEGER NOT NULL,
   summary TEXT NOT NULL,
-  evidence TEXT NOT NULL DEFAULT '',
-  confidence REAL NOT NULL DEFAULT 0,
-  author TEXT NOT NULL,
+  evidence TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  stock_codes_json TEXT NOT NULL DEFAULT '[]',
-  stock_names_json TEXT NOT NULL DEFAULT '[]',
-  industries_json TEXT NOT NULL DEFAULT '[]',
-  commodities_json TEXT NOT NULL DEFAULT '[]',
-  indices_json TEXT NOT NULL DEFAULT '[]'
+  UNIQUE(post_uid, idx)
 )
 """
         )
         conn.execute(
             """
 CREATE TABLE assertion_entities(
-  post_uid TEXT NOT NULL,
-  assertion_idx INTEGER NOT NULL,
-  entity_idx INTEGER NOT NULL,
+  assertion_id TEXT NOT NULL,
   entity_key TEXT NOT NULL,
-  entity_type TEXT NOT NULL
+  entity_type TEXT NOT NULL,
+  match_source TEXT NOT NULL,
+  is_primary INTEGER NOT NULL DEFAULT 0
+)
+"""
+        )
+        conn.execute(
+            """
+CREATE TABLE assertion_mentions(
+  assertion_id TEXT NOT NULL,
+  mention_seq INTEGER NOT NULL,
+  mention_text TEXT NOT NULL,
+  mention_norm TEXT NOT NULL,
+  mention_type TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  confidence REAL NOT NULL DEFAULT 0
+)
+"""
+        )
+        conn.execute(
+            """
+CREATE TABLE topic_cluster_topics(
+  topic_key TEXT NOT NULL,
+  cluster_key TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'manual',
+  confidence REAL NOT NULL DEFAULT 1.0,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (topic_key, cluster_key)
 )
 """
         )
@@ -147,37 +166,34 @@ VALUES (?, ?, ?, ?, ?, ?, ?)
         conn.execute(
             """
 INSERT INTO assertions(
-  post_uid, idx, topic_key, action, action_strength, summary, author, created_at,
-  stock_codes_json, stock_names_json
+  assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 """,
             (
+                "weibo:2#1",
                 "weibo:2",
                 1,
-                "stock:紫金",
                 "trade.buy",
                 2,
                 "别名行也要进正式个股页",
-                "alice",
+                "别名行也要进正式个股页",
                 "2099-01-02 00:00:00",
-                "[]",
-                "[]",
             ),
         )
         conn.execute(
             """
 INSERT INTO assertion_entities(
-  post_uid, assertion_idx, entity_idx, entity_key, entity_type
+  assertion_id, entity_key, entity_type, match_source, is_primary
 )
 VALUES (?, ?, ?, ?, ?)
 """,
             (
-                "weibo:2",
-                1,
-                1,
+                "weibo:2#1",
                 "stock:601899.SH",
                 "stock",
+                "stock_alias",
+                1,
             ),
         )
 
@@ -203,7 +219,7 @@ VALUES (?, ?, ?, ?, ?)
 
         assert list(posts["post_uid"]) == ["weibo:2"]
         assert list(assertions["post_uid"]) == ["weibo:2"]
-        assert assertions.iloc[0]["topic_key"] == "stock:紫金"
+        assert assertions.iloc[0]["entity_key"] == "stock:601899.SH"
         assert assertions.iloc[0]["summary"] == "别名行也要进正式个股页"
     finally:
         stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()

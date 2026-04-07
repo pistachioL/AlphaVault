@@ -125,22 +125,18 @@ def scan_invalid_assertion_rows(*, filter_prompt_version: bool) -> str:
         where_clause += " AND COALESCE(p.prompt_version, '') = :prompt_version"
     return f"""
 SELECT
-    p.post_uid AS post_uid,
+    a.assertion_id AS assertion_id,
+    a.post_uid AS post_uid,
     COALESCE(p.prompt_version, '') AS prompt_version,
     a.idx AS idx,
-    a.topic_key AS topic_key,
     a.action AS action,
     a.action_strength AS action_strength,
-    a.confidence AS confidence,
-    a.stock_codes_json AS stock_codes_json,
-    a.stock_names_json AS stock_names_json,
-    a.industries_json AS industries_json,
-    a.commodities_json AS commodities_json,
-    a.indices_json AS indices_json,
-    COALESCE(a.keywords_json, '[]') AS keywords_json
+    a.summary AS summary,
+    a.evidence AS evidence,
+    COALESCE(a.created_at, '') AS created_at
 FROM posts p
 JOIN assertions a
   ON a.post_uid = p.post_uid
 {where_clause}
-ORDER BY p.post_uid ASC, a.idx ASC
+ORDER BY a.post_uid ASC, a.idx ASC
 """

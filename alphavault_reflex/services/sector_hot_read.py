@@ -44,6 +44,32 @@ def _dict_rows(value: object) -> list[dict[str, str]]:
     return out
 
 
+def _dict_object(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): str(raw).strip() if raw is not None else ""
+        for key, raw in value.items()
+        if str(key).strip()
+    }
+
+
+def _counter_int(payload: dict[str, object], key: str) -> int:
+    counters = _dict_object(payload.get("counters"))
+    text = str(counters.get(key) or "").strip()
+    if not text:
+        return 0
+    try:
+        return max(int(text), 0)
+    except ValueError:
+        return 0
+
+
+def _page_title(payload: dict[str, object]) -> str:
+    header = _dict_object(payload.get("header"))
+    return str(header.get("title") or "").strip()
+
+
 def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     if not rows:
         return []
@@ -71,8 +97,12 @@ def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 def _merge_related_stocks(hot_rows: list[dict[str, object]]) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
     for payload in hot_rows:
-        for row in _dict_rows(payload.get("related_stocks")):
-            stock_key = str(row.get("stock_key") or "").strip()
+        for row in _dict_rows(payload.get("related")):
+            entity_key = str(row.get("entity_key") or "").strip()
+            entity_type = str(row.get("entity_type") or "").strip()
+            if entity_type != "stock" and not entity_key.startswith("stock:"):
+                continue
+            stock_key = entity_key
             if not stock_key:
                 continue
             try:
@@ -92,7 +122,7 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
     if not normalized:
         return {
             "entity_key": "",
-            "header_title": "",
+            "page_title": "",
             "signals": [],
             "signal_total": 0,
             "related_stocks": [],
@@ -104,7 +134,7 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
     if not sources:
         return {
             "entity_key": normalized,
-            "header_title": normalized.removeprefix("cluster:"),
+            "page_title": normalized.removeprefix("cluster:"),
             "signals": [],
             "signal_total": 0,
             "related_stocks": [],
@@ -134,20 +164,20 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
             if hot:
                 hot_rows.append(hot)
     all_signals = _sort_signal_rows(
-        [row for payload in hot_rows for row in _dict_rows(payload.get("signals"))]
+        [row for payload in hot_rows for row in _dict_rows(payload.get("signal_top"))]
     )
-    header_title = ""
+    page_title = ""
     entity_key = normalized
     for payload in hot_rows:
         payload_entity = str(payload.get("entity_key") or "").strip()
-        payload_title = str(payload.get("header_title") or "").strip()
+        payload_title = _page_title(payload)
         if payload_entity:
             entity_key = payload_entity
         if payload_title:
-            header_title = payload_title
+            page_title = payload_title
             break
-    if not header_title:
-        header_title = normalized.removeprefix("cluster:")
+    if not page_title:
+        page_title = normalized.removeprefix("cluster:")
     load_error = ""
     if not hot_rows and not sources:
         load_error = MISSING_TURSO_SOURCES_ERROR
@@ -155,9 +185,15 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
         load_error = errors[0]
     return {
         "entity_key": entity_key,
-        "header_title": header_title,
+        "page_title": page_title,
         "signals": all_signals,
-        "signal_total": len(all_signals),
+        "signal_total": max(
+            len(all_signals),
+            max(
+                (_counter_int(payload, "signal_total") for payload in hot_rows),
+                default=0,
+            ),
+        ),
         "related_stocks": _merge_related_stocks(hot_rows),
         "load_error": load_error,
         "snapshot_hit": bool(hot_rows),

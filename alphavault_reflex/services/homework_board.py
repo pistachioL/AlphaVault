@@ -176,7 +176,7 @@ def build_board(
 
     board_df = trade_df.dropna(subset=["created_at"]).copy()
     if group_col not in board_df.columns:
-        group_col = "topic_key" if "topic_key" in board_df.columns else group_col
+        group_col = "entity_key" if "entity_key" in board_df.columns else group_col
     if group_col in board_df.columns:
         board_df = board_df[board_df[group_col].astype(str).str.strip().ne("")].copy()
     if board_df.empty:

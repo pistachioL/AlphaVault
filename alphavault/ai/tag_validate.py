@@ -7,25 +7,9 @@ If something is invalid, we fail fast so the caller can retry/regenerate.
 
 from __future__ import annotations
 
-import json
-import re
 from typing import Iterable, Mapping
 
 from alphavault.ai.analyze import ALLOWED_ACTIONS
-from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
-
-
-ALLOWED_TOPIC_KEY_PREFIXES = {
-    "stock",
-    "industry",
-    "index",
-    "macro",
-    "commodity",
-    "method",
-    "mindset",
-    "life",
-    "keyword",
-}
 
 ALLOWED_RELATION_TO_TOPIC = {"new", "follow", "repeat", "forward"}
 
@@ -42,16 +26,6 @@ ALLOWED_MENTION_TYPES = {
 }
 
 _BAD_SEPARATORS = {",", "，", "、"}
-
-_STOCK_SUFFIXES = {"SH", "SZ", "BJ", "HK", "US"}
-
-_STOCK_CODE_CN_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$")
-_STOCK_CODE_HK_RE = re.compile(r"^\d{4,5}\.HK$")
-_STOCK_CODE_US_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}\.US$")
-
-_RAW_STOCK_CODE_CN_RE = re.compile(r"^\d{6}$")
-_RAW_STOCK_CODE_HK_RE = re.compile(r"^\d{4,5}$")
-_RAW_STOCK_CODE_US_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 
 class AiTagValidationError(RuntimeError):
@@ -81,64 +55,6 @@ def _must(condition: bool, msg: str) -> None:
     raise AiTagValidationError(msg)
 
 
-def _is_stock_code_with_suffix(value: str) -> bool:
-    v = _clean_str(value).upper()
-    return bool(
-        _STOCK_CODE_CN_RE.match(v)
-        or _STOCK_CODE_HK_RE.match(v)
-        or _STOCK_CODE_US_RE.match(v)
-    )
-
-
-def _is_raw_stock_code(value: str) -> bool:
-    v = _clean_str(value).upper()
-    return bool(
-        _RAW_STOCK_CODE_CN_RE.match(v)
-        or _RAW_STOCK_CODE_HK_RE.match(v)
-        or _RAW_STOCK_CODE_US_RE.match(v)
-    )
-
-
-def _is_stock_code_like(value: str) -> bool:
-    return _is_stock_code_with_suffix(value) or _is_raw_stock_code(value)
-
-
-def _parse_json_list(value: object) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [_clean_str(x) for x in value if _clean_str(x)]
-    raw = _clean_str(value)
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except Exception as exc:
-        raise AiTagValidationError(
-            f"json_list_invalid:{type(exc).__name__} raw={_short(raw)}"
-        ) from exc
-    if not isinstance(parsed, list):
-        raise AiTagValidationError(f"json_list_not_list type={type(parsed).__name__}")
-    return [_clean_str(x) for x in parsed if _clean_str(x)]
-
-
-def _parse_json_array(value: object, *, field: str) -> list[object]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return list(value)
-    raw = _clean_str(value)
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except Exception as exc:
-        raise AiTagValidationError(f"{field}_invalid_json") from exc
-    if not isinstance(parsed, list):
-        raise AiTagValidationError(f"{field}_not_list")
-    return list(parsed)
-
-
 def _validate_optional_str_list(
     value: object,
     *,
@@ -162,57 +78,6 @@ def _validate_optional_str_list(
         if len(out) >= int(max_items):
             break
     return out
-
-
-def _validate_stock_code(code: str, *, field: str) -> None:
-    c = _clean_str(code)
-    _must(bool(c), f"{field}_empty")
-    _must(not _has_bad_separator(c), f"{field}_has_separator value={_short(c)}")
-    _must(bool(_is_stock_code_like(c)), f"{field}_invalid_code value={_short(c)}")
-    if "." not in c:
-        return
-    suffix = c.rsplit(".", 1)[-1].strip().upper()
-    _must(suffix in _STOCK_SUFFIXES, f"{field}_invalid_suffix value={_short(c)}")
-
-
-def _stock_value_kind(value: str, *, allow_stock_name: bool) -> str:
-    v = _clean_str(value)
-    _must(bool(v), "topic_key_value_empty")
-    _must(not _has_bad_separator(v), f"topic_key_value_has_separator value={_short(v)}")
-    if _is_stock_code_like(v):
-        return "code"
-    _must(bool(allow_stock_name), f"topic_key_stock_name_not_allowed value={_short(v)}")
-    _must(":" not in v, f"topic_key_stock_name_has_colon value={_short(v)}")
-    _must(len(v) <= 40, f"topic_key_stock_name_too_long value={_short(v)}")
-    return "name"
-
-
-def _validate_topic_key(
-    topic_key: object, *, allow_stock_name: bool
-) -> tuple[str, str, str]:
-    raw = _clean_str(topic_key)
-    _must(bool(raw), "topic_key_empty")
-    _must(":" in raw, f"topic_key_missing_colon value={_short(raw)}")
-    left, right = raw.split(":", 1)
-    prefix = _clean_str(left).lower()
-    value = _clean_str(right)
-    _must(
-        prefix in ALLOWED_TOPIC_KEY_PREFIXES,
-        f"topic_key_prefix_invalid prefix={_short(prefix)}",
-    )
-    _must(bool(value), f"topic_key_value_empty prefix={_short(prefix)}")
-    _must(
-        not _has_bad_separator(value),
-        f"topic_key_value_has_separator value={_short(value)}",
-    )
-
-    if prefix == "stock":
-        kind = _stock_value_kind(value, allow_stock_name=allow_stock_name)
-        return prefix, value, kind
-
-    _must(":" not in value, f"topic_key_value_has_colon value={_short(value)}")
-    _must(len(value) <= 40, f"topic_key_value_too_long value={_short(value)}")
-    return prefix, value, "plain"
 
 
 def _validate_action(action: object) -> None:
@@ -411,65 +276,28 @@ def validate_topic_prompt_v4_assertion(
 
 
 def validate_assertion_row(row: dict[str, object], *, prompt_version: str) -> None:
-    allow_stock_name = str(prompt_version or "").strip() == TOPIC_PROMPT_VERSION
-    prefix, _value, stock_kind = _validate_topic_key(
-        row.get("topic_key"),
-        allow_stock_name=allow_stock_name,
+    del prompt_version
+    assertion_id = _validate_required_text(
+        row.get("assertion_id"), field="assertion_id", max_len=160
     )
-
+    post_uid = _validate_required_text(
+        row.get("post_uid"), field="post_uid", max_len=120
+    )
+    idx_text = _clean_str(row.get("idx"))
+    _must(bool(idx_text), "idx_empty")
+    _validate_int_range(row.get("idx"), field="idx", low=1, high=1_000_000)
+    idx = int(idx_text)
     _validate_action(row.get("action"))
     _validate_int_range(
         row.get("action_strength"), field="action_strength", low=0, high=3
     )
-    _validate_float_range(row.get("confidence"), field="confidence", low=0.0, high=1.0)
-
-    def _parse_field(field: str) -> list[str]:
-        try:
-            return _parse_json_list(row.get(field))
-        except AiTagValidationError as exc:
-            raise AiTagValidationError(f"{field}:{exc}") from exc
-
-    stock_codes = _parse_field("stock_codes_json")
-    stock_names = _parse_field("stock_names_json")
-    industries = _parse_field("industries_json")
-    commodities = _parse_field("commodities_json")
-    indices = _parse_field("indices_json")
-    keywords = _parse_field("keywords_json")
-
-    for field, items, max_len in [
-        ("stock_codes_json", stock_codes, 20),
-        ("stock_names_json", stock_names, 60),
-        ("industries_json", industries, 60),
-        ("commodities_json", commodities, 60),
-        ("indices_json", indices, 60),
-        ("keywords_json", keywords, 60),
-    ]:
-        for i, v in enumerate(items):
-            _must(bool(v), f"{field}[{i}]_empty")
-            _must(len(v) <= int(max_len), f"{field}[{i}]_too_long")
-            _must(not _has_bad_separator(v), f"{field}[{i}]_has_separator")
-
-    if prefix == "stock":
-        for i, code in enumerate(stock_codes):
-            _validate_stock_code(code, field=f"stock_codes_json[{i}]")
-        if (
-            stock_kind == "name"
-            and str(prompt_version or "").strip() != TOPIC_PROMPT_VERSION
-        ):
-            _must(not stock_codes, "stock_name_requires_empty_stock_codes")
-
-    evidence_refs_raw = row.get("evidence_refs_json")
-    if _clean_str(evidence_refs_raw):
-        evidence_refs = _parse_json_array(evidence_refs_raw, field="evidence_refs_json")
-        _validate_evidence_refs(evidence_refs, field="evidence_refs_json")
-
-    relation = _clean_str(row.get("relation_to_topic"))
-    if relation:
-        _validate_relation_to_topic(relation)
-
-    speaker = _clean_str(row.get("speaker"))
-    if speaker:
-        _validate_required_text(speaker, field="speaker", max_len=80)
+    _validate_required_text(row.get("summary"), field="summary", max_len=240)
+    _validate_required_text(row.get("evidence"), field="evidence", max_len=400)
+    _validate_required_text(row.get("created_at"), field="created_at", max_len=80)
+    _must(
+        assertion_id == f"{post_uid}#{idx}",
+        f"assertion_id_mismatch value={_short(assertion_id)}",
+    )
 
 
 def validate_many_assertion_rows(

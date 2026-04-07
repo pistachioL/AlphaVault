@@ -177,8 +177,8 @@ class ResearchState(rx.State):
 
         view = load_stock_page_cached_view(
             slug,
-            signal_page=1,
-            signal_page_size=normalize_related_limit(self.related_limit),
+            signal_page=_normalize_signal_page(self.signal_page),
+            signal_page_size=_normalize_signal_page_size(self.signal_page_size),
         )
         self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
         self._refresh_related_posts()
@@ -263,7 +263,7 @@ class ResearchState(rx.State):
     def _apply_stock_primary_view(
         self, view: dict[str, object], *, fallback_stock_key: str
     ) -> None:
-        self.page_title = str(view.get("header_title") or "").strip()
+        self.page_title = str(view.get("page_title") or "").strip()
         self.entity_key = str(view.get("entity_key") or fallback_stock_key).strip()
         self.entity_type = "stock"
         self.load_error = str(view.get("load_error") or "").strip()
@@ -345,7 +345,7 @@ class ResearchState(rx.State):
         )
         sector_key = str(slug or "").strip()
         view = load_sector_page_view(sector_key)
-        self.page_title = str(view.get("header_title") or "").strip()
+        self.page_title = str(view.get("page_title") or "").strip()
         self.entity_key = f"cluster:{sector_key}" if sector_key else ""
         self.entity_type = "sector"
         self.load_error = str(view.get("load_error") or "").strip()

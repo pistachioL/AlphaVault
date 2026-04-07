@@ -413,7 +413,7 @@ def _sector_relation_candidates(assertions) -> list[dict[str, str]]:
 def _unique_stock_keys(assertions) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for raw_key in assertions.get("topic_key", pd.Series(dtype=str)).tolist():
+    for raw_key in assertions.get("entity_key", pd.Series(dtype=str)).tolist():
         stock_key = str(raw_key or "").strip()
         if not stock_key.startswith("stock:") or stock_key in seen:
             continue

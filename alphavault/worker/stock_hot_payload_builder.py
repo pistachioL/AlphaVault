@@ -8,26 +8,18 @@ import pandas as pd
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
-from alphavault.domains.common.json_list import parse_json_list
-from alphavault.domains.stock.object_index import (
-    build_stock_object_index,
-    filter_assertions_for_stock_object,
-)
 from alphavault.domains.thread_tree.service import build_post_tree_map
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
 
 
 WANTED_ASSERTION_COLUMNS = [
+    "assertion_id",
     "post_uid",
-    "topic_key",
     "action",
     "action_strength",
     "summary",
-    "author",
     "created_at",
-    "stock_codes_json",
-    "stock_names_json",
-    "cluster_keys_json",
+    "resolved_entity_key",
 ]
 
 WANTED_POST_COLUMNS = [
@@ -118,7 +110,12 @@ def _load_stock_assertions(
 
     select_expr = ", ".join(
         [
-            *(f"a.{col}" for col in WANTED_ASSERTION_COLUMNS),
+            "a.assertion_id",
+            "a.post_uid",
+            "a.action",
+            "a.action_strength",
+            "a.summary",
+            "a.created_at",
             "ae.entity_key AS resolved_entity_key",
         ]
     )
@@ -126,7 +123,7 @@ def _load_stock_assertions(
 SELECT {select_expr}
 FROM assertions a
 JOIN assertion_entities ae
-  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
+  ON ae.assertion_id = a.assertion_id
 WHERE a.action LIKE 'trade.%'
   AND ae.entity_type = 'stock'
   AND {key_clause}
@@ -139,17 +136,58 @@ LIMIT :limit
     if assertions.empty:
         return assertions
     out = assertions.copy()
-    for col in ["post_uid", "topic_key", "summary", "author", "action"]:
+    for col in ["assertion_id", "post_uid", "summary", "action", "resolved_entity_key"]:
         if col in out.columns:
             out[col] = out[col].fillna("").astype(str)
-    if "stock_codes_json" not in out.columns:
-        out["stock_codes_json"] = "[]"
-    if "stock_names_json" not in out.columns:
-        out["stock_names_json"] = "[]"
-    out["stock_codes_json"] = out["stock_codes_json"].fillna("[]").astype(str)
-    out["stock_names_json"] = out["stock_names_json"].fillna("[]").astype(str)
-    out["cluster_keys"] = out["cluster_keys_json"].fillna("[]").astype(str)
-    out["cluster_keys"] = out["cluster_keys"].apply(parse_json_list)
+    out["sector_keys"] = out["assertion_id"].map(
+        _load_sector_keys_by_assertion_id(
+            conn,
+            assertion_ids=[
+                str(item or "").strip()
+                for item in out.get("assertion_id", pd.Series(dtype=str)).tolist()
+                if str(item or "").strip()
+            ],
+        )
+    )
+    out["sector_keys"] = out["sector_keys"].apply(
+        lambda item: item if isinstance(item, list) else []
+    )
+    return out
+
+
+def _load_sector_keys_by_assertion_id(
+    conn: TursoConnection,
+    *,
+    assertion_ids: list[str],
+) -> dict[str, list[str]]:
+    cleaned = [
+        str(item or "").strip() for item in assertion_ids if str(item or "").strip()
+    ]
+    if not cleaned:
+        return {}
+    placeholders = make_in_placeholders(prefix="a", count=len(cleaned))
+    params = make_in_params(prefix="a", values=cleaned)
+    query = f"""
+SELECT ae.assertion_id, tct.cluster_key
+FROM assertion_entities ae
+JOIN topic_cluster_topics tct
+  ON tct.topic_key = ae.entity_key
+WHERE ae.entity_type = 'industry'
+  AND ae.assertion_id IN ({placeholders})
+"""
+    try:
+        rows = conn.execute(query, params).mappings().all()
+    except BaseException:
+        return {}
+    out: dict[str, list[str]] = {}
+    for row in rows:
+        assertion_id = str(row.get("assertion_id") or "").strip()
+        cluster_key = str(row.get("cluster_key") or "").strip()
+        if not assertion_id or not cluster_key:
+            continue
+        bucket = out.setdefault(assertion_id, [])
+        if cluster_key not in bucket:
+            bucket.append(cluster_key)
     return out
 
 
@@ -271,7 +309,7 @@ def _format_signal_created_at_line(value: object) -> str:
 
 def _build_related_sectors(rows: pd.DataFrame) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
-    for item in rows.get("cluster_keys", pd.Series(dtype=object)).tolist():
+    for item in rows.get("sector_keys", pd.Series(dtype=object)).tolist():
         if not isinstance(item, list):
             continue
         for raw in item:
@@ -281,7 +319,11 @@ def _build_related_sectors(rows: pd.DataFrame) -> list[dict[str, str]]:
             counts[key] = int(counts.get(key, 0)) + 1
     ranked = sorted(counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
     return [
-        {"sector_key": str(sector_key), "mention_count": str(count)}
+        {
+            "entity_key": f"cluster:{sector_key}",
+            "entity_type": "sector",
+            "mention_count": str(count),
+        }
         for sector_key, count in ranked
     ]
 
@@ -297,10 +339,11 @@ def build_stock_hot_payload(
     if not normalized_key:
         return {
             "entity_key": "",
-            "header_title": "",
-            "signals": [],
-            "signal_total": 0,
-            "related_sectors": [],
+            "entity_type": "",
+            "header": {},
+            "signal_top": [],
+            "related": [],
+            "counters": {"signal_total": 0},
         }
     stock_relations = _load_stock_alias_relations(conn)
     assertions = _load_stock_assertions(
@@ -314,27 +357,14 @@ def build_stock_hot_payload(
         stock_value = normalized_key.removeprefix("stock:")
         return {
             "entity_key": normalized_key,
-            "header_title": stock_value,
-            "signals": [],
-            "signal_total": 0,
-            "related_sectors": [],
+            "entity_type": "stock",
+            "header": {"title": stock_value},
+            "signal_top": [],
+            "related": [],
+            "counters": {"signal_total": 0},
         }
-    stock_index = build_stock_object_index(assertions, stock_relations=stock_relations)
-    entity_key = stock_index.resolve(normalized_key) or normalized_key
-    rows = filter_assertions_for_stock_object(
-        assertions,
-        stock_key=entity_key,
-        stock_relations=stock_relations,
-        stock_index=stock_index,
-    )
-    if rows.empty:
-        return {
-            "entity_key": entity_key,
-            "header_title": stock_index.header_title(entity_key),
-            "signals": [],
-            "signal_total": 0,
-            "related_sectors": [],
-        }
+    rows = assertions.copy()
+    entity_key = normalized_key
     if "created_at" in rows.columns:
         rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
         rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
@@ -371,10 +401,11 @@ def build_stock_hot_payload(
         )
     return {
         "entity_key": entity_key,
-        "header_title": stock_index.header_title(entity_key),
-        "signals": signals,
-        "signal_total": total,
-        "related_sectors": _build_related_sectors(rows),
+        "entity_type": "stock",
+        "header": {"title": entity_key.removeprefix("stock:")},
+        "signal_top": signals,
+        "related": _build_related_sectors(rows),
+        "counters": {"signal_total": total},
     }
 
 

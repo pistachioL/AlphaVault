@@ -92,9 +92,10 @@ def _normalize_assertion_entities(value: object) -> list[dict[str, object]]:
             {
                 "entity_key": entity_key,
                 "entity_type": entity_type,
-                "source_mention_text": _clean_text(raw_item.get("source_mention_text")),
-                "source_mention_type": _clean_text(raw_item.get("source_mention_type")),
-                "confidence": _clamp_confidence(raw_item.get("confidence")),
+                "match_source": _clean_text(
+                    raw_item.get("match_source") or raw_item.get("source_mention_type")
+                ),
+                "is_primary": int(raw_item.get("is_primary") or 0),
             }
         )
     return out
@@ -134,11 +135,10 @@ def build_assertion_entities(
     )
 
     out: list[dict[str, object]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for item in cleaned_mentions:
         mention_text = _clean_text(item.get("mention_text"))
         mention_type = _clean_text(item.get("mention_type"))
-        confidence = _clamp_confidence(item.get("confidence"))
         if not mention_text or not mention_type:
             continue
 
@@ -159,7 +159,7 @@ def build_assertion_entities(
         if not entity_key or not entity_type:
             continue
 
-        dedupe_key = (entity_key, entity_type, mention_text, mention_type)
+        dedupe_key = (entity_key, entity_type, mention_type)
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
@@ -167,11 +167,12 @@ def build_assertion_entities(
             {
                 "entity_key": entity_key,
                 "entity_type": entity_type,
-                "source_mention_text": mention_text,
-                "source_mention_type": mention_type,
-                "confidence": confidence,
+                "match_source": mention_type,
+                "is_primary": 0,
             }
         )
+    if out:
+        out[0]["is_primary"] = 1
     return out
 
 

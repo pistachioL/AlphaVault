@@ -21,50 +21,35 @@ CREATE TABLE IF NOT EXISTS posts (
 );
 
 CREATE TABLE IF NOT EXISTS assertions (
+    assertion_id TEXT PRIMARY KEY,
     post_uid TEXT NOT NULL,
     idx INTEGER NOT NULL CHECK (idx >= 1),
-    speaker TEXT NOT NULL DEFAULT '',
-    relation_to_topic TEXT NOT NULL DEFAULT 'new',
-    topic_key TEXT NOT NULL,
     action TEXT NOT NULL,
     action_strength INTEGER NOT NULL CHECK (action_strength BETWEEN 0 AND 3),
     summary TEXT NOT NULL,
     evidence TEXT NOT NULL,
-    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
-    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
-    stock_codes_json TEXT NOT NULL DEFAULT '[]',
-    stock_names_json TEXT NOT NULL DEFAULT '[]',
-    industries_json TEXT NOT NULL DEFAULT '[]',
-    commodities_json TEXT NOT NULL DEFAULT '[]',
-    indices_json TEXT NOT NULL DEFAULT '[]',
-    keywords_json TEXT NOT NULL DEFAULT '[]',
-    cluster_keys_json TEXT NOT NULL DEFAULT '[]',
-    author TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT '',
     UNIQUE(post_uid, idx)
 );
 
 CREATE TABLE IF NOT EXISTS assertion_mentions (
-    post_uid TEXT NOT NULL,
-    assertion_idx INTEGER NOT NULL CHECK (assertion_idx >= 1),
-    mention_idx INTEGER NOT NULL CHECK (mention_idx >= 1),
+    assertion_id TEXT NOT NULL,
+    mention_seq INTEGER NOT NULL CHECK (mention_seq >= 1),
     mention_text TEXT NOT NULL,
+    mention_norm TEXT NOT NULL DEFAULT '',
     mention_type TEXT NOT NULL,
     evidence TEXT NOT NULL DEFAULT '',
     confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
-    PRIMARY KEY (post_uid, assertion_idx, mention_idx)
+    PRIMARY KEY (assertion_id, mention_seq)
 );
 
 CREATE TABLE IF NOT EXISTS assertion_entities (
-    post_uid TEXT NOT NULL,
-    assertion_idx INTEGER NOT NULL CHECK (assertion_idx >= 1),
-    entity_idx INTEGER NOT NULL CHECK (entity_idx >= 1),
+    assertion_id TEXT NOT NULL,
     entity_key TEXT NOT NULL,
     entity_type TEXT NOT NULL,
-    source_mention_text TEXT NOT NULL DEFAULT '',
-    source_mention_type TEXT NOT NULL DEFAULT '',
-    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
-    PRIMARY KEY (post_uid, assertion_idx, entity_idx)
+    match_source TEXT NOT NULL DEFAULT '',
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (assertion_id, entity_key)
 );
 
 CREATE TABLE IF NOT EXISTS topic_clusters (
@@ -142,11 +127,11 @@ CREATE TABLE IF NOT EXISTS alias_resolve_tasks (
 
 CREATE TABLE IF NOT EXISTS entity_page_snapshot (
     entity_key TEXT PRIMARY KEY,
-    header_title TEXT NOT NULL DEFAULT '',
-    signal_total INTEGER NOT NULL DEFAULT 0,
-    signals_json TEXT NOT NULL DEFAULT '[]',
-    related_sectors_json TEXT NOT NULL DEFAULT '[]',
-    related_stocks_json TEXT NOT NULL DEFAULT '[]',
+    entity_type TEXT NOT NULL DEFAULT '',
+    header_json TEXT NOT NULL DEFAULT '{}',
+    signal_top_json TEXT NOT NULL DEFAULT '[]',
+    related_json TEXT NOT NULL DEFAULT '[]',
+    counters_json TEXT NOT NULL DEFAULT '{}',
     content_hash TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
@@ -207,24 +192,20 @@ CREATE INDEX IF NOT EXISTS idx_posts_created_at_post_uid
 CREATE INDEX IF NOT EXISTS idx_posts_platform_post_id
     ON posts(platform_post_id);
 
-CREATE INDEX IF NOT EXISTS idx_assertions_topic_key
-    ON assertions(topic_key);
+CREATE INDEX IF NOT EXISTS idx_assertions_post_uid
+    ON assertions(post_uid);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_action
     ON assertions(action);
 
-CREATE INDEX IF NOT EXISTS idx_assertions_topic_action_post_uid
-    ON assertions(topic_key, action, post_uid);
-
-CREATE INDEX IF NOT EXISTS idx_assertions_trade_stock_topic_key
-    ON assertions(topic_key)
-    WHERE action LIKE 'trade.%' AND topic_key LIKE 'stock:%';
+CREATE INDEX IF NOT EXISTS idx_assertions_created_at
+    ON assertions(created_at);
 
 CREATE INDEX IF NOT EXISTS idx_assertion_mentions_text
     ON assertion_mentions(mention_text);
 
-CREATE INDEX IF NOT EXISTS idx_assertion_mentions_type_text
-    ON assertion_mentions(mention_type, mention_text);
+CREATE INDEX IF NOT EXISTS idx_assertion_mentions_type_norm
+    ON assertion_mentions(mention_type, mention_norm);
 
 CREATE INDEX IF NOT EXISTS idx_assertion_entities_key
     ON assertion_entities(entity_key);

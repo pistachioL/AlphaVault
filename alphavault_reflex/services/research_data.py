@@ -27,7 +27,7 @@ MAX_SIGNAL_ROWS = 60
 @dataclass(frozen=True)
 class StockResearchView:
     entity_key: str
-    header_title: str
+    page_title: str
     signals: list[dict[str, str]]
     signal_total: int
     signal_page: int
@@ -93,7 +93,7 @@ def build_stock_research_view(
     if assertions.empty or not stock_key:
         return StockResearchView(
             entity_key=stock_key,
-            header_title=_stock_title(stock_key),
+            page_title=_stock_title(stock_key),
             signals=[],
             signal_total=0,
             signal_page=1,
@@ -122,7 +122,7 @@ def build_stock_research_view(
     )
     return StockResearchView(
         entity_key=entity_key,
-        header_title=stock_index.header_title(entity_key),
+        page_title=stock_index.page_title(entity_key),
         signals=build_signal_rows(signal_slice, posts=posts, now=now),
         signal_total=signal_total,
         signal_page=signal_page,

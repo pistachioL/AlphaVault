@@ -67,6 +67,16 @@ class CloudPost:
     ai_retry_count: int
 
 
+def _make_assertion_id(
+    *, post_uid: str, idx: int, raw_assertion: dict[str, Any]
+) -> str:
+    resolved_post_uid = str(post_uid or "").strip()
+    resolved_idx = int(idx)
+    default_assertion_id = f"{resolved_post_uid}#{resolved_idx}"
+    raw_assertion_id = str(raw_assertion.get("assertion_id") or "").strip()
+    return raw_assertion_id or default_assertion_id
+
+
 def _chunk_post_uids(post_uids: Iterable[str], *, chunk_size: int) -> list[list[str]]:
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -342,45 +352,39 @@ def write_assertions_and_mark_done(
             mention_payloads: list[dict[str, object]] = []
             entity_payloads: list[dict[str, object]] = []
             for idx, a in enumerate(assertions, start=1):
+                assertion_id = _make_assertion_id(
+                    post_uid=post_uid,
+                    idx=idx,
+                    raw_assertion=a,
+                )
                 assertion_payloads.append(
                     {
+                        "assertion_id": assertion_id,
                         "post_uid": post_uid,
                         "idx": int(idx),
-                        "speaker": str(a.get("speaker") or "").strip(),
-                        "relation_to_topic": str(
-                            a.get("relation_to_topic") or "new"
-                        ).strip()
-                        or "new",
-                        "topic_key": a["topic_key"],
                         "action": a["action"],
                         "action_strength": int(a["action_strength"]),
                         "summary": a["summary"],
                         "evidence": a["evidence"],
-                        "evidence_refs_json": a.get("evidence_refs_json", "[]"),
-                        "confidence": float(a["confidence"]),
-                        "stock_codes_json": a.get("stock_codes_json", "[]"),
-                        "stock_names_json": a.get("stock_names_json", "[]"),
-                        "industries_json": a.get("industries_json", "[]"),
-                        "commodities_json": a.get("commodities_json", "[]"),
-                        "indices_json": a.get("indices_json", "[]"),
-                        "keywords_json": a.get("keywords_json", "[]"),
-                        "cluster_keys_json": a.get("cluster_keys_json", "[]"),
-                        "author": str(a.get("author") or "").strip(),
                         "created_at": str(a.get("created_at") or "").strip(),
                     }
                 )
                 raw_mentions = a.get("assertion_mentions")
                 mentions = raw_mentions if isinstance(raw_mentions, list) else []
-                for mention_idx, raw_mention in enumerate(mentions, start=1):
+                for mention_seq, raw_mention in enumerate(mentions, start=1):
                     if not isinstance(raw_mention, dict):
                         continue
                     mention_payloads.append(
                         {
-                            "post_uid": post_uid,
-                            "assertion_idx": int(idx),
-                            "mention_idx": int(mention_idx),
+                            "assertion_id": assertion_id,
+                            "mention_seq": int(mention_seq),
                             "mention_text": str(
                                 raw_mention.get("mention_text") or ""
+                            ).strip(),
+                            "mention_norm": str(
+                                raw_mention.get("mention_norm")
+                                or raw_mention.get("mention_text")
+                                or ""
                             ).strip(),
                             "mention_type": str(
                                 raw_mention.get("mention_type") or ""
@@ -391,27 +395,24 @@ def write_assertions_and_mark_done(
                     )
                 raw_entities = a.get("assertion_entities")
                 entities = raw_entities if isinstance(raw_entities, list) else []
-                for entity_idx, raw_entity in enumerate(entities, start=1):
+                for raw_entity in entities:
                     if not isinstance(raw_entity, dict):
                         continue
                     entity_payloads.append(
                         {
-                            "post_uid": post_uid,
-                            "assertion_idx": int(idx),
-                            "entity_idx": int(entity_idx),
+                            "assertion_id": assertion_id,
                             "entity_key": str(
                                 raw_entity.get("entity_key") or ""
                             ).strip(),
                             "entity_type": str(
                                 raw_entity.get("entity_type") or ""
                             ).strip(),
-                            "source_mention_text": str(
-                                raw_entity.get("source_mention_text") or ""
+                            "match_source": str(
+                                raw_entity.get("match_source")
+                                or raw_entity.get("source_mention_type")
+                                or ""
                             ).strip(),
-                            "source_mention_type": str(
-                                raw_entity.get("source_mention_type") or ""
-                            ).strip(),
-                            "confidence": float(raw_entity.get("confidence") or 0.0),
+                            "is_primary": int(raw_entity.get("is_primary") or 0),
                         }
                     )
             if assertion_payloads:

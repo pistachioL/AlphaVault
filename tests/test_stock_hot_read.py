@@ -97,8 +97,9 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
         "load_entity_page_signal_snapshot",
         lambda *_args, **_kwargs: {
             "entity_key": "stock:600519.SH",
-            "header_title": "600519.SH",
-            "signals": [
+            "entity_type": "stock",
+            "header": {"title": "600519.SH"},
+            "signal_top": [
                 {
                     "post_uid": "p1",
                     "summary": "s",
@@ -108,8 +109,8 @@ def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> Non
                     "created_at_line": "",
                 }
             ],
-            "signal_total": 1,
-            "related_sectors": [],
+            "related": [],
+            "counters": {"signal_total": 1},
         },
     )
     monkeypatch.setattr(
@@ -139,10 +140,17 @@ def test_load_stock_cached_view_has_no_backfill_posts(monkeypatch) -> None:
         "load_entity_page_signal_snapshot",
         lambda *_args, **_kwargs: {
             "entity_key": "stock:600519.SH",
-            "header_title": "600519.SH",
-            "signals": [],
-            "signal_total": 0,
-            "related_sectors": [{"sector_key": "white_liquor"}],
+            "entity_type": "stock",
+            "header": {"title": "600519.SH"},
+            "signal_top": [],
+            "related": [
+                {
+                    "entity_key": "cluster:white_liquor",
+                    "entity_type": "sector",
+                    "mention_count": "1",
+                }
+            ],
+            "counters": {"signal_total": 0},
         },
     )
     monkeypatch.setattr(

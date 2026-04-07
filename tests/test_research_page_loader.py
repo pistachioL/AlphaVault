@@ -12,7 +12,7 @@ def test_load_sector_page_view_prefers_cached_snapshot(monkeypatch) -> None:
         "alphavault_reflex.services.research_page_loader.load_sector_cached_view_from_env",
         lambda sector_key: {
             "entity_key": "cluster:white_liquor",
-            "header_title": "white_liquor",
+            "page_title": "white_liquor",
             "signals": [{"summary": "板块继续走强"}],
             "related_stocks": [{"stock_key": "stock:600519.SH"}],
             "load_error": "",
@@ -30,7 +30,7 @@ def test_load_sector_page_view_prefers_cached_snapshot(monkeypatch) -> None:
     signals = cast(list[dict[str, str]], view["signals"])
     related_stocks = cast(list[dict[str, str]], view["related_stocks"])
 
-    assert view["header_title"] == "white_liquor"
+    assert view["page_title"] == "white_liquor"
     assert signals[0]["summary"] == "板块继续走强"
     assert related_stocks[0]["stock_key"] == "stock:600519.SH"
 
@@ -42,7 +42,7 @@ def test_load_sector_page_view_falls_back_to_live_when_snapshot_misses(
         "alphavault_reflex.services.research_page_loader.load_sector_cached_view_from_env",
         lambda sector_key: {
             "entity_key": f"cluster:{sector_key}",
-            "header_title": sector_key,
+            "page_title": sector_key,
             "signals": [],
             "related_stocks": [],
             "load_error": "",
@@ -56,7 +56,7 @@ def test_load_sector_page_view_falls_back_to_live_when_snapshot_misses(
     monkeypatch.setattr(
         "alphavault_reflex.services.research_page_loader.build_sector_research_view",
         lambda posts, assertions, sector_key: SectorResearchView(
-            header_title=sector_key,
+            page_title=sector_key,
             signals=[{"summary": "live fallback"}],
             related_stocks=[{"stock_key": "stock:000001.SZ"}],
         ),

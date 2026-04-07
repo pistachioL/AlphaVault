@@ -7,7 +7,6 @@ from typing import Iterator, TypedDict
 
 from alphavault.content_hash import build_content_hash
 from alphavault.domains.common.assertion_entities import extract_stock_entity_keys
-from alphavault.domains.common.json_list import parse_json_list
 from alphavault.timeutil import CST, format_cst_datetime, now_cst_str
 from alphavault.db.sql.research_stock_cache import (
     select_claimable_research_stock_dirty_keys,
@@ -47,6 +46,14 @@ _DIRTY_REASON_MASKS = {
 }
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_TOPIC_CLUSTER_TABLE = "topic_cluster_topics"
+_CLUSTER_KEY_PREFIX = "cluster:"
+_TOPIC_ENTITY_PREFIXES = (
+    "industry:",
+    "commodity:",
+    "index:",
+    "keyword:",
+)
 
 
 EntityPageDirtyEntry = TypedDict(
@@ -104,12 +111,28 @@ def _clean_json_rows(value: object) -> list[dict[str, str]]:
             continue
         out.append(
             {
-                str(key): str(raw or "").strip()
+                str(key): _stringify_json_value(raw)
                 for key, raw in row.items()
                 if str(key).strip()
             }
         )
     return out
+
+
+def _stringify_json_value(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _clean_json_object(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): _stringify_json_value(raw)
+        for key, raw in value.items()
+        if str(key).strip()
+    }
 
 
 def _json_list(value: object) -> list[dict[str, str]]:
@@ -125,8 +148,25 @@ def _json_list(value: object) -> list[dict[str, str]]:
     return _clean_json_rows(parsed)
 
 
+def _json_object(value: object) -> dict[str, str]:
+    if isinstance(value, dict):
+        return _clean_json_object(value)
+    text = _stringify_json_value(value)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    return _clean_json_object(parsed)
+
+
 def _json_dumps(value: list[dict[str, str]]) -> str:
     return json.dumps(_clean_json_rows(value), ensure_ascii=False)
+
+
+def _json_dumps_object(value: dict[str, str]) -> str:
+    return json.dumps(_clean_json_object(value), ensure_ascii=False)
 
 
 def _coerce_non_negative_int(value: object, *, default: int) -> int:
@@ -165,19 +205,19 @@ def _select_entity_page_snapshot_row(
 
 def _entity_page_snapshot_content_hash(
     *,
-    header_title: str,
-    signal_total: int,
-    signals: list[dict[str, str]],
-    related_sectors: list[dict[str, str]],
-    related_stocks: list[dict[str, str]],
+    entity_type: str,
+    header: dict[str, str],
+    signal_top: list[dict[str, str]],
+    related: list[dict[str, str]],
+    counters: dict[str, str],
 ) -> str:
     return build_content_hash(
         {
-            "header_title": str(header_title or "").strip(),
-            "signal_total": max(0, int(signal_total)),
-            "signals": _clean_json_rows(signals),
-            "related_sectors": _clean_json_rows(related_sectors),
-            "related_stocks": _clean_json_rows(related_stocks),
+            "entity_type": _stringify_json_value(entity_type),
+            "header": _clean_json_object(header),
+            "signal_top": _clean_json_rows(signal_top),
+            "related": _clean_json_rows(related),
+            "counters": _clean_json_object(counters),
         }
     )
 
@@ -189,11 +229,11 @@ def _entity_page_snapshot_row_hash(row: dict[str, object]) -> str:
     if stored_hash:
         return stored_hash
     return _entity_page_snapshot_content_hash(
-        header_title=str(row.get("header_title") or "").strip(),
-        signal_total=_coerce_non_negative_int(row.get("signal_total"), default=0),
-        signals=_json_list(row.get("signals_json")),
-        related_sectors=_json_list(row.get("related_sectors_json")),
-        related_stocks=_json_list(row.get("related_stocks_json")),
+        entity_type=str(row.get("entity_type") or "").strip(),
+        header=_json_object(row.get("header_json")),
+        signal_top=_json_list(row.get("signal_top_json")),
+        related=_json_list(row.get("related_json")),
+        counters=_json_object(row.get("counters_json")),
     )
 
 
@@ -206,24 +246,32 @@ def save_entity_page_signal_snapshot(
     key = str(stock_key or "").strip()
     if not key:
         return
-    signals = _clean_json_rows(payload.get("signals"))
-    related_sectors = _clean_json_rows(payload.get("related_sectors"))
-    related_stocks = _clean_json_rows(payload.get("related_stocks"))
     entity_key = str(payload.get("entity_key") or key).strip() or key
-    header_title = str(payload.get("header_title") or "").strip()
+    entity_type = str(payload.get("entity_type") or "").strip()
+    if not entity_type:
+        entity_type = (
+            "sector" if entity_key.startswith(_CLUSTER_KEY_PREFIX) else "stock"
+        )
+    header = _clean_json_object(payload.get("header"))
+    signal_top = _clean_json_rows(payload.get("signal_top"))
+    related = _clean_json_rows(payload.get("related"))
+    counters = _clean_json_object(payload.get("counters"))
+    if "signal_total" not in counters:
+        counters["signal_total"] = str(len(signal_top))
     signal_total = _coerce_non_negative_int(
-        payload.get("signal_total"),
-        default=len(signals),
+        counters.get("signal_total"),
+        default=len(signal_top),
     )
+    counters["signal_total"] = str(signal_total)
     try:
         with _use_conn(engine_or_conn) as conn:
             existing_row = _select_entity_page_snapshot_row(conn, entity_key=entity_key)
             content_hash = _entity_page_snapshot_content_hash(
-                header_title=header_title,
-                signal_total=signal_total,
-                signals=signals,
-                related_sectors=related_sectors,
-                related_stocks=related_stocks,
+                entity_type=entity_type,
+                header=header,
+                signal_top=signal_top,
+                related=related,
+                counters=counters,
             )
             if (
                 existing_row
@@ -234,11 +282,11 @@ def save_entity_page_signal_snapshot(
                 upsert_entity_page_snapshot_hot(ENTITY_PAGE_SNAPSHOT_TABLE),
                 {
                     "entity_key": entity_key,
-                    "header_title": header_title,
-                    "signal_total": signal_total,
-                    "signals_json": _json_dumps(signals),
-                    "related_sectors_json": _json_dumps(related_sectors),
-                    "related_stocks_json": _json_dumps(related_stocks),
+                    "entity_type": entity_type,
+                    "header_json": _json_dumps_object(header),
+                    "signal_top_json": _json_dumps(signal_top),
+                    "related_json": _json_dumps(related),
+                    "counters_json": _json_dumps_object(counters),
                     "content_hash": content_hash,
                     "updated_at": _now_str(),
                 },
@@ -264,11 +312,11 @@ def load_entity_page_signal_snapshot(
         return {}
     return {
         "entity_key": str(row.get("entity_key") or "").strip(),
-        "header_title": str(row.get("header_title") or "").strip(),
-        "signal_total": _coerce_non_negative_int(row.get("signal_total"), default=0),
-        "signals": _json_list(row.get("signals_json")),
-        "related_sectors": _json_list(row.get("related_sectors_json")),
-        "related_stocks": _json_list(row.get("related_stocks_json")),
+        "entity_type": str(row.get("entity_type") or "").strip(),
+        "header": _json_object(row.get("header_json")),
+        "signal_top": _json_list(row.get("signal_top_json")),
+        "related": _json_list(row.get("related_json")),
+        "counters": _json_object(row.get("counters_json")),
         "updated_at": str(row.get("updated_at") or "").strip(),
     }
 
@@ -590,6 +638,100 @@ def pop_entity_page_dirty_keys(
     return keys
 
 
+def _normalize_assertion_entities(value: object) -> list[dict[str, str]]:
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        text = _stringify_json_value(value)
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        raw_items = parsed
+
+    out: list[dict[str, str]] = []
+    for row in raw_items:
+        if not isinstance(row, dict):
+            continue
+        entity_key = _stringify_json_value(row.get("entity_key"))
+        entity_type = _stringify_json_value(row.get("entity_type"))
+        if not entity_key or not entity_type:
+            continue
+        out.append(
+            {
+                "entity_key": entity_key,
+                "entity_type": entity_type,
+            }
+        )
+    return out
+
+
+def _extract_topic_and_cluster_entity_keys(
+    assertions: list[dict[str, object]],
+) -> tuple[list[str], list[str]]:
+    topic_keys: set[str] = set()
+    cluster_keys: set[str] = set()
+    for raw_assertion in assertions:
+        if not isinstance(raw_assertion, dict):
+            continue
+        entities = _normalize_assertion_entities(
+            raw_assertion.get("assertion_entities")
+        )
+        for entity in entities:
+            entity_key = _stringify_json_value(entity.get("entity_key"))
+            if not entity_key:
+                continue
+            if entity_key.startswith(_CLUSTER_KEY_PREFIX):
+                cluster_keys.add(entity_key)
+                continue
+            if entity_key.startswith(_TOPIC_ENTITY_PREFIXES):
+                topic_keys.add(entity_key)
+    return sorted(topic_keys), sorted(cluster_keys)
+
+
+def _load_cluster_entity_keys_for_topics(
+    conn: TursoConnection,
+    *,
+    topic_keys: list[str],
+) -> list[str]:
+    if not topic_keys:
+        return []
+    placeholders = ", ".join(["?"] * len(topic_keys))
+    rows = (
+        conn.execute(
+            f"""
+SELECT DISTINCT cluster_key
+FROM {_TOPIC_CLUSTER_TABLE}
+WHERE topic_key IN ({placeholders})
+""",
+            topic_keys,
+        )
+        .mappings()
+        .all()
+    )
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        cluster_key = _stringify_json_value(row.get("cluster_key"))
+        if not cluster_key:
+            continue
+        entity_key = (
+            cluster_key
+            if cluster_key.startswith(_CLUSTER_KEY_PREFIX)
+            else f"{_CLUSTER_KEY_PREFIX}{cluster_key}"
+        )
+        if entity_key in seen:
+            continue
+        seen.add(entity_key)
+        out.append(entity_key)
+    out.sort()
+    return out
+
+
 def mark_entity_page_dirty_from_assertions(
     engine_or_conn: TursoEngine | TursoConnection,
     *,
@@ -597,20 +739,18 @@ def mark_entity_page_dirty_from_assertions(
     reason: str,
 ) -> int:
     keys = set(extract_stock_entity_keys(assertions))
-    for row in assertions:
-        if not isinstance(row, dict):
-            continue
-        topic_key = str(row.get("topic_key") or "").strip()
-        if topic_key.startswith("cluster:"):
-            keys.add(topic_key)
-        for sector_key in parse_json_list(row.get("cluster_keys_json")):
-            keys.add(f"cluster:{sector_key}")
-        for sector_key in parse_json_list(row.get("cluster_keys")):
-            keys.add(f"cluster:{sector_key}")
-        cluster_key = str(row.get("cluster_key") or "").strip()
-        if cluster_key:
-            keys.add(f"cluster:{cluster_key}")
-    for key in keys:
+    try:
+        with _use_conn(engine_or_conn) as conn:
+            topic_keys, direct_cluster_keys = _extract_topic_and_cluster_entity_keys(
+                assertions
+            )
+            keys.update(direct_cluster_keys)
+            keys.update(
+                _load_cluster_entity_keys_for_topics(conn, topic_keys=topic_keys)
+            )
+    except BaseException as err:
+        _handle_turso_error(engine_or_conn, err)
+    for key in sorted(keys):
         mark_entity_page_dirty(engine_or_conn, stock_key=key, reason=reason)
     return len(keys)
 

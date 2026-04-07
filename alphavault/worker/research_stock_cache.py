@@ -96,7 +96,7 @@ def _list_missing_hot_cache_stock_keys(
 SELECT DISTINCT ae.entity_key
 FROM assertions a
 JOIN assertion_entities ae
-  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx
+  ON ae.assertion_id = a.assertion_id
 WHERE a.action LIKE 'trade.%'
   AND ae.entity_type = 'stock'
   AND ae.entity_key LIKE 'stock:%'

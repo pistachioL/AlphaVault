@@ -141,16 +141,46 @@ def _dict_rows(value: object) -> list[dict[str, str]]:
     return out
 
 
+def _dict_object(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key): str(raw).strip() if raw is not None else ""
+        for key, raw in value.items()
+        if str(key).strip()
+    }
+
+
+def _counter_int(payload: dict[str, object], key: str) -> int:
+    counters = _dict_object(payload.get("counters"))
+    text = str(counters.get(key) or "").strip()
+    if not text:
+        return 0
+    try:
+        return max(int(text), 0)
+    except ValueError:
+        return 0
+
+
+def _page_title(payload: dict[str, object]) -> str:
+    header = _dict_object(payload.get("header"))
+    return str(header.get("title") or "").strip()
+
+
 def _merge_related_sectors(hot_rows: list[dict[str, object]]) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
     for payload in hot_rows:
-        rows = payload.get("related_sectors")
+        rows = payload.get("related")
         if not isinstance(rows, list):
             continue
         for row in rows:
             if not isinstance(row, dict):
                 continue
-            sector_key = str(row.get("sector_key") or "").strip()
+            entity_key = str(row.get("entity_key") or "").strip()
+            entity_type = str(row.get("entity_type") or "").strip()
+            if entity_type != "sector" and not entity_key.startswith("cluster:"):
+                continue
+            sector_key = entity_key.removeprefix("cluster:")
             if not sector_key:
                 continue
             try:
@@ -222,7 +252,7 @@ def load_stock_cached_view_from_env(
     if not normalized:
         return {
             "entity_key": "",
-            "header_title": "",
+            "page_title": "",
             "signals": [],
             "signal_total": 0,
             "signal_page": 1,
@@ -240,7 +270,7 @@ def load_stock_cached_view_from_env(
     if not sources:
         return {
             "entity_key": normalized,
-            "header_title": normalized.removeprefix("stock:"),
+            "page_title": normalized.removeprefix("stock:"),
             "signals": [],
             "signal_total": 0,
             "signal_page": 1,
@@ -288,7 +318,11 @@ def load_stock_cached_view_from_env(
                 if progress:
                     progress_rows.append(progress)
         merged_signals = _sort_signal_rows(
-            [row for payload in hot_rows for row in _dict_rows(payload.get("signals"))]
+            [
+                row
+                for payload in hot_rows
+                for row in _dict_rows(payload.get("signal_top"))
+            ]
         )
         if merged_signals:
             selected_hot_rows = hot_rows
@@ -300,30 +334,37 @@ def load_stock_cached_view_from_env(
             selected_progress_rows = progress_rows
             selected_key = candidate
 
-    header_title = ""
+    page_title = ""
     entity_key = selected_key
     all_signals = _sort_signal_rows(
         [
             row
             for payload in selected_hot_rows
-            for row in _dict_rows(payload.get("signals"))
+            for row in _dict_rows(payload.get("signal_top"))
         ]
     )
     for payload in selected_hot_rows:
         payload_entity = str(payload.get("entity_key") or "").strip()
-        payload_title = str(payload.get("header_title") or "").strip()
+        payload_title = _page_title(payload)
         if payload_entity and payload_entity.startswith("stock:"):
             entity_key = payload_entity
         if payload_title:
-            header_title = payload_title
+            page_title = payload_title
             break
-    if not header_title:
-        header_title = entity_key.removeprefix("stock:")
+    if not page_title:
+        page_title = entity_key.removeprefix("stock:")
 
-    signal_slice, signal_total, safe_page = _slice_signals(
+    signal_slice, signal_total_from_rows, safe_page = _slice_signals(
         all_signals,
         signal_page=signal_page,
         signal_page_size=signal_page_size,
+    )
+    signal_total = max(
+        signal_total_from_rows,
+        max(
+            (_counter_int(payload, "signal_total") for payload in selected_hot_rows),
+            default=0,
+        ),
     )
     related_sectors = _merge_related_sectors(selected_hot_rows)
     worker_progress = _merge_worker_cycle_progress(selected_progress_rows)
@@ -336,7 +377,7 @@ def load_stock_cached_view_from_env(
         warning = f"{warning} | {err_line}" if warning else err_line
     return {
         "entity_key": entity_key,
-        "header_title": header_title,
+        "page_title": page_title,
         "signals": signal_slice,
         "signal_total": signal_total,
         "signal_page": safe_page,

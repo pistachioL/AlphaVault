@@ -15,7 +15,14 @@ def score_from_assertions(rows: list[dict[str, object]]) -> float:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        confidence = _clamp_float(row.get("confidence", 0.0), 0.0, 1.0, 0.0)
+        raw_mentions = row.get("assertion_mentions")
+        mentions = raw_mentions if isinstance(raw_mentions, list) else []
+        mention_values = [
+            _clamp_float(item.get("confidence", 0.0), 0.0, 1.0, 0.0)
+            for item in mentions
+            if isinstance(item, dict)
+        ]
+        confidence = max(mention_values) if mention_values else 0.5
         strength = _clamp_int(row.get("action_strength", 1), 0, 3, 1)
         strength_weight = strength / 3.0
         scores.append(0.7 * confidence + 0.3 * strength_weight)

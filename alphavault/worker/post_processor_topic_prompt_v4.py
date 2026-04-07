@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 import time
 
 from alphavault.ai._client import AiInvalidJsonError
@@ -42,30 +40,6 @@ from alphavault.worker.topic_prompt_v4 import (
     to_one_line_tail,
 )
 
-_TOPIC_KEY_PRIORITY = [
-    "stock_code",
-    "stock_name",
-    "stock_alias",
-    "industry_name",
-    "commodity_name",
-    "index_name",
-    "keyword",
-]
-
-_STOCK_NAME_TYPES = {"stock_name", "stock_alias"}
-
-
-def _unique_in_order(values: list[str]) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in values:
-        value = str(raw or "").strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-    return out
-
 
 def _build_top_level_mentions_lookup(
     ai_result: dict[str, object],
@@ -82,90 +56,12 @@ def _build_top_level_mentions_lookup(
             continue
         out[mention_text] = {
             "mention_text": mention_text,
+            "mention_norm": mention_text,
             "mention_type": str(raw_mention.get("mention_type") or "").strip(),
             "evidence": str(raw_mention.get("evidence") or "").strip(),
             "confidence": _clamp_float(raw_mention.get("confidence"), 0.0, 1.0, 0.0),
         }
     return out
-
-
-def _pick_topic_key(assertion_mentions: list[dict[str, object]]) -> str:
-    for target_type in _TOPIC_KEY_PRIORITY:
-        for mention in assertion_mentions:
-            mention_type = str(mention.get("mention_type") or "").strip()
-            mention_text = str(mention.get("mention_text") or "").strip()
-            if mention_type != target_type or not mention_text:
-                continue
-            if mention_type in {"stock_code", "stock_name", "stock_alias"}:
-                return f"stock:{mention_text}"
-            if mention_type == "industry_name":
-                return f"industry:{mention_text}"
-            if mention_type == "commodity_name":
-                return f"commodity:{mention_text}"
-            if mention_type == "index_name":
-                return f"index:{mention_text}"
-            if mention_type == "keyword":
-                return f"keyword:{mention_text}"
-    return ""
-
-
-def _bucket_mentions(
-    assertion_mentions: list[dict[str, object]],
-) -> tuple[list[str], list[str], list[str], list[str], list[str], list[str]]:
-    stock_codes = _unique_in_order(
-        [
-            str(item.get("mention_text") or "").strip()
-            for item in assertion_mentions
-            if str(item.get("mention_type") or "").strip() == "stock_code"
-        ]
-    )
-    stock_names = _unique_in_order(
-        [
-            str(item.get("mention_text") or "").strip()
-            for item in assertion_mentions
-            if str(item.get("mention_type") or "").strip() in _STOCK_NAME_TYPES
-        ]
-    )
-    industries = _unique_in_order(
-        [
-            str(item.get("mention_text") or "").strip()
-            for item in assertion_mentions
-            if str(item.get("mention_type") or "").strip() == "industry_name"
-        ]
-    )
-    commodities = _unique_in_order(
-        [
-            str(item.get("mention_text") or "").strip()
-            for item in assertion_mentions
-            if str(item.get("mention_type") or "").strip() == "commodity_name"
-        ]
-    )
-    indices = _unique_in_order(
-        [
-            str(item.get("mention_text") or "").strip()
-            for item in assertion_mentions
-            if str(item.get("mention_type") or "").strip() == "index_name"
-        ]
-    )
-    keywords = _unique_in_order(
-        [
-            str(item.get("mention_text") or "").strip()
-            for item in assertion_mentions
-            if str(item.get("mention_type") or "").strip() == "keyword"
-        ]
-    )
-    return stock_codes, stock_names, industries, commodities, indices, keywords
-
-
-def _confidence_from_mentions(assertion_mentions: list[dict[str, object]]) -> float:
-    values = [
-        _clamp_float(item.get("confidence"), 0.0, 1.0, 0.0)
-        for item in assertion_mentions
-        if isinstance(item, dict)
-    ]
-    if not values:
-        return 0.5
-    return max(values)
 
 
 def _clip_text(value: object, *, limit: int) -> str:
@@ -242,25 +138,7 @@ def map_topic_prompt_assertions_to_rows(
         if not assertion_mentions:
             continue
 
-        topic_key = _pick_topic_key(assertion_mentions)
-        if not topic_key:
-            continue
-        (
-            stock_codes,
-            stock_names,
-            industries,
-            commodities,
-            indices,
-            keywords,
-        ) = _bucket_mentions(assertion_mentions)
-
         row = {
-            "speaker": speaker,
-            "relation_to_topic": str(
-                raw_assertion.get("relation_to_topic") or "new"
-            ).strip()
-            or "new",
-            "topic_key": topic_key,
             "action": normalize_action(
                 str(raw_assertion.get("action") or "").strip() or "trade.watch"
             ),
@@ -269,14 +147,7 @@ def map_topic_prompt_assertions_to_rows(
             ),
             "summary": str(raw_assertion.get("summary") or "").strip() or "未提供摘要",
             "evidence": evidence,
-            "evidence_refs_json": json.dumps(refs, ensure_ascii=False),
-            "confidence": _confidence_from_mentions(assertion_mentions),
-            "stock_codes_json": json.dumps(stock_codes, ensure_ascii=False),
-            "stock_names_json": json.dumps(stock_names, ensure_ascii=False),
-            "industries_json": json.dumps(industries, ensure_ascii=False),
-            "commodities_json": json.dumps(commodities, ensure_ascii=False),
-            "indices_json": json.dumps(indices, ensure_ascii=False),
-            "keywords_json": json.dumps(keywords, ensure_ascii=False),
+            "created_at": "",
             "assertion_mentions": assertion_mentions,
             "assertion_entities": build_assertion_entities(assertion_mentions),
             "source_text_excerpt": _clip_text(node_text, limit=220),

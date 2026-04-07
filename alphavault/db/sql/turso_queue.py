@@ -91,12 +91,22 @@ LIMIT :limit
 
 
 DELETE_ASSERTIONS_BY_POST_UID = "DELETE FROM assertions WHERE post_uid = :post_uid"
-DELETE_ASSERTION_MENTIONS_BY_POST_UID = (
-    "DELETE FROM assertion_mentions WHERE post_uid = :post_uid"
+DELETE_ASSERTION_MENTIONS_BY_POST_UID = """
+DELETE FROM assertion_mentions
+WHERE assertion_id IN (
+    SELECT assertion_id
+    FROM assertions
+    WHERE post_uid = :post_uid
 )
-DELETE_ASSERTION_ENTITIES_BY_POST_UID = (
-    "DELETE FROM assertion_entities WHERE post_uid = :post_uid"
+""".strip()
+DELETE_ASSERTION_ENTITIES_BY_POST_UID = """
+DELETE FROM assertion_entities
+WHERE assertion_id IN (
+    SELECT assertion_id
+    FROM assertions
+    WHERE post_uid = :post_uid
 )
+""".strip()
 DELETE_ASSERTIONS_ALL = "DELETE FROM assertions"
 DELETE_ASSERTION_MENTIONS_ALL = "DELETE FROM assertion_mentions"
 DELETE_ASSERTION_ENTITIES_ALL = "DELETE FROM assertion_entities"
@@ -107,42 +117,51 @@ def delete_assertions_by_post_uids(placeholders: str) -> str:
 
 
 def delete_assertion_mentions_by_post_uids(placeholders: str) -> str:
-    return f"DELETE FROM assertion_mentions WHERE post_uid IN ({placeholders})"
+    return f"""
+DELETE FROM assertion_mentions
+WHERE assertion_id IN (
+    SELECT assertion_id
+    FROM assertions
+    WHERE post_uid IN ({placeholders})
+)
+"""
 
 
 def delete_assertion_entities_by_post_uids(placeholders: str) -> str:
-    return f"DELETE FROM assertion_entities WHERE post_uid IN ({placeholders})"
+    return f"""
+DELETE FROM assertion_entities
+WHERE assertion_id IN (
+    SELECT assertion_id
+    FROM assertions
+    WHERE post_uid IN ({placeholders})
+)
+"""
 
 
 INSERT_ASSERTION = """
 INSERT INTO assertions (
-    post_uid, idx, speaker, relation_to_topic, topic_key, action, action_strength,
-    summary, evidence, evidence_refs_json, confidence, stock_codes_json,
-    stock_names_json, industries_json, commodities_json, indices_json, keywords_json,
-    cluster_keys_json, author, created_at
+    assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
 ) VALUES (
-    :post_uid, :idx, :speaker, :relation_to_topic, :topic_key, :action,
-    :action_strength, :summary, :evidence, :evidence_refs_json, :confidence,
-    :stock_codes_json, :stock_names_json, :industries_json, :commodities_json,
-    :indices_json, :keywords_json, :cluster_keys_json, :author, :created_at
+    :assertion_id, :post_uid, :idx, :action, :action_strength, :summary, :evidence,
+    :created_at
 )
 """
 
 INSERT_ASSERTION_MENTION = """
 INSERT INTO assertion_mentions (
-    post_uid, assertion_idx, mention_idx, mention_text, mention_type, evidence, confidence
+    assertion_id, mention_seq, mention_text, mention_norm, mention_type, evidence,
+    confidence
 ) VALUES (
-    :post_uid, :assertion_idx, :mention_idx, :mention_text, :mention_type, :evidence, :confidence
+    :assertion_id, :mention_seq, :mention_text, :mention_norm, :mention_type,
+    :evidence, :confidence
 )
 """
 
 INSERT_ASSERTION_ENTITY = """
 INSERT INTO assertion_entities (
-    post_uid, assertion_idx, entity_idx, entity_key, entity_type,
-    source_mention_text, source_mention_type, confidence
+    assertion_id, entity_key, entity_type, match_source, is_primary
 ) VALUES (
-    :post_uid, :assertion_idx, :entity_idx, :entity_key, :entity_type,
-    :source_mention_text, :source_mention_type, :confidence
+    :assertion_id, :entity_key, :entity_type, :match_source, :is_primary
 )
 """
 

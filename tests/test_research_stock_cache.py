@@ -29,9 +29,9 @@ def test_save_and_load_entity_page_signal_snapshot() -> None:
             stock_key="stock:601899.SH",
             payload={
                 "entity_key": "stock:601899.SH",
-                "header_title": "紫金矿业 (601899.SH)",
-                "signal_total": 2,
-                "signals": [
+                "entity_type": "stock",
+                "header": {"title": "紫金矿业 (601899.SH)"},
+                "signal_top": [
                     {
                         "post_uid": "weibo:2",
                         "summary": "继续拿着",
@@ -55,7 +55,14 @@ def test_save_and_load_entity_page_signal_snapshot() -> None:
                         "tree_text": "",
                     },
                 ],
-                "related_sectors": [{"sector_key": "gold", "mention_count": "2"}],
+                "related": [
+                    {
+                        "entity_key": "cluster:gold",
+                        "entity_type": "sector",
+                        "mention_count": "2",
+                    }
+                ],
+                "counters": {"signal_total": 2},
             },
         )
         loaded = load_entity_page_signal_snapshot(
@@ -63,13 +70,16 @@ def test_save_and_load_entity_page_signal_snapshot() -> None:
             stock_key="stock:601899.SH",
         )
         assert cast(str, loaded["entity_key"]) == "stock:601899.SH"
-        assert cast(str, loaded["header_title"]) == "紫金矿业 (601899.SH)"
-        assert cast(int, loaded["signal_total"]) == 2
-        signals = cast(list[dict[str, str]], loaded["signals"])
-        related_sectors = cast(list[dict[str, str]], loaded["related_sectors"])
-        assert signals[0]["post_uid"] == "weibo:2"
-        assert signals[0]["tree_text"] == "root -> child"
-        assert related_sectors[0]["sector_key"] == "gold"
+        assert cast(str, loaded["entity_type"]) == "stock"
+        header = cast(dict[str, str], loaded["header"])
+        counters = cast(dict[str, str], loaded["counters"])
+        signal_top = cast(list[dict[str, str]], loaded["signal_top"])
+        related = cast(list[dict[str, str]], loaded["related"])
+        assert header["title"] == "紫金矿业 (601899.SH)"
+        assert counters["signal_total"] == "2"
+        assert signal_top[0]["post_uid"] == "weibo:2"
+        assert signal_top[0]["tree_text"] == "root -> child"
+        assert related[0]["entity_key"] == "cluster:gold"
     finally:
         conn.close()
 
@@ -83,9 +93,9 @@ def test_save_and_load_entity_page_signal_snapshot_for_sector() -> None:
             stock_key="cluster:white_liquor",
             payload={
                 "entity_key": "cluster:white_liquor",
-                "header_title": "white_liquor",
-                "signal_total": 1,
-                "signals": [
+                "entity_type": "sector",
+                "header": {"title": "white_liquor"},
+                "signal_top": [
                     {
                         "post_uid": "weibo:3",
                         "summary": "板块继续走强",
@@ -94,9 +104,14 @@ def test_save_and_load_entity_page_signal_snapshot_for_sector() -> None:
                         "created_at": "2026-03-26 10:00:00",
                     }
                 ],
-                "related_stocks": [
-                    {"stock_key": "stock:600519.SH", "mention_count": "2"}
+                "related": [
+                    {
+                        "entity_key": "stock:600519.SH",
+                        "entity_type": "stock",
+                        "mention_count": "2",
+                    }
                 ],
+                "counters": {"signal_total": 1},
             },
         )
         loaded = load_entity_page_signal_snapshot(
@@ -104,10 +119,13 @@ def test_save_and_load_entity_page_signal_snapshot_for_sector() -> None:
             stock_key="cluster:white_liquor",
         )
         assert cast(str, loaded["entity_key"]) == "cluster:white_liquor"
-        assert cast(str, loaded["header_title"]) == "white_liquor"
-        assert cast(int, loaded["signal_total"]) == 1
-        related_stocks = cast(list[dict[str, str]], loaded["related_stocks"])
-        assert related_stocks[0]["stock_key"] == "stock:600519.SH"
+        assert cast(str, loaded["entity_type"]) == "sector"
+        header = cast(dict[str, str], loaded["header"])
+        counters = cast(dict[str, str], loaded["counters"])
+        related = cast(list[dict[str, str]], loaded["related"])
+        assert header["title"] == "white_liquor"
+        assert counters["signal_total"] == "1"
+        assert related[0]["entity_key"] == "stock:600519.SH"
     finally:
         conn.close()
 
@@ -129,12 +147,13 @@ def test_entity_page_signal_snapshot_skips_write_when_content_unchanged(
             "alphavault.research_stock_cache._now_str",
             lambda: next(timestamps),
         )
-        payload = {
+        payload: dict[str, object] = {
             "entity_key": "stock:601899.SH",
-            "header_title": "紫金矿业 (601899.SH)",
-            "signal_total": 1,
-            "signals": [{"post_uid": "weibo:1", "summary": "继续拿着"}],
-            "related_sectors": [{"sector_key": "gold"}],
+            "entity_type": "stock",
+            "header": {"title": "紫金矿业 (601899.SH)"},
+            "signal_top": [{"post_uid": "weibo:1", "summary": "继续拿着"}],
+            "related": [{"entity_key": "cluster:gold", "entity_type": "sector"}],
+            "counters": {"signal_total": 1},
         }
         save_entity_page_signal_snapshot(
             conn,
@@ -179,11 +198,11 @@ WHERE entity_key = :entity_key
             stock_key="stock:601899.SH",
             payload={
                 **payload,
-                "signal_total": 2,
-                "signals": [
+                "signal_top": [
                     {"post_uid": "weibo:1", "summary": "继续拿着"},
                     {"post_uid": "weibo:2", "summary": "小仓试错"},
                 ],
+                "counters": {"signal_total": 2},
             },
         )
         third = (
@@ -214,10 +233,16 @@ def test_stock_page_snapshot_uses_single_entity_page_snapshot_table() -> None:
             stock_key="stock:601899.SH",
             payload={
                 "entity_key": "stock:601899.SH",
-                "header_title": "紫金矿业 (601899.SH)",
-                "signal_total": 1,
-                "signals": [{"post_uid": "weibo:1"}],
-                "related_sectors": [{"sector_key": "gold"}],
+                "entity_type": "stock",
+                "header": {"title": "紫金矿业 (601899.SH)"},
+                "signal_top": [{"post_uid": "weibo:1"}],
+                "related": [
+                    {
+                        "entity_key": "cluster:gold",
+                        "entity_type": "sector",
+                    }
+                ],
+                "counters": {"signal_total": 1},
             },
         )
 
@@ -240,7 +265,7 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
         rows = (
             conn.execute(
                 """
-SELECT entity_key, signal_total
+SELECT entity_key, entity_type, counters_json
 FROM entity_page_snapshot
 ORDER BY entity_key ASC
 """
@@ -250,11 +275,14 @@ ORDER BY entity_key ASC
         )
         assert len(rows) == 1
         assert rows[0]["entity_key"] == "stock:601899.SH"
-        assert rows[0]["signal_total"] == 1
+        assert rows[0]["entity_type"] == "stock"
+        assert rows[0]["counters_json"] == '{"signal_total": "1"}'
 
         hot = load_entity_page_signal_snapshot(conn, stock_key="stock:601899.SH")
-        assert cast(int, hot["signal_total"]) == 1
-        assert cast(list[dict[str, str]], hot["signals"])[0]["post_uid"] == "weibo:1"
+        counters = cast(dict[str, str], hot["counters"])
+        signal_top = cast(list[dict[str, str]], hot["signal_top"])
+        assert counters["signal_total"] == "1"
+        assert signal_top[0]["post_uid"] == "weibo:1"
     finally:
         conn.close()
 
@@ -424,30 +452,54 @@ def test_mark_entity_page_dirty_from_assertions_reads_stock_and_sector_entities(
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
         ensure_research_stock_cache_schema(conn)
+        conn.execute(
+            """
+INSERT INTO topic_cluster_topics(
+    topic_key,
+    cluster_key,
+    source,
+    confidence,
+    created_at
+)
+VALUES (
+    'industry:黄金',
+    'gold',
+    'manual',
+    1.0,
+    '2026-04-06 10:00:00'
+)
+"""
+        )
         marked = mark_entity_page_dirty_from_assertions(
             conn,
             assertions=[
                 {
-                    "topic_key": "stock:紫金",
-                    "stock_codes_json": '["601899.SH"]',
                     "assertion_entities": [
                         {
                             "entity_key": "stock:601899.SH",
                             "entity_type": "stock",
+                            "match_source": "stock_code",
+                            "is_primary": 1,
                         },
                         {
                             "entity_key": "industry:黄金",
                             "entity_type": "industry",
+                            "match_source": "industry_name",
+                            "is_primary": 0,
                         },
                     ],
-                    "cluster_keys_json": '["gold"]',
                 },
+                {"assertion_entities": []},
                 {
-                    "topic_key": "stock:阿紫",
-                    "stock_codes_json": "[]",
-                    "assertion_entities": [],
+                    "assertion_entities": [
+                        {
+                            "entity_key": "cluster:energy",
+                            "entity_type": "sector",
+                            "match_source": "manual",
+                            "is_primary": 1,
+                        }
+                    ]
                 },
-                {"topic_key": "cluster:energy", "stock_codes_json": '["600519.SH"]'},
             ],
             reason="ai",
         )

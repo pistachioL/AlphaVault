@@ -16,13 +16,11 @@ from alphavault.constants import (
     ENV_TURSO_MAX_CONNECTIONS,
 )
 from alphavault.db.turso_env import require_configured_turso_sources_from_env
-from alphavault.db.sql.turso_db import (
-    SQL_BEGIN,
-    SQL_COMMIT,
-    SQL_ROLLBACK,
-)
 # NOTE: This module keeps Turso engine creation + connection helpers.
 
+SQL_BEGIN = "BEGIN"
+SQL_COMMIT = "COMMIT"
+SQL_ROLLBACK = "ROLLBACK"
 TURSO_SAVEPOINT_NAME = "alphavault_sp"
 _SAVEPOINT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)

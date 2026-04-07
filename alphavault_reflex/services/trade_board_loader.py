@@ -9,6 +9,11 @@ import time
 
 import pandas as pd
 
+from alphavault.db.sql.ui import (
+    build_assertion_projection_expr,
+    build_assertion_rollup_ctes,
+    build_assertion_rollup_joins,
+)
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.db.turso_pandas import turso_read_sql_df
@@ -27,12 +32,12 @@ DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = 2
 TRADE_BOARD_ASSERTION_COLUMNS = [
     "post_uid",
     "idx",
-    "topic_key",
+    "entity_key",
     "action",
     "action_strength",
     "summary",
-    "stock_codes_json",
-    "stock_names_json",
+    "stock_codes",
+    "stock_names",
 ]
 
 STOCK_ALIAS_RELATIONS_SQL = """
@@ -52,7 +57,7 @@ def trade_board_cutoff_from_utc_now(*, lookback_days: int) -> str:
 
 def trade_board_select_expr() -> str:
     return ", ".join(
-        [f"a.{col} AS {col}" for col in TRADE_BOARD_ASSERTION_COLUMNS]
+        [build_assertion_projection_expr(TRADE_BOARD_ASSERTION_COLUMNS)]
         + [
             "p.author AS author",
             "p.created_at AS created_at",
@@ -65,9 +70,11 @@ def query_trade_board_assertions(
     *, conn: object, cutoff: str, source_name: str
 ) -> pd.DataFrame:
     sql = f"""
+{build_assertion_rollup_ctes()}
 SELECT {trade_board_select_expr()}
 FROM posts p
 JOIN assertions a ON a.post_uid = p.post_uid
+{build_assertion_rollup_joins("a")}
 WHERE p.processed_at IS NOT NULL
   AND p.created_at >= :cutoff
   AND a.action LIKE 'trade.%'
@@ -77,7 +84,7 @@ WHERE p.processed_at IS NOT NULL
         return df
     df = df.copy()
     df["source"] = str(source_name or "").strip()
-    for col in ["post_uid", "topic_key", "action", "summary", "author", "url"]:
+    for col in ["post_uid", "entity_key", "action", "summary", "author", "url"]:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str)
     df = normalize_assertions_datetime(df)

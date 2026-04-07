@@ -28,19 +28,19 @@ def test_list_missing_hot_cache_stock_keys_reads_assertion_entities() -> None:
         conn.execute(
             """
             INSERT INTO assertions(
-                post_uid, idx, topic_key, action, action_strength, summary, evidence, confidence
+                assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
             )
             VALUES (
-                'weibo:1', 1, 'stock:紫金', 'trade.buy', 1, '小仓试错', '原文', 0.9
+                'weibo:1#1', 'weibo:1', 1, 'trade.buy', 1, '小仓试错', '原文', '2026-04-06 10:00:00'
             )
             """
         )
         conn.execute(
             """
             INSERT INTO assertion_entities(
-                post_uid, assertion_idx, entity_idx, entity_key, entity_type, confidence
+                assertion_id, entity_key, entity_type, match_source, is_primary
             )
-            VALUES ('weibo:1', 1, 1, 'stock:601899.SH', 'stock', 0.9)
+            VALUES ('weibo:1#1', 'stock:601899.SH', 'stock', 'stock_code', 1)
             """
         )
 

@@ -7,6 +7,11 @@ from typing import Any
 import pandas as pd
 
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
+from alphavault.db.sql.ui import (
+    build_assertion_projection_expr,
+    build_assertion_rollup_ctes,
+    build_assertion_rollup_joins,
+)
 from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.db.turso_pandas import turso_read_sql_df
@@ -89,26 +94,29 @@ def load_stock_trade_sources_fast_cached(
     with turso_connect_autocommit(engine) as conn:
         params: dict[str, object] = {"stock_key": normalized_key, "limit": limit}
         alias_keys = _load_stock_alias_keys(conn, stock_key=normalized_key)
-        key_clause = "ae.entity_key = :stock_key"
+        key_clause = "ae_filter.entity_key = :stock_key"
         if alias_keys:
             placeholders = make_in_placeholders(prefix="k", count=len(alias_keys))
             params.update(make_in_params(prefix="k", values=alias_keys))
             key_clause = (
-                f"(ae.entity_key = :stock_key OR ae.entity_key IN ({placeholders}))"
+                "(ae_filter.entity_key = :stock_key "
+                f"OR ae_filter.entity_key IN ({placeholders}))"
             )
         select_expr = ", ".join(
             [
-                *(f"a.{col}" for col in WANTED_TRADE_ASSERTION_COLUMNS),
-                "ae.entity_key AS resolved_entity_key",
+                build_assertion_projection_expr(WANTED_TRADE_ASSERTION_COLUMNS),
+                "ae_filter.entity_key AS resolved_entity_key",
             ]
         )
         assertions_query = (
+            f"{build_assertion_rollup_ctes()}\n"
             f"SELECT {select_expr}\n"
             "FROM assertions a\n"
-            "JOIN assertion_entities ae\n"
-            "  ON ae.post_uid = a.post_uid AND ae.assertion_idx = a.idx\n"
+            "JOIN assertion_entities ae_filter\n"
+            "  ON ae_filter.assertion_id = a.assertion_id\n"
+            f"{build_assertion_rollup_joins('a')}\n"
             "WHERE a.action LIKE 'trade.%'\n"
-            "  AND ae.entity_type = 'stock'\n"
+            "  AND ae_filter.entity_type = 'stock'\n"
             f"  AND {key_clause}\n"
             "ORDER BY a.created_at DESC\n"
             "LIMIT :limit"

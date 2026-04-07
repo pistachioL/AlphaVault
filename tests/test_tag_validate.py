@@ -176,48 +176,44 @@ def test_topic_prompt_v4_reject_bad_mention_type() -> None:
         validate_topic_prompt_v4_ai_result(parsed)
 
 
-def test_db_row_ok_v4_stock_alias_with_raw_code_bucket() -> None:
+def test_db_row_ok_v4_assertion_row_minimal_fields() -> None:
     row = {
-        "topic_key": "stock:长电",
+        "assertion_id": "weibo:1#1",
+        "post_uid": "weibo:1",
+        "idx": 1,
         "action": "trade.watch",
         "action_strength": 1,
-        "confidence": 0.6,
-        "stock_codes_json": '["600519"]',
-        "stock_names_json": '["长电"]',
-        "industries_json": "[]",
-        "commodities_json": "[]",
-        "indices_json": "[]",
+        "summary": "他说先看着。",
+        "evidence": "长电先看着",
+        "created_at": "2026-03-28 12:00:00",
     }
     validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)
 
 
-def test_db_row_ok_v4_keyword_topic() -> None:
+def test_db_row_rejects_missing_assertion_id() -> None:
     row = {
-        "topic_key": "keyword:黄金",
+        "post_uid": "weibo:1",
+        "idx": 1,
         "action": "view.bullish",
         "action_strength": 1,
-        "confidence": 0.6,
-        "stock_codes_json": "[]",
-        "stock_names_json": "[]",
-        "industries_json": "[]",
-        "commodities_json": "[]",
-        "indices_json": "[]",
-        "keywords_json": '["黄金"]',
+        "summary": "他说继续看。",
+        "evidence": "黄金继续看",
+        "created_at": "2026-03-28 12:00:00",
     }
-    validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)
+    with pytest.raises(AiTagValidationError):
+        validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)
 
 
-def test_db_row_ok_v4_commodity_topic() -> None:
+def test_db_row_rejects_empty_evidence() -> None:
     row = {
-        "topic_key": "commodity:黄金",
+        "assertion_id": "weibo:1#1",
+        "post_uid": "weibo:1",
+        "idx": 1,
         "action": "view.bullish",
         "action_strength": 1,
-        "confidence": 0.6,
-        "stock_codes_json": "[]",
-        "stock_names_json": "[]",
-        "industries_json": "[]",
-        "commodities_json": '["黄金"]',
-        "indices_json": "[]",
-        "keywords_json": "[]",
+        "summary": "他说继续看。",
+        "evidence": "",
+        "created_at": "2026-03-28 12:00:00",
     }
-    validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)
+    with pytest.raises(AiTagValidationError):
+        validate_assertion_row(row, prompt_version=TOPIC_PROMPT_VERSION)

@@ -65,6 +65,51 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
             "updated_at",
         } == projection_dirty_columns
 
+        assertion_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(assertions)").mappings().all()
+        }
+        assert {
+            "assertion_id",
+            "post_uid",
+            "idx",
+            "action",
+            "action_strength",
+            "summary",
+            "evidence",
+            "created_at",
+        } == assertion_columns
+
+        mention_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(assertion_mentions)")
+            .mappings()
+            .all()
+        }
+        assert {
+            "assertion_id",
+            "mention_seq",
+            "mention_text",
+            "mention_norm",
+            "mention_type",
+            "evidence",
+            "confidence",
+        } == mention_columns
+
+        entity_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(assertion_entities)")
+            .mappings()
+            .all()
+        }
+        assert {
+            "assertion_id",
+            "entity_key",
+            "entity_type",
+            "match_source",
+            "is_primary",
+        } == entity_columns
+
         snapshot_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(entity_page_snapshot)")
@@ -73,11 +118,11 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
         }
         assert {
             "entity_key",
-            "header_title",
-            "signal_total",
-            "signals_json",
-            "related_sectors_json",
-            "related_stocks_json",
+            "entity_type",
+            "header_json",
+            "signal_top_json",
+            "related_json",
+            "counters_json",
             "content_hash",
             "updated_at",
         } == snapshot_columns

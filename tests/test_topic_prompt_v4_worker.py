@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import json
 from typing import Any, cast
 
 import libsql
@@ -15,7 +13,7 @@ from alphavault.worker.post_processor_topic_prompt_v4 import (
 )
 
 
-def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_topic_key() -> (
+def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_entities() -> (
     None
 ):
     ai_result: dict[str, object] = {
@@ -74,35 +72,28 @@ def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_topic_ke
     rows = rows_by_post_uid["weibo:1001"]
     assert len(rows) == 1
     row = rows[0]
-    assert row["topic_key"] == "stock:600519"
-    assert json.loads(str(row["stock_codes_json"])) == ["600519"]
-    assert json.loads(str(row["stock_names_json"])) == ["茅台"]
-    assert json.loads(str(row["industries_json"])) == ["白酒"]
-    assert json.loads(str(row["keywords_json"])) == []
-    assert row["speaker"] == "老王"
-    assert row["relation_to_topic"] == "new"
-    assert json.loads(str(row["evidence_refs_json"])) == [
-        {
-            "source_kind": "status",
-            "source_id": "1001",
-            "quote": "我今天开始买600519了，茅台先上车",
-        }
-    ]
+    assert row["action"] == "trade.buy"
+    assert row["action_strength"] == 2
+    assert row["summary"] == "他说已经开始买了。"
+    assert row["evidence"] == "我今天开始买600519了，茅台先上车"
     assert row["assertion_mentions"] == [
         {
             "mention_text": "600519",
+            "mention_norm": "600519",
             "mention_type": "stock_code",
             "evidence": "我今天开始买600519了",
             "confidence": 0.95,
         },
         {
             "mention_text": "茅台",
+            "mention_norm": "茅台",
             "mention_type": "stock_alias",
             "evidence": "茅台先上车",
             "confidence": 0.9,
         },
         {
             "mention_text": "白酒",
+            "mention_norm": "白酒",
             "mention_type": "industry_name",
             "evidence": "白酒这块也在看",
             "confidence": 0.85,
@@ -112,16 +103,14 @@ def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_topic_ke
         {
             "entity_key": "stock:600519.SH",
             "entity_type": "stock",
-            "source_mention_text": "600519",
-            "source_mention_type": "stock_code",
-            "confidence": 0.95,
+            "match_source": "stock_code",
+            "is_primary": 1,
         },
         {
             "entity_key": "industry:白酒",
             "entity_type": "industry",
-            "source_mention_text": "白酒",
-            "source_mention_type": "industry_name",
-            "confidence": 0.85,
+            "match_source": "industry_name",
+            "is_primary": 0,
         },
     ]
 
@@ -220,23 +209,18 @@ def test_map_topic_prompt_assertions_to_rows_supports_commodity_layer() -> None:
     rows = rows_by_post_uid["weibo:2002"]
     assert len(rows) == 1
     row = rows[0]
-    assert row["topic_key"] == "commodity:黄金"
-    assert json.loads(str(row["commodities_json"])) == ["黄金"]
-    assert json.loads(str(row["keywords_json"])) == ["汇率"]
     assert row["assertion_entities"] == [
         {
             "entity_key": "commodity:黄金",
             "entity_type": "commodity",
-            "source_mention_text": "黄金",
-            "source_mention_type": "commodity_name",
-            "confidence": 0.88,
+            "match_source": "commodity_name",
+            "is_primary": 1,
         },
         {
             "entity_key": "keyword:汇率",
             "entity_type": "keyword",
-            "source_mention_text": "汇率",
-            "source_mention_type": "keyword",
-            "confidence": 0.7,
+            "match_source": "keyword",
+            "is_primary": 0,
         },
     ]
 
@@ -271,9 +255,8 @@ def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates
                             {
                                 "entity_key": "stock:600519.SH",
                                 "entity_type": "stock",
-                                "source_mention_text": "茅台",
-                                "source_mention_type": "stock_alias",
-                                "confidence": 0.9,
+                                "match_source": "stock_alias",
+                                "is_primary": 1,
                             }
                         ],
                     ),
@@ -287,9 +270,8 @@ def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates
             {
                 "entity_key": "stock:600519.SH",
                 "entity_type": "stock",
-                "source_mention_text": "600519",
-                "source_mention_type": "stock_code",
-                "confidence": 0.95,
+                "match_source": "stock_code",
+                "is_primary": 1,
             }
         ]
         followups = followups_by_post_uid["weibo:1"]

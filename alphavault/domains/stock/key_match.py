@@ -141,7 +141,7 @@ def build_stock_name_to_code(
     Sources (in order of confidence):
     - 1:1 (stock_code, stock_name) pairs from AI fields
     - inverse(stock_name_by_code)
-    - topic_key stock:<alias> + stock_names[0] -> code (conservative)
+    - entity_key stock:<alias> + stock_names[0] -> code (conservative)
     """
     counts: dict[str, dict[str, int]] = {}
 
@@ -184,18 +184,18 @@ def build_stock_name_to_code(
         ]
         base_best_code_by_name[str(name or "").strip()] = normalize_stock_code(best)
 
-    # 3) topic_key stock:<alias> + stock_names[0] -> code (v3 often has empty stock_codes)
+    # 3) entity_key stock:<alias> + stock_names[0] -> code (v3 often has empty stock_codes)
     if (
         not assertions_filtered.empty
-        and "topic_key" in assertions_filtered.columns
+        and "entity_key" in assertions_filtered.columns
         and "stock_names" in assertions_filtered.columns
     ):
-        for topic_key, stock_names in zip(
-            assertions_filtered["topic_key"].tolist(),
+        for entity_key, stock_names in zip(
+            assertions_filtered["entity_key"].tolist(),
             assertions_filtered["stock_names"].tolist(),
             strict=False,
         ):
-            tk = str(topic_key or "").strip()
+            tk = str(entity_key or "").strip()
             if not tk.startswith("stock:"):
                 continue
             alias = tk[len("stock:") :].strip()
@@ -307,10 +307,9 @@ def key_candidates(assertions_filtered: pd.DataFrame) -> pd.Series:
             return pd.Series(dtype=int)
         return pd.Series(flat, dtype=str).value_counts()
 
-    # Fallback: old data path (topic_key only).
-    if "topic_key" not in assertions_filtered.columns:
+    if "entity_key" not in assertions_filtered.columns:
         return pd.Series(dtype=int)
-    s = assertions_filtered["topic_key"].dropna().astype(str).str.strip()
+    s = assertions_filtered["entity_key"].dropna().astype(str).str.strip()
     s = s[s.ne("")]
     if s.empty:
         return pd.Series(dtype=int)
@@ -388,9 +387,9 @@ def filter_assertions_by_follow_key(
         return assertions_filtered.head(0).copy()
 
     if "match_keys" not in assertions_filtered.columns:
-        if "topic_key" in assertions_filtered.columns:
+        if "entity_key" in assertions_filtered.columns:
             return assertions_filtered[
-                assertions_filtered["topic_key"].astype(str).str.strip() == want
+                assertions_filtered["entity_key"].astype(str).str.strip() == want
             ]
         return assertions_filtered.head(0).copy()
 
@@ -464,9 +463,9 @@ def filter_assertions_by_follow_keys(
     want: set[str] = set(keys)
 
     if "match_keys" not in assertions_filtered.columns:
-        if "topic_key" in assertions_filtered.columns:
+        if "entity_key" in assertions_filtered.columns:
             return assertions_filtered[
-                assertions_filtered["topic_key"].astype(str).str.strip().isin(want)
+                assertions_filtered["entity_key"].astype(str).str.strip().isin(want)
             ]
         return assertions_filtered.head(0).copy()
 

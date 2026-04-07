@@ -23,7 +23,7 @@ def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 3,
                 "summary": "继续加仓",
@@ -35,7 +35,7 @@ def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -
 
     view = build_stock_research_view(posts, assertions, stock_key="stock:600519.SH")
     assert view.entity_key == "stock:600519.SH"
-    assert view.header_title == "600519.SH"
+    assert view.page_title == "600519.SH"
     assert view.signals[0]["summary"] == "继续加仓"
     assert view.signals[0]["tree_text"].endswith("[原帖 ID: p1]")
     assert view.related_sectors[0]["sector_key"] == "white_liquor"
@@ -66,36 +66,36 @@ def test_build_stock_research_view_aggregates_one_stock_object() -> None:
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:601899.SH",
+                "entity_key": "stock:601899.SH",
                 "action": "trade.buy",
                 "action_strength": 3,
                 "summary": "先建一点仓",
                 "created_at": "2026-03-25 10:00:00",
                 "cluster_keys": ["gold"],
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:紫金",
+                "entity_key": "stock:紫金",
                 "action": "trade.hold",
                 "action_strength": 1,
                 "summary": "继续拿着",
                 "created_at": "2026-03-24 10:00:00",
                 "cluster_keys": ["gold"],
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金"]',
+                "stock_codes": [],
+                "stock_names": ["紫金"],
             },
             {
                 "post_uid": "p3",
-                "topic_key": "stock:紫金矿业",
+                "entity_key": "stock:紫金矿业",
                 "action": "trade.watch",
                 "action_strength": 1,
                 "summary": "先继续观察",
                 "created_at": "2026-03-23 10:00:00",
                 "cluster_keys": ["copper"],
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金矿业"]',
+                "stock_codes": [],
+                "stock_names": ["紫金矿业"],
             },
         ]
     )
@@ -133,7 +133,7 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 3,
                 "summary": "继续加仓",
@@ -178,14 +178,14 @@ def test_build_stock_research_view_has_no_backfill_field() -> None:
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:601899.SH",
+                "entity_key": "stock:601899.SH",
                 "action": "trade.buy",
                 "action_strength": 3,
                 "summary": "先建一点仓",
                 "created_at": "2026-03-25 10:00:00",
                 "cluster_keys": ["gold"],
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
             }
         ]
     )
@@ -210,7 +210,7 @@ def test_build_stock_research_view_paginates_signals_and_returns_total() -> None
         [
             {
                 "post_uid": f"p{i}",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.watch",
                 "action_strength": 1,
                 "summary": f"信号{i}",
@@ -255,7 +255,7 @@ def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "板块继续走强",
@@ -266,7 +266,7 @@ def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -
     )
 
     view = build_sector_research_view(posts, assertions, sector_key="white_liquor")
-    assert view.header_title == "white_liquor"
+    assert view.page_title == "white_liquor"
     assert view.signals[0]["summary"] == "板块继续走强"
     assert view.related_stocks[0]["stock_key"] == "stock:600519.SH"
     assert not hasattr(view, "pending_candidates")
@@ -293,7 +293,7 @@ def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() ->
         [
             {
                 "post_uid": post_uid,
-                "topic_key": "stock:600011.SH",
+                "entity_key": "stock:600011.SH",
                 "action": "trade.watch",
                 "action_strength": 0,
                 "summary": "看走势，可以看出大家想法",
@@ -334,7 +334,7 @@ def test_build_search_index_returns_stock_and_sector_hits() -> None:
     assertions = pd.DataFrame(
         [
             {
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "cluster_keys": ["white_liquor"],
             }
         ]
@@ -352,22 +352,22 @@ def test_build_search_index_deduplicates_stock_objects_and_keeps_alias_search_te
     assertions = pd.DataFrame(
         [
             {
-                "topic_key": "stock:601899.SH",
+                "entity_key": "stock:601899.SH",
                 "cluster_keys": ["gold"],
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
             },
             {
-                "topic_key": "stock:紫金",
+                "entity_key": "stock:紫金",
                 "cluster_keys": ["gold"],
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金"]',
+                "stock_codes": [],
+                "stock_names": ["紫金"],
             },
             {
-                "topic_key": "stock:紫金矿业",
+                "entity_key": "stock:紫金矿业",
                 "cluster_keys": ["gold"],
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金矿业"]',
+                "stock_codes": [],
+                "stock_names": ["紫金矿业"],
             },
         ]
     )

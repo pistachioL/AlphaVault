@@ -16,21 +16,21 @@ def test_build_stock_object_index_merges_code_and_full_name_but_not_short_alias(
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:601899.SH",
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "entity_key": "stock:601899.SH",
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:紫金矿业",
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金矿业"]',
+                "entity_key": "stock:紫金矿业",
+                "stock_codes": [],
+                "stock_names": ["紫金矿业"],
             },
             {
                 "post_uid": "p3",
-                "topic_key": "stock:紫金",
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金"]',
+                "entity_key": "stock:紫金",
+                "stock_codes": [],
+                "stock_names": ["紫金"],
             },
         ]
     )
@@ -50,15 +50,15 @@ def test_filter_assertions_for_stock_object_uses_accepted_alias_relations() -> N
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:601899.SH",
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "entity_key": "stock:601899.SH",
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:阿紫",
-                "stock_codes_json": "[]",
-                "stock_names_json": '["阿紫"]',
+                "entity_key": "stock:阿紫",
+                "stock_codes": [],
+                "stock_names": ["阿紫"],
             },
         ]
     )

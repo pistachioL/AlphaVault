@@ -29,14 +29,14 @@ MISSING_TURSO_SOURCES_ERROR = (
 WANTED_TRADE_ASSERTION_COLUMNS = [
     "post_uid",
     "idx",
-    "topic_key",
+    "entity_key",
     "action",
     "action_strength",
     "summary",
     "evidence",
     "confidence",
-    "stock_codes_json",
-    "stock_names_json",
+    "stock_codes",
+    "stock_names",
     "industries_json",
     "commodities_json",
     "indices_json",
@@ -88,14 +88,14 @@ def standardize_assertions(
     defaults: dict[str, object] = {
         "post_uid": "",
         "idx": 0,
-        "topic_key": "",
+        "entity_key": "",
         "action": "",
         "action_strength": 0,
         "summary": "",
         "evidence": "",
         "confidence": 0.0,
-        "stock_codes_json": "[]",
-        "stock_names_json": "[]",
+        "stock_codes": "[]",
+        "stock_names": "[]",
         "industries_json": "[]",
         "commodities_json": "[]",
         "indices_json": "[]",
@@ -138,8 +138,8 @@ def standardize_assertions(
             missing_created, "post_uid"
         ].map(created_map)
 
-    assertions["stock_codes"] = assertions["stock_codes_json"].apply(parse_json_list)
-    assertions["stock_names"] = assertions["stock_names_json"].apply(parse_json_list)
+    assertions["stock_codes"] = assertions["stock_codes"].apply(parse_json_list)
+    assertions["stock_names"] = assertions["stock_names"].apply(parse_json_list)
     assertions["industries"] = assertions["industries_json"].apply(parse_json_list)
     assertions["commodities"] = assertions["commodities_json"].apply(parse_json_list)
     assertions["indices"] = assertions["indices_json"].apply(parse_json_list)

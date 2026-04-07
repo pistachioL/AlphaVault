@@ -5,31 +5,31 @@ def upsert_entity_page_snapshot_hot(table: str) -> str:
     return f"""
 INSERT INTO {table}(
     entity_key,
-    header_title,
-    signal_total,
-    signals_json,
-    related_sectors_json,
-    related_stocks_json,
+    entity_type,
+    header_json,
+    signal_top_json,
+    related_json,
+    counters_json,
     content_hash,
     updated_at
 )
 VALUES(
     :entity_key,
-    :header_title,
-    :signal_total,
-    :signals_json,
-    :related_sectors_json,
-    :related_stocks_json,
+    :entity_type,
+    :header_json,
+    :signal_top_json,
+    :related_json,
+    :counters_json,
     :content_hash,
     :updated_at
 )
 ON CONFLICT(entity_key) DO UPDATE SET
     entity_key = excluded.entity_key,
-    header_title = excluded.header_title,
-    signal_total = excluded.signal_total,
-    signals_json = excluded.signals_json,
-    related_sectors_json = excluded.related_sectors_json,
-    related_stocks_json = excluded.related_stocks_json,
+    entity_type = excluded.entity_type,
+    header_json = excluded.header_json,
+    signal_top_json = excluded.signal_top_json,
+    related_json = excluded.related_json,
+    counters_json = excluded.counters_json,
     content_hash = excluded.content_hash,
     updated_at = excluded.updated_at
 """
@@ -38,11 +38,11 @@ ON CONFLICT(entity_key) DO UPDATE SET
 def select_entity_page_snapshot(table: str) -> str:
     return f"""
 SELECT entity_key,
-       header_title,
-       signal_total,
-       signals_json,
-       related_sectors_json,
-       related_stocks_json,
+       entity_type,
+       header_json,
+       signal_top_json,
+       related_json,
+       counters_json,
        content_hash,
        updated_at
 FROM {table}

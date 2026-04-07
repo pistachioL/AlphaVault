@@ -453,17 +453,19 @@ def _prepare_board_assertions(
     )
     board_group_keys: list[str] = []
     board_topic_labels: dict[str, str] = {}
-    for topic_key in board_assertions.get("topic_key", pd.Series(dtype=str)).tolist():
-        topic = str(topic_key or "").strip()
-        if topic.startswith("stock:"):
-            group_key = stock_index.resolve(topic)
+    for raw_entity_key in board_assertions.get(
+        "entity_key", pd.Series(dtype=str)
+    ).tolist():
+        entity_key = str(raw_entity_key or "").strip()
+        if entity_key.startswith("stock:"):
+            group_key = stock_index.resolve(entity_key)
             board_group_keys.append(group_key)
             if group_key:
-                board_topic_labels[group_key] = stock_index.header_title(group_key)
+                board_topic_labels[group_key] = stock_index.page_title(group_key)
             continue
-        board_group_keys.append(topic)
-        if topic:
-            board_topic_labels[topic] = _topic_label(topic)
+        board_group_keys.append(entity_key)
+        if entity_key:
+            board_topic_labels[entity_key] = _topic_label(entity_key)
     board_assertions["board_group_key"] = board_group_keys
     return board_assertions, board_topic_labels
 

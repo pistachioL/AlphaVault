@@ -44,9 +44,8 @@ def test_resolve_assertion_mentions_creates_candidate_for_unconfirmed_alias() ->
             {
                 "entity_key": "stock:600519.SH",
                 "entity_type": "stock",
-                "source_mention_text": "600519",
-                "source_mention_type": "stock_code",
-                "confidence": 0.95,
+                "match_source": "stock_code",
+                "is_primary": 1,
             }
         ]
         assert len(result.relation_candidates) == 1
@@ -85,9 +84,8 @@ def test_resolve_assertion_mentions_uses_confirmed_alias_relation() -> None:
             {
                 "entity_key": "stock:601899.SH",
                 "entity_type": "stock",
-                "source_mention_text": "紫金",
-                "source_mention_type": "stock_alias",
-                "confidence": 0.88,
+                "match_source": "stock_alias",
+                "is_primary": 1,
             }
         ]
         assert result.relation_candidates == []
@@ -123,9 +121,8 @@ def test_resolve_assertion_mentions_uses_security_master_official_name() -> None
             {
                 "entity_key": "stock:601899.SH",
                 "entity_type": "stock",
-                "source_mention_text": "紫金矿业",
-                "source_mention_type": "stock_name",
-                "confidence": 0.91,
+                "match_source": "stock_name",
+                "is_primary": 1,
             }
         ]
         assert result.relation_candidates == []
@@ -162,9 +159,8 @@ def test_resolve_assertion_mentions_allows_stock_name_to_fallback_to_confirmed_a
             {
                 "entity_key": "stock:600519.SH",
                 "entity_type": "stock",
-                "source_mention_text": "茅台",
-                "source_mention_type": "stock_name",
-                "confidence": 0.9,
+                "match_source": "stock_name",
+                "is_primary": 1,
             }
         ]
         assert result.relation_candidates == []
@@ -182,29 +178,25 @@ def test_resolve_assertion_mentions_does_not_use_historical_stock_name_mapping()
         conn.execute(
             """
 INSERT INTO assertion_mentions(
-  post_uid, assertion_idx, mention_idx, mention_text, mention_type, evidence, confidence
+  assertion_id, mention_seq, mention_text, mention_norm, mention_type, evidence, confidence
 )
 VALUES (?, ?, ?, ?, ?, ?, ?)
 """,
-            ("weibo:1", 1, 1, "紫金矿业", "stock_name", "原文", 0.95),
+            ("weibo:1#1", 1, "紫金矿业", "紫金矿业", "stock_name", "原文", 0.95),
         )
         conn.execute(
             """
 INSERT INTO assertion_entities(
-  post_uid, assertion_idx, entity_idx, entity_key, entity_type,
-  source_mention_text, source_mention_type, confidence
+  assertion_id, entity_key, entity_type, match_source, is_primary
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?)
 """,
             (
-                "weibo:1",
-                1,
-                1,
+                "weibo:1#1",
                 "stock:601899.SH",
                 "stock",
-                "紫金矿业",
                 "stock_name",
-                0.95,
+                1,
             ),
         )
 

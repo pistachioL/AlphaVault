@@ -10,7 +10,7 @@ def test_build_board_caption_only_shows_window_line() -> None:
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "小仓",
@@ -19,7 +19,7 @@ def test_build_board_caption_only_shows_window_line() -> None:
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.hold",
                 "action_strength": 1,
                 "summary": "继续",
@@ -32,7 +32,7 @@ def test_build_board_caption_only_shows_window_line() -> None:
     result = build_board(
         assertions,
         pd.DataFrame(),
-        group_col="topic_key",
+        group_col="entity_key",
         group_label="主题",
         window_days=3,
         trade_filter="全部",
@@ -48,7 +48,7 @@ def test_build_board_keeps_xueqiu_tree_post_uid_without_strip() -> None:
         [
             {
                 "post_uid": raw_uid,
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "小仓",
@@ -61,7 +61,7 @@ def test_build_board_keeps_xueqiu_tree_post_uid_without_strip() -> None:
     result = build_board(
         assertions,
         pd.DataFrame(),
-        group_col="topic_key",
+        group_col="entity_key",
         group_label="主题",
         window_days=3,
         trade_filter="全部",
@@ -75,7 +75,7 @@ def test_build_board_trade_filter_only_keeps_latest_buy() -> None:
         [
             {
                 "post_uid": "a1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.sell",
                 "action_strength": 2,
                 "summary": "先卖一点",
@@ -84,7 +84,7 @@ def test_build_board_trade_filter_only_keeps_latest_buy() -> None:
             },
             {
                 "post_uid": "a2",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "又买回来",
@@ -93,7 +93,7 @@ def test_build_board_trade_filter_only_keeps_latest_buy() -> None:
             },
             {
                 "post_uid": "b1",
-                "topic_key": "stock:000001.SZ",
+                "entity_key": "stock:000001.SZ",
                 "action": "trade.buy",
                 "action_strength": 1,
                 "summary": "先试试",
@@ -102,7 +102,7 @@ def test_build_board_trade_filter_only_keeps_latest_buy() -> None:
             },
             {
                 "post_uid": "b2",
-                "topic_key": "stock:000001.SZ",
+                "entity_key": "stock:000001.SZ",
                 "action": "trade.sell",
                 "action_strength": 3,
                 "summary": "卖掉",
@@ -115,7 +115,7 @@ def test_build_board_trade_filter_only_keeps_latest_buy() -> None:
     result = build_board(
         assertions,
         pd.DataFrame(),
-        group_col="topic_key",
+        group_col="entity_key",
         group_label="主题",
         window_days=10,
         trade_filter="买",
@@ -129,7 +129,7 @@ def test_build_board_trade_filter_hold_includes_watch() -> None:
         [
             {
                 "post_uid": "a1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.watch",
                 "action_strength": 2,
                 "summary": "先看看",
@@ -138,7 +138,7 @@ def test_build_board_trade_filter_hold_includes_watch() -> None:
             },
             {
                 "post_uid": "b1",
-                "topic_key": "stock:000001.SZ",
+                "entity_key": "stock:000001.SZ",
                 "action": "trade.sell",
                 "action_strength": 3,
                 "summary": "卖掉",
@@ -151,7 +151,7 @@ def test_build_board_trade_filter_hold_includes_watch() -> None:
     result = build_board(
         assertions,
         pd.DataFrame(),
-        group_col="topic_key",
+        group_col="entity_key",
         group_label="主题",
         window_days=10,
         trade_filter="只看",

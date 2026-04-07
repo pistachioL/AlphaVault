@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from alphavault.constants import (
     ENV_AI_API_MODE,
@@ -19,8 +19,9 @@ from alphavault.ai._errors import extract_llm_error_details, format_llm_error_on
 from alphavault.ai._text import clean_text, clamp_float, clamp_int, parse_json_text
 from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
 
-# NOTE: This module is extracted from the old CSV/local-sqlite scripts.
-# It is the public API for AI call + output normalization.
+# NOTE: Current worker paths only need the shared constants and helpers below.
+# Some repo scripts still import the old analyze API, so we keep a small
+# compatibility layer here instead of breaking those entry points.
 
 AI_MODE_COMPLETION = "completion"
 AI_MODE_RESPONSES = "responses"
@@ -67,7 +68,7 @@ LEGACY_ACTION_MAP = {
 class AnalyzeResult:
     status: str
     invest_score: float
-    assertions: List[Dict[str, Any]]
+    assertions: list[dict[str, Any]]
 
 
 def normalize_action(action: str) -> str:
@@ -92,8 +93,8 @@ def normalize_action(action: str) -> str:
 def analyze_with_litellm(
     api_key: str,
     model: str,
-    analysis_context: Dict[str, str],
-    row: Dict[str, str],
+    analysis_context: dict[str, str],
+    row: dict[str, str],
     base_url: str,
     api_mode: str,
     ai_stream: bool,
@@ -152,7 +153,6 @@ quoted_text（转发/引用上下文）:
 """.strip()
 
     resolved_api_mode = (api_mode or DEFAULT_AI_MODE).strip().lower()
-
     trace_label = (
         clean_text(row.get("id", "")) or clean_text(row.get("bid", "")) or "weibo"
     )
@@ -175,17 +175,16 @@ quoted_text（转发/引用上下文）:
     if status not in ("relevant", "irrelevant"):
         status = "irrelevant"
     invest_score = clamp_float(parsed.get("invest_score", 0.0), 0.0, 1.0, 0.0)
-    assertions = parsed.get("assertions") or []
-    if not isinstance(assertions, list):
-        assertions = []
+    raw_assertions = parsed.get("assertions") or []
+    assertions = raw_assertions if isinstance(raw_assertions, list) else []
     if status == "irrelevant":
         assertions = []
 
-    normalized_assertions: List[Dict[str, Any]] = []
-    for a in assertions[:5]:
-        if not isinstance(a, dict):
+    normalized_assertions: list[dict[str, Any]] = []
+    for item in assertions[:5]:
+        if not isinstance(item, dict):
             continue
-        source_type = clean_text(a.get("source_type", "commentary")).lower()
+        source_type = clean_text(item.get("source_type", "commentary")).lower()
         source_type = (
             source_type
             if source_type in {"commentary", "extension", "forward_only"}
@@ -193,57 +192,61 @@ quoted_text（转发/引用上下文）:
         )
         normalized_assertions.append(
             {
-                "topic_key": clean_text(a.get("topic_key", "other:misc"))
+                "topic_key": clean_text(item.get("topic_key", "other:misc"))
                 or "other:misc",
-                "action": normalize_action(clean_text(a.get("action", "view.bullish"))),
-                "action_strength": clamp_int(a.get("action_strength", 1), 0, 3, 1),
-                "summary": clean_text(a.get("summary", "")) or "未提供摘要",
-                "evidence": clean_text(a.get("evidence", "")),
-                "confidence": clamp_float(a.get("confidence", 0.5), 0.0, 1.0, 0.5),
+                "action": normalize_action(
+                    clean_text(item.get("action", "view.bullish"))
+                ),
+                "action_strength": clamp_int(item.get("action_strength", 1), 0, 3, 1),
+                "summary": clean_text(item.get("summary", "")) or "未提供摘要",
+                "evidence": clean_text(item.get("evidence", "")),
+                "confidence": clamp_float(item.get("confidence", 0.5), 0.0, 1.0, 0.5),
                 "stock_codes_json": json.dumps(
-                    a.get("stock_codes_json", []), ensure_ascii=False
+                    item.get("stock_codes_json", []), ensure_ascii=False
                 ),
                 "stock_names_json": json.dumps(
-                    a.get("stock_names_json", []), ensure_ascii=False
+                    item.get("stock_names_json", []), ensure_ascii=False
                 ),
                 "industries_json": json.dumps(
-                    a.get("industries_json", []), ensure_ascii=False
+                    item.get("industries_json", []), ensure_ascii=False
                 ),
                 "commodities_json": json.dumps(
-                    a.get("commodities_json", []), ensure_ascii=False
+                    item.get("commodities_json", []), ensure_ascii=False
                 ),
                 "indices_json": json.dumps(
-                    a.get("indices_json", []), ensure_ascii=False
+                    item.get("indices_json", []), ensure_ascii=False
                 ),
                 "source_type": source_type,
             }
         )
 
     return AnalyzeResult(
-        status=status, invest_score=invest_score, assertions=normalized_assertions
+        status=status,
+        invest_score=invest_score,
+        assertions=normalized_assertions,
     )
 
 
 def validate_and_adjust_assertions(
-    assertions: List[Dict[str, Any]],
+    assertions: list[dict[str, Any]],
     commentary_text: str,
     quoted_text: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     commentary = commentary_text or ""
     quoted = quoted_text or ""
     fallback_evidence = (
         commentary[:120] if commentary else (quoted[:120] if quoted else "")
     )
 
-    fixed: List[Dict[str, Any]] = []
-    for a in assertions:
-        if not isinstance(a, dict):
+    fixed: list[dict[str, Any]] = []
+    for item in assertions:
+        if not isinstance(item, dict):
             continue
-        evidence = clean_text(a.get("evidence", ""))
-        summary = clean_text(a.get("summary", "未提供摘要")) or "未提供摘要"
-        confidence = clamp_float(a.get("confidence", 0.5), 0.0, 1.0, 0.5)
-        strength = clamp_int(a.get("action_strength", 1), 0, 3, 1)
-        source_type = clean_text(a.get("source_type", "commentary")).lower()
+        evidence = clean_text(item.get("evidence", ""))
+        summary = clean_text(item.get("summary", "未提供摘要")) or "未提供摘要"
+        confidence = clamp_float(item.get("confidence", 0.5), 0.0, 1.0, 0.5)
+        strength = clamp_int(item.get("action_strength", 1), 0, 3, 1)
+        source_type = clean_text(item.get("source_type", "commentary")).lower()
         source_type = (
             source_type
             if source_type in {"commentary", "extension", "forward_only"}
@@ -253,7 +256,8 @@ def validate_and_adjust_assertions(
         if evidence and commentary and evidence in commentary:
             pass
         elif evidence and quoted and evidence in quoted:
-            source_type = "forward_only" if source_type == "commentary" else source_type
+            if source_type == "commentary":
+                source_type = "forward_only"
             confidence = min(confidence, 0.45)
             strength = min(strength, 1)
             summary = f"[转发线索] {summary}"
@@ -265,7 +269,7 @@ def validate_and_adjust_assertions(
 
         fixed.append(
             {
-                **a,
+                **item,
                 "summary": summary,
                 "evidence": evidence,
                 "confidence": confidence,
@@ -288,13 +292,10 @@ __all__ = [
     "DEFAULT_AI_REASONING_EFFORT",
     "ALLOWED_ACTIONS",
     "LEGACY_ACTION_MAP",
-    # data
     "AnalyzeResult",
-    # main API
     "analyze_with_litellm",
     "validate_and_adjust_assertions",
     "normalize_action",
-    # helpers (re-export)
     "_call_ai_with_litellm",
     "clean_text",
     "clamp_float",

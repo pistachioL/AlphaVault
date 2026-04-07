@@ -21,7 +21,7 @@ def test_load_stock_page_sets_primary_signal(monkeypatch) -> None:
         "alphavault_reflex.research_state.load_stock_page_cached_view",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:600519.SH",
-            "header_title": "600519.SH",
+            "page_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
             "signal_total": 1,
             "signal_page": 1,
@@ -52,7 +52,7 @@ def test_load_stock_page_shows_empty_state_after_loaded(monkeypatch) -> None:
         "alphavault_reflex.research_state.load_stock_page_cached_view",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:000001.SZ",
-            "header_title": "000001.SZ",
+            "page_title": "000001.SZ",
             "signals": [],
             "related_sectors": [],
             "signal_total": 0,
@@ -80,7 +80,7 @@ def test_load_stock_page_sets_signals_not_ready_when_cache_preparing(
         "alphavault_reflex.research_state.load_stock_page_cached_view",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:000001.SZ",
-            "header_title": "000001.SZ",
+            "page_title": "000001.SZ",
             "signals": [],
             "related_sectors": [],
             "signal_total": 0,
@@ -102,7 +102,7 @@ def test_load_stock_page_maps_worker_progress_fields(monkeypatch) -> None:
         "alphavault_reflex.research_state.load_stock_page_cached_view",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:000001.SZ",
-            "header_title": "000001.SZ",
+            "page_title": "000001.SZ",
             "signals": [],
             "related_sectors": [],
             "signal_total": 0,
@@ -131,7 +131,7 @@ def test_load_stock_page_uses_canonical_entity_key_from_view(monkeypatch) -> Non
         "alphavault_reflex.research_state.load_stock_page_cached_view",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:601899.SH",
-            "header_title": "紫金矿业 (601899.SH)",
+            "page_title": "紫金矿业 (601899.SH)",
             "signals": [{"summary": "继续拿着"}],
             "related_sectors": [],
             "signal_total": 1,
@@ -155,7 +155,7 @@ def test_load_stock_page_if_needed_resets_stock_sidebar_when_stock_changes(
         "alphavault_reflex.research_state.load_stock_page_cached_view",
         lambda stock_slug, **_kwargs: {
             "entity_key": "stock:601899.SH",
-            "header_title": "紫金矿业 (601899.SH)",
+            "page_title": "紫金矿业 (601899.SH)",
             "signals": [],
             "related_sectors": [],
             "signal_total": 0,
@@ -214,7 +214,7 @@ def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:
     monkeypatch.setattr(
         "alphavault_reflex.research_state.load_sector_page_view",
         lambda sector_slug: {
-            "header_title": "white_liquor",
+            "page_title": "white_liquor",
             "signals": [{"summary": "板块继续走强"}],
             "related_stocks": [{"stock_key": "stock:600519.SH"}],
         },
@@ -235,7 +235,7 @@ def test_load_stock_page_if_needed_runs_on_first_load(monkeypatch) -> None:
         calls.append(stock_slug)
         return {
             "entity_key": "stock:600519.SH",
-            "header_title": "600519.SH",
+            "page_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
             "related_sectors": [],
             "signal_total": 1,
@@ -284,7 +284,7 @@ def test_load_stock_page_if_needed_loads_when_stock_changes(monkeypatch) -> None
         calls.append(stock_slug)
         return {
             "entity_key": "stock:600519.SH",
-            "header_title": "600519.SH",
+            "page_title": "600519.SH",
             "signals": [{"summary": "继续加仓"}],
             "related_sectors": [],
             "signal_total": 1,
@@ -307,6 +307,110 @@ def test_load_stock_page_if_needed_loads_when_stock_changes(monkeypatch) -> None
 
     assert calls == ["600519.SH"]
     assert state.entity_key == "stock:600519.SH"
+
+
+def test_next_signal_page_requests_next_page_from_loader(monkeypatch) -> None:
+    seen_calls: list[dict[str, object]] = []
+
+    def _fake_load_stock_page_cached_view(
+        stock_slug: str,
+        *,
+        signal_page: int,
+        signal_page_size: int,
+    ) -> dict[str, object]:
+        seen_calls.append(
+            {
+                "stock_slug": stock_slug,
+                "signal_page": signal_page,
+                "signal_page_size": signal_page_size,
+            }
+        )
+        return {
+            "entity_key": "stock:600519.SH",
+            "page_title": "600519.SH",
+            "signals": [{"summary": "第2页"}],
+            "signal_total": 50,
+            "signal_page": signal_page,
+            "signal_page_size": signal_page_size,
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        _fake_load_stock_page_cached_view,
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "stock"
+    state.entity_key = "stock:600519.SH"
+    state.signal_page = 1
+    state.signal_page_size = 40
+    state.signal_total = 90
+
+    state.next_signal_page()
+
+    assert seen_calls == [
+        {
+            "stock_slug": "600519.SH",
+            "signal_page": 2,
+            "signal_page_size": 40,
+        }
+    ]
+    assert state.signal_page == 2
+    assert state.signal_page_size == 40
+
+
+def test_set_signal_page_size_uses_selected_page_size_in_loader(monkeypatch) -> None:
+    seen_calls: list[dict[str, object]] = []
+
+    def _fake_load_stock_page_cached_view(
+        stock_slug: str,
+        *,
+        signal_page: int,
+        signal_page_size: int,
+    ) -> dict[str, object]:
+        seen_calls.append(
+            {
+                "stock_slug": stock_slug,
+                "signal_page": signal_page,
+                "signal_page_size": signal_page_size,
+            }
+        )
+        return {
+            "entity_key": "stock:600519.SH",
+            "page_title": "600519.SH",
+            "signals": [{"summary": "第1页"}],
+            "signal_total": 50,
+            "signal_page": signal_page,
+            "signal_page_size": signal_page_size,
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        _fake_load_stock_page_cached_view,
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "stock"
+    state.entity_key = "stock:600519.SH"
+    state.signal_page = 3
+    state.signal_page_size = 20
+    state.related_limit = 500
+
+    state.set_signal_page_size("60")
+
+    assert seen_calls == [
+        {
+            "stock_slug": "600519.SH",
+            "signal_page": 1,
+            "signal_page_size": 60,
+        }
+    ]
+    assert state.signal_page == 1
+    assert state.signal_page_size == 60
 
 
 def test_load_sector_page_if_needed_skips_when_same_sector_loaded(monkeypatch) -> None:
@@ -336,7 +440,7 @@ def test_load_sector_page_if_needed_loads_when_sector_changes(monkeypatch) -> No
     def _fake_load_sector_page_view(sector_slug):
         calls.append(sector_slug)
         return {
-            "header_title": "white_liquor",
+            "page_title": "white_liquor",
             "signals": [{"summary": "板块继续走强"}],
             "related_stocks": [{"stock_key": "stock:600519.SH"}],
         }

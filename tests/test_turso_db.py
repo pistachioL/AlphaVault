@@ -9,6 +9,7 @@ import pytest
 
 from alphavault.db import turso_queue
 from alphavault.db.sql.turso_queue import (
+    INSERT_ASSERTION,
     INSERT_ASSERTION_ENTITY,
     INSERT_ASSERTION_MENTION,
     UPSERT_PENDING_POST,
@@ -472,23 +473,16 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
         archived_at="2026-03-28 12:00:01",
         assertions=[
             {
-                "topic_key": "stock:600519",
-                "speaker": "作者A",
-                "relation_to_topic": "new",
+                "assertion_id": "weibo:2#1",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "他说开始买了。",
                 "evidence": "我今天开始买600519了",
-                "evidence_refs_json": "[]",
-                "confidence": 0.95,
-                "stock_codes_json": '["600519"]',
-                "stock_names_json": '["茅台"]',
-                "industries_json": "[]",
-                "commodities_json": "[]",
-                "indices_json": "[]",
+                "created_at": "2026-03-28 11:59:00",
                 "assertion_mentions": [
                     {
                         "mention_text": "600519",
+                        "mention_norm": "600519",
                         "mention_type": "stock_code",
                         "evidence": "我今天开始买600519了",
                         "confidence": 0.95,
@@ -505,13 +499,31 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     mention_params = cast(list[dict[str, object]], mention_calls[0][1])
     assert mention_params == [
         {
-            "post_uid": "weibo:2",
-            "assertion_idx": 1,
-            "mention_idx": 1,
+            "assertion_id": "weibo:2#1",
+            "mention_seq": 1,
             "mention_text": "600519",
+            "mention_norm": "600519",
             "mention_type": "stock_code",
             "evidence": "我今天开始买600519了",
             "confidence": 0.95,
+        }
+    ]
+
+    assertion_calls = [
+        item for item in calls if item[0].strip() == INSERT_ASSERTION.strip()
+    ]
+    assert len(assertion_calls) == 1
+    assertion_params = cast(list[dict[str, object]], assertion_calls[0][1])
+    assert assertion_params == [
+        {
+            "assertion_id": "weibo:2#1",
+            "post_uid": "weibo:2",
+            "idx": 1,
+            "action": "trade.buy",
+            "action_strength": 2,
+            "summary": "他说开始买了。",
+            "evidence": "我今天开始买600519了",
+            "created_at": "2026-03-28 11:59:00",
         }
     ]
 
@@ -552,27 +564,18 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
         archived_at="2026-03-28 12:00:01",
         assertions=[
             {
-                "topic_key": "stock:600519",
-                "speaker": "作者A",
-                "relation_to_topic": "new",
+                "assertion_id": "weibo:3#1",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "他说开始买了。",
                 "evidence": "我今天开始买600519了",
-                "evidence_refs_json": "[]",
-                "confidence": 0.95,
-                "stock_codes_json": '["600519"]',
-                "stock_names_json": '["茅台"]',
-                "industries_json": "[]",
-                "commodities_json": "[]",
-                "indices_json": "[]",
+                "created_at": "2026-03-28 11:59:00",
                 "assertion_entities": [
                     {
                         "entity_key": "stock:600519.SH",
                         "entity_type": "stock",
-                        "source_mention_text": "600519",
-                        "source_mention_type": "stock_code",
-                        "confidence": 0.95,
+                        "match_source": "stock_code",
+                        "is_primary": 1,
                     }
                 ],
             }
@@ -586,14 +589,11 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
     entity_params = cast(list[dict[str, object]], entity_calls[0][1])
     assert entity_params == [
         {
-            "post_uid": "weibo:3",
-            "assertion_idx": 1,
-            "entity_idx": 1,
+            "assertion_id": "weibo:3#1",
             "entity_key": "stock:600519.SH",
             "entity_type": "stock",
-            "source_mention_text": "600519",
-            "source_mention_type": "stock_code",
-            "confidence": 0.95,
+            "match_source": "stock_code",
+            "is_primary": 1,
         }
     ]
 
@@ -646,27 +646,18 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
         archived_at="2026-03-28 12:00:01",
         assertions=[
             {
-                "topic_key": "stock:600519",
-                "speaker": "作者A",
-                "relation_to_topic": "new",
+                "assertion_id": "weibo:4#1",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "他说开始买了。",
                 "evidence": "我今天开始买600519了",
-                "evidence_refs_json": "[]",
-                "confidence": 0.95,
-                "stock_codes_json": '["600519"]',
-                "stock_names_json": '["茅台"]',
-                "industries_json": "[]",
-                "commodities_json": "[]",
-                "indices_json": "[]",
+                "created_at": "2026-03-28 11:59:00",
                 "assertion_entities": [
                     {
                         "entity_key": "stock:600519.SH",
                         "entity_type": "stock",
-                        "source_mention_text": "600519",
-                        "source_mention_type": "stock_code",
-                        "confidence": 0.95,
+                        "match_source": "stock_code",
+                        "is_primary": 1,
                     }
                 ],
             }
@@ -745,20 +736,12 @@ def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
             archived_at="2026-03-28 12:00:01",
             assertions=[
                 {
-                    "topic_key": "stock:600519",
-                    "speaker": "作者A",
-                    "relation_to_topic": "new",
+                    "assertion_id": "weibo:5#1",
                     "action": "trade.buy",
                     "action_strength": 2,
                     "summary": "他说开始买了。",
                     "evidence": "我今天开始买600519了",
-                    "evidence_refs_json": "[]",
-                    "confidence": 0.95,
-                    "stock_codes_json": '["600519"]',
-                    "stock_names_json": '["茅台"]',
-                    "industries_json": "[]",
-                    "commodities_json": "[]",
-                    "indices_json": "[]",
+                    "created_at": "2026-03-28 11:59:00",
                 }
             ],
             entity_match_results=[

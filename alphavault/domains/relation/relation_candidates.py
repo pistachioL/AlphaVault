@@ -21,7 +21,7 @@ def build_stock_alias_candidates(
     stock_key: str,
 ) -> list[dict[str, str]]:
     target = str(stock_key or "").strip()
-    if assertions.empty or not target or "topic_key" not in assertions.columns:
+    if assertions.empty or not target or "entity_key" not in assertions.columns:
         return []
 
     stock_index = build_stock_object_index(assertions)
@@ -43,8 +43,8 @@ def build_stock_alias_candidates(
         if not alias_key or alias_key == entity_key:
             continue
         topic_hits = (
-            stock_view["topic_key"].astype(str).str.strip().eq(alias_key).sum()
-            if "topic_key" in stock_view.columns
+            stock_view["entity_key"].astype(str).str.strip().eq(alias_key).sum()
+            if "entity_key" in stock_view.columns
             else 0
         )
         if topic_hits:
@@ -74,7 +74,7 @@ def build_stock_sector_candidates(
     stock_key: str,
 ) -> list[dict[str, str]]:
     target = str(stock_key or "").strip()
-    if assertions.empty or not target or "topic_key" not in assertions.columns:
+    if assertions.empty or not target or "entity_key" not in assertions.columns:
         return []
 
     stock_index = build_stock_object_index(assertions)
@@ -118,11 +118,11 @@ def build_sector_relation_candidates(
 
     stocks_by_sector: dict[str, set[str]] = defaultdict(set)
     for _, row in assertions.iterrows():
-        topic_key = str(row.get("topic_key") or "").strip()
-        if not topic_key.startswith(STOCK_KEY_PREFIX):
+        entity_key = str(row.get("entity_key") or "").strip()
+        if not entity_key.startswith(STOCK_KEY_PREFIX):
             continue
         for member_sector in _row_sector_keys(row):
-            stocks_by_sector[member_sector].add(topic_key)
+            stocks_by_sector[member_sector].add(entity_key)
 
     base_stocks = stocks_by_sector.get(target, set())
     if not base_stocks:

@@ -38,7 +38,7 @@ class StockObjectIndex:
         key = self.resolve(stock_key)
         return str(self.display_name_by_object_key.get(key) or stock_value(key)).strip()
 
-    def header_title(self, stock_key: str) -> str:
+    def page_title(self, stock_key: str) -> str:
         key = self.resolve(stock_key)
         display_name = self.display_name(key)
         value = stock_value(key)
@@ -54,7 +54,7 @@ class StockObjectIndex:
     def search_text(self, stock_key: str) -> str:
         key = self.resolve(stock_key)
         return str(
-            self.search_text_by_object_key.get(key) or self.header_title(key)
+            self.search_text_by_object_key.get(key) or self.page_title(key)
         ).strip()
 
 
@@ -219,10 +219,10 @@ def filter_assertions_for_stock_object(
     member_keys = index.member_keys_by_object_key.get(target_key)
     if not member_keys:
         member_keys = {target_key}
-    if "topic_key" not in enriched.columns:
+    if "entity_key" not in enriched.columns:
         return enriched.head(0).copy()
-    topics = enriched["topic_key"].fillna("").astype(str).str.strip()
-    return enriched[topics.isin(member_keys)].copy()
+    entity_keys = enriched["entity_key"].fillna("").astype(str).str.strip()
+    return enriched[entity_keys.isin(member_keys)].copy()
 
 
 def build_stock_search_rows(
@@ -246,7 +246,7 @@ def build_stock_search_rows(
             {
                 "entity_type": "stock",
                 "entity_key": object_key,
-                "label": index.header_title(object_key),
+                "label": index.page_title(object_key),
                 "search_text": index.search_text(object_key),
             }
         )
@@ -277,25 +277,23 @@ def ensure_stock_columns(assertions: pd.DataFrame) -> pd.DataFrame:
     if assertions.empty:
         return assertions.copy()
     out = assertions.copy()
-    if "stock_codes" not in out.columns:
-        raw_codes = (
-            out["stock_codes_json"]
-            if "stock_codes_json" in out.columns
-            else pd.Series(["[]"] * len(out), index=out.index)
-        )
-        out["stock_codes"] = raw_codes.apply(parse_json_list)
-    if "stock_names" not in out.columns:
-        raw_names = (
-            out["stock_names_json"]
-            if "stock_names_json" in out.columns
-            else pd.Series(["[]"] * len(out), index=out.index)
-        )
-        out["stock_names"] = raw_names.apply(parse_json_list)
+    raw_codes = (
+        out["stock_codes"]
+        if "stock_codes" in out.columns
+        else pd.Series(["[]"] * len(out), index=out.index)
+    )
+    out["stock_codes"] = raw_codes.apply(parse_json_list)
+    raw_names = (
+        out["stock_names"]
+        if "stock_names" in out.columns
+        else pd.Series(["[]"] * len(out), index=out.index)
+    )
+    out["stock_names"] = raw_names.apply(parse_json_list)
     if "match_keys" not in out.columns:
         out["match_keys"] = out.apply(
             lambda row: _build_stock_match_keys(
                 resolved_entity_key=row.get("resolved_entity_key"),
-                topic_key=row.get("topic_key"),
+                entity_key=row.get("entity_key"),
                 stock_codes=row.get("stock_codes"),
             ),
             axis=1,
@@ -304,15 +302,15 @@ def ensure_stock_columns(assertions: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_stock_match_keys(
-    *, resolved_entity_key: object, topic_key: object, stock_codes: object
+    *, resolved_entity_key: object, entity_key: object, stock_codes: object
 ) -> list[str]:
     keys: list[str] = []
     resolved_key = normalize_stock_key(str(resolved_entity_key or "").strip())
     if resolved_key:
         keys.append(resolved_key)
-    topic = normalize_stock_key(str(topic_key or "").strip())
-    if topic:
-        keys.append(topic)
+    row_entity_key = normalize_stock_key(str(entity_key or "").strip())
+    if row_entity_key:
+        keys.append(row_entity_key)
     codes = stock_codes if isinstance(stock_codes, list) else []
     for raw in codes:
         code = normalize_stock_code(str(raw or "").strip())
@@ -365,7 +363,7 @@ def _pick_unresolved_alias_keys(
         if alias_keys
         else [
             str(item or "").strip()
-            for item in assertions.get("topic_key", pd.Series(dtype=str)).tolist()
+            for item in assertions.get("entity_key", pd.Series(dtype=str)).tolist()
         ]
     )
 

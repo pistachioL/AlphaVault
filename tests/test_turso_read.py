@@ -59,15 +59,15 @@ def test_load_homework_board_payload_from_env_merges_source_rows(
             [
                 {
                     "post_uid": f"{source_name}:p1",
-                    "topic_key": "stock:600519.SH",
+                    "entity_key": "stock:600519.SH",
                     "action": "trade.buy",
                     "action_strength": 2,
                     "summary": "小仓试错",
                     "author": "alice",
                     "created_at": pd.Timestamp("2026-03-25 10:00:00"),
                     "url": "https://example.com",
-                    "stock_codes_json": '["600519.SH"]',
-                    "stock_names_json": '["贵州茅台"]',
+                    "stock_codes": ["600519.SH"],
+                    "stock_names": ["贵州茅台"],
                 }
             ]
         )

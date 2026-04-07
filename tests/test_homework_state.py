@@ -32,25 +32,25 @@ def test_homework_state_keeps_unlinked_stock_alias_as_separate_rows(
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:601899.SH",
+                "entity_key": "stock:601899.SH",
                 "action": "trade.buy",
                 "action_strength": 3,
                 "summary": "先建一点仓",
                 "author": "alice",
                 "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:紫金",
+                "entity_key": "stock:紫金",
                 "action": "trade.hold",
                 "action_strength": 1,
                 "summary": "继续拿着",
                 "author": "bob",
                 "created_at": pd.Timestamp("2026-03-26 10:00:00"),
-                "stock_codes_json": "[]",
-                "stock_names_json": '["紫金"]',
+                "stock_codes": [],
+                "stock_names": ["紫金"],
             },
         ]
     )
@@ -79,25 +79,25 @@ def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
         [
             {
                 "post_uid": "p1",
-                "topic_key": "stock:601899.SH",
+                "entity_key": "stock:601899.SH",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "先上车",
                 "author": "alice",
                 "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes_json": '["601899.SH"]',
-                "stock_names_json": '["紫金矿业"]',
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
             },
             {
                 "post_uid": "p2",
-                "topic_key": "stock:阿紫",
+                "entity_key": "stock:阿紫",
                 "action": "trade.watch",
                 "action_strength": 1,
                 "summary": "继续看",
                 "author": "bob",
                 "created_at": pd.Timestamp("2026-03-26 10:00:00"),
-                "stock_codes_json": "[]",
-                "stock_names_json": '["阿紫"]',
+                "stock_codes": [],
+                "stock_names": ["阿紫"],
             },
         ]
     )
@@ -188,14 +188,14 @@ def test_homework_state_refresh_bootstraps_default_feed_on_miss(monkeypatch) -> 
         [
             {
                 "post_uid": "weibo:1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 2,
                 "summary": "小仓试错",
                 "author": "alice",
                 "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes_json": '["600519.SH"]',
-                "stock_names_json": '["贵州茅台"]',
+                "stock_codes": ["600519.SH"],
+                "stock_names": ["贵州茅台"],
             }
         ]
     )
@@ -299,14 +299,14 @@ def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
         [
             {
                 "post_uid": "weibo:1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 1,
                 "summary": "小仓",
                 "author": "alice",
                 "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes_json": '["600519.SH"]',
-                "stock_names_json": '["贵州茅台"]',
+                "stock_codes": ["600519.SH"],
+                "stock_names": ["贵州茅台"],
             }
         ]
     )
@@ -337,14 +337,14 @@ def test_load_data_if_needed_runs_on_first_load(monkeypatch) -> None:
         [
             {
                 "post_uid": "weibo:1",
-                "topic_key": "stock:600519.SH",
+                "entity_key": "stock:600519.SH",
                 "action": "trade.buy",
                 "action_strength": 1,
                 "summary": "小仓",
                 "author": "alice",
                 "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes_json": '["600519.SH"]',
-                "stock_names_json": '["贵州茅台"]',
+                "stock_codes": ["600519.SH"],
+                "stock_names": ["贵州茅台"],
             }
         ]
     )

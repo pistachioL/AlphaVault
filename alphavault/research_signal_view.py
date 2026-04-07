@@ -92,7 +92,14 @@ def build_signal_rows(
 
 def build_related_stock_rows(view: pd.DataFrame) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
-    for raw_key in view.get("topic_key", pd.Series(dtype=str)).tolist():
+    raw_values: list[object]
+    if "stock_key" in view.columns:
+        raw_values = view.get("stock_key", pd.Series(dtype=str)).tolist()
+    elif "resolved_entity_key" in view.columns:
+        raw_values = view.get("resolved_entity_key", pd.Series(dtype=str)).tolist()
+    else:
+        raw_values = view.get("entity_key", pd.Series(dtype=str)).tolist()
+    for raw_key in raw_values:
         stock_key = str(raw_key or "").strip()
         if not stock_key.startswith("stock:"):
             continue
