@@ -317,7 +317,6 @@ def process_one_post_uid_topic_prompt_v4(
         )
 
     try:
-        limiter.wait()
         start_ts = time.time()
         parsed = _call_ai_with_litellm(
             prompt=prompt,
@@ -335,6 +334,7 @@ def process_one_post_uid_topic_prompt_v4(
             trace_out=config.trace_out,
             trace_label=trace_label,
             validator=validate_topic_prompt_v4_ai_result,
+            request_gate=limiter.wait,
         )
 
         if config.verbose:

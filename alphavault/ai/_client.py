@@ -62,6 +62,7 @@ def _call_ai_with_litellm(
     trace_out: Optional[Path],
     trace_label: str,
     validator: Optional[Callable[[Dict[str, Any]], None]] = None,
+    request_gate: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Any]:
     litellm = _import_litellm()
 
@@ -73,6 +74,8 @@ def _call_ai_with_litellm(
     for attempt in range(retries + 1):
         raw_text = ""
         try:
+            if request_gate is not None:
+                request_gate()
             response: Any
             if api_mode == "responses":
                 responses_fn = getattr(litellm, "responses", None)
