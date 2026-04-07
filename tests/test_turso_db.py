@@ -7,7 +7,7 @@ from typing import Any, cast
 import libsql
 import pytest
 
-from alphavault.db import turso_queue
+from alphavault.db import turso_db, turso_queue
 from alphavault.db.sql.turso_queue import (
     INSERT_ASSERTION,
     INSERT_ASSERTION_ENTITY,
@@ -16,6 +16,7 @@ from alphavault.db.sql.turso_queue import (
 )
 from alphavault.db.turso_db import (
     TursoConnection,
+    TursoEngine,
     is_turso_stream_not_found_error,
     turso_savepoint,
 )
@@ -348,6 +349,146 @@ def test_turso_connection_execute_disposes_engine_on_libsql_panic() -> None:
     assert engine.dispose_calls == 1
 
 
+def test_run_turso_transaction_retries_on_stream_not_found_with_new_connection(
+    monkeypatch,
+) -> None:
+    class _FakeCursor:
+        rowcount = 1
+
+        def fetchone(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def fetchall(self):  # type: ignore[no-untyped-def]
+            return []
+
+    class _FakeConn:
+        def __init__(self, name: str, *, fail_on_query: bool) -> None:
+            self.name = name
+            self.fail_on_query = fail_on_query
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            del params
+            sql = str(query).strip()
+            if sql == "SELECT 1" and self.fail_on_query:
+                self.fail_on_query = False
+                raise ValueError("stream not found: abc")
+            return _FakeCursor()
+
+    class _FakeEngine:
+        def __init__(self) -> None:
+            self.dispose_calls = 0
+
+        def dispose(self) -> None:
+            self.dispose_calls += 1
+
+    connect_calls: list[str] = []
+    body_calls: list[str] = []
+    connections = [
+        _FakeConn("conn-1", fail_on_query=True),
+        _FakeConn("conn-2", fail_on_query=False),
+    ]
+
+    @contextmanager
+    def _fake_connect(_engine):  # type: ignore[no-untyped-def]
+        conn = connections[len(connect_calls)]
+        connect_calls.append(conn.name)
+        yield conn
+
+    def _body(conn):  # type: ignore[no-untyped-def]
+        body_calls.append(conn.name)
+        conn.execute("SELECT 1")
+        return conn.name
+
+    monkeypatch.setattr(turso_db, "turso_connect_autocommit", _fake_connect)
+
+    helper = getattr(turso_db, "run_turso_transaction")
+    engine = _FakeEngine()
+    assert helper(engine, _body) == "conn-2"
+    assert connect_calls == ["conn-1", "conn-2"]
+    assert body_calls == ["conn-1", "conn-2"]
+    assert engine.dispose_calls == 1
+
+
+def test_run_turso_transaction_uses_existing_connection_without_opening_new_one(
+    monkeypatch,
+) -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        conn.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
+
+        @contextmanager
+        def _fail_connect(_engine):  # type: ignore[no-untyped-def]
+            raise AssertionError("should_not_open_new_connection")
+            yield
+
+        def _body(tx_conn):  # type: ignore[no-untyped-def]
+            tx_conn.execute("INSERT INTO t(id) VALUES (:id)", {"id": 1})
+            return tx_conn.execute("SELECT COUNT(*) FROM t").scalar()
+
+        monkeypatch.setattr(turso_db, "turso_connect_autocommit", _fail_connect)
+
+        helper = getattr(turso_db, "run_turso_transaction")
+        assert helper(conn, _body) == 1
+    finally:
+        conn.close()
+
+
+def test_run_turso_transaction_drops_bad_connection_on_connection_reset(
+    monkeypatch,
+) -> None:
+    class _FakeCursor:
+        rowcount = 1
+
+        def fetchone(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def fetchall(self):  # type: ignore[no-untyped-def]
+            return []
+
+    class _RawConn:
+        def __init__(self, name: str, *, fail_on_query: bool) -> None:
+            self.name = name
+            self.fail_on_query = fail_on_query
+            self.close_calls = 0
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            del params
+            sql = str(query).strip()
+            if sql == "SELECT 1" and self.fail_on_query:
+                raise RuntimeError("connection reset by peer")
+            return _FakeCursor()
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    raw_1 = _RawConn("raw-1", fail_on_query=True)
+    raw_2 = _RawConn("raw-2", fail_on_query=False)
+    created = [raw_1, raw_2]
+    body_calls: list[str] = []
+    engine = TursoEngine(
+        remote_url="libsql://unit.test",
+        auth_token="token",
+        max_connections=1,
+    )
+
+    def _fake_open_raw_connection():  # type: ignore[no-untyped-def]
+        return created.pop(0)
+
+    def _body(conn: TursoConnection) -> str:
+        body_calls.append(str(conn._raw.name))
+        conn.execute("SELECT 1")
+        return str(conn._raw.name)
+
+    monkeypatch.setattr(engine, "_open_raw_connection", _fake_open_raw_connection)
+    monkeypatch.setattr(turso_db.time, "sleep", lambda _seconds: None)
+
+    helper = getattr(turso_db, "run_turso_transaction")
+    assert helper(engine, _body) == "raw-2"
+    assert body_calls == ["raw-1", "raw-2"]
+    assert raw_1.close_calls == 1
+    assert raw_2.close_calls == 0
+
+
 def test_upsert_pending_post_wraps_nonfatal_base_exception(monkeypatch) -> None:
     PanicException = type(
         "PanicException", (BaseException,), {"__module__": "pyo3_runtime"}
@@ -443,24 +584,14 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     calls: list[tuple[str, object]] = []
 
     class _FakeConn:
-        def __enter__(self):  # type: ignore[no-untyped-def]
-            return self
-
-        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
-            return False
-
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             calls.append((str(query), params))
             return self
 
-    @contextmanager
-    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
-        yield
+    def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        return fn(_FakeConn())
 
-    monkeypatch.setattr(
-        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
-    )
-    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
 
     turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
@@ -534,12 +665,6 @@ def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_d
     calls: list[tuple[str, object]] = []
 
     class _FakeConn:
-        def __enter__(self):  # type: ignore[no-untyped-def]
-            return self
-
-        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
-            return False
-
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             calls.append((str(query).strip(), params))
             return self
@@ -550,14 +675,10 @@ def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_d
         def fetchone(self):  # type: ignore[no-untyped-def]
             return None
 
-    @contextmanager
-    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
-        yield
+    def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        return fn(_FakeConn())
 
-    monkeypatch.setattr(
-        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
-    )
-    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
 
     turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
@@ -604,24 +725,14 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
     calls: list[tuple[str, object]] = []
 
     class _FakeConn:
-        def __enter__(self):  # type: ignore[no-untyped-def]
-            return self
-
-        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
-            return False
-
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             calls.append((str(query), params))
             return self
 
-    @contextmanager
-    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
-        yield
+    def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        return fn(_FakeConn())
 
-    monkeypatch.setattr(
-        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
-    )
-    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
 
     turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
@@ -668,38 +779,33 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
     ]
 
 
-def test_write_assertions_and_mark_done_persists_entity_match_followups_before_done(
+def test_write_assertions_and_mark_done_persists_entity_match_followups_after_done(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
     followup_calls: list[EntityMatchResult] = []
-    standard_engine = object()
+    source_engine = cast(Any, object())
+    standard_engine = cast(Any, object())
 
     class _FakeConn:
-        def __enter__(self):  # type: ignore[no-untyped-def]
-            return self
-
-        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
-            return False
+        def __init__(self, *, label: str) -> None:
+            self.label = label
 
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             del params
             calls.append(str(query).strip())
             return self
 
-    @contextmanager
-    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
-        yield
-
-    def _fake_persist(_engine, result):  # type: ignore[no-untyped-def]
-        assert _engine is standard_engine
+    def _fake_persist(_conn, result):  # type: ignore[no-untyped-def]
+        assert getattr(_conn, "label", "") == "standard"
         followup_calls.append(result)
         calls.append("__persist_entity_match_followups__")
 
-    monkeypatch.setattr(
-        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
-    )
-    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        label = "standard" if _engine_or_conn is standard_engine else "source"
+        return fn(_FakeConn(label=label))
+
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
     monkeypatch.setattr(
         turso_queue,
         "get_research_workbench_engine_from_env",
@@ -714,7 +820,7 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
     )
 
     turso_queue.write_assertions_and_mark_done(
-        cast(Any, object()),
+        source_engine,
         post_uid="weibo:4",
         final_status="relevant",
         invest_score=0.9,
@@ -763,54 +869,55 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
 
     assert len(followup_calls) == 1
     assert calls.index(INSERT_ASSERTION_ENTITY.strip()) < calls.index(
-        "__persist_entity_match_followups__"
-    )
-    assert calls.index("__persist_entity_match_followups__") < calls.index(
         turso_queue.UPDATE_POST_DONE.strip()
     )
+    assert calls.index(turso_queue.UPDATE_POST_DONE.strip()) < calls.index(
+        "__persist_entity_match_followups__"
+    )
 
 
-def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
+def test_write_assertions_and_mark_done_raises_after_mark_done_when_followups_fail(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
+    source_engine = cast(Any, object())
+    standard_engine = cast(Any, object())
 
     class _FakeConn:
-        def __enter__(self):  # type: ignore[no-untyped-def]
-            return self
-
-        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
-            return False
+        def __init__(self, *, label: str) -> None:
+            self.label = label
 
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             del params
             calls.append(str(query).strip())
             return self
 
-    @contextmanager
-    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
-        yield
+    def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        label = "standard" if _engine_or_conn is standard_engine else "source"
+        return fn(_FakeConn(label=label))
 
-    monkeypatch.setattr(
-        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
-    )
-    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
     monkeypatch.setattr(
         turso_queue,
         "get_research_workbench_engine_from_env",
-        lambda: object(),
+        lambda: standard_engine,
         raising=False,
     )
+
+    def _fake_persist(_conn, _result):  # type: ignore[no-untyped-def]
+        assert getattr(_conn, "label", "") == "standard"
+        raise RuntimeError("boom")
+
     monkeypatch.setattr(
         turso_queue,
         "persist_entity_match_followups",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        _fake_persist,
         raising=False,
     )
 
     with pytest.raises(RuntimeError, match="boom"):
         turso_queue.write_assertions_and_mark_done(
-            cast(Any, object()),
+            source_engine,
             post_uid="weibo:5",
             final_status="relevant",
             invest_score=0.9,
@@ -837,4 +944,97 @@ def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
             ],
         )
 
-    assert turso_queue.UPDATE_POST_DONE.strip() not in calls
+    assert turso_queue.UPDATE_POST_DONE.strip() in calls
+
+
+def test_reset_ai_results_all_uses_run_turso_transaction(monkeypatch) -> None:
+    helper_calls: list[object] = []
+
+    def _fake_run(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        del fn
+        helper_calls.append(engine_or_conn)
+        return (3, 4)
+
+    @contextmanager
+    def _fail_connect(_engine):  # type: ignore[no-untyped-def]
+        raise AssertionError("old_transaction_path_used")
+        yield
+
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run, raising=False)
+    monkeypatch.setattr(turso_queue, "turso_connect_autocommit", _fail_connect)
+
+    engine = TursoEngine(
+        remote_url="libsql://unit.test",
+        auth_token="token",
+    )
+    assert turso_queue.reset_ai_results_all(
+        engine, archived_at="2026-04-07 10:00:00"
+    ) == (
+        3,
+        4,
+    )
+    assert helper_calls == [engine]
+
+
+def test_reset_ai_results_for_post_uids_uses_run_turso_transaction(monkeypatch) -> None:
+    helper_calls: list[object] = []
+
+    def _fake_run(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        del fn
+        helper_calls.append(engine_or_conn)
+        return (5, 6)
+
+    @contextmanager
+    def _fail_connect(_engine):  # type: ignore[no-untyped-def]
+        raise AssertionError("old_transaction_path_used")
+        yield
+
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run, raising=False)
+    monkeypatch.setattr(turso_queue, "turso_connect_autocommit", _fail_connect)
+
+    engine = TursoEngine(
+        remote_url="libsql://unit.test",
+        auth_token="token",
+    )
+    result = turso_queue.reset_ai_results_for_post_uids(
+        engine,
+        post_uids=["weibo:1"],
+        archived_at="2026-04-07 10:00:00",
+        chunk_size=100,
+    )
+    assert result == (5, 6)
+    assert helper_calls == [engine]
+
+
+def test_write_assertions_and_mark_done_uses_run_turso_transaction(monkeypatch) -> None:
+    helper_calls: list[object] = []
+
+    def _fake_run(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        del fn
+        helper_calls.append(engine_or_conn)
+        return None
+
+    @contextmanager
+    def _fail_connect(_engine):  # type: ignore[no-untyped-def]
+        raise AssertionError("old_transaction_path_used")
+        yield
+
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run, raising=False)
+    monkeypatch.setattr(turso_queue, "turso_connect_autocommit", _fail_connect)
+
+    engine = TursoEngine(
+        remote_url="libsql://unit.test",
+        auth_token="token",
+    )
+    turso_queue.write_assertions_and_mark_done(
+        engine,
+        post_uid="weibo:7",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-04-07 10:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-04-07 10:00:01",
+        assertions=[],
+    )
+    assert helper_calls == [engine]

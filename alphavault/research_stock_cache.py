@@ -20,8 +20,8 @@ from alphavault.db.turso_db import (
     TursoEngine,
     is_turso_libsql_panic_error,
     is_turso_stream_not_found_error,
+    run_turso_transaction,
     turso_connect_autocommit,
-    turso_savepoint,
 )
 
 ENTITY_PAGE_SNAPSHOT_TABLE = "entity_page_snapshot"
@@ -474,17 +474,12 @@ WHERE job_type = ?
     if claim_token:
         sql += "\n  AND claim_until = ?"
         params.append(claim_token)
-    try:
-        with _use_conn(engine_or_conn) as conn:
-            with turso_savepoint(conn):
-                res = conn.execute(
-                    sql,
-                    params,
-                )
-                return int(res.rowcount or 0)
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
-    return 0
+
+    def _delete(conn: TursoConnection) -> int:
+        res = conn.execute(sql, params)
+        return int(res.rowcount or 0)
+
+    return run_turso_transaction(engine_or_conn, _delete)
 
 
 def claim_entity_page_dirty_entries(
@@ -498,31 +493,28 @@ def claim_entity_page_dirty_entries(
         return []
     now_str = _now_str()
     claim_until = _claim_until_str(now_str, claim_ttl_seconds)
-    try:
-        with _use_conn(engine_or_conn) as conn:
-            with turso_savepoint(conn):
-                rows = (
-                    conn.execute(
-                        select_claimable_research_stock_dirty_keys(
-                            PROJECTION_DIRTY_TABLE
-                        ),
-                        {
-                            "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
-                            "now": now_str,
-                            "limit": n,
-                        },
-                    )
-                    .mappings()
-                    .all()
-                )
-                keys = _clean_dirty_keys(
-                    [str(row.get("target_key") or "").strip() for row in rows]
-                )
-                if not keys:
-                    return []
-                placeholders = ", ".join(["?"] * len(keys))
-                conn.execute(
-                    f"""
+
+    def _claim(conn: TursoConnection) -> list[EntityPageDirtyEntry]:
+        rows = (
+            conn.execute(
+                select_claimable_research_stock_dirty_keys(PROJECTION_DIRTY_TABLE),
+                {
+                    "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
+                    "now": now_str,
+                    "limit": n,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        keys = _clean_dirty_keys(
+            [str(row.get("target_key") or "").strip() for row in rows]
+        )
+        if not keys:
+            return []
+        placeholders = ", ".join(["?"] * len(keys))
+        conn.execute(
+            f"""
 UPDATE {PROJECTION_DIRTY_TABLE}
 SET claim_until = ?,
     updated_at = ?
@@ -530,23 +522,26 @@ WHERE job_type = ?
   AND target_key IN ({placeholders})
   AND (claim_until = '' OR claim_until <= ?)
 """,
-                    [
-                        claim_until,
-                        now_str,
-                        PROJECTION_JOB_TYPE_ENTITY_PAGE,
-                        *keys,
-                        now_str,
-                    ],
-                )
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
-    out: list[EntityPageDirtyEntry] = []
-    for row in rows:
-        mapped = _map_entity_page_dirty_row(dict(row), claim_until_override=claim_until)
-        if not str(mapped.get("stock_key") or "").strip():
-            continue
-        out.append(mapped)
-    return out
+            [
+                claim_until,
+                now_str,
+                PROJECTION_JOB_TYPE_ENTITY_PAGE,
+                *keys,
+                now_str,
+            ],
+        )
+        out: list[EntityPageDirtyEntry] = []
+        for row in rows:
+            mapped = _map_entity_page_dirty_row(
+                dict(row),
+                claim_until_override=claim_until,
+            )
+            if not str(mapped.get("stock_key") or "").strip():
+                continue
+            out.append(mapped)
+        return out
+
+    return run_turso_transaction(engine_or_conn, _claim)
 
 
 def release_entity_page_dirty_claims(
@@ -569,22 +564,20 @@ WHERE job_type = ?
   AND target_key IN ({placeholders})
   AND claim_until = ?
 """
-    try:
-        with _use_conn(engine_or_conn) as conn:
-            with turso_savepoint(conn):
-                res = conn.execute(
-                    sql,
-                    [
-                        now_str,
-                        PROJECTION_JOB_TYPE_ENTITY_PAGE,
-                        *keys,
-                        claim_token,
-                    ],
-                )
-                return int(res.rowcount or 0)
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
-    return 0
+
+    def _release(conn: TursoConnection) -> int:
+        res = conn.execute(
+            sql,
+            [
+                now_str,
+                PROJECTION_JOB_TYPE_ENTITY_PAGE,
+                *keys,
+                claim_token,
+            ],
+        )
+        return int(res.rowcount or 0)
+
+    return run_turso_transaction(engine_or_conn, _release)
 
 
 def fail_entity_page_dirty_claims(
@@ -608,22 +601,20 @@ WHERE job_type = ?
   AND target_key IN ({placeholders})
   AND claim_until = ?
 """
-    try:
-        with _use_conn(engine_or_conn) as conn:
-            with turso_savepoint(conn):
-                res = conn.execute(
-                    sql,
-                    [
-                        now_str,
-                        PROJECTION_JOB_TYPE_ENTITY_PAGE,
-                        *keys,
-                        claim_token,
-                    ],
-                )
-                return int(res.rowcount or 0)
-    except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
-    return 0
+
+    def _fail(conn: TursoConnection) -> int:
+        res = conn.execute(
+            sql,
+            [
+                now_str,
+                PROJECTION_JOB_TYPE_ENTITY_PAGE,
+                *keys,
+                claim_token,
+            ],
+        )
+        return int(res.rowcount or 0)
+
+    return run_turso_transaction(engine_or_conn, _fail)
 
 
 def pop_entity_page_dirty_keys(

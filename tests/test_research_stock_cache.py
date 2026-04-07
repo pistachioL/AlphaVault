@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import libsql
-from typing import cast
+from typing import Callable, cast
+
+import pytest
 
 from alphavault.db.cloud_schema import (
     apply_cloud_schema as ensure_research_stock_cache_schema,
 )
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault import research_stock_cache as research_stock_cache_module
 from alphavault.research_stock_cache import (
+    EntityPageDirtyEntry,
     claim_entity_page_dirty_entries,
     dirty_reason_mask_for,
     fail_entity_page_dirty_claims,
@@ -508,3 +513,116 @@ VALUES (
         assert keys == {"stock:601899.SH", "cluster:gold", "cluster:energy"}
     finally:
         conn.close()
+
+
+def _assert_transaction_helper_used(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    expected_result: object,
+    call_fn: Callable[[TursoEngine], object],
+) -> None:
+    helper_calls: list[object] = []
+
+    def _fake_run(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        del fn
+        helper_calls.append(engine_or_conn)
+        return expected_result
+
+    @contextmanager
+    def _fail_use_conn(_engine_or_conn):  # type: ignore[no-untyped-def]
+        raise AssertionError("old_transaction_path_used")
+        yield
+
+    engine = TursoEngine(
+        remote_url="libsql://unit.test",
+        auth_token="token",
+    )
+    monkeypatch.setattr(
+        research_stock_cache_module,
+        "run_turso_transaction",
+        _fake_run,
+        raising=False,
+    )
+    monkeypatch.setattr(research_stock_cache_module, "_use_conn", _fail_use_conn)
+
+    assert call_fn(engine) == expected_result
+    assert helper_calls == [engine]
+
+
+def test_remove_entity_page_dirty_keys_uses_run_turso_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _call(engine: TursoEngine) -> int:
+        return research_stock_cache_module.remove_entity_page_dirty_keys(
+            engine,
+            stock_keys=["stock:601899.SH"],
+        )
+
+    _assert_transaction_helper_used(
+        monkeypatch,
+        expected_result=11,
+        call_fn=_call,
+    )
+
+
+def test_claim_entity_page_dirty_entries_uses_run_turso_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected: list[EntityPageDirtyEntry] = [
+        {
+            "stock_key": "stock:601899.SH",
+            "reason_mask": 0,
+            "dirty_since": "",
+            "last_dirty_at": "",
+            "claim_until": "",
+            "attempt_count": 0,
+            "updated_at": "",
+        }
+    ]
+
+    def _call(engine: TursoEngine) -> list[EntityPageDirtyEntry]:
+        return research_stock_cache_module.claim_entity_page_dirty_entries(
+            engine,
+            limit=2,
+            claim_ttl_seconds=60,
+        )
+
+    _assert_transaction_helper_used(
+        monkeypatch,
+        expected_result=expected,
+        call_fn=_call,
+    )
+
+
+def test_release_entity_page_dirty_claims_uses_run_turso_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _call(engine: TursoEngine) -> int:
+        return research_stock_cache_module.release_entity_page_dirty_claims(
+            engine,
+            stock_keys=["stock:601899.SH"],
+            claim_until="2026-04-07 10:00:00",
+        )
+
+    _assert_transaction_helper_used(
+        monkeypatch,
+        expected_result=12,
+        call_fn=_call,
+    )
+
+
+def test_fail_entity_page_dirty_claims_uses_run_turso_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _call(engine: TursoEngine) -> int:
+        return research_stock_cache_module.fail_entity_page_dirty_claims(
+            engine,
+            stock_keys=["stock:601899.SH"],
+            claim_until="2026-04-07 10:00:00",
+        )
+
+    _assert_transaction_helper_used(
+        monkeypatch,
+        expected_result=13,
+        call_fn=_call,
+    )

@@ -25,7 +25,9 @@ ALLOWED_MENTION_TYPES = {
     "keyword",
 }
 
+_CN_LIST_SEPARATOR = "、"
 _BAD_SEPARATORS = {",", "，", "、"}
+_MENTION_TYPES_ALLOWING_CN_LIST_SEPARATOR = {"industry_name"}
 
 
 class AiTagValidationError(RuntimeError):
@@ -45,8 +47,18 @@ def _short(value: object, *, max_len: int = 80) -> str:
     return s[: max(0, int(max_len) - 3)] + "..."
 
 
-def _has_bad_separator(value: str) -> bool:
-    return any(sep in value for sep in _BAD_SEPARATORS)
+def _has_bad_separator(value: str, *, separators: set[str] | None = None) -> bool:
+    active_separators = separators or _BAD_SEPARATORS
+    return any(sep in value for sep in active_separators)
+
+
+def _mention_text_has_bad_separator(mention_text: str, *, mention_type: str) -> bool:
+    if mention_type in _MENTION_TYPES_ALLOWING_CN_LIST_SEPARATOR:
+        return _has_bad_separator(
+            mention_text,
+            separators=_BAD_SEPARATORS - {_CN_LIST_SEPARATOR},
+        )
+    return _has_bad_separator(mention_text)
 
 
 def _must(condition: bool, msg: str) -> None:
@@ -61,6 +73,7 @@ def _validate_optional_str_list(
     field: str,
     max_items: int = 50,
     max_item_len: int = 60,
+    reject_separators: bool = True,
 ) -> list[str]:
     if value is None:
         return []
@@ -71,9 +84,11 @@ def _validate_optional_str_list(
         s = _clean_str(item)
         _must(bool(s), f"{field}[{i}]_empty")
         _must(len(s) <= int(max_item_len), f"{field}[{i}]_too_long value={_short(s)}")
-        _must(
-            not _has_bad_separator(s), f"{field}[{i}]_has_separator value={_short(s)}"
-        )
+        if reject_separators:
+            _must(
+                not _has_bad_separator(s),
+                f"{field}[{i}]_has_separator value={_short(s)}",
+            )
         out.append(s)
         if len(out) >= int(max_items):
             break
@@ -175,14 +190,14 @@ def _validate_top_level_mention(
         field=f"mentions[{mention_index}].mention_text",
         max_len=80,
     )
-    _must(
-        not _has_bad_separator(mention_text),
-        f"mentions[{mention_index}].mention_text_has_separator",
-    )
     mention_type = _clean_str(mention.get("mention_type"))
     _must(
         mention_type in ALLOWED_MENTION_TYPES,
         f"mentions[{mention_index}].mention_type_invalid value={_short(mention_type)}",
+    )
+    _must(
+        not _mention_text_has_bad_separator(mention_text, mention_type=mention_type),
+        f"mentions[{mention_index}].mention_text_has_separator",
     )
     evidence = _validate_required_text(
         mention.get("evidence"),
@@ -266,6 +281,7 @@ def validate_topic_prompt_v4_assertion(
         item.get("mentions"),
         field=f"assertions[{assertion_index}].mentions",
         max_item_len=80,
+        reject_separators=False,
     )
     _must(bool(mention_refs), f"assertions[{assertion_index}].mentions_empty")
     for mention_text in mention_refs:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from alphavault.db.sql.research_workbench import upsert_research_relation
 from alphavault.db.turso_db import TursoConnection, TursoEngine
-from alphavault.db.turso_db import turso_savepoint
+from alphavault.db.turso_db import run_turso_transaction
 from alphavault.infra.entity_match_redis import (
     sync_stock_alias_shadow_dict_best_effort,
 )
@@ -11,8 +11,6 @@ from alphavault.domains.relation.ids import make_relation_id
 
 from .schema import (
     RESEARCH_RELATIONS_TABLE,
-    handle_turso_error,
-    use_conn,
 )
 
 RELATION_TYPE_STOCK_SECTOR = "stock_sector"
@@ -60,19 +58,17 @@ def record_stock_sector_relation(
     sector_key: str,
     source: str,
 ) -> None:
-    try:
-        with use_conn(engine_or_conn) as conn:
-            with turso_savepoint(conn):
-                record_relation(
-                    conn,
-                    relation_type=RELATION_TYPE_STOCK_SECTOR,
-                    left_key=stock_key,
-                    right_key=sector_key,
-                    relation_label="member_of",
-                    source=source,
-                )
-    except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+    def _record(conn: TursoConnection) -> None:
+        record_relation(
+            conn,
+            relation_type=RELATION_TYPE_STOCK_SECTOR,
+            left_key=stock_key,
+            right_key=sector_key,
+            relation_label="member_of",
+            source=source,
+        )
+
+    run_turso_transaction(engine_or_conn, _record)
 
 
 def record_stock_alias_relation(
@@ -82,19 +78,17 @@ def record_stock_alias_relation(
     alias_key: str,
     source: str,
 ) -> None:
-    try:
-        with use_conn(engine_or_conn) as conn:
-            with turso_savepoint(conn):
-                record_relation(
-                    conn,
-                    relation_type=RELATION_TYPE_STOCK_ALIAS,
-                    left_key=stock_key,
-                    right_key=alias_key,
-                    relation_label=RELATION_LABEL_ALIAS,
-                    source=source,
-                )
-    except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+    def _record(conn: TursoConnection) -> None:
+        record_relation(
+            conn,
+            relation_type=RELATION_TYPE_STOCK_ALIAS,
+            left_key=stock_key,
+            right_key=alias_key,
+            relation_label=RELATION_LABEL_ALIAS,
+            source=source,
+        )
+
+    run_turso_transaction(engine_or_conn, _record)
     try:
         sync_stock_alias_shadow_dict_best_effort(
             stock_key=stock_key,

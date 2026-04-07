@@ -10,6 +10,7 @@ from alphavault.research_workbench import service
 def test_get_research_workbench_engine_from_env_uses_standard_turso_env(
     monkeypatch,
 ) -> None:
+    service._get_cached_research_workbench_engine.cache_clear()
     monkeypatch.setenv(ENV_STANDARD_TURSO_DATABASE_URL, "libsql://standard.turso.io")
     monkeypatch.setenv(ENV_STANDARD_TURSO_AUTH_TOKEN, "standard-token")
 
@@ -27,9 +28,34 @@ def test_get_research_workbench_engine_from_env_uses_standard_turso_env(
     assert captured == [("libsql://standard.turso.io", "standard-token")]
 
 
+def test_get_research_workbench_engine_from_env_reuses_cached_engine(
+    monkeypatch,
+) -> None:
+    service._get_cached_research_workbench_engine.cache_clear()
+    monkeypatch.setenv(ENV_STANDARD_TURSO_DATABASE_URL, "libsql://standard.turso.io")
+    monkeypatch.setenv(ENV_STANDARD_TURSO_AUTH_TOKEN, "standard-token")
+
+    captured: list[tuple[str, str]] = []
+    cached_engine = object()
+
+    def _fake_ensure_turso_engine(url: str, token: str):  # type: ignore[no-untyped-def]
+        captured.append((url, token))
+        return cached_engine
+
+    monkeypatch.setattr(service, "ensure_turso_engine", _fake_ensure_turso_engine)
+
+    first = service.get_research_workbench_engine_from_env()
+    second = service.get_research_workbench_engine_from_env()
+
+    assert first is cached_engine
+    assert second is cached_engine
+    assert captured == [("libsql://standard.turso.io", "standard-token")]
+
+
 def test_get_research_workbench_engine_from_env_requires_standard_database_url(
     monkeypatch,
 ) -> None:
+    service._get_cached_research_workbench_engine.cache_clear()
     monkeypatch.delenv(ENV_STANDARD_TURSO_DATABASE_URL, raising=False)
     monkeypatch.setenv(ENV_STANDARD_TURSO_AUTH_TOKEN, "standard-token")
 

@@ -115,6 +115,39 @@ def test_topic_prompt_v4_ok_commodity_mention() -> None:
     validate_topic_prompt_v4_ai_result(parsed)
 
 
+def test_topic_prompt_v4_ok_industry_name_with_cn_list_separator() -> None:
+    parsed = {
+        "topic_status_id": "status-industry-1",
+        "topic_summary": "他主要在说行业利润表现。",
+        "assertions": [
+            {
+                "speaker": "老王",
+                "relation_to_topic": "new",
+                "action": "trade.watch",
+                "action_strength": 1,
+                "summary": "他说这个行业还得继续看。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "status",
+                        "source_id": "6006",
+                        "quote": "1-2月电力、热力生产和供应业利润1177亿，同比增长3.4%",
+                    }
+                ],
+                "mentions": ["电力、热力生产和供应业"],
+            }
+        ],
+        "mentions": [
+            {
+                "mention_text": "电力、热力生产和供应业",
+                "mention_type": "industry_name",
+                "evidence": "1-2月电力、热力生产和供应业利润1177亿，同比增长3.4%",
+                "confidence": 0.93,
+            }
+        ],
+    }
+    validate_topic_prompt_v4_ai_result(parsed)
+
+
 def test_topic_prompt_v4_reject_assertion_mention_not_defined() -> None:
     parsed = {
         "topic_status_id": "status-3",
@@ -168,6 +201,40 @@ def test_topic_prompt_v4_reject_bad_mention_type() -> None:
                 "mention_text": "长电",
                 "mention_type": "company_name",
                 "evidence": "先别动",
+                "confidence": 0.9,
+            }
+        ],
+    }
+    with pytest.raises(AiTagValidationError):
+        validate_topic_prompt_v4_ai_result(parsed)
+
+
+def test_topic_prompt_v4_reject_non_industry_mention_with_cn_list_separator() -> None:
+    parsed = {
+        "topic_status_id": "status-5",
+        "topic_summary": "他说了一句。",
+        "assertions": [
+            {
+                "speaker": "老王",
+                "relation_to_topic": "new",
+                "action": "trade.watch",
+                "action_strength": 1,
+                "summary": "他说先看着。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "status",
+                        "source_id": "5005",
+                        "quote": "茅台、五粮液先看着",
+                    }
+                ],
+                "mentions": ["茅台、五粮液"],
+            }
+        ],
+        "mentions": [
+            {
+                "mention_text": "茅台、五粮液",
+                "mention_type": "stock_alias",
+                "evidence": "茅台、五粮液先看着",
                 "confidence": 0.9,
             }
         ],
