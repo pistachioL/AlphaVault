@@ -245,6 +245,59 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
     assert dirty_marks == ["dirty"]
 
 
+def test_process_one_post_uid_topic_prompt_v4_passes_prefetched_post_to_final_write(
+    monkeypatch,
+) -> None:
+    limiter = RateLimiter(rpm=0.0)
+    writes: list[dict[str, object]] = []
+    prefetched_post = CloudPost(
+        post_uid="xueqiu:1",
+        platform="xueqiu",
+        platform_post_id="xueqiu:1",
+        author="泽元投资",
+        created_at="2026-03-31 17:39:52+08:00",
+        url="https://xueqiu.com/5992135535/381907747",
+        raw_text="泽元投资：[献花花][献花花]",
+        ai_retry_count=1,
+    )
+
+    def _fake_call_ai(**_kwargs):  # type: ignore[no-untyped-def]
+        return {"assertions": [], "mentions": []}
+
+    def _fake_write(*_args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        writes.append(dict(kwargs))
+
+    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_litellm", _fake_call_ai)
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "resolve_rows_entity_matches",
+        lambda _engine, _rows_by_post_uid: {"xueqiu:1": []},
+    )
+    monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "write_assertions_and_mark_done",
+        _fake_write,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_entity_page_dirty_from_assertions",
+        lambda *_args, **_kwargs: None,
+    )
+
+    topic_prompt_module.process_one_post_uid_topic_prompt_v4(
+        engine=cast(Any, object()),
+        post_uid="xueqiu:1",
+        config=_build_config(),
+        limiter=limiter,
+        prefetched_post=prefetched_post,
+    )
+
+    assert len(writes) == 1
+    assert writes[0]["post_uid"] == "xueqiu:1"
+    assert writes[0]["prefetched_post"] == prefetched_post
+
+
 def test_map_topic_prompt_assertions_to_rows_falls_back_to_current_post_uid_for_talk_reply() -> (
     None
 ):

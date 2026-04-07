@@ -29,10 +29,7 @@ from alphavault.weibo.topic_prompt_tree import (
     MAX_TOPIC_PROMPT_CHARS,
     thread_root_info_for_post,
 )
-from alphavault.worker.post_processor_utils import (
-    ensure_prefetched_post_persisted,
-    score_from_assertions,
-)
+from alphavault.worker.post_processor_utils import score_from_assertions
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
 from alphavault.worker.topic_prompt_v4 import (
     build_topic_prompt_v4_llm_log_line,
@@ -381,13 +378,6 @@ def process_one_post_uid_topic_prompt_v4(
             invest_score = score_from_assertions(rows)
             processed_at = now_str()
             archived_at = now_str()
-            if prefetched_post is not None and uid == str(post.post_uid or "").strip():
-                ensure_prefetched_post_persisted(
-                    engine=engine,
-                    post=prefetched_post,
-                    archived_at=archived_at,
-                    ingested_at=int(time.time()),
-                )
             write_assertions_and_mark_done(
                 engine,
                 post_uid=uid,
@@ -399,6 +389,13 @@ def process_one_post_uid_topic_prompt_v4(
                 archived_at=archived_at,
                 assertions=rows,
                 entity_match_results=entity_match_results_by_post_uid.get(uid, []),
+                prefetched_post=(
+                    prefetched_post
+                    if prefetched_post is not None
+                    and uid == str(post.post_uid or "").strip()
+                    else None
+                ),
+                prefetched_ingested_at=int(time.time()),
             )
 
             if rows:

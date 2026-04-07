@@ -528,6 +528,76 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     ]
 
 
+def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_done(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _FakeConn:
+        def __enter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb):  # type: ignore[no-untyped-def]
+            return False
+
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            calls.append((str(query).strip(), params))
+            return self
+
+        def mappings(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def fetchone(self):  # type: ignore[no-untyped-def]
+            return None
+
+    @contextmanager
+    def _fake_savepoint(_conn):  # type: ignore[no-untyped-def]
+        yield
+
+    monkeypatch.setattr(
+        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+    )
+    monkeypatch.setattr(turso_queue, "turso_savepoint", _fake_savepoint)
+
+    turso_queue.write_assertions_and_mark_done(
+        cast(Any, object()),
+        post_uid="xueqiu:2",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-03-28 12:00:01",
+        assertions=[],
+        prefetched_post=turso_queue.CloudPost(
+            post_uid="xueqiu:2",
+            platform="xueqiu",
+            platform_post_id="xueqiu:2",
+            author="泽元投资",
+            created_at="2026-03-28 11:59:00",
+            url="https://xueqiu.com/2",
+            raw_text="泽元投资：[献花花][献花花]",
+            ai_retry_count=0,
+        ),
+    )
+
+    assert calls[0][0] == turso_queue.SELECT_POST_PROCESSED_AT.strip()
+    assert calls[1][0] == UPSERT_PENDING_POST.strip()
+    assert calls[1][1] == {
+        "post_uid": "xueqiu:2",
+        "platform": "xueqiu",
+        "platform_post_id": "xueqiu:2",
+        "author": "泽元投资",
+        "created_at": "2026-03-28 11:59:00",
+        "url": "https://xueqiu.com/2",
+        "raw_text": "泽元投资：[献花花][献花花]",
+        "final_status": "irrelevant",
+        "archived_at": "2026-03-28 12:00:01",
+        "ingested_at": 0,
+    }
+    assert calls[-1][0] == turso_queue.UPDATE_POST_DONE.strip()
+
+
 def test_write_assertions_and_mark_done_writes_assertion_entities(
     monkeypatch,
 ) -> None:

@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import json
 
-from alphavault.db.turso_db import TursoEngine
-from alphavault.db.turso_queue import CloudPost, upsert_pending_post
-from alphavault.rss.utils import now_str
 from alphavault.worker.runtime_models import _clamp_float, _clamp_int
 
 
@@ -52,33 +49,8 @@ def json_to_str_list(value: object) -> list[str]:
     return [str(item).strip() for item in parsed if str(item).strip()]
 
 
-def ensure_prefetched_post_persisted(
-    *,
-    engine: TursoEngine,
-    post: CloudPost,
-    archived_at: str,
-    ingested_at: int,
-) -> None:
-    raw_text = str(post.raw_text or "")
-    author = str(post.author or "")
-    platform = str(post.platform or "").strip().lower() or "weibo"
-    upsert_pending_post(
-        engine,
-        post_uid=str(post.post_uid or "").strip(),
-        platform=platform,
-        platform_post_id=str(post.platform_post_id or "").strip(),
-        author=author,
-        created_at=str(post.created_at or now_str()),
-        url=str(post.url or "").strip(),
-        raw_text=raw_text,
-        archived_at=str(archived_at or now_str()),
-        ingested_at=max(0, int(ingested_at)),
-    )
-
-
 __all__ = [
     "as_str_list",
-    "ensure_prefetched_post_persisted",
     "json_to_str_list",
     "score_from_assertions",
 ]
