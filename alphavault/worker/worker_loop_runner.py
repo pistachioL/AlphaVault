@@ -20,7 +20,12 @@ from alphavault.worker.worker_loop_models import (
     SourceTickExecutors,
     SourceTickState,
 )
-from alphavault.worker.worker_loop_source_tick import run_source_tick
+from alphavault.worker.worker_loop_source_tick import (
+    PreparedSourceTick,
+    finalize_source_tick,
+    prepare_source_tick,
+    run_prepared_source_maintenance,
+)
 
 
 @dataclass(frozen=True)
@@ -169,7 +174,9 @@ def _run_sources_once(
     execs: SourceTickExecutors,
     state: SourceTickState,
 ) -> bool:
-    any_inflight = False
+    prepared_ticks: list[
+        tuple[WorkerSourceRuntime, SourceTickContext, PreparedSourceTick]
+    ] = []
     for source in loop_ctx.sources:
         tick_ctx = _build_tick_ctx(
             loop_ctx=loop_ctx,
@@ -179,9 +186,45 @@ def _run_sources_once(
             now=float(now),
             do_maintenance=bool(do_maintenance),
         )
-        any_inflight = any_inflight or bool(
-            run_source_tick(source=source, ctx=tick_ctx, execs=execs, state=state)
+        prepared_ticks.append(
+            (
+                source,
+                tick_ctx,
+                prepare_source_tick(
+                    source=source,
+                    ctx=tick_ctx,
+                    execs=execs,
+                    state=state,
+                ),
+            )
         )
+
+    prepared_ticks = [
+        (
+            source,
+            tick_ctx,
+            run_prepared_source_maintenance(
+                source=source,
+                prepared=prepared,
+                ctx=tick_ctx,
+                state=state,
+            ),
+        )
+        for source, tick_ctx, prepared in prepared_ticks
+    ]
+
+    any_inflight = False
+    for source, tick_ctx, prepared in prepared_ticks:
+        source_inflight = bool(
+            finalize_source_tick(
+                source=source,
+                prepared=prepared,
+                ctx=tick_ctx,
+                execs=execs,
+                state=state,
+            )
+        )
+        any_inflight = bool(any_inflight or source_inflight)
     return bool(any_inflight)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import time
 
 from alphavault.rss.utils import CST
@@ -25,6 +26,14 @@ from alphavault.worker.worker_loop_spool import maybe_schedule_spool_flush
 from alphavault.worker.worker_loop_turso import ensure_source_turso_ready
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+@dataclass(frozen=True)
+class PreparedSourceTick:
+    source_name: str
+    active_engine: object | None
+    errors: dict[str, bool]
+    rss_enqueue_error: bool
 
 
 def _resolve_source_identity(source) -> tuple[str, str]:
@@ -226,13 +235,13 @@ def _save_cycle_progress(
     )
 
 
-def run_source_tick(
+def prepare_source_tick(
     *,
     source,
     ctx: SourceTickContext,
     execs: SourceTickExecutors,
     state: SourceTickState,
-) -> bool:
+) -> PreparedSourceTick:
     source_name, _platform = _resolve_source_identity(source)
     active_engine = _ensure_active_engine(
         source=source, source_name=source_name, ctx=ctx
@@ -240,7 +249,6 @@ def run_source_tick(
     errors, rss_enqueue_error = _collect_source_finished_jobs(
         source=source, source_name=source_name, ctx=ctx
     )
-    _run_redis_due_maintenance(source=source, ctx=ctx)
     _schedule_rss_and_spool(
         source=source,
         active_engine=active_engine,
@@ -248,23 +256,57 @@ def run_source_tick(
         execs=execs,
         state=state,
     )
-    errors["maintenance_error"] = _run_source_maintenance(
-        source=source,
+    return PreparedSourceTick(
         source_name=source_name,
         active_engine=active_engine,
+        errors=errors,
+        rss_enqueue_error=bool(rss_enqueue_error),
+    )
+
+
+def run_prepared_source_maintenance(
+    *,
+    source,
+    prepared: PreparedSourceTick,
+    ctx: SourceTickContext,
+    state: SourceTickState,
+) -> PreparedSourceTick:
+    errors = dict(prepared.errors)
+    _run_redis_due_maintenance(source=source, ctx=ctx)
+    errors["maintenance_error"] = _run_source_maintenance(
+        source=source,
+        source_name=prepared.source_name,
+        active_engine=prepared.active_engine,
         ctx=ctx,
         state=state,
     )
+    return PreparedSourceTick(
+        source_name=prepared.source_name,
+        active_engine=prepared.active_engine,
+        errors=errors,
+        rss_enqueue_error=prepared.rss_enqueue_error,
+    )
+
+
+def finalize_source_tick(
+    *,
+    source,
+    prepared: PreparedSourceTick,
+    ctx: SourceTickContext,
+    execs: SourceTickExecutors,
+    state: SourceTickState,
+) -> bool:
+    errors = dict(prepared.errors)
     errors["schedule_error"] = _run_source_ai_schedule(
         source=source,
-        active_engine=active_engine,
+        active_engine=prepared.active_engine,
         ctx=ctx,
         execs=execs,
         state=state,
     )
     _run_source_low_priority(
         source=source,
-        active_engine=active_engine,
+        active_engine=prepared.active_engine,
         ctx=ctx,
         execs=execs,
         state=state,
@@ -275,10 +317,44 @@ def run_source_tick(
         source=source,
         ctx=ctx,
         any_inflight=any_inflight,
-        rss_enqueue_error=rss_enqueue_error,
+        rss_enqueue_error=prepared.rss_enqueue_error,
         errors=errors,
     )
     return bool(any_inflight)
 
 
-__all__ = ["run_source_tick"]
+def run_source_tick(
+    *,
+    source,
+    ctx: SourceTickContext,
+    execs: SourceTickExecutors,
+    state: SourceTickState,
+) -> bool:
+    prepared = prepare_source_tick(
+        source=source,
+        ctx=ctx,
+        execs=execs,
+        state=state,
+    )
+    prepared = run_prepared_source_maintenance(
+        source=source,
+        prepared=prepared,
+        ctx=ctx,
+        state=state,
+    )
+    return finalize_source_tick(
+        source=source,
+        prepared=prepared,
+        ctx=ctx,
+        execs=execs,
+        state=state,
+    )
+
+
+__all__ = [
+    "PreparedSourceTick",
+    "finalize_source_tick",
+    "prepare_source_tick",
+    "run_prepared_source_maintenance",
+    "run_source_tick",
+]
