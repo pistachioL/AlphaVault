@@ -9,7 +9,7 @@ from alphavault.db.sql.research_workbench import (
     upsert_relation_candidate as upsert_relation_candidate_sql,
 )
 from alphavault.db.turso_db import TursoConnection, TursoEngine
-from alphavault.db.turso_db import turso_savepoint
+from alphavault.db.turso_db import run_turso_transaction
 from alphavault.infra.entity_match_redis import (
     sync_stock_alias_shadow_dict_best_effort,
 )
@@ -190,8 +190,9 @@ def accept_relation_candidate(
             accepted_left_key = str(row.get("left_key") or "").strip()
             accepted_right_key = str(row.get("right_key") or "").strip()
             accepted_relation_label = str(row.get("relation_label") or "").strip()
-            with turso_savepoint(conn):
-                conn.execute(
+
+            def _accept(tx_conn: TursoConnection) -> None:
+                tx_conn.execute(
                     update_candidate_status(RESEARCH_RELATION_CANDIDATES_TABLE),
                     {
                         "candidate_id": candidate_key,
@@ -200,13 +201,15 @@ def accept_relation_candidate(
                     },
                 )
                 record_relation(
-                    conn,
+                    tx_conn,
                     relation_type=accepted_relation_type,
                     left_key=accepted_left_key,
                     right_key=accepted_right_key,
                     relation_label=accepted_relation_label,
                     source=source,
                 )
+
+            run_turso_transaction(engine_or_conn, _accept)
     except BaseException as err:
         handle_turso_error(engine_or_conn, err)
     if (

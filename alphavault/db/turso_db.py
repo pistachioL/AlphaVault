@@ -7,7 +7,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
 
 import libsql
 import sqlparams
@@ -28,7 +28,9 @@ _DEFAULT_TURSO_MAX_CONNECTIONS = 4
 _POOL_WAIT_TIMEOUT_SECONDS = 0.5
 _NAMED_TO_QMARK = sqlparams.SQLParams("named", "qmark", escape_char=True)
 _DEFAULT_EXECUTE_RETRIES = 2
+_DEFAULT_TRANSACTION_RETRIES = 1
 _RETRY_BASE_SLEEP_SECONDS = 0.2
+_T = TypeVar("_T")
 
 
 def is_fatal_base_exception(err: BaseException) -> bool:
@@ -284,7 +286,7 @@ class TursoConnection:
         broken = False
         if isinstance(exc, BaseException):
             broken = bool(
-                is_turso_stream_not_found_error(exc) or is_turso_libsql_panic_error(exc)
+                is_turso_retryable_error(exc) or is_turso_libsql_panic_error(exc)
             )
         self.close(broken=broken)
 
@@ -511,6 +513,36 @@ def turso_savepoint(
         conn.execute(SQL_COMMIT)
     finally:
         conn._in_transaction = False
+
+
+def run_turso_transaction(
+    engine_or_conn: TursoEngine | TursoConnection,
+    fn: Callable[[TursoConnection], _T],
+    *,
+    retry_count: int = _DEFAULT_TRANSACTION_RETRIES,
+) -> _T:
+    if isinstance(engine_or_conn, TursoConnection):
+        with turso_savepoint(engine_or_conn):
+            return fn(engine_or_conn)
+
+    engine = engine_or_conn
+    retries = max(0, int(retry_count))
+    for attempt in range(retries + 1):
+        try:
+            with turso_connect_autocommit(engine) as conn:
+                with turso_savepoint(conn):
+                    return fn(conn)
+        except BaseException as err:
+            if is_fatal_base_exception(err):
+                raise
+            maybe_dispose_turso_engine_on_transient_error(engine, err)
+            should_retry = bool(
+                is_turso_retryable_error(err) or is_turso_libsql_panic_error(err)
+            )
+            if attempt >= retries or not should_retry:
+                raise
+            time.sleep(_RETRY_BASE_SLEEP_SECONDS * (2**attempt))
+    raise RuntimeError("turso_transaction_unreachable")
 
 
 def _normalize_turso_url(url: str) -> str:

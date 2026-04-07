@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import libsql
+
+import pytest
 
 from alphavault.db.cloud_schema import (
     apply_cloud_schema as ensure_research_workbench_schema,
 )
 from alphavault.db.turso_db import TursoConnection
+from alphavault.research_workbench import candidate_repo, relation_repo
 from alphavault.research_workbench import (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_RELATIONS_TABLE,
@@ -705,3 +709,108 @@ def test_list_pending_candidates_for_left_key_includes_candidate_key() -> None:
         assert rows[1]["candidate_key"] == "stock:贵州茅台"
     finally:
         conn.close()
+
+
+def test_record_stock_sector_relation_uses_run_turso_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper_calls: list[object] = []
+
+    def _fake_run(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        del fn
+        helper_calls.append(engine_or_conn)
+        return None
+
+    engine = object()
+    monkeypatch.setattr(
+        relation_repo, "run_turso_transaction", _fake_run, raising=False
+    )
+
+    relation_repo.record_stock_sector_relation(
+        engine,  # type: ignore[arg-type]
+        stock_key="stock:600519.SH",
+        sector_key="cluster:white_liquor",
+        source="manual",
+    )
+    assert helper_calls == [engine]
+
+
+def test_record_stock_alias_relation_uses_run_turso_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper_calls: list[object] = []
+
+    def _fake_run(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        del fn
+        helper_calls.append(engine_or_conn)
+        return None
+
+    monkeypatch.setattr(
+        relation_repo, "run_turso_transaction", _fake_run, raising=False
+    )
+    monkeypatch.setattr(
+        relation_repo,
+        "sync_stock_alias_shadow_dict_best_effort",
+        lambda **_kwargs: None,
+        raising=False,
+    )
+
+    engine = object()
+    relation_repo.record_stock_alias_relation(
+        engine,  # type: ignore[arg-type]
+        stock_key="stock:600519.SH",
+        alias_key="stock:茅台",
+        source="manual",
+    )
+    assert helper_calls == [engine]
+
+
+def test_accept_relation_candidate_uses_run_turso_transaction_for_write_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper_calls: list[object] = []
+
+    class _FakeMappings:
+        def fetchone(self) -> dict[str, object]:
+            return {
+                "relation_type": "stock_alias",
+                "left_key": "stock:600519.SH",
+                "right_key": "stock:茅台",
+                "relation_label": "alias_of",
+            }
+
+    class _FakeResult:
+        def mappings(self) -> _FakeMappings:
+            return _FakeMappings()
+
+    class _FakeConn:
+        def execute(self, _query, _params=None):  # type: ignore[no-untyped-def]
+            return _FakeResult()
+
+    @contextmanager
+    def _fake_use_conn(_engine_or_conn):  # type: ignore[no-untyped-def]
+        yield _FakeConn()
+
+    def _fake_run(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        del fn
+        helper_calls.append(engine_or_conn)
+        return None
+
+    monkeypatch.setattr(candidate_repo, "use_conn", _fake_use_conn)
+    monkeypatch.setattr(
+        candidate_repo, "run_turso_transaction", _fake_run, raising=False
+    )
+    monkeypatch.setattr(
+        candidate_repo,
+        "sync_stock_alias_shadow_dict_best_effort",
+        lambda **_kwargs: None,
+        raising=False,
+    )
+
+    engine = object()
+    candidate_repo.accept_relation_candidate(
+        engine,  # type: ignore[arg-type]
+        candidate_id="cand-1",
+        source="manual",
+    )
+    assert helper_calls == [engine]

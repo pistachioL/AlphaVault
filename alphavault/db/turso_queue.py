@@ -43,8 +43,8 @@ from alphavault.db.turso_db import (
     TursoEngine,
     is_fatal_base_exception,
     maybe_dispose_turso_engine_on_transient_error,
+    run_turso_transaction,
     turso_connect_autocommit,
-    turso_savepoint,
 )
 
 if TYPE_CHECKING:
@@ -260,18 +260,19 @@ def reset_ai_results_all(
     *,
     archived_at: str,
 ) -> tuple[int, int]:
-    with turso_connect_autocommit(engine) as conn:
-        with turso_savepoint(conn):
-            deleted = int(conn.execute(SELECT_ASSERTION_COUNT_ALL).scalar() or 0)
-            updated = int(conn.execute(SELECT_POST_COUNT_ALL).scalar() or 0)
-            conn.execute(DELETE_ASSERTION_ENTITIES_ALL)
-            conn.execute(DELETE_ASSERTION_MENTIONS_ALL)
-            conn.execute(DELETE_ASSERTIONS_ALL)
-            conn.execute(
-                RESET_ALL_POSTS_TO_PENDING,
-                {"archived_at": str(archived_at or "").strip()},
-            )
-    return deleted, updated
+    def _reset(conn: TursoConnection) -> tuple[int, int]:
+        deleted = int(conn.execute(SELECT_ASSERTION_COUNT_ALL).scalar() or 0)
+        updated = int(conn.execute(SELECT_POST_COUNT_ALL).scalar() or 0)
+        conn.execute(DELETE_ASSERTION_ENTITIES_ALL)
+        conn.execute(DELETE_ASSERTION_MENTIONS_ALL)
+        conn.execute(DELETE_ASSERTIONS_ALL)
+        conn.execute(
+            RESET_ALL_POSTS_TO_PENDING,
+            {"archived_at": str(archived_at or "").strip()},
+        )
+        return deleted, updated
+
+    return run_turso_transaction(engine, _reset)
 
 
 def reset_ai_results_for_post_uids(
@@ -284,43 +285,41 @@ def reset_ai_results_for_post_uids(
     chunks = _chunk_post_uids(post_uids, chunk_size=max(1, int(chunk_size)))
     if not chunks:
         return 0, 0
-    deleted_total = 0
-    updated_total = 0
     resolved_archived_at = str(archived_at or "").strip()
-    with turso_connect_autocommit(engine) as conn:
-        with turso_savepoint(conn):
-            for chunk in chunks:
-                placeholders = make_in_placeholders(prefix="uid", count=len(chunk))
-                params = make_in_params(prefix="uid", values=chunk)
-                deleted_total += int(
-                    conn.execute(
-                        select_assertion_count_by_post_uids(placeholders),
-                        params,
-                    ).scalar()
-                    or 0
-                )
-                updated_total += int(
-                    conn.execute(
-                        select_post_count_by_post_uids(placeholders),
-                        params,
-                    ).scalar()
-                    or 0
-                )
+
+    def _reset(conn: TursoConnection) -> tuple[int, int]:
+        deleted_total = 0
+        updated_total = 0
+        for chunk in chunks:
+            placeholders = make_in_placeholders(prefix="uid", count=len(chunk))
+            params = make_in_params(prefix="uid", values=chunk)
+            deleted_total += int(
                 conn.execute(
-                    delete_assertion_entities_by_post_uids(placeholders), params
-                )
+                    select_assertion_count_by_post_uids(placeholders),
+                    params,
+                ).scalar()
+                or 0
+            )
+            updated_total += int(
                 conn.execute(
-                    delete_assertion_mentions_by_post_uids(placeholders), params
-                )
-                conn.execute(delete_assertions_by_post_uids(placeholders), params)
-                conn.execute(
-                    reset_posts_to_pending_by_post_uids(placeholders),
-                    {
-                        **params,
-                        "archived_at": resolved_archived_at,
-                    },
-                )
-    return deleted_total, updated_total
+                    select_post_count_by_post_uids(placeholders),
+                    params,
+                ).scalar()
+                or 0
+            )
+            conn.execute(delete_assertion_entities_by_post_uids(placeholders), params)
+            conn.execute(delete_assertion_mentions_by_post_uids(placeholders), params)
+            conn.execute(delete_assertions_by_post_uids(placeholders), params)
+            conn.execute(
+                reset_posts_to_pending_by_post_uids(placeholders),
+                {
+                    **params,
+                    "archived_at": resolved_archived_at,
+                },
+            )
+        return deleted_total, updated_total
+
+    return run_turso_transaction(engine, _reset)
 
 
 def write_assertions_and_mark_done(
@@ -343,95 +342,93 @@ def write_assertions_and_mark_done(
     - mark posts row as done
     """
     resolved_entity_match_results = list(entity_match_results or [])
-    with turso_connect_autocommit(engine) as conn:
-        with turso_savepoint(conn):
-            conn.execute(DELETE_ASSERTION_ENTITIES_BY_POST_UID, {"post_uid": post_uid})
-            conn.execute(DELETE_ASSERTION_MENTIONS_BY_POST_UID, {"post_uid": post_uid})
-            conn.execute(DELETE_ASSERTIONS_BY_POST_UID, {"post_uid": post_uid})
-            assertion_payloads: list[dict[str, object]] = []
-            mention_payloads: list[dict[str, object]] = []
-            entity_payloads: list[dict[str, object]] = []
-            for idx, a in enumerate(assertions, start=1):
-                assertion_id = _make_assertion_id(
-                    post_uid=post_uid,
-                    idx=idx,
-                    raw_assertion=a,
-                )
-                assertion_payloads.append(
+
+    def _write(conn: TursoConnection) -> None:
+        conn.execute(DELETE_ASSERTION_ENTITIES_BY_POST_UID, {"post_uid": post_uid})
+        conn.execute(DELETE_ASSERTION_MENTIONS_BY_POST_UID, {"post_uid": post_uid})
+        conn.execute(DELETE_ASSERTIONS_BY_POST_UID, {"post_uid": post_uid})
+        assertion_payloads: list[dict[str, object]] = []
+        mention_payloads: list[dict[str, object]] = []
+        entity_payloads: list[dict[str, object]] = []
+        for idx, a in enumerate(assertions, start=1):
+            assertion_id = _make_assertion_id(
+                post_uid=post_uid,
+                idx=idx,
+                raw_assertion=a,
+            )
+            assertion_payloads.append(
+                {
+                    "assertion_id": assertion_id,
+                    "post_uid": post_uid,
+                    "idx": int(idx),
+                    "action": a["action"],
+                    "action_strength": int(a["action_strength"]),
+                    "summary": a["summary"],
+                    "evidence": a["evidence"],
+                    "created_at": str(a.get("created_at") or "").strip(),
+                }
+            )
+            raw_mentions = a.get("assertion_mentions")
+            mentions = raw_mentions if isinstance(raw_mentions, list) else []
+            for mention_seq, raw_mention in enumerate(mentions, start=1):
+                if not isinstance(raw_mention, dict):
+                    continue
+                mention_payloads.append(
                     {
                         "assertion_id": assertion_id,
-                        "post_uid": post_uid,
-                        "idx": int(idx),
-                        "action": a["action"],
-                        "action_strength": int(a["action_strength"]),
-                        "summary": a["summary"],
-                        "evidence": a["evidence"],
-                        "created_at": str(a.get("created_at") or "").strip(),
+                        "mention_seq": int(mention_seq),
+                        "mention_text": str(
+                            raw_mention.get("mention_text") or ""
+                        ).strip(),
+                        "mention_norm": str(
+                            raw_mention.get("mention_norm")
+                            or raw_mention.get("mention_text")
+                            or ""
+                        ).strip(),
+                        "mention_type": str(
+                            raw_mention.get("mention_type") or ""
+                        ).strip(),
+                        "evidence": str(raw_mention.get("evidence") or "").strip(),
+                        "confidence": float(raw_mention.get("confidence") or 0.0),
                     }
                 )
-                raw_mentions = a.get("assertion_mentions")
-                mentions = raw_mentions if isinstance(raw_mentions, list) else []
-                for mention_seq, raw_mention in enumerate(mentions, start=1):
-                    if not isinstance(raw_mention, dict):
-                        continue
-                    mention_payloads.append(
-                        {
-                            "assertion_id": assertion_id,
-                            "mention_seq": int(mention_seq),
-                            "mention_text": str(
-                                raw_mention.get("mention_text") or ""
-                            ).strip(),
-                            "mention_norm": str(
-                                raw_mention.get("mention_norm")
-                                or raw_mention.get("mention_text")
-                                or ""
-                            ).strip(),
-                            "mention_type": str(
-                                raw_mention.get("mention_type") or ""
-                            ).strip(),
-                            "evidence": str(raw_mention.get("evidence") or "").strip(),
-                            "confidence": float(raw_mention.get("confidence") or 0.0),
-                        }
-                    )
-                raw_entities = a.get("assertion_entities")
-                entities = raw_entities if isinstance(raw_entities, list) else []
-                for raw_entity in entities:
-                    if not isinstance(raw_entity, dict):
-                        continue
-                    entity_payloads.append(
-                        {
-                            "assertion_id": assertion_id,
-                            "entity_key": str(
-                                raw_entity.get("entity_key") or ""
-                            ).strip(),
-                            "entity_type": str(
-                                raw_entity.get("entity_type") or ""
-                            ).strip(),
-                            "match_source": str(
-                                raw_entity.get("match_source")
-                                or raw_entity.get("source_mention_type")
-                                or ""
-                            ).strip(),
-                            "is_primary": int(raw_entity.get("is_primary") or 0),
-                        }
-                    )
-            if assertion_payloads:
-                conn.execute(INSERT_ASSERTION, assertion_payloads)
-            if mention_payloads:
-                conn.execute(INSERT_ASSERTION_MENTION, mention_payloads)
-            if entity_payloads:
-                conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
-            for match_result in resolved_entity_match_results:
-                persist_entity_match_followups(conn, match_result)
-            conn.execute(
-                UPDATE_POST_DONE,
-                {
-                    "post_uid": post_uid,
-                    "final_status": final_status,
-                    "invest_score": invest_score,
-                    "processed_at": processed_at,
-                    "model": model,
-                    "prompt_version": prompt_version,
-                    "archived_at": archived_at,
-                },
-            )
+            raw_entities = a.get("assertion_entities")
+            entities = raw_entities if isinstance(raw_entities, list) else []
+            for raw_entity in entities:
+                if not isinstance(raw_entity, dict):
+                    continue
+                entity_payloads.append(
+                    {
+                        "assertion_id": assertion_id,
+                        "entity_key": str(raw_entity.get("entity_key") or "").strip(),
+                        "entity_type": str(raw_entity.get("entity_type") or "").strip(),
+                        "match_source": str(
+                            raw_entity.get("match_source")
+                            or raw_entity.get("source_mention_type")
+                            or ""
+                        ).strip(),
+                        "is_primary": int(raw_entity.get("is_primary") or 0),
+                    }
+                )
+        if assertion_payloads:
+            conn.execute(INSERT_ASSERTION, assertion_payloads)
+        if mention_payloads:
+            conn.execute(INSERT_ASSERTION_MENTION, mention_payloads)
+        if entity_payloads:
+            conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
+        for match_result in resolved_entity_match_results:
+            persist_entity_match_followups(conn, match_result)
+        conn.execute(
+            UPDATE_POST_DONE,
+            {
+                "post_uid": post_uid,
+                "final_status": final_status,
+                "invest_score": invest_score,
+                "processed_at": processed_at,
+                "model": model,
+                "prompt_version": prompt_version,
+                "archived_at": archived_at,
+            },
+        )
+
+    run_turso_transaction(engine, _write)
