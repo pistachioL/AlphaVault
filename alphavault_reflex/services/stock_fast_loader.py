@@ -16,6 +16,10 @@ from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
+from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
+from alphavault.research_workbench.service import (
+    get_research_workbench_engine_from_env,
+)
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
     MISSING_TURSO_SOURCES_ERROR,
@@ -36,29 +40,27 @@ FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE = 240
 FAST_STOCK_TOTAL_TIMEOUT_SECONDS = 8.0
 
 FAST_STOCK_ALIAS_KEY_LIMIT = 64
+_STANDARD_TURSO_ERROR_PREFIX = "turso_connect_error:standard:"
 
 FAST_STOCK_ALIAS_KEYS_SQL = """
 SELECT right_key
-FROM research_relations
+FROM {relations_table}
 WHERE relation_type = 'stock_alias'
   AND left_key = :stock_key
   AND relation_label = 'alias_of'
 ORDER BY right_key ASC
 LIMIT :limit
-"""
+""".format(relations_table=RESEARCH_RELATIONS_TABLE)
 
 
 def _load_stock_alias_keys(conn: Any, *, stock_key: str) -> list[str]:
     key = str(stock_key or "").strip()
     if not key:
         return []
-    try:
-        rows = conn.execute(
-            FAST_STOCK_ALIAS_KEYS_SQL,
-            {"stock_key": key, "limit": int(FAST_STOCK_ALIAS_KEY_LIMIT)},
-        ).fetchall()
-    except BaseException:
-        return []
+    rows = conn.execute(
+        FAST_STOCK_ALIAS_KEYS_SQL,
+        {"stock_key": key, "limit": int(FAST_STOCK_ALIAS_KEY_LIMIT)},
+    ).fetchall()
 
     out: list[str] = []
     seen: set[str] = set()
@@ -75,6 +77,28 @@ def _load_stock_alias_keys(conn: Any, *, stock_key: str) -> list[str]:
     return out
 
 
+def _standard_turso_error_text(err: BaseException) -> str:
+    text = str(err or "").strip()
+    if text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+        return text
+    return f"{_STANDARD_TURSO_ERROR_PREFIX}{type(err).__name__}"
+
+
+@lru_cache(maxsize=64)
+def load_stock_alias_keys_cached(stock_key: str) -> tuple[str, ...]:
+    normalized_key = normalize_stock_key_for_fast_query(stock_key)
+    if not normalized_key:
+        return ()
+    try:
+        engine = get_research_workbench_engine_from_env()
+        with turso_connect_autocommit(engine) as conn:
+            return tuple(_load_stock_alias_keys(conn, stock_key=normalized_key))
+    except BaseException as err:
+        if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
+            raise
+        raise RuntimeError(_standard_turso_error_text(err)) from err
+
+
 @lru_cache(maxsize=64)
 def load_stock_trade_sources_fast_cached(
     db_url: str,
@@ -89,11 +113,11 @@ def load_stock_trade_sources_fast_cached(
     if not normalized_key:
         return pd.DataFrame(), pd.DataFrame()
     limit = max(1, int(per_source_limit or FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE))
+    alias_keys = list(load_stock_alias_keys_cached(normalized_key))
 
     engine = ensure_turso_engine(db_url, auth_token)
     with turso_connect_autocommit(engine) as conn:
         params: dict[str, object] = {"stock_key": normalized_key, "limit": limit}
-        alias_keys = _load_stock_alias_keys(conn, stock_key=normalized_key)
         key_clause = "ae_filter.entity_key = :stock_key"
         if alias_keys:
             placeholders = make_in_placeholders(prefix="k", count=len(alias_keys))
@@ -205,6 +229,9 @@ def load_stock_sources_fast_from_env(
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                     raise
+                error_text = str(err or "").strip()
+                if error_text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+                    return pd.DataFrame(), pd.DataFrame(), error_text
                 errors.append(f"turso_connect_error:{source_name}:{type(err).__name__}")
                 continue
             posts_frames.append(posts)
@@ -235,6 +262,7 @@ def load_stock_sources_fast_from_env(
 __all__ = [
     "FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE",
     "FAST_STOCK_TOTAL_TIMEOUT_SECONDS",
+    "load_stock_alias_keys_cached",
     "load_stock_sources_fast_from_env",
     "load_stock_trade_sources_fast_cached",
 ]

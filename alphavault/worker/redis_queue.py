@@ -14,7 +14,7 @@ from alphavault.constants import (
     ENV_REDIS_QUEUE_KEY,
     ENV_REDIS_URL,
 )
-from alphavault.worker.spool import sha1_short
+from alphavault.worker.spool import sha1_short, spool_delete
 
 
 DEFAULT_REDIS_QUEUE_KEY = "alphavault:rss_spool"
@@ -424,5 +424,11 @@ def redis_ai_ack_and_cleanup(
         if verbose:
             print(f"[redis] ai_ack_error {type(e).__name__}: {e}", flush=True)
         return False
-    del post_uid, spool_dir, lease_token
+    resolved_post_uid = str(post_uid or "").strip()
+    if resolved_post_uid:
+        try:
+            spool_delete(spool_dir, resolved_post_uid)
+        except Exception:
+            pass
+    del lease_token
     return True

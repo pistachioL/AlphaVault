@@ -659,6 +659,66 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     ]
 
 
+def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_done(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    class _FakeConn:
+        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
+            calls.append((str(query).strip(), params))
+            return self
+
+        def mappings(self):  # type: ignore[no-untyped-def]
+            return self
+
+        def fetchone(self):  # type: ignore[no-untyped-def]
+            return None
+
+    def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        return fn(_FakeConn())
+
+    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
+
+    turso_queue.write_assertions_and_mark_done(
+        cast(Any, object()),
+        post_uid="xueqiu:2",
+        final_status="relevant",
+        invest_score=0.9,
+        processed_at="2026-03-28 12:00:00",
+        model="m",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-03-28 12:00:01",
+        assertions=[],
+        prefetched_post=turso_queue.CloudPost(
+            post_uid="xueqiu:2",
+            platform="xueqiu",
+            platform_post_id="xueqiu:2",
+            author="泽元投资",
+            created_at="2026-03-28 11:59:00",
+            url="https://xueqiu.com/2",
+            raw_text="泽元投资：[献花花][献花花]",
+            ai_retry_count=0,
+        ),
+    )
+
+    assert calls[0][0] == turso_queue.SELECT_POST_PROCESSED_AT.strip()
+    assert calls[1][0] == UPSERT_PENDING_POST.strip()
+    assert calls[1][1] == {
+        "post_uid": "xueqiu:2",
+        "platform": "xueqiu",
+        "platform_post_id": "xueqiu:2",
+        "author": "泽元投资",
+        "created_at": "2026-03-28 11:59:00",
+        "url": "https://xueqiu.com/2",
+        "raw_text": "泽元投资：[献花花][献花花]",
+        "final_status": "irrelevant",
+        "archived_at": "2026-03-28 12:00:01",
+        "ingested_at": 0,
+    }
+    assert calls[-1][0] == turso_queue.UPDATE_POST_DONE.strip()
+
+
 def test_write_assertions_and_mark_done_writes_assertion_entities(
     monkeypatch,
 ) -> None:
@@ -719,26 +779,39 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
     ]
 
 
-def test_write_assertions_and_mark_done_persists_entity_match_followups_before_done(
+def test_write_assertions_and_mark_done_persists_entity_match_followups_after_done(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
     followup_calls: list[EntityMatchResult] = []
+    source_engine = cast(Any, object())
+    standard_engine = cast(Any, object())
 
     class _FakeConn:
+        def __init__(self, *, label: str) -> None:
+            self.label = label
+
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             del params
             calls.append(str(query).strip())
             return self
 
     def _fake_persist(_conn, result):  # type: ignore[no-untyped-def]
+        assert getattr(_conn, "label", "") == "standard"
         followup_calls.append(result)
         calls.append("__persist_entity_match_followups__")
 
     def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
-        return fn(_FakeConn())
+        label = "standard" if _engine_or_conn is standard_engine else "source"
+        return fn(_FakeConn(label=label))
 
     monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
+    monkeypatch.setattr(
+        turso_queue,
+        "get_research_workbench_engine_from_env",
+        lambda: standard_engine,
+        raising=False,
+    )
     monkeypatch.setattr(
         turso_queue,
         "persist_entity_match_followups",
@@ -747,7 +820,7 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
     )
 
     turso_queue.write_assertions_and_mark_done(
-        cast(Any, object()),
+        source_engine,
         post_uid="weibo:4",
         final_status="relevant",
         invest_score=0.9,
@@ -796,38 +869,55 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_before_d
 
     assert len(followup_calls) == 1
     assert calls.index(INSERT_ASSERTION_ENTITY.strip()) < calls.index(
-        "__persist_entity_match_followups__"
-    )
-    assert calls.index("__persist_entity_match_followups__") < calls.index(
         turso_queue.UPDATE_POST_DONE.strip()
     )
+    assert calls.index(turso_queue.UPDATE_POST_DONE.strip()) < calls.index(
+        "__persist_entity_match_followups__"
+    )
 
 
-def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
+def test_write_assertions_and_mark_done_raises_after_mark_done_when_followups_fail(
     monkeypatch,
 ) -> None:
     calls: list[str] = []
+    source_engine = cast(Any, object())
+    standard_engine = cast(Any, object())
 
     class _FakeConn:
+        def __init__(self, *, label: str) -> None:
+            self.label = label
+
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             del params
             calls.append(str(query).strip())
             return self
 
     def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
-        return fn(_FakeConn())
+        label = "standard" if _engine_or_conn is standard_engine else "source"
+        return fn(_FakeConn(label=label))
 
     monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
     monkeypatch.setattr(
         turso_queue,
+        "get_research_workbench_engine_from_env",
+        lambda: standard_engine,
+        raising=False,
+    )
+
+    def _fake_persist(_conn, _result):  # type: ignore[no-untyped-def]
+        assert getattr(_conn, "label", "") == "standard"
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        turso_queue,
         "persist_entity_match_followups",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        _fake_persist,
         raising=False,
     )
 
     with pytest.raises(RuntimeError, match="boom"):
         turso_queue.write_assertions_and_mark_done(
-            cast(Any, object()),
+            source_engine,
             post_uid="weibo:5",
             final_status="relevant",
             invest_score=0.9,
@@ -854,7 +944,7 @@ def test_write_assertions_and_mark_done_does_not_mark_done_when_followups_fail(
             ],
         )
 
-    assert turso_queue.UPDATE_POST_DONE.strip() not in calls
+    assert turso_queue.UPDATE_POST_DONE.strip() in calls
 
 
 def test_reset_ai_results_all_uses_run_turso_transaction(monkeypatch) -> None:

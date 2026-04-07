@@ -69,6 +69,7 @@ uv run python weibo_rss_turso_worker.py --verbose
 说明：
 - `WEIBO_RSS_URLS` 支持逗号/换行分隔；也可以用 `WEIBO_RSS_URL`（只传 1 个）。
 - 你也可以同时填 `XUEQIU_RSS_URLS` + `XUEQIU_TURSO_DATABASE_URL`，worker 会同时跑两套（weibo + xueqiu）。
+- 研究台整理表单独走标准库：`STANDARD_TURSO_DATABASE_URL` / `STANDARD_TURSO_AUTH_TOKEN`。
 - RSS 抓取网络参数：`RSS_TIMEOUT_SECONDS`（默认 60 秒）和 `RSS_RETRIES`（默认失败后再试 5 次）。
 - RSS 抓取节奏参数：`RSS_FEED_SLEEP_SECONDS`（默认 10 秒，表示每个 feed 抓完后 sleep；设 `0` 可关闭）。
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
@@ -92,12 +93,74 @@ export RSS_MANUAL_TRIGGER_KEY="YOUR_TRIGGER_KEY"
 curl "http://127.0.0.1:8080/api/rss/trigger?key=YOUR_TRIGGER_KEY"
 ```
 
+## 导入 `security_master` 标准清单
+先准备标准库：
+
+1. 对标准库手工执行 `alphavault/db/sql/cloud_schema.sql`
+2. 配置 `STANDARD_TURSO_DATABASE_URL`
+3. 按需配置 `STANDARD_TURSO_AUTH_TOKEN`
+4. 先执行 `uv sync`
+
+第一版清单文件在 `data/security_master.csv`，固定 4 列：
+
+- `stock_key`
+- `market`
+- `code`
+- `official_name`
+
+先生成 `CSV`：
+
+- 沪市、深市：`AKShare`
+- 港股：`HKEX` 官方 `ListOfSecurities_c.xlsx`
+- 港股只保留真正股票：
+  - `分類 = 股本`
+  - `次分類` 包含 `股本證券`
+- 港股 `official_name` 会转成简体简称，不会写成公司繁体全称
+- 名字里的全角字母、全角数字、全角空格会整理成正常半角写法，例如 `ＡＰＯＬＬＯ出行 -> APOLLO出行`
+
+```bash
+uv run python build_security_master_csv_from_akshare.py
+```
+
+如果只想先跑沪深：
+
+```bash
+uv run python build_security_master_csv_from_akshare.py --markets sh,sz
+```
+
+如果只想单独生成港股：
+
+```bash
+uv run python build_security_master_csv_from_akshare.py --markets hk
+```
+
+如需输出到别的文件：
+
+```bash
+uv run python build_security_master_csv_from_akshare.py --output-path /path/to/security_master.csv
+```
+
+再导入标准库：
+
+```bash
+uv run python import_security_master_csv.py
+```
+
+如需导入别的文件：
+
+```bash
+uv run python import_security_master_csv.py --csv-path /path/to/security_master.csv
+```
+
 ## Reflex 前端
 ```bash
 uv run reflex run
 ```
 
-需要：`WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`（token 可选）。
+需要：
+
+- `WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`（源库，token 可选）
+- `STANDARD_TURSO_DATABASE_URL`（标准库）
 
 主要页面：
 - `/`：首页 + 全局搜索
@@ -272,7 +335,8 @@ uv run reflex run
 
 启动时会先做一次 startup check（失败就直接退出容器）：
 - 本地缓存：`SPOOL_DIR`（默认 `/tmp/alphavault-spool`）需要可写
-- Turso：必须配置 `WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`，并且能连（healthcheck 只读）
+- Turso：必须配置 `WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`，并且也必须配置 `STANDARD_TURSO_DATABASE_URL`；healthcheck 会把这些库都做只读连通检查
+- 标准库：还会直接检查 `security_master`、`relations`、`relation_candidates`、`alias_resolve_tasks` 这 4 张关键表；没先执行 `alphavault/db/sql/cloud_schema.sql` 就会直接 fail
 - Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
 
 定时（通过 env 配）：
@@ -306,6 +370,8 @@ docker run -d --name alphavault \
 	  -e AI_API_KEY="YOUR_KEY" \
 	  -e WEIBO_TURSO_DATABASE_URL="libsql://xxx.turso.io" \
 	  -e WEIBO_TURSO_AUTH_TOKEN="YOUR_TOKEN" \
+	  -e STANDARD_TURSO_DATABASE_URL="libsql://standard.turso.io" \
+	  -e STANDARD_TURSO_AUTH_TOKEN="YOUR_TOKEN" \
 	  -e REDIS_URL="redis://:pass@host:6379/0" \
 	  -e SPOOL_DIR="/tmp/alphavault-spool" \
 	  alphavault

@@ -87,10 +87,12 @@ def test_redis_ai_move_due_delayed_to_ready_moves_messages() -> None:
     ]
 
 
-def test_redis_ai_ack_and_cleanup_only_acks_processing(
+def test_redis_ai_ack_and_cleanup_acks_processing_and_deletes_spool(
     monkeypatch, tmp_path: Path
 ) -> None:
     ack_calls: list[tuple[str, str]] = []
+    spool_file = tmp_path / f"{redis_queue.sha1_short('weibo:1')}.json"
+    spool_file.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(
         redis_queue,
@@ -108,6 +110,7 @@ def test_redis_ai_ack_and_cleanup_only_acks_processing(
     )
     assert ok is True
     assert ack_calls == [("ack", "msg-1")]
+    assert spool_file.exists() is False
 
 
 def test_redis_ai_try_claim_and_release_lease_uses_token() -> None:

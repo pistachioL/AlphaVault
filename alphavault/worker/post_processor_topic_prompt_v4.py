@@ -24,15 +24,15 @@ from alphavault.domains.entity_match import (
     resolve_assertion_mentions,
 )
 from alphavault.rss.utils import RateLimiter, now_str
+from alphavault.research_workbench.service import (
+    get_research_workbench_engine_from_env,
+)
 from alphavault.research_stock_cache import mark_entity_page_dirty_from_assertions
 from alphavault.weibo.topic_prompt_tree import (
     MAX_TOPIC_PROMPT_CHARS,
     thread_root_info_for_post,
 )
-from alphavault.worker.post_processor_utils import (
-    ensure_prefetched_post_persisted,
-    score_from_assertions,
-)
+from alphavault.worker.post_processor_utils import score_from_assertions
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
 from alphavault.worker.topic_prompt_v4 import (
     build_topic_prompt_v4_llm_log_line,
@@ -191,11 +191,15 @@ def resolve_rows_entity_matches(
                 ):
                     seen_stock_aliases.add(mention_text)
                     stock_alias_texts.append(mention_text)
-    stock_name_targets, stock_alias_targets = load_entity_match_lookup_maps(
-        engine_or_conn,
-        stock_name_texts=stock_name_texts,
-        stock_alias_texts=stock_alias_texts,
-    )
+    stock_name_targets: dict[str, str] = {}
+    stock_alias_targets: dict[str, str] = {}
+    if stock_name_texts or stock_alias_texts:
+        standard_engine = get_research_workbench_engine_from_env()
+        stock_name_targets, stock_alias_targets = load_entity_match_lookup_maps(
+            standard_engine,
+            stock_name_texts=stock_name_texts,
+            stock_alias_texts=stock_alias_texts,
+        )
     followups_by_post_uid: dict[str, list[EntityMatchResult]] = {}
     for post_uid, rows in rows_by_post_uid.items():
         post_followups: list[EntityMatchResult] = []
@@ -381,13 +385,6 @@ def process_one_post_uid_topic_prompt_v4(
             invest_score = score_from_assertions(rows)
             processed_at = now_str()
             archived_at = now_str()
-            if prefetched_post is not None and uid == str(post.post_uid or "").strip():
-                ensure_prefetched_post_persisted(
-                    engine=engine,
-                    post=prefetched_post,
-                    archived_at=archived_at,
-                    ingested_at=int(time.time()),
-                )
             write_assertions_and_mark_done(
                 engine,
                 post_uid=uid,
@@ -399,6 +396,13 @@ def process_one_post_uid_topic_prompt_v4(
                 archived_at=archived_at,
                 assertions=rows,
                 entity_match_results=entity_match_results_by_post_uid.get(uid, []),
+                prefetched_post=(
+                    prefetched_post
+                    if prefetched_post is not None
+                    and uid == str(post.post_uid or "").strip()
+                    else None
+                ),
+                prefetched_ingested_at=int(time.time()),
             )
 
             if rows:

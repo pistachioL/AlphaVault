@@ -64,14 +64,16 @@ def _load_stock_hot_payload_cached(
     return hot, progress
 
 
-def _resolve_stock_key_candidates(stock_key: str) -> list[str]:
+def _resolve_stock_key_candidates(stock_key: str) -> tuple[list[str], str]:
     normalized = _normalize_stock_key(stock_key)
     if not normalized:
-        return []
+        return [], ""
     out = [normalized]
     relations, relation_err = load_stock_alias_relations_from_env()
     if relation_err or relations.empty:
-        return out
+        if relation_err:
+            return [], relation_err
+        return out, ""
     seen = {normalized}
     for _, row in relations.iterrows():
         relation_type = str(row.get("relation_type") or "").strip()
@@ -86,7 +88,7 @@ def _resolve_stock_key_candidates(stock_key: str) -> list[str]:
             continue
         seen.add(left_key)
         out.append(left_key)
-    return out
+    return out, ""
 
 
 def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -283,7 +285,23 @@ def load_stock_cached_view_from_env(
             "worker_cycle_updated_at": "",
             "worker_running": False,
         }
-    key_candidates = _resolve_stock_key_candidates(normalized)
+    key_candidates, relation_err = _resolve_stock_key_candidates(normalized)
+    if relation_err:
+        return {
+            "entity_key": normalized,
+            "page_title": normalized.removeprefix("stock:"),
+            "signals": [],
+            "signal_total": 0,
+            "signal_page": 1,
+            "signal_page_size": max(int(signal_page_size or 1), 1),
+            "related_sectors": [],
+            "load_error": relation_err,
+            "load_warning": "",
+            "worker_status_text": "",
+            "worker_next_run_at": "",
+            "worker_cycle_updated_at": "",
+            "worker_running": False,
+        }
     errors: list[str] = []
     selected_hot_rows: list[dict[str, object]] = []
     selected_progress_rows: list[dict[str, object]] = []

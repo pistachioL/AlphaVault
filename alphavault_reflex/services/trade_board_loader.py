@@ -18,6 +18,10 @@ from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
+from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
+from alphavault.research_workbench.service import (
+    get_research_workbench_engine_from_env,
+)
 from alphavault_reflex.services.homework_constants import TRADE_BOARD_MAX_WINDOW_DAYS
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
@@ -28,6 +32,7 @@ from alphavault_reflex.services.turso_read_utils import normalize_assertions_dat
 _logger = logging.getLogger(__name__)
 ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = "REFLEX_HOMEWORK_SOURCE_MAX_WORKERS"
 DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = 2
+_STANDARD_TURSO_ERROR_PREFIX = "turso_connect_error:standard:"
 
 TRADE_BOARD_ASSERTION_COLUMNS = [
     "post_uid",
@@ -42,9 +47,9 @@ TRADE_BOARD_ASSERTION_COLUMNS = [
 
 STOCK_ALIAS_RELATIONS_SQL = """
 SELECT relation_type, left_key, right_key, relation_label, source, updated_at
-FROM research_relations
+FROM {relations_table}
 WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
-"""
+""".format(relations_table=RESEARCH_RELATIONS_TABLE)
 
 
 def trade_board_cutoff_from_utc_now(*, lookback_days: int) -> str:
@@ -100,6 +105,13 @@ def query_stock_alias_relations(*, conn: object, source_name: str) -> pd.DataFra
     return df
 
 
+def _standard_turso_error_text(err: BaseException) -> str:
+    text = str(err or "").strip()
+    if text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+        return text
+    return f"{_STANDARD_TURSO_ERROR_PREFIX}{type(err).__name__}"
+
+
 @lru_cache(maxsize=8)
 def load_trade_board_assertions_cached(
     db_url: str,
@@ -119,14 +131,12 @@ def load_trade_board_assertions_cached(
 
 
 @lru_cache(maxsize=2)
-def load_stock_alias_relations_cached(
-    db_url: str, auth_token: str, source_name: str
-) -> pd.DataFrame:
-    engine = ensure_turso_engine(db_url, auth_token)
+def load_stock_alias_relations_cached() -> pd.DataFrame:
+    engine = get_research_workbench_engine_from_env()
     with turso_connect_autocommit(engine) as conn:
         return query_stock_alias_relations(
             conn=conn,
-            source_name=source_name,
+            source_name="standard",
         )
 
 
@@ -164,20 +174,18 @@ def load_homework_board_payload_cached(
         )
         assertion_count = int(len(assertions))
         try:
-            relations = query_stock_alias_relations(
-                conn=conn,
-                source_name=source_name,
-            )
+            relations = load_stock_alias_relations_cached()
             relation_count = int(len(relations))
         except BaseException as err:
             if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                 raise
-            _logger.debug(
+            error_text = _standard_turso_error_text(err)
+            _logger.warning(
                 "homework_payload relation_query_failed source=%s err=%s",
                 source_name,
-                type(err).__name__,
+                error_text,
             )
-            relations = pd.DataFrame()
+            raise RuntimeError(error_text) from err
     _logger.debug(
         "homework_payload source_query source=%s lookback_days=%d assertions=%d relations=%d elapsed=%.3fs",
         source_name,
@@ -261,6 +269,9 @@ def load_homework_board_payload_from_env(
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                     raise
+                error_text = str(err or "").strip()
+                if error_text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+                    return pd.DataFrame(), pd.DataFrame(), error_text
                 source_errors.append(
                     f"turso_connect_error:{source.name}:{type(err).__name__}"
                 )
@@ -299,6 +310,9 @@ def load_homework_board_payload_from_env(
                 except BaseException as err:
                     if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                         raise
+                    error_text = str(err or "").strip()
+                    if error_text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+                        return pd.DataFrame(), pd.DataFrame(), error_text
                     source_errors.append(
                         f"turso_connect_error:{name}:{type(err).__name__}"
                     )
@@ -324,6 +338,8 @@ def load_homework_board_payload_from_env(
         return pd.DataFrame(), pd.DataFrame(), "turso_sources_empty"
     assertions_all = pd.concat(assertions_frames, ignore_index=True)
     relations_all = pd.concat(relation_frames, ignore_index=True)
+    if not relations_all.empty:
+        relations_all = relations_all.drop_duplicates().reset_index(drop=True)
     _logger.debug(
         "homework_payload done sources=%d workers=%d assertions=%d relations=%d elapsed=%.3fs",
         int(len(sources)),
@@ -340,24 +356,15 @@ def load_stock_alias_relations_from_env(
     load_cached_fn=load_stock_alias_relations_cached,
 ) -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
-    if not sources:
-        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
-    frames: list[pd.DataFrame] = []
-    for source in sources:
-        try:
-            frames.append(load_cached_fn(source.url, source.token, source.name))
-        except BaseException as err:
-            if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
-                raise
-            return (
-                pd.DataFrame(),
-                f"turso_connect_error:{source.name}:{type(err).__name__}",
-            )
-
-    if not frames:
-        return pd.DataFrame(), "turso_sources_empty"
-    return pd.concat(frames, ignore_index=True), ""
+    try:
+        return load_cached_fn(), ""
+    except BaseException as err:
+        if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
+            raise
+        return (
+            pd.DataFrame(),
+            _standard_turso_error_text(err),
+        )
 
 
 __all__ = [

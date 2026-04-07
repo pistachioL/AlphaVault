@@ -46,6 +46,7 @@ from alphavault.db.turso_db import (
     run_turso_transaction,
     turso_connect_autocommit,
 )
+from alphavault.rss.utils import now_str
 
 if TYPE_CHECKING:
     from alphavault.domains.entity_match.resolve import EntityMatchResult
@@ -95,13 +96,36 @@ def _chunk_post_uids(post_uids: Iterable[str], *, chunk_size: int) -> list[list[
 
 
 def persist_entity_match_followups(
-    conn: TursoConnection, result: "EntityMatchResult"
+    engine_or_conn: TursoConnection | TursoEngine, result: "EntityMatchResult"
 ) -> None:
     from alphavault.domains.entity_match.resolve import (
         persist_entity_match_followups as persist_followups,
     )
 
-    persist_followups(conn, result)
+    persist_followups(engine_or_conn, result)
+
+
+def get_research_workbench_engine_from_env() -> TursoEngine:
+    from alphavault.research_workbench.service import (
+        get_research_workbench_engine_from_env as load_engine,
+    )
+
+    return load_engine()
+
+
+def persist_entity_match_followups_batch(
+    engine_or_conn: TursoConnection | TursoEngine,
+    results: Iterable["EntityMatchResult"],
+) -> None:
+    resolved_results = list(results)
+    if not resolved_results:
+        return
+
+    def _write(conn: TursoConnection) -> None:
+        for result in resolved_results:
+            persist_entity_match_followups(conn, result)
+
+    run_turso_transaction(engine_or_conn, _write)
 
 
 def _execute_upsert_pending_post(
@@ -255,6 +279,33 @@ def load_unprocessed_post_queue_rows(
         return [dict(r) for r in rows if r]
 
 
+def _ensure_post_row_exists_for_done(
+    conn: TursoConnection,
+    *,
+    post_uid: str,
+    archived_at: str,
+    prefetched_post: CloudPost | None,
+    prefetched_ingested_at: int,
+) -> None:
+    if prefetched_post is None:
+        return
+    if load_post_processed_at(conn, post_uid=post_uid) is not None:
+        return
+    platform = str(prefetched_post.platform or "").strip().lower() or "weibo"
+    _execute_upsert_pending_post(
+        conn,
+        post_uid=str(post_uid or "").strip(),
+        platform=platform,
+        platform_post_id=str(prefetched_post.platform_post_id or "").strip(),
+        author=str(prefetched_post.author or ""),
+        created_at=str(prefetched_post.created_at or now_str()),
+        url=str(prefetched_post.url or "").strip(),
+        raw_text=str(prefetched_post.raw_text or ""),
+        archived_at=str(archived_at or now_str()),
+        ingested_at=max(0, int(prefetched_ingested_at)),
+    )
+
+
 def reset_ai_results_all(
     engine: TursoEngine,
     *,
@@ -334,6 +385,8 @@ def write_assertions_and_mark_done(
     archived_at: str,
     assertions: Iterable[Dict[str, Any]],
     entity_match_results: Iterable["EntityMatchResult"] | None = None,
+    prefetched_post: CloudPost | None = None,
+    prefetched_ingested_at: int = 0,
 ) -> None:
     """
     Commit AI outputs in a single atomic unit, without DBAPI commit/rollback.
@@ -344,6 +397,13 @@ def write_assertions_and_mark_done(
     resolved_entity_match_results = list(entity_match_results or [])
 
     def _write(conn: TursoConnection) -> None:
+        _ensure_post_row_exists_for_done(
+            conn,
+            post_uid=str(post_uid or "").strip(),
+            archived_at=str(archived_at or "").strip(),
+            prefetched_post=prefetched_post,
+            prefetched_ingested_at=int(prefetched_ingested_at),
+        )
         conn.execute(DELETE_ASSERTION_ENTITIES_BY_POST_UID, {"post_uid": post_uid})
         conn.execute(DELETE_ASSERTION_MENTIONS_BY_POST_UID, {"post_uid": post_uid})
         conn.execute(DELETE_ASSERTIONS_BY_POST_UID, {"post_uid": post_uid})
@@ -416,8 +476,6 @@ def write_assertions_and_mark_done(
             conn.execute(INSERT_ASSERTION_MENTION, mention_payloads)
         if entity_payloads:
             conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
-        for match_result in resolved_entity_match_results:
-            persist_entity_match_followups(conn, match_result)
         conn.execute(
             UPDATE_POST_DONE,
             {
@@ -432,3 +490,8 @@ def write_assertions_and_mark_done(
         )
 
     run_turso_transaction(engine, _write)
+    if resolved_entity_match_results:
+        persist_entity_match_followups_batch(
+            get_research_workbench_engine_from_env(),
+            resolved_entity_match_results,
+        )

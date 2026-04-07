@@ -3,6 +3,7 @@ from __future__ import annotations
 from alphavault_reflex.organizer_state import OrganizerState
 from alphavault_reflex.organizer_state import ALIAS_TASK_PAGE_LIMIT
 from alphavault_reflex.organizer_state import SECTION_ALIAS_MANUAL
+from alphavault_reflex.organizer_state import load_search_results
 from alphavault_reflex.organizer_state import load_pending_rows
 
 
@@ -332,3 +333,27 @@ def test_confirm_alias_manual_merge_keeps_limit_and_ai_preview(monkeypatch) -> N
     assert seen_limits == [ALIAS_TASK_PAGE_LIMIT * 2]
     assert state.pending_rows[0]["ai_stock_code"] == "600519.SH"
     assert state.pending_rows[0]["ai_reason"] == "之前已经预判过"
+
+
+def test_load_search_results_returns_relation_error_when_standard_alias_fails(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.load_sources_from_env",
+        lambda: (None, None, ""),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.load_stock_alias_relations_from_env",
+        lambda: (None, "turso_connect_error:standard:RuntimeError"),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.build_search_index",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_build_search_index")
+        ),
+    )
+
+    rows, err = load_search_results("茅台")
+
+    assert rows == []
+    assert err == "turso_connect_error:standard:RuntimeError"
