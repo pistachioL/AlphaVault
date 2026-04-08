@@ -307,6 +307,79 @@ def test_upsert_security_master_stock_replaces_old_redis_name_shadow_field(
     }
 
 
+def test_bulk_upsert_security_master_stocks_writes_rows_without_per_row_redis_sync(
+    monkeypatch,
+) -> None:
+    from alphavault.research_workbench import security_master_repo
+
+    synced: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        security_master_repo,
+        "sync_stock_name_shadow_dict_best_effort",
+        lambda *, stock_key, official_name, previous_official_name="": synced.append(
+            (stock_key, official_name, previous_official_name)
+        ),
+        raising=False,
+    )
+
+    bulk_upsert = getattr(
+        security_master_repo,
+        "bulk_upsert_security_master_stocks",
+        None,
+    )
+    assert callable(bulk_upsert)
+
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+        bulk_upsert(
+            conn,
+            [
+                {
+                    "stock_key": " stock:601899.sh ",
+                    "market": "",
+                    "code": " 601899 ",
+                    "official_name": " 紫金矿业 ",
+                },
+                {
+                    "stock_key": "stock:1810.hk",
+                    "market": "hk",
+                    "code": " 1810 ",
+                    "official_name": " 小米集团-W ",
+                },
+            ],
+        )
+        rows = (
+            conn.execute(
+                f"""
+SELECT stock_key, market, code, official_name
+FROM {RESEARCH_SECURITY_MASTER_TABLE}
+ORDER BY stock_key
+"""
+            )
+            .mappings()
+            .all()
+        )
+    finally:
+        conn.close()
+
+    assert rows == [
+        {
+            "stock_key": "stock:1810.HK",
+            "market": "HK",
+            "code": "1810",
+            "official_name": "小米集团-W",
+        },
+        {
+            "stock_key": "stock:601899.SH",
+            "market": "SH",
+            "code": "601899",
+            "official_name": "紫金矿业",
+        },
+    ]
+    assert synced == []
+
+
 def test_rebuild_stock_dict_shadow_replaces_unique_names_and_aliases(
     monkeypatch,
 ) -> None:

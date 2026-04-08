@@ -12,11 +12,34 @@ from alphavault.db.turso_db import (
 )
 
 
-_CLOUD_SCHEMA_PATH = Path(__file__).resolve().parent / "sql" / "cloud_schema.sql"
+_SQL_DIR = Path(__file__).resolve().parent / "sql"
+_SCHEMA_TARGET_SOURCE = "source"
+_SCHEMA_TARGET_STANDARD = "standard"
+_SCHEMA_TARGET_ALL = "all"
+_SCHEMA_PATHS = {
+    _SCHEMA_TARGET_SOURCE: _SQL_DIR / "source_schema.sql",
+    _SCHEMA_TARGET_STANDARD: _SQL_DIR / "standard_schema.sql",
+}
 
 
-def load_cloud_schema_sql() -> str:
-    return _CLOUD_SCHEMA_PATH.read_text(encoding="utf-8")
+def _normalize_schema_target(target: str) -> str:
+    normalized = str(target or "").strip().lower() or _SCHEMA_TARGET_ALL
+    if normalized == _SCHEMA_TARGET_ALL:
+        return normalized
+    if normalized in _SCHEMA_PATHS:
+        return normalized
+    raise ValueError(f"unknown_cloud_schema_target:{normalized}")
+
+
+def load_cloud_schema_sql(*, target: str = _SCHEMA_TARGET_ALL) -> str:
+    normalized = _normalize_schema_target(target)
+    if normalized == _SCHEMA_TARGET_ALL:
+        parts = [
+            load_cloud_schema_sql(target=_SCHEMA_TARGET_SOURCE).strip(),
+            load_cloud_schema_sql(target=_SCHEMA_TARGET_STANDARD).strip(),
+        ]
+        return "\n\n".join(part for part in parts if part).strip() + "\n"
+    return _SCHEMA_PATHS[normalized].read_text(encoding="utf-8")
 
 
 def _normalize_statement(statement: str) -> str:
@@ -54,9 +77,15 @@ def _use_conn(
         yield conn
 
 
-def apply_cloud_schema(engine_or_conn: TursoEngine | TursoConnection) -> None:
+def apply_cloud_schema(
+    engine_or_conn: TursoEngine | TursoConnection,
+    *,
+    target: str = _SCHEMA_TARGET_ALL,
+) -> None:
     with _use_conn(engine_or_conn) as conn:
-        for statement in iter_cloud_schema_statements(load_cloud_schema_sql()):
+        for statement in iter_cloud_schema_statements(
+            load_cloud_schema_sql(target=target)
+        ):
             conn.execute(statement)
 
 

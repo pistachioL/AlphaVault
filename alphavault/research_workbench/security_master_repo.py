@@ -5,7 +5,7 @@ from alphavault.db.sql.research_workbench import (
     select_security_master_by_stock_key,
     upsert_security_master_stock as upsert_security_master_stock_sql,
 )
-from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault.db.turso_db import TursoConnection, TursoEngine, turso_savepoint
 from alphavault.domains.stock.key_match import normalize_stock_code
 from alphavault.domains.stock.keys import normalize_stock_key
 from alphavault.infra.entity_match_redis import (
@@ -37,14 +37,14 @@ def _resolve_market(*, stock_key: str, market: str) -> str:
     return _clean_text(stock_key.rsplit(".", 1)[1]).upper()
 
 
-def upsert_security_master_stock(
-    engine_or_conn: TursoEngine | TursoConnection,
+def _build_security_master_upsert_payload(
     *,
     stock_key: str,
     market: str,
     code: str,
     official_name: str,
-) -> None:
+    now: str,
+) -> dict[str, str] | None:
     resolved_stock_key = normalize_stock_key(stock_key)
     resolved_code = normalize_stock_code(code)
     resolved_name = _clean_text(official_name)
@@ -55,8 +55,36 @@ def upsert_security_master_stock(
         or not resolved_name
         or not resolved_market
     ):
+        return None
+    return {
+        "stock_key": resolved_stock_key,
+        "market": resolved_market,
+        "code": resolved_code,
+        "official_name": resolved_name,
+        "official_name_norm": _normalize_name(resolved_name),
+        "now": now,
+    }
+
+
+def upsert_security_master_stock(
+    engine_or_conn: TursoEngine | TursoConnection,
+    *,
+    stock_key: str,
+    market: str,
+    code: str,
+    official_name: str,
+) -> None:
+    payload = _build_security_master_upsert_payload(
+        stock_key=stock_key,
+        market=market,
+        code=code,
+        official_name=official_name,
+        now=_now_str(),
+    )
+    if payload is None:
         return
-    now = _now_str()
+    resolved_stock_key = payload["stock_key"]
+    resolved_name = payload["official_name"]
     previous_official_name = ""
     try:
         with use_conn(engine_or_conn) as conn:
@@ -68,14 +96,7 @@ def upsert_security_master_stock(
                 previous_official_name = _clean_text(row[0])
             conn.execute(
                 upsert_security_master_stock_sql(RESEARCH_SECURITY_MASTER_TABLE),
-                {
-                    "stock_key": resolved_stock_key,
-                    "market": resolved_market,
-                    "code": resolved_code,
-                    "official_name": resolved_name,
-                    "official_name_norm": _normalize_name(resolved_name),
-                    "now": now,
-                },
+                payload,
             )
     except BaseException as err:
         handle_turso_error(engine_or_conn, err)
@@ -87,6 +108,39 @@ def upsert_security_master_stock(
         )
     except Exception:
         pass
+
+
+def bulk_upsert_security_master_stocks(
+    engine_or_conn: TursoEngine | TursoConnection,
+    rows: list[dict[str, str]],
+) -> int:
+    if not rows:
+        return 0
+    now = _now_str()
+    payloads: list[dict[str, str]] = []
+    for row in rows:
+        payload = _build_security_master_upsert_payload(
+            stock_key=str(row.get("stock_key") or ""),
+            market=str(row.get("market") or ""),
+            code=str(row.get("code") or ""),
+            official_name=str(row.get("official_name") or ""),
+            now=now,
+        )
+        if payload is None:
+            continue
+        payloads.append(payload)
+    if not payloads:
+        return 0
+    try:
+        with use_conn(engine_or_conn) as conn:
+            with turso_savepoint(conn):
+                conn.execute(
+                    upsert_security_master_stock_sql(RESEARCH_SECURITY_MASTER_TABLE),
+                    payloads,
+                )
+    except BaseException as err:
+        handle_turso_error(engine_or_conn, err)
+    return len(payloads)
 
 
 def get_stock_keys_by_official_names(
@@ -129,6 +183,7 @@ def get_stock_keys_by_official_names(
 
 
 __all__ = [
+    "bulk_upsert_security_master_stocks",
     "get_stock_keys_by_official_names",
     "upsert_security_master_stock",
 ]

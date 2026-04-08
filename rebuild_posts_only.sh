@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCHEMA_SQL="${SCHEMA_SQL:-$ROOT_DIR/alphavault/db/sql/cloud_schema.sql}"
+SCHEMA_SQL="${SCHEMA_SQL:-$ROOT_DIR/alphavault/db/sql/source_schema.sql}"
 OLD_WEIBO_FILE="${OLD_WEIBO_FILE:-$ROOT_DIR/old-weibo.db}"
 NEW_WEIBO_FILE="${NEW_WEIBO_FILE:-$ROOT_DIR/weibo_rebuild.db}"
 OLD_XUEQIU_FILE="${OLD_XUEQIU_FILE:-$ROOT_DIR/old-xueqiu.db}"

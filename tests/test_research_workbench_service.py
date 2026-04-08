@@ -11,6 +11,7 @@ def test_get_research_workbench_engine_from_env_uses_standard_turso_env(
     monkeypatch,
 ) -> None:
     service._get_cached_research_workbench_engine.cache_clear()
+    monkeypatch.setattr(service, "load_dotenv_if_present", lambda: None)
     monkeypatch.setenv(ENV_STANDARD_TURSO_DATABASE_URL, "libsql://standard.turso.io")
     monkeypatch.setenv(ENV_STANDARD_TURSO_AUTH_TOKEN, "standard-token")
 
@@ -32,6 +33,7 @@ def test_get_research_workbench_engine_from_env_reuses_cached_engine(
     monkeypatch,
 ) -> None:
     service._get_cached_research_workbench_engine.cache_clear()
+    monkeypatch.setattr(service, "load_dotenv_if_present", lambda: None)
     monkeypatch.setenv(ENV_STANDARD_TURSO_DATABASE_URL, "libsql://standard.turso.io")
     monkeypatch.setenv(ENV_STANDARD_TURSO_AUTH_TOKEN, "standard-token")
 
@@ -56,6 +58,7 @@ def test_get_research_workbench_engine_from_env_requires_standard_database_url(
     monkeypatch,
 ) -> None:
     service._get_cached_research_workbench_engine.cache_clear()
+    monkeypatch.setattr(service, "load_dotenv_if_present", lambda: None)
     monkeypatch.delenv(ENV_STANDARD_TURSO_DATABASE_URL, raising=False)
     monkeypatch.setenv(ENV_STANDARD_TURSO_AUTH_TOKEN, "standard-token")
 

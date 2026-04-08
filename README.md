@@ -70,6 +70,7 @@ uv run python weibo_rss_turso_worker.py --verbose
 - `WEIBO_RSS_URLS` 支持逗号/换行分隔；也可以用 `WEIBO_RSS_URL`（只传 1 个）。
 - 你也可以同时填 `XUEQIU_RSS_URLS` + `XUEQIU_TURSO_DATABASE_URL`，worker 会同时跑两套（weibo + xueqiu）。
 - 研究台整理表单独走标准库：`STANDARD_TURSO_DATABASE_URL` / `STANDARD_TURSO_AUTH_TOKEN`。
+- source 库先手工执行 `alphavault/db/sql/source_schema.sql`；标准库先手工执行 `alphavault/db/sql/standard_schema.sql`。
 - RSS 抓取网络参数：`RSS_TIMEOUT_SECONDS`（默认 60 秒）和 `RSS_RETRIES`（默认失败后再试 5 次）。
 - RSS 抓取节奏参数：`RSS_FEED_SLEEP_SECONDS`（默认 10 秒，表示每个 feed 抓完后 sleep；设 `0` 可关闭）。
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
@@ -96,7 +97,7 @@ curl "http://127.0.0.1:8080/api/rss/trigger?key=YOUR_TRIGGER_KEY"
 ## 导入 `security_master` 标准清单
 先准备标准库：
 
-1. 对标准库手工执行 `alphavault/db/sql/cloud_schema.sql`
+1. 对标准库手工执行 `alphavault/db/sql/standard_schema.sql`
 2. 配置 `STANDARD_TURSO_DATABASE_URL`
 3. 按需配置 `STANDARD_TURSO_AUTH_TOKEN`
 4. 先执行 `uv sync`
@@ -150,6 +151,49 @@ uv run python import_security_master_csv.py
 
 ```bash
 uv run python import_security_master_csv.py --csv-path /path/to/security_master.csv
+```
+
+## 补搬旧历史整理表到标准库
+先准备这 3 套库的 env：
+
+- `WEIBO_TURSO_DATABASE_URL`
+- `WEIBO_TURSO_AUTH_TOKEN`
+- `XUEQIU_TURSO_DATABASE_URL`
+- `XUEQIU_TURSO_AUTH_TOKEN`
+- `STANDARD_TURSO_DATABASE_URL`
+- `STANDARD_TURSO_AUTH_TOKEN`
+
+这一步只搬这 `3` 张表：
+
+- `relations`
+- `relation_candidates`
+- `alias_resolve_tasks`
+
+迁移规则：
+
+- 会同时读取 `weibo`、`xueqiu`、当前 `standard`
+- 同一主键冲突时，保留 `updated_at` 更新的那一行
+- 如果时间一样，优先保留当前 `standard` 里已有的那一行
+- 正式迁移会按 `--batch-size` 分批写标准库，默认 `500`
+- 会打印开始参数、每张表读取数量、写入批次进度、总数对帐和分组对帐
+- 整次迁移里，`weibo / xueqiu / standard` 各自只打开一次连接并复用到结束
+
+先跑 `dry-run`：
+
+```bash
+uv run python migrate_standard_history_tables.py --dry-run
+```
+
+如果想把标准库写入批次调小一点，比如每批 `100` 行：
+
+```bash
+uv run python migrate_standard_history_tables.py --batch-size 100
+```
+
+确认对帐没问题后，再跑正式迁移：
+
+```bash
+uv run python migrate_standard_history_tables.py
 ```
 
 ## Reflex 前端
@@ -335,8 +379,10 @@ uv run reflex run
 
 启动时会先做一次 startup check（失败就直接退出容器）：
 - 本地缓存：`SPOOL_DIR`（默认 `/tmp/alphavault-spool`）需要可写
-- Turso：必须配置 `WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`，并且也必须配置 `STANDARD_TURSO_DATABASE_URL`；healthcheck 会把这些库都做只读连通检查
-- 标准库：还会直接检查 `security_master`、`relations`、`relation_candidates`、`alias_resolve_tasks` 这 4 张关键表；没先执行 `alphavault/db/sql/cloud_schema.sql` 就会直接 fail
+- Turso：`startup_healthcheck.py` 只检查 `1` 个目标库，目标由 `STARTUP_HEALTHCHECK_TURSO_TARGET` 控制；默认是 `standard`，可选 `weibo` 或 `xueqiu`
+- Turso：默认值是 `standard`，所以默认至少要配 `STANDARD_TURSO_DATABASE_URL`；这只影响 startup healthcheck 查哪个库，不代表 worker 不需要 source 库
+- Turso：当前 Docker 默认还是同时启动 `web + worker`；如果要让 worker 正常跑，仍然要至少再配一组 `WEIBO_*` 或 `XUEQIU_*`
+- 标准库：只有当 `STARTUP_HEALTHCHECK_TURSO_TARGET=standard` 时，才会在启动时额外检查 `security_master`、`relations`、`relation_candidates`、`alias_resolve_tasks` 这 4 张关键表；没先执行 `alphavault/db/sql/standard_schema.sql` 就会直接 fail
 - Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
 
 定时（通过 env 配）：

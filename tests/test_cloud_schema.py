@@ -5,44 +5,54 @@ import libsql
 from alphavault.db.turso_db import TursoConnection
 
 
-def test_apply_cloud_schema_creates_final_cloud_tables() -> None:
-    from alphavault.db.cloud_schema import apply_cloud_schema
+_SOURCE_TABLES = {
+    "posts",
+    "assertions",
+    "assertion_mentions",
+    "assertion_entities",
+    "topic_clusters",
+    "topic_cluster_topics",
+    "topic_cluster_post_overrides",
+    "entity_page_snapshot",
+    "projection_dirty",
+    "worker_cursor",
+    "worker_locks",
+}
 
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        apply_cloud_schema(conn)
+_STANDARD_TABLES = {
+    "security_master",
+    "relations",
+    "relation_candidates",
+    "alias_resolve_tasks",
+    "homework_trade_feed",
+    "follow_pages",
+}
 
-        table_names = {
-            str(row["name"])
-            for row in conn.execute(
-                """
+
+def _table_names(conn: TursoConnection) -> set[str]:
+    return {
+        str(row["name"])
+        for row in conn.execute(
+            """
 SELECT name
 FROM sqlite_schema
 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
 """
-            )
-            .mappings()
-            .all()
-        }
-        assert {
-            "posts",
-            "assertions",
-            "assertion_mentions",
-            "assertion_entities",
-            "topic_clusters",
-            "topic_cluster_topics",
-            "topic_cluster_post_overrides",
-            "security_master",
-            "relations",
-            "relation_candidates",
-            "alias_resolve_tasks",
-            "entity_page_snapshot",
-            "projection_dirty",
-            "homework_trade_feed",
-            "follow_pages",
-            "worker_cursor",
-            "worker_locks",
-        }.issubset(table_names)
+        )
+        .mappings()
+        .all()
+    }
+
+
+def test_apply_cloud_schema_all_creates_final_cloud_tables() -> None:
+    from alphavault.db.cloud_schema import apply_cloud_schema
+
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        apply_cloud_schema(conn, target="all")
+
+        table_names = _table_names(conn)
+        assert _SOURCE_TABLES.union(_STANDARD_TABLES).issubset(table_names)
         assert "research_assertion_outbox" not in table_names
         assert "research_stock_backfill_posts" not in table_names
         assert "research_stock_backfill_meta" not in table_names
@@ -153,10 +163,44 @@ WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
         conn.close()
 
 
+def test_apply_cloud_schema_supports_source_and_standard_targets() -> None:
+    from alphavault.db.cloud_schema import apply_cloud_schema
+
+    source_conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    standard_conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        apply_cloud_schema(source_conn, target="source")
+        apply_cloud_schema(standard_conn, target="standard")
+
+        source_tables = _table_names(source_conn)
+        standard_tables = _table_names(standard_conn)
+
+        assert _SOURCE_TABLES == source_tables
+        assert _STANDARD_TABLES == standard_tables
+    finally:
+        source_conn.close()
+        standard_conn.close()
+
+
+def test_load_cloud_schema_sql_supports_targets() -> None:
+    from alphavault.db.cloud_schema import load_cloud_schema_sql
+
+    source_sql = load_cloud_schema_sql(target="source")
+    standard_sql = load_cloud_schema_sql(target="standard")
+    all_sql = load_cloud_schema_sql(target="all")
+
+    assert "CREATE TABLE IF NOT EXISTS posts" in source_sql
+    assert "CREATE TABLE IF NOT EXISTS relations" not in source_sql
+    assert "CREATE TABLE IF NOT EXISTS relations" in standard_sql
+    assert "CREATE TABLE IF NOT EXISTS posts" not in standard_sql
+    assert source_sql in all_sql
+    assert standard_sql in all_sql
+
+
 def test_cloud_schema_sql_has_no_alter_table() -> None:
     from alphavault.db.cloud_schema import load_cloud_schema_sql
 
-    sql_text = load_cloud_schema_sql().upper()
+    sql_text = load_cloud_schema_sql(target="all").upper()
 
     assert "ALTER TABLE" not in sql_text
 
@@ -166,7 +210,7 @@ def test_apply_cloud_schema_posts_table_has_no_ai_runtime_columns() -> None:
 
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:
-        apply_cloud_schema(conn)
+        apply_cloud_schema(conn, target="source")
         post_columns = {
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(posts)").mappings().all()

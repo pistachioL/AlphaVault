@@ -7,14 +7,18 @@ from pathlib import Path
 from alphavault.research_workbench import (
     get_research_workbench_engine_from_env,
     rebuild_stock_dict_shadow_best_effort,
-    upsert_security_master_stock,
 )
+from alphavault.research_workbench.security_master_repo import (
+    bulk_upsert_security_master_stocks,
+)
+from alphavault.research_workbench.schema import use_conn
 
 
 REQUIRED_COLUMNS = ("stock_key", "market", "code", "official_name")
 DEFAULT_SECURITY_MASTER_CSV_PATH = (
     Path(__file__).resolve().parent / "data" / "security_master.csv"
 )
+IMPORT_SECURITY_MASTER_BATCH_SIZE = 100
 
 
 def parse_args() -> argparse.Namespace:
@@ -24,6 +28,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=str(DEFAULT_SECURITY_MASTER_CSV_PATH),
         help="security_master CSV path",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=IMPORT_SECURITY_MASTER_BATCH_SIZE,
+        help="security_master import batch size",
     )
     return parser.parse_args()
 
@@ -54,24 +64,43 @@ def load_security_master_rows(csv_path: str | Path) -> list[dict[str, str]]:
     return rows
 
 
-def import_csv_into_security_master(engine_or_conn, csv_path: str | Path) -> int:
+def _iter_row_batches(
+    rows: list[dict[str, str]],
+    batch_size: int,
+):
+    resolved_batch_size = max(1, int(batch_size or 0))
+    for start in range(0, len(rows), resolved_batch_size):
+        yield rows[start : start + resolved_batch_size]
+
+
+def import_csv_into_security_master(
+    engine_or_conn,
+    csv_path: str | Path,
+    *,
+    batch_size: int | None = None,
+) -> int:
     rows = load_security_master_rows(csv_path)
-    for row in rows:
-        upsert_security_master_stock(
-            engine_or_conn,
-            stock_key=row["stock_key"],
-            market=row["market"],
-            code=row["code"],
-            official_name=row["official_name"],
-        )
-    rebuild_stock_dict_shadow_best_effort(engine_or_conn)
-    return len(rows)
+    row_count = len(rows)
+    imported = 0
+    resolved_batch_size = max(1, int(batch_size or IMPORT_SECURITY_MASTER_BATCH_SIZE))
+    with use_conn(engine_or_conn) as conn:
+        for batch_rows in _iter_row_batches(rows, resolved_batch_size):
+            imported += bulk_upsert_security_master_stocks(conn, batch_rows)
+            print(f"imported security_master rows: {imported}/{row_count}", flush=True)
+        print("rebuilding security_master shadow dict...", flush=True)
+        rebuild_stock_dict_shadow_best_effort(conn)
+        print("rebuilt security_master shadow dict", flush=True)
+    return row_count
 
 
 def main() -> int:
     args = parse_args()
     engine = get_research_workbench_engine_from_env()
-    row_count = import_csv_into_security_master(engine, args.csv_path)
+    row_count = import_csv_into_security_master(
+        engine,
+        args.csv_path,
+        batch_size=args.batch_size,
+    )
     print(f"imported security_master rows: {row_count}", flush=True)
     return 0
 

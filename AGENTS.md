@@ -42,14 +42,17 @@ Uses `uv` (lockfile: `uv.lock`).
 - YAGNI: don’t add “maybe needed later” abstractions; only add backwards-compat fallbacks when explicitly required.
 
 ## Cloud Schema Rules
-- 云端 `Turso` 表结构只认一份总 SQL：`alphavault/db/sql/cloud_schema.sql`。
-- 新环境上线前，先手工执行 `alphavault/db/sql/cloud_schema.sql`，再启动服务和脚本。
-- Python 里只允许保留一个最底层装库入口：`alphavault.db.cloud_schema.apply_cloud_schema(...)`，只给测试或人工装空库用。
+- 云端 `Turso` 表结构按库角色只认两份 SQL：
+  - source 库：`alphavault/db/sql/source_schema.sql`
+  - standard 库：`alphavault/db/sql/standard_schema.sql`
+- 新环境上线前，先对对应库手工执行对应 SQL，再启动服务和脚本。
+- Python 里只允许保留一个最底层装库入口：`alphavault.db.cloud_schema.apply_cloud_schema(...)`。
+- `apply_cloud_schema(..., target="all")` 只给测试或人工装空库用；运行时代码不要依赖它自动建表。
 - 业务模块里不允许再导出或保留 `ensure_*schema`、`init_*schema` 这类 wrapper helper。
 - 运行时不允许自动建表、补列、迁移旧表；缺表缺列就直接报错。
 - 云端代码里不允许用 `PRAGMA table_info`、`table_columns(...)`、`ALTER TABLE` 这类动态兼容手法。
 - 新字段直接写进 `CREATE TABLE`；如果要补的是索引，可以单独写 `CREATE INDEX IF NOT EXISTS`。
-- Python 里不要再保留第二份云端 `CREATE TABLE` / `CREATE INDEX` 真相，避免和总 SQL 分叉。
+- Python 里不要再保留第二份云端 `CREATE TABLE` / `CREATE INDEX` 真相，避免和这两份 SQL 分叉。
 
 ## 流程图与逻辑图写法标准
 - 默认目标：图本身就要让人看懂，不依赖图外解释；用户只看图，也要知道整体逻辑、数据怎么流、哪里容易出问题。
