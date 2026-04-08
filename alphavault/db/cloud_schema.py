@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
+import re
 import sqlite3
-from typing import Iterator
+from typing import Any, Iterator
 
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    turso_connect_autocommit,
+from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO, SCHEMA_XUEQIU
+from alphavault.db.postgres_db import (
+    PostgresEngine,
+    postgres_connect_autocommit,
 )
 
 
@@ -16,6 +17,8 @@ _SQL_DIR = Path(__file__).resolve().parent / "sql"
 _SCHEMA_TARGET_SOURCE = "source"
 _SCHEMA_TARGET_STANDARD = "standard"
 _SCHEMA_TARGET_ALL = "all"
+_SCHEMA_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SCHEMA_TEMPLATE_NAME = "{{schema_name}}"
 _SCHEMA_PATHS = {
     _SCHEMA_TARGET_SOURCE: _SQL_DIR / "source_schema.sql",
     _SCHEMA_TARGET_STANDARD: _SQL_DIR / "standard_schema.sql",
@@ -66,31 +69,68 @@ def iter_cloud_schema_statements(sql_text: str) -> Iterator[str]:
         raise ValueError("incomplete_cloud_schema_sql")
 
 
+def _normalize_schema_name(schema_name: str | None) -> str:
+    resolved = str(schema_name or "").strip()
+    if not resolved:
+        raise ValueError("missing_cloud_schema_name")
+    if _SCHEMA_NAME_RE.fullmatch(resolved) is None:
+        raise ValueError(f"invalid_cloud_schema_name:{resolved}")
+    return resolved
+
+
+def render_cloud_schema_sql(sql_text: str, *, schema_name: str) -> str:
+    return str(sql_text or "").replace(
+        _SCHEMA_TEMPLATE_NAME,
+        _normalize_schema_name(schema_name),
+    )
+
+
+def _resolve_schema_jobs(
+    *, target: str, schema_name: str | None
+) -> tuple[tuple[str, str], ...]:
+    normalized = _normalize_schema_target(target)
+    if normalized == _SCHEMA_TARGET_ALL:
+        return (
+            (_SCHEMA_TARGET_SOURCE, SCHEMA_WEIBO),
+            (_SCHEMA_TARGET_SOURCE, SCHEMA_XUEQIU),
+            (_SCHEMA_TARGET_STANDARD, SCHEMA_STANDARD),
+        )
+    return ((normalized, _normalize_schema_name(schema_name)),)
+
+
 @contextmanager
 def _use_conn(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> Iterator[TursoConnection]:
-    if isinstance(engine_or_conn, TursoConnection):
-        yield engine_or_conn
+    engine_or_conn: PostgresEngine | Any,
+) -> Iterator[Any]:
+    if isinstance(engine_or_conn, PostgresEngine):
+        with postgres_connect_autocommit(engine_or_conn) as conn:
+            yield conn
         return
-    with turso_connect_autocommit(engine_or_conn) as conn:
-        yield conn
+    yield engine_or_conn
 
 
 def apply_cloud_schema(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | Any,
     *,
     target: str = _SCHEMA_TARGET_ALL,
+    schema_name: str | None = None,
 ) -> None:
     with _use_conn(engine_or_conn) as conn:
-        for statement in iter_cloud_schema_statements(
-            load_cloud_schema_sql(target=target)
+        for sql_target, resolved_schema_name in _resolve_schema_jobs(
+            target=target,
+            schema_name=schema_name,
         ):
-            conn.execute(statement)
+            rendered_sql = render_cloud_schema_sql(
+                load_cloud_schema_sql(target=sql_target),
+                schema_name=resolved_schema_name,
+            )
+            for statement in iter_cloud_schema_statements(rendered_sql):
+                conn.execute(statement)
 
 
 __all__ = [
     "apply_cloud_schema",
     "iter_cloud_schema_statements",
     "load_cloud_schema_sql",
+    "render_cloud_schema_sql",
 ]

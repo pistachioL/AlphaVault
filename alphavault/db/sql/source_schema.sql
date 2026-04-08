@@ -1,7 +1,9 @@
--- AlphaVault source Turso schema
--- 给 weibo / xueqiu 这类 source 库使用
+-- AlphaVault source Postgres schema
+-- 给 weibo / xueqiu 这类 source schema 使用
 
-CREATE TABLE IF NOT EXISTS posts (
+CREATE SCHEMA IF NOT EXISTS {{schema_name}};
+
+CREATE TABLE IF NOT EXISTS {{schema_name}}.posts (
     post_uid TEXT PRIMARY KEY,
     platform TEXT NOT NULL,
     platform_post_id TEXT NOT NULL,
@@ -18,7 +20,7 @@ CREATE TABLE IF NOT EXISTS posts (
     ingested_at INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS assertions (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.assertions (
     assertion_id TEXT PRIMARY KEY,
     post_uid TEXT NOT NULL,
     idx INTEGER NOT NULL CHECK (idx >= 1),
@@ -30,7 +32,7 @@ CREATE TABLE IF NOT EXISTS assertions (
     UNIQUE(post_uid, idx)
 );
 
-CREATE TABLE IF NOT EXISTS assertion_mentions (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.assertion_mentions (
     assertion_id TEXT NOT NULL,
     mention_seq INTEGER NOT NULL CHECK (mention_seq >= 1),
     mention_text TEXT NOT NULL,
@@ -41,7 +43,7 @@ CREATE TABLE IF NOT EXISTS assertion_mentions (
     PRIMARY KEY (assertion_id, mention_seq)
 );
 
-CREATE TABLE IF NOT EXISTS assertion_entities (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.assertion_entities (
     assertion_id TEXT NOT NULL,
     entity_key TEXT NOT NULL,
     entity_type TEXT NOT NULL,
@@ -50,7 +52,7 @@ CREATE TABLE IF NOT EXISTS assertion_entities (
     PRIMARY KEY (assertion_id, entity_key)
 );
 
-CREATE TABLE IF NOT EXISTS topic_clusters (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.topic_clusters (
     cluster_key TEXT PRIMARY KEY,
     cluster_name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -58,7 +60,7 @@ CREATE TABLE IF NOT EXISTS topic_clusters (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS topic_cluster_topics (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.topic_cluster_topics (
     topic_key TEXT NOT NULL,
     cluster_key TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'manual',
@@ -67,7 +69,7 @@ CREATE TABLE IF NOT EXISTS topic_cluster_topics (
     PRIMARY KEY (topic_key, cluster_key)
 );
 
-CREATE TABLE IF NOT EXISTS topic_cluster_post_overrides (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.topic_cluster_post_overrides (
     post_uid TEXT PRIMARY KEY,
     cluster_key TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
@@ -75,7 +77,7 @@ CREATE TABLE IF NOT EXISTS topic_cluster_post_overrides (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS entity_page_snapshot (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.entity_page_snapshot (
     entity_key TEXT PRIMARY KEY,
     entity_type TEXT NOT NULL DEFAULT '',
     header_json TEXT NOT NULL DEFAULT '{}',
@@ -86,7 +88,7 @@ CREATE TABLE IF NOT EXISTS entity_page_snapshot (
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS projection_dirty (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.projection_dirty (
     job_type TEXT NOT NULL,
     target_key TEXT NOT NULL,
     reason_mask INTEGER NOT NULL DEFAULT 0,
@@ -98,59 +100,59 @@ CREATE TABLE IF NOT EXISTS projection_dirty (
     PRIMARY KEY (job_type, target_key)
 );
 
-CREATE TABLE IF NOT EXISTS worker_cursor (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.worker_cursor (
     state_key TEXT PRIMARY KEY,
     cursor TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS worker_locks (
+CREATE TABLE IF NOT EXISTS {{schema_name}}.worker_locks (
     lock_key TEXT PRIMARY KEY,
     locked_until INTEGER NOT NULL,
     updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_created_at
-    ON posts(created_at);
+    ON {{schema_name}}.posts(created_at);
 
 CREATE INDEX IF NOT EXISTS idx_posts_author_created_at
-    ON posts(author, created_at);
+    ON {{schema_name}}.posts(author, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_posts_created_at_post_uid
-    ON posts(created_at, post_uid);
+    ON {{schema_name}}.posts(created_at, post_uid);
 
 CREATE INDEX IF NOT EXISTS idx_posts_platform_post_id
-    ON posts(platform_post_id);
+    ON {{schema_name}}.posts(platform_post_id);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_post_uid
-    ON assertions(post_uid);
+    ON {{schema_name}}.assertions(post_uid);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_action
-    ON assertions(action);
+    ON {{schema_name}}.assertions(action);
 
 CREATE INDEX IF NOT EXISTS idx_assertions_created_at
-    ON assertions(created_at);
+    ON {{schema_name}}.assertions(created_at);
 
 CREATE INDEX IF NOT EXISTS idx_assertion_mentions_text
-    ON assertion_mentions(mention_text);
+    ON {{schema_name}}.assertion_mentions(mention_text);
 
 CREATE INDEX IF NOT EXISTS idx_assertion_mentions_type_norm
-    ON assertion_mentions(mention_type, mention_norm);
+    ON {{schema_name}}.assertion_mentions(mention_type, mention_norm);
 
 CREATE INDEX IF NOT EXISTS idx_assertion_entities_key
-    ON assertion_entities(entity_key);
+    ON {{schema_name}}.assertion_entities(entity_key);
 
 CREATE INDEX IF NOT EXISTS idx_assertion_entities_type_key
-    ON assertion_entities(entity_type, entity_key);
+    ON {{schema_name}}.assertion_entities(entity_type, entity_key);
 
 CREATE INDEX IF NOT EXISTS idx_topic_cluster_topics_cluster_key
-    ON topic_cluster_topics(cluster_key);
+    ON {{schema_name}}.topic_cluster_topics(cluster_key);
 
 CREATE INDEX IF NOT EXISTS idx_topic_cluster_post_overrides_cluster_key
-    ON topic_cluster_post_overrides(cluster_key);
+    ON {{schema_name}}.topic_cluster_post_overrides(cluster_key);
 
 CREATE INDEX IF NOT EXISTS idx_entity_page_snapshot_updated
-    ON entity_page_snapshot(updated_at);
+    ON {{schema_name}}.entity_page_snapshot(updated_at);
 
 CREATE INDEX IF NOT EXISTS idx_projection_dirty_claimable
-    ON projection_dirty(job_type, claim_until, dirty_since, last_dirty_at, target_key);
+    ON {{schema_name}}.projection_dirty(job_type, claim_until, dirty_since, last_dirty_at, target_key);

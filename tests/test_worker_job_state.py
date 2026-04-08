@@ -1,28 +1,19 @@
 from __future__ import annotations
 
-import libsql
-
+from alphavault.constants import SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
-from alphavault.db.turso_db import TursoConnection
 
 
-def test_apply_cloud_schema_uses_worker_job_state_target_tables() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        apply_cloud_schema(conn)
-        table_names = {
-            str(row["name"])
-            for row in conn.execute(
-                """
-SELECT name
-FROM sqlite_schema
-WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-"""
-            )
-            .mappings()
-            .all()
-        }
-    finally:
-        conn.close()
+def test_apply_cloud_schema_uses_worker_job_state_target_tables(pg_conn) -> None:
+    apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
+    rows = pg_conn.execute(
+        """
+SELECT tablename
+FROM pg_tables
+WHERE schemaname = %(schema_name)s
+""",
+        {"schema_name": SCHEMA_WEIBO},
+    ).fetchall()
+    table_names = {str(row[0]) for row in rows}
 
     assert {"worker_cursor", "worker_locks"}.issubset(table_names)
