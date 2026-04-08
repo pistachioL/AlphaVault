@@ -11,6 +11,8 @@ dependencies = [
   "litellm",
   "opencc",
   "pandas",
+  "psycopg",
+  "psycopg-pool",
   "python-dotenv",
   "redis",
   "reflex>=0.8.28.post1",
