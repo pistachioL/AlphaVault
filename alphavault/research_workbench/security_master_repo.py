@@ -6,8 +6,7 @@ from alphavault.db.sql.research_workbench import (
     upsert_security_master_stock as upsert_security_master_stock_sql,
 )
 from alphavault.db.turso_db import TursoConnection, TursoEngine, turso_savepoint
-from alphavault.domains.stock.key_match import normalize_stock_code
-from alphavault.domains.stock.keys import normalize_stock_key
+from alphavault.domains.stock.keys import normalize_stock_key, stock_value
 from alphavault.infra.entity_match_redis import (
     sync_stock_name_shadow_dict_best_effort,
 )
@@ -37,6 +36,16 @@ def _resolve_market(*, stock_key: str, market: str) -> str:
     return _clean_text(stock_key.rsplit(".", 1)[1]).upper()
 
 
+def _resolve_code(*, stock_key: str, code: str) -> str:
+    stock_text = stock_value(stock_key)
+    if "." in stock_text:
+        code_part, _market = stock_text.rsplit(".", 1)
+        code_text = _clean_text(code_part).upper()
+        if code_text:
+            return code_text
+    return _clean_text(code).upper()
+
+
 def _build_security_master_upsert_payload(
     *,
     stock_key: str,
@@ -46,9 +55,9 @@ def _build_security_master_upsert_payload(
     now: str,
 ) -> dict[str, str] | None:
     resolved_stock_key = normalize_stock_key(stock_key)
-    resolved_code = normalize_stock_code(code)
-    resolved_name = _clean_text(official_name)
     resolved_market = _resolve_market(stock_key=resolved_stock_key, market=market)
+    resolved_code = _resolve_code(stock_key=resolved_stock_key, code=code)
+    resolved_name = _clean_text(official_name)
     if (
         not resolved_stock_key
         or not resolved_code

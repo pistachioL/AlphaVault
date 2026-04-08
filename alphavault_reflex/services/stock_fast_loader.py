@@ -16,6 +16,7 @@ from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
+from alphavault.domains.stock.keys import stock_key_lookup_candidates
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
 from alphavault.research_workbench.service import (
     get_research_workbench_engine_from_env,
@@ -51,6 +52,18 @@ WHERE relation_type = 'stock_alias'
 ORDER BY right_key ASC
 LIMIT :limit
 """.format(relations_table=RESEARCH_RELATIONS_TABLE)
+
+
+def _dedupe_stock_keys(keys: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw_key in keys:
+        key = str(raw_key or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
 
 
 def _load_stock_alias_keys(conn: Any, *, stock_key: str) -> list[str]:
@@ -113,15 +126,21 @@ def load_stock_trade_sources_fast_cached(
     if not normalized_key:
         return pd.DataFrame(), pd.DataFrame()
     limit = max(1, int(per_source_limit or FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE))
-    alias_keys = list(load_stock_alias_keys_cached(normalized_key))
+    stock_keys = _dedupe_stock_keys(
+        stock_key_lookup_candidates(normalized_key)
+        + list(load_stock_alias_keys_cached(normalized_key))
+    )
+    if not stock_keys:
+        return pd.DataFrame(), pd.DataFrame()
 
     engine = ensure_turso_engine(db_url, auth_token)
     with turso_connect_autocommit(engine) as conn:
-        params: dict[str, object] = {"stock_key": normalized_key, "limit": limit}
+        params: dict[str, object] = {"stock_key": stock_keys[0], "limit": limit}
         key_clause = "ae_filter.entity_key = :stock_key"
-        if alias_keys:
-            placeholders = make_in_placeholders(prefix="k", count=len(alias_keys))
-            params.update(make_in_params(prefix="k", values=alias_keys))
+        if len(stock_keys) > 1:
+            other_keys = stock_keys[1:]
+            placeholders = make_in_placeholders(prefix="k", count=len(other_keys))
+            params.update(make_in_params(prefix="k", values=other_keys))
             key_clause = (
                 "(ae_filter.entity_key = :stock_key "
                 f"OR ae_filter.entity_key IN ({placeholders}))"

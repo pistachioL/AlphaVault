@@ -8,6 +8,10 @@ import pandas as pd
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.turso_db import TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.domains.stock.keys import (
+    normalize_stock_key as _normalize_stock_key,
+    stock_key_lookup_candidates,
+)
 from alphavault.domains.thread_tree.service import build_post_tree_map
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
 
@@ -39,10 +43,7 @@ WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 
 
 def normalize_stock_key(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    return text if text.startswith("stock:") else f"stock:{text}"
+    return _normalize_stock_key(value)
 
 
 def _window_cutoff_str(days: int) -> str:
@@ -94,7 +95,7 @@ def _load_stock_assertions(
         "limit": max(1, int(max_rows)),
     }
 
-    keys = [str(stock_key or "").strip()] + _alias_keys_for_stock(
+    keys = stock_key_lookup_candidates(stock_key) + _alias_keys_for_stock(
         stock_relations,
         stock_key=stock_key,
     )

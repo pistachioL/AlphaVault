@@ -13,6 +13,7 @@ _ENTITY_PREFIX_BY_MENTION_TYPE = {
     "keyword": "keyword",
 }
 _RAW_CN_STOCK_CODE_RE = re.compile(r"^\d{6}$")
+_RAW_PREFIXED_CN_STOCK_CODE_RE = re.compile(r"^(SH|SZ|BJ)(\d{6})$")
 _RAW_HK_STOCK_CODE_RE = re.compile(r"^\d{4,5}$")
 _RAW_US_STOCK_CODE_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}$")
 
@@ -48,6 +49,14 @@ def _guess_cn_market(code: str) -> str:
     return ""
 
 
+def _coerce_prefixed_cn_stock_code(raw: str) -> str:
+    matched = _RAW_PREFIXED_CN_STOCK_CODE_RE.match(raw)
+    if matched is None:
+        return ""
+    market, code = matched.groups()
+    return f"stock:{code}.{market}"
+
+
 def coerce_stock_code_entity_key(value: object) -> str:
     raw = _clean_text(value).upper()
     if not raw:
@@ -58,6 +67,9 @@ def coerce_stock_code_entity_key(value: object) -> str:
         market = _guess_cn_market(raw)
         if market:
             return f"stock:{raw}.{market}"
+    prefixed_cn_key = _coerce_prefixed_cn_stock_code(raw)
+    if prefixed_cn_key:
+        return prefixed_cn_key
     if _RAW_HK_STOCK_CODE_RE.match(raw):
         return f"stock:{raw}.HK"
     if _RAW_US_STOCK_CODE_RE.match(raw):

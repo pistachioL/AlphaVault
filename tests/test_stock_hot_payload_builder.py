@@ -244,3 +244,62 @@ def test_build_stock_hot_payload_reads_stock_entity_key_instead_of_topic_key() -
         assert counters == {"signal_total": 1}
     finally:
         conn.close()
+
+
+def test_build_stock_hot_payload_reads_legacy_prefixed_cn_entity_key_for_canonical_stock() -> (
+    None
+):
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        _setup_tables(conn)
+        conn.execute(
+            INSERT_POST_SQL,
+            {
+                "post_uid": "xueqiu:1",
+                "platform_post_id": "1",
+                "author": "alice",
+                "created_at": "2099-01-03 00:00:00",
+                "url": "https://example.com/xueqiu/1",
+                "raw_text": "原文",
+                "processed_at": "2099-01-03 00:00:01",
+            },
+        )
+        conn.execute(
+            INSERT_ASSERTION_SQL,
+            {
+                "assertion_id": "xueqiu:1#1",
+                "post_uid": "xueqiu:1",
+                "idx": 1,
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "旧坏 key 也要进规范个股页",
+                "evidence": "旧坏 key 也要进规范个股页",
+                "created_at": "2099-01-03 00:00:00",
+            },
+        )
+        conn.execute(
+            INSERT_ASSERTION_ENTITY_SQL,
+            {
+                "assertion_id": "xueqiu:1#1",
+                "entity_key": "stock:SZ000725.US",
+                "entity_type": "stock",
+                "match_source": "stock_code",
+                "is_primary": 1,
+            },
+        )
+
+        payload = build_stock_hot_payload(
+            conn,
+            stock_key="stock:000725.SZ",
+            signal_window_days=30,
+            signal_cap=10,
+        )
+
+        signal_top = payload.get("signal_top") or []
+        assert isinstance(signal_top, list)
+        assert signal_top
+        assert payload.get("entity_key") == "stock:000725.SZ"
+        assert (payload.get("header") or {}) == {"title": "000725.SZ"}
+        assert signal_top[0].get("post_uid") == "xueqiu:1"
+    finally:
+        conn.close()

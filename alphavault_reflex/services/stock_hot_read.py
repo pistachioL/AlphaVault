@@ -8,6 +8,10 @@ import pandas as pd
 
 from alphavault.db.turso_db import ensure_turso_engine
 from alphavault.db.turso_env import load_configured_turso_sources_from_env
+from alphavault.domains.stock.keys import (
+    normalize_stock_key as _canonical_stock_key,
+    stock_key_lookup_candidates,
+)
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_stock_cache import load_entity_page_signal_snapshot
 from alphavault_reflex.services.turso_read import (
@@ -27,10 +31,7 @@ _STOCK_SIGNAL_CAP = 500
 
 
 def _normalize_stock_key(value: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    return text if text.startswith("stock:") else f"stock:{text}"
+    return _canonical_stock_key(value)
 
 
 @lru_cache(maxsize=256)
@@ -68,13 +69,13 @@ def _resolve_stock_key_candidates(stock_key: str) -> tuple[list[str], str]:
     normalized = _normalize_stock_key(stock_key)
     if not normalized:
         return [], ""
-    out = [normalized]
+    out = stock_key_lookup_candidates(normalized)
     relations, relation_err = load_stock_alias_relations_from_env()
     if relation_err or relations.empty:
         if relation_err:
             return [], relation_err
         return out, ""
-    seen = {normalized}
+    seen = set(out)
     for _, row in relations.iterrows():
         relation_type = str(row.get("relation_type") or "").strip()
         relation_label = str(row.get("relation_label") or "").strip()
@@ -82,12 +83,12 @@ def _resolve_stock_key_candidates(stock_key: str) -> tuple[list[str], str]:
             continue
         right_key = str(row.get("right_key") or "").strip()
         left_key = str(row.get("left_key") or "").strip()
-        if right_key != normalized or not left_key.startswith("stock:"):
+        if left_key != normalized or not right_key.startswith("stock:"):
             continue
-        if left_key in seen:
+        if right_key in seen:
             continue
-        seen.add(left_key)
-        out.append(left_key)
+        seen.add(right_key)
+        out.append(right_key)
     return out, ""
 
 
@@ -305,7 +306,6 @@ def load_stock_cached_view_from_env(
     errors: list[str] = []
     selected_hot_rows: list[dict[str, object]] = []
     selected_progress_rows: list[dict[str, object]] = []
-    selected_key = normalized
 
     for candidate in key_candidates:
         hot_rows: list[dict[str, object]] = []
@@ -345,15 +345,13 @@ def load_stock_cached_view_from_env(
         if merged_signals:
             selected_hot_rows = hot_rows
             selected_progress_rows = progress_rows
-            selected_key = candidate
             break
         if not selected_hot_rows and (hot_rows or progress_rows):
             selected_hot_rows = hot_rows
             selected_progress_rows = progress_rows
-            selected_key = candidate
 
     page_title = ""
-    entity_key = selected_key
+    entity_key = normalized
     all_signals = _sort_signal_rows(
         [
             row
@@ -364,13 +362,18 @@ def load_stock_cached_view_from_env(
     for payload in selected_hot_rows:
         payload_entity = str(payload.get("entity_key") or "").strip()
         payload_title = _page_title(payload)
-        if payload_entity and payload_entity.startswith("stock:"):
-            entity_key = payload_entity
         if payload_title:
+            normalized_payload_entity = _normalize_stock_key(payload_entity)
+            if (
+                payload_entity.startswith("stock:")
+                and payload_title == payload_entity.removeprefix("stock:")
+                and normalized_payload_entity != payload_entity
+            ):
+                payload_title = entity_key.removeprefix("stock:")
             page_title = payload_title
             break
     if not page_title:
-        page_title = entity_key.removeprefix("stock:")
+        page_title = _normalize_stock_key(entity_key).removeprefix("stock:")
 
     signal_slice, signal_total_from_rows, safe_page = _slice_signals(
         all_signals,

@@ -15,6 +15,10 @@ BAD_STOCK_VALUE_SEPARATORS = {",", "，", "、"}
 STOCK_CODE_CN_RE = re.compile(r"^\d{6}\.(SH|SZ|BJ)$", re.IGNORECASE)
 STOCK_CODE_HK_RE = re.compile(r"^\d{4,5}\.HK$", re.IGNORECASE)
 STOCK_CODE_US_RE = re.compile(r"^[A-Z][A-Z0-9]{0,9}\.US$", re.IGNORECASE)
+_PREFIXED_CN_STOCK_CODE_RE = re.compile(
+    r"^(SH|SZ|BJ)(\d{6})(?:\.US)?$",
+    re.IGNORECASE,
+)
 
 
 def has_bad_stock_separator(value: str) -> bool:
@@ -32,7 +36,14 @@ def is_stock_code_value(value: str) -> bool:
 
 
 def normalize_stock_code(value: str) -> str:
-    return str(value or "").strip().upper()
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    matched = _PREFIXED_CN_STOCK_CODE_RE.match(text)
+    if matched is None:
+        return text
+    market, code = matched.groups()
+    return f"{code}.{market}"
 
 
 def split_stock_value_tokens(value: str) -> list[str]:

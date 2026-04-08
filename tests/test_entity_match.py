@@ -58,6 +58,36 @@ def test_resolve_assertion_mentions_creates_candidate_for_unconfirmed_alias() ->
         conn.close()
 
 
+def test_resolve_assertion_mentions_normalizes_prefixed_cn_stock_code() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+
+        result = resolve_assertion_mentions(
+            conn,
+            assertion_mentions=[
+                {
+                    "mention_text": "SZ000725",
+                    "mention_type": "stock_code",
+                    "confidence": 0.95,
+                }
+            ],
+        )
+
+        assert result.entities == [
+            {
+                "entity_key": "stock:000725.SZ",
+                "entity_type": "stock",
+                "match_source": "stock_code",
+                "is_primary": 1,
+            }
+        ]
+        assert result.relation_candidates == []
+        assert result.alias_task_keys == []
+    finally:
+        conn.close()
+
+
 def test_resolve_assertion_mentions_uses_confirmed_alias_relation() -> None:
     conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     try:

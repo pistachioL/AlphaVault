@@ -15,3 +15,7 @@ def test_canonical_stock_key_normalizes_code_and_name_aliases() -> None:
 def test_build_stock_route_and_sector_route() -> None:
     assert build_stock_route("stock:600519.SH") == "/research/stocks/600519.SH"
     assert build_sector_route("cluster:gold") == "/research/sectors/gold"
+
+
+def test_build_stock_route_normalizes_prefixed_cn_slug() -> None:
+    assert build_stock_route("stock:SZ000725.US") == "/research/stocks/000725.SZ"

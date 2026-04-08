@@ -49,6 +49,200 @@ def test_load_stock_cached_view_without_running_worker_has_no_processing_warning
     assert bool(payload.get("worker_running", True)) is False
 
 
+def test_load_stock_cached_view_normalizes_prefixed_cn_slug_before_snapshot_lookup(
+    monkeypatch,
+) -> None:
+    _setup_single_source(monkeypatch)
+    seen_stock_keys: list[str] = []
+
+    def _fake_load_snapshot(_engine, *, stock_key: str) -> dict[str, object]:
+        seen_stock_keys.append(stock_key)
+        return {
+            "entity_key": stock_key,
+            "entity_type": "stock",
+            "header": {"title": stock_key.removeprefix("stock:")},
+            "signal_top": [
+                {
+                    "post_uid": "xueqiu:1",
+                    "summary": "规范 key 先命中",
+                    "action": "trade.buy",
+                    "author": "alice",
+                    "created_at": "2099-01-01 00:00",
+                    "created_at_line": "2099-01-01 00:00 · 0分钟前",
+                }
+            ],
+            "related": [],
+            "counters": {"signal_total": 1},
+        }
+
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        _fake_load_snapshot,
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "SZ000725.US",
+        signal_page=1,
+        signal_page_size=5,
+    )
+
+    assert seen_stock_keys == ["stock:000725.SZ"]
+    assert payload["entity_key"] == "stock:000725.SZ"
+    assert payload["page_title"] == "000725.SZ"
+
+
+def test_load_stock_cached_view_falls_back_to_legacy_prefixed_cn_snapshot(
+    monkeypatch,
+) -> None:
+    _setup_single_source(monkeypatch)
+    seen_stock_keys: list[str] = []
+
+    def _fake_load_snapshot(_engine, *, stock_key: str) -> dict[str, object]:
+        seen_stock_keys.append(stock_key)
+        if stock_key == "stock:000725.SZ":
+            return {}
+        return {
+            "entity_key": "stock:SZ000725.US",
+            "entity_type": "stock",
+            "header": {"title": "SZ000725.US"},
+            "signal_top": [
+                {
+                    "post_uid": "xueqiu:1",
+                    "summary": "旧快照",
+                    "action": "trade.buy",
+                    "author": "alice",
+                    "created_at": "2099-01-01 00:00",
+                    "created_at_line": "2099-01-01 00:00 · 0分钟前",
+                }
+            ],
+            "related": [],
+            "counters": {"signal_total": 1},
+        }
+
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        _fake_load_snapshot,
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "SZ000725.US",
+        signal_page=1,
+        signal_page_size=5,
+    )
+
+    assert seen_stock_keys == ["stock:000725.SZ", "stock:SZ000725.US"]
+    assert payload["entity_key"] == "stock:000725.SZ"
+    assert payload["page_title"] == "000725.SZ"
+    assert payload["signal_total"] == 1
+
+
+def test_resolve_stock_key_candidates_appends_alias_keys_for_canonical_stock(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_alias_relations_from_env",
+        lambda: (
+            pd.DataFrame(
+                [
+                    {
+                        "relation_type": "stock_alias",
+                        "left_key": "stock:000725.SZ",
+                        "right_key": "stock:京东方A",
+                        "relation_label": "alias_of",
+                    }
+                ]
+            ),
+            "",
+        ),
+    )
+
+    stock_keys, err = stock_hot_read._resolve_stock_key_candidates("stock:000725.SZ")
+
+    assert err == ""
+    assert stock_keys == ["stock:000725.SZ", "stock:SZ000725.US", "stock:京东方A"]
+
+
+def test_load_stock_cached_view_keeps_canonical_entity_key_when_alias_snapshot_hits(
+    monkeypatch,
+) -> None:
+    _setup_single_source(monkeypatch)
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_alias_relations_from_env",
+        lambda: (
+            pd.DataFrame(
+                [
+                    {
+                        "relation_type": "stock_alias",
+                        "left_key": "stock:000725.SZ",
+                        "right_key": "stock:京东方A",
+                        "relation_label": "alias_of",
+                    }
+                ]
+            ),
+            "",
+        ),
+    )
+    seen_stock_keys: list[str] = []
+
+    def _fake_load_snapshot(_engine, *, stock_key: str) -> dict[str, object]:
+        seen_stock_keys.append(stock_key)
+        if stock_key != "stock:京东方A":
+            return {}
+        return {
+            "entity_key": "stock:京东方A",
+            "entity_type": "stock",
+            "header": {"title": "京东方A"},
+            "signal_top": [
+                {
+                    "post_uid": "xueqiu:2",
+                    "summary": "alias 快照命中",
+                    "action": "trade.buy",
+                    "author": "alice",
+                    "created_at": "2099-01-02 00:00",
+                    "created_at_line": "2099-01-02 00:00 · 0分钟前",
+                }
+            ],
+            "related": [],
+            "counters": {"signal_total": 1},
+        }
+
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        _fake_load_snapshot,
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "000725.SZ",
+        signal_page=1,
+        signal_page_size=5,
+    )
+
+    assert seen_stock_keys == ["stock:000725.SZ", "stock:SZ000725.US", "stock:京东方A"]
+    assert payload["entity_key"] == "stock:000725.SZ"
+    assert payload["page_title"] == "京东方A"
+    assert payload["signal_total"] == 1
+
+
 def test_load_stock_cached_view_with_running_worker_includes_status(
     monkeypatch,
 ) -> None:

@@ -45,6 +45,26 @@ def test_build_stock_object_index_merges_code_and_full_name_but_not_short_alias(
     assert resolve_stock_object_key(assertions, stock_key="stock:紫金") == "stock:紫金"
 
 
+def test_build_stock_object_index_normalizes_prefixed_cn_code_with_wrong_us_suffix() -> (
+    None
+):
+    assertions = pd.DataFrame(
+        [
+            {
+                "post_uid": "p1",
+                "entity_key": "stock:SZ000725.US",
+                "stock_codes": ["SZ000725.US"],
+                "stock_names": ["京东方A"],
+            }
+        ]
+    )
+
+    index = build_stock_object_index(assertions)
+
+    assert index.resolve("stock:SZ000725.US") == "stock:000725.SZ"
+    assert index.page_title("stock:SZ000725.US") == "京东方A (000725.SZ)"
+
+
 def test_filter_assertions_for_stock_object_uses_accepted_alias_relations() -> None:
     assertions = pd.DataFrame(
         [

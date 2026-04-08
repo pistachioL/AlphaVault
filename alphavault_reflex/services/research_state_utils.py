@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import unquote
 
+from alphavault.domains.stock.keys import normalize_stock_key as _normalize_stock_key
 from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
@@ -62,12 +63,7 @@ def split_route_parts(value: object) -> tuple[str, ...]:
 
 
 def normalize_stock_key(stock_slug: str) -> str:
-    slug = str(stock_slug or "").strip()
-    if not slug:
-        return ""
-    if slug.startswith("stock:"):
-        return slug
-    return f"stock:{slug}"
+    return _normalize_stock_key(stock_slug)
 
 
 def normalize_signal_page(value: object) -> int:

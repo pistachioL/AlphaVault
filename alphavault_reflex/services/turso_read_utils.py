@@ -5,6 +5,7 @@ from pandas.api.types import is_datetime64_any_dtype
 
 from alphavault.domains.common.json_list import parse_json_list
 from alphavault.domains.stock.key_match import is_stock_code_value, normalize_stock_code
+from alphavault.domains.stock.keys import normalize_stock_key as _normalize_stock_key
 from alphavault.domains.thread_tree.api import extract_platform_post_id
 
 
@@ -58,12 +59,7 @@ def ensure_platform_post_id(posts: pd.DataFrame) -> pd.DataFrame:
 
 
 def normalize_stock_key_for_fast_query(stock_key: str) -> str:
-    raw = str(stock_key or "").strip()
-    if not raw:
-        return ""
-    if raw.startswith("stock:"):
-        return raw
-    return f"stock:{raw}"
+    return _normalize_stock_key(stock_key)
 
 
 def stock_code_from_stock_key(stock_key: str) -> str:

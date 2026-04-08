@@ -238,6 +238,41 @@ ORDER BY stock_key
         conn.close()
 
 
+def test_upsert_security_master_stock_keeps_code_column_as_pure_code() -> None:
+    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    try:
+        ensure_research_workbench_schema(conn)
+        upsert_security_master_stock(
+            conn,
+            stock_key="stock:SZ000725.US",
+            market="SZ",
+            code="SZ000725",
+            official_name="京东方A",
+        )
+
+        rows = (
+            conn.execute(
+                f"""
+SELECT stock_key, market, code, official_name
+FROM {RESEARCH_SECURITY_MASTER_TABLE}
+ORDER BY stock_key
+"""
+            )
+            .mappings()
+            .all()
+        )
+        assert rows == [
+            {
+                "stock_key": "stock:000725.SZ",
+                "market": "SZ",
+                "code": "000725",
+                "official_name": "京东方A",
+            }
+        ]
+    finally:
+        conn.close()
+
+
 def test_upsert_security_master_stock_refreshes_redis_name_shadow_dict(
     monkeypatch,
 ) -> None:
