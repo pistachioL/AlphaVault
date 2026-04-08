@@ -12,6 +12,7 @@ from alphavault.constants import ENV_POSTGRES_POOL_MAX_SIZE
 
 _DEFAULT_POSTGRES_POOL_MAX_SIZE = 4
 _NAMED_TO_PYFORMAT = sqlparams.SQLParams("named", "pyformat", escape_char=True)
+_QMARK_TO_FORMAT = sqlparams.SQLParams("qmark", "format", escape_char=True)
 _T = TypeVar("_T")
 
 
@@ -28,13 +29,18 @@ def _to_sequence(values: Sequence[Any]) -> tuple[Any, ...]:
     return tuple(values)
 
 
-def _bind_single(query: str, params: Any) -> tuple[str, Mapping[str, Any] | tuple[Any, ...]]:
+def _bind_single(
+    query: str, params: Any
+) -> tuple[str, Mapping[str, Any] | tuple[Any, ...] | None]:
     if params is None:
-        return query, ()
+        return query, None
     if isinstance(params, Mapping):
         converted_query, converted_params = _NAMED_TO_PYFORMAT.format(query, params)
         return str(converted_query), converted_params
     if isinstance(params, (list, tuple)):
+        if "?" in query:
+            converted_query, converted_params = _QMARK_TO_FORMAT.format(query, params)
+            return str(converted_query), _to_sequence(converted_params)
         return query, _to_sequence(params)
     raise TypeError(f"unsupported_sql_params_type: {type(params).__name__}")
 
@@ -49,6 +55,9 @@ def _bind_many(
         converted_query, converted_many = _NAMED_TO_PYFORMAT.formatmany(query, items)
         return str(converted_query), list(converted_many)
     if isinstance(first, (list, tuple)):
+        if "?" in query:
+            converted_query, converted_many = _QMARK_TO_FORMAT.formatmany(query, items)
+            return str(converted_query), [_to_sequence(item) for item in converted_many]
         return query, [_to_sequence(item) for item in items]
     raise TypeError(f"unsupported_sql_many_item_type: {type(first).__name__}")
 

@@ -8,8 +8,11 @@ from alphavault.db.sql.research_workbench import (
     update_candidate_status,
     upsert_relation_candidate as upsert_relation_candidate_sql,
 )
-from alphavault.db.turso_db import TursoConnection, TursoEngine
-from alphavault.db.turso_db import run_turso_transaction
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    run_postgres_transaction,
+)
 from alphavault.infra.entity_match_redis import (
     sync_stock_alias_shadow_dict_best_effort,
 )
@@ -33,7 +36,7 @@ def _now_str() -> str:
 
 
 def upsert_relation_candidate(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     candidate_id: str,
     relation_type: str,
@@ -70,7 +73,7 @@ def upsert_relation_candidate(
 
 
 def list_pending_candidates(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
 ) -> list[dict[str, object]]:
     try:
         with use_conn(engine_or_conn) as conn:
@@ -87,7 +90,7 @@ def list_pending_candidates(
 
 
 def list_pending_candidates_for_left_key(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     left_key: str,
     limit: int = 12,
@@ -113,7 +116,7 @@ def list_pending_candidates_for_left_key(
 
 
 def list_candidate_status_map(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     candidate_ids: list[str],
 ) -> dict[str, str]:
     cleaned = [
@@ -141,7 +144,7 @@ def list_candidate_status_map(
 
 
 def _set_candidate_status(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     candidate_id: str,
     status: str,
@@ -162,7 +165,7 @@ def _set_candidate_status(
 
 
 def accept_relation_candidate(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     candidate_id: str,
     source: str,
@@ -191,7 +194,7 @@ def accept_relation_candidate(
             accepted_right_key = str(row.get("right_key") or "").strip()
             accepted_relation_label = str(row.get("relation_label") or "").strip()
 
-            def _accept(tx_conn: TursoConnection) -> None:
+            def _accept(tx_conn: PostgresConnection) -> None:
                 tx_conn.execute(
                     update_candidate_status(RESEARCH_RELATION_CANDIDATES_TABLE),
                     {
@@ -209,7 +212,7 @@ def accept_relation_candidate(
                     source=source,
                 )
 
-            run_turso_transaction(engine_or_conn, _accept)
+            run_postgres_transaction(engine_or_conn, _accept)
     except BaseException as err:
         handle_turso_error(engine_or_conn, err)
     if (
@@ -226,7 +229,7 @@ def accept_relation_candidate(
 
 
 def ignore_relation_candidate(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     candidate_id: str,
 ) -> None:
@@ -238,7 +241,7 @@ def ignore_relation_candidate(
 
 
 def block_relation_candidate(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     candidate_id: str,
 ) -> None:

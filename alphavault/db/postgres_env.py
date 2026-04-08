@@ -29,4 +29,24 @@ def load_configured_postgres_sources_from_env() -> list[PostgresSource]:
     ]
 
 
-__all__ = ["PostgresSource", "load_configured_postgres_sources_from_env"]
+def require_configured_postgres_sources_from_env() -> list[PostgresSource]:
+    sources = load_configured_postgres_sources_from_env()
+    if sources:
+        return sources
+    raise RuntimeError(f"missing {ENV_POSTGRES_DSN}")
+
+
+def require_postgres_source_from_env(name: str) -> PostgresSource:
+    wanted = str(name or "").strip().lower()
+    for source in require_configured_postgres_sources_from_env():
+        if source.name == wanted:
+            return source
+    raise RuntimeError(f"unknown_postgres_source:{wanted}")
+
+
+__all__ = [
+    "PostgresSource",
+    "load_configured_postgres_sources_from_env",
+    "require_configured_postgres_sources_from_env",
+    "require_postgres_source_from_env",
+]

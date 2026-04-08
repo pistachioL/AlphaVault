@@ -60,7 +60,7 @@ ON CONFLICT(relation_id) DO UPDATE SET
 
 def upsert_relation_candidate(table: str) -> str:
     return f"""
-INSERT INTO {table}(
+INSERT INTO {table} AS target(
     candidate_id,
     relation_type,
     left_key,
@@ -98,7 +98,7 @@ ON CONFLICT(candidate_id) DO UPDATE SET
     score = excluded.score,
     ai_status = excluded.ai_status,
     status = CASE
-        WHEN status IN ('accepted', 'ignored', 'blocked') THEN status
+        WHEN target.status IN ('accepted', 'ignored', 'blocked') THEN target.status
         ELSE excluded.status
     END,
     updated_at = excluded.updated_at
@@ -222,7 +222,7 @@ ON CONFLICT(alias_key) DO UPDATE SET
 
 def upsert_alias_resolve_task_status(table: str) -> str:
     return f"""
-INSERT INTO {table}(
+INSERT INTO {table} AS target(
     alias_key,
     status,
     attempt_count,
@@ -245,15 +245,15 @@ VALUES (
 ON CONFLICT(alias_key) DO UPDATE SET
     status = excluded.status,
     sample_post_uid = CASE
-        WHEN COALESCE({table}.sample_post_uid, '') <> '' THEN {table}.sample_post_uid
+        WHEN COALESCE(target.sample_post_uid, '') <> '' THEN target.sample_post_uid
         ELSE excluded.sample_post_uid
     END,
     sample_evidence = CASE
-        WHEN COALESCE({table}.sample_evidence, '') <> '' THEN {table}.sample_evidence
+        WHEN COALESCE(target.sample_evidence, '') <> '' THEN target.sample_evidence
         ELSE excluded.sample_evidence
     END,
     sample_raw_text_excerpt = CASE
-        WHEN COALESCE({table}.sample_raw_text_excerpt, '') <> '' THEN {table}.sample_raw_text_excerpt
+        WHEN COALESCE(target.sample_raw_text_excerpt, '') <> '' THEN target.sample_raw_text_excerpt
         ELSE excluded.sample_raw_text_excerpt
     END,
     updated_at = excluded.updated_at

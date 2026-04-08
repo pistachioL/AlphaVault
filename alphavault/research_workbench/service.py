@@ -3,11 +3,9 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 
-from alphavault.constants import (
-    ENV_STANDARD_TURSO_AUTH_TOKEN,
-    ENV_STANDARD_TURSO_DATABASE_URL,
-)
-from alphavault.db.turso_db import TursoEngine, ensure_turso_engine
+from alphavault.constants import SCHEMA_STANDARD
+from alphavault.db.postgres_db import PostgresEngine, ensure_postgres_engine
+from alphavault.db.postgres_env import require_configured_postgres_sources_from_env
 from alphavault.env import load_dotenv_if_present
 
 
@@ -16,17 +14,23 @@ def _env_text(name: str) -> str:
 
 
 @lru_cache(maxsize=2)
-def _get_cached_research_workbench_engine(url: str, token: str) -> TursoEngine:
-    return ensure_turso_engine(url, token)
+def _get_cached_research_workbench_engine(dsn: str) -> PostgresEngine:
+    return ensure_postgres_engine(dsn)
 
 
-def get_research_workbench_engine_from_env() -> TursoEngine:
+def get_research_workbench_engine_from_env() -> PostgresEngine:
     load_dotenv_if_present()
-    url = _env_text(ENV_STANDARD_TURSO_DATABASE_URL)
-    if not url:
-        raise RuntimeError(f"missing {ENV_STANDARD_TURSO_DATABASE_URL}")
-    token = _env_text(ENV_STANDARD_TURSO_AUTH_TOKEN)
-    return _get_cached_research_workbench_engine(url, token)
+    standard_source = next(
+        (
+            source
+            for source in require_configured_postgres_sources_from_env()
+            if source.schema == SCHEMA_STANDARD
+        ),
+        None,
+    )
+    if standard_source is None:
+        raise RuntimeError(f"missing standard postgres source")
+    return _get_cached_research_workbench_engine(standard_source.dsn)
 
 
 __all__ = ["get_research_workbench_engine_from_env"]

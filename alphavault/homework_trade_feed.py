@@ -2,23 +2,22 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-from typing import Iterator
+from typing import Any, Iterator
 
+from alphavault.constants import SCHEMA_STANDARD
 from alphavault.content_hash import build_content_hash
 from alphavault.db.sql.homework_trade_feed import (
     select_homework_trade_feed,
     upsert_homework_trade_feed,
 )
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    is_turso_libsql_panic_error,
-    is_turso_stream_not_found_error,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    postgres_connect_autocommit,
 )
 from alphavault.timeutil import now_cst_str
 
-HOMEWORK_TRADE_FEED_TABLE = "homework_trade_feed"
+HOMEWORK_TRADE_FEED_TABLE = f"{SCHEMA_STANDARD}.homework_trade_feed"
 HOMEWORK_DEFAULT_VIEW_KEY = "default"
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -30,29 +29,21 @@ def _now_str() -> str:
 
 @contextmanager
 def _use_conn(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> Iterator[TursoConnection]:
-    if isinstance(engine_or_conn, TursoConnection):
-        yield engine_or_conn
+    engine_or_conn: PostgresEngine | PostgresConnection | Any,
+) -> Iterator[Any]:
+    if isinstance(engine_or_conn, PostgresEngine):
+        with postgres_connect_autocommit(engine_or_conn) as conn:
+            yield conn
         return
-    with turso_connect_autocommit(engine_or_conn) as conn:
-        yield conn
+    yield engine_or_conn
 
 
 def _handle_turso_error(
-    engine_or_conn: TursoEngine | TursoConnection, err: BaseException
+    engine_or_conn: PostgresEngine | PostgresConnection | Any, err: BaseException
 ) -> None:
+    del engine_or_conn
     if isinstance(err, _FATAL_BASE_EXCEPTIONS):
         raise err
-    engine = (
-        engine_or_conn._engine
-        if isinstance(engine_or_conn, TursoConnection)
-        else engine_or_conn
-    )
-    if engine is not None and (
-        is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)
-    ):
-        engine.dispose()
     raise err
 
 
@@ -122,7 +113,7 @@ def _coerce_non_negative_int(value: object, *, default: int) -> int:
 
 
 def _select_homework_trade_feed_row(
-    conn: TursoConnection,
+    conn: PostgresConnection | Any,
     *,
     view_key: str,
 ) -> dict[str, object]:
@@ -174,7 +165,7 @@ def _homework_trade_feed_row_hash(row: dict[str, object]) -> str:
 
 
 def save_homework_trade_feed(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection | Any,
     *,
     view_key: str,
     caption: str,
@@ -223,7 +214,7 @@ def save_homework_trade_feed(
 
 
 def load_homework_trade_feed(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection | Any,
     *,
     view_key: str,
 ) -> dict[str, object]:

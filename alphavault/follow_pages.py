@@ -14,6 +14,7 @@ import json
 
 import pandas as pd
 
+from alphavault.constants import SCHEMA_STANDARD
 from alphavault.timeutil import now_cst_str
 from alphavault.db.sql.follow_pages import (
     FOLLOW_KEYS_JSON_COLUMN,
@@ -21,12 +22,11 @@ from alphavault.db.sql.follow_pages import (
     select_follow_pages,
     upsert_follow_page as upsert_follow_page_sql,
 )
-from alphavault.db.turso_db import TursoEngine
-from alphavault.db.turso_db import turso_connect_autocommit
+from alphavault.db.postgres_db import PostgresEngine, postgres_connect_autocommit
 from alphavault.db.turso_pandas import turso_read_sql_df
 
 
-FOLLOW_PAGES_TABLE = "follow_pages"
+FOLLOW_PAGES_TABLE = f"{SCHEMA_STANDARD}.follow_pages"
 
 FOLLOW_TYPE_TOPIC = "topic"
 FOLLOW_TYPE_CLUSTER = "cluster"
@@ -50,14 +50,14 @@ def make_page_key(*, follow_type: str, follow_key: str) -> str:
     return f"{t}:{k}"
 
 
-def try_load_follow_pages(engine: TursoEngine) -> tuple[pd.DataFrame, str]:
+def try_load_follow_pages(engine: PostgresEngine) -> tuple[pd.DataFrame, str]:
     """
     Best-effort load follow_pages.
 
     Returns: (pages_df, error_message)
     """
     try:
-        with turso_connect_autocommit(engine) as conn:
+        with postgres_connect_autocommit(engine) as conn:
             pages = turso_read_sql_df(conn, select_follow_pages(FOLLOW_PAGES_TABLE))
         return pages, ""
     except Exception as exc:
@@ -65,7 +65,7 @@ def try_load_follow_pages(engine: TursoEngine) -> tuple[pd.DataFrame, str]:
 
 
 def upsert_follow_page(
-    engine: TursoEngine,
+    engine: PostgresEngine,
     *,
     follow_type: str,
     follow_key: str,
@@ -80,7 +80,7 @@ def upsert_follow_page(
         raise ValueError("Invalid follow_type/follow_key")
 
     now = _now_str()
-    with turso_connect_autocommit(engine) as conn:
+    with postgres_connect_autocommit(engine) as conn:
         follow_keys_json = "[]"
         if follow_type_norm == FOLLOW_TYPE_CLUSTER:
             follow_keys_json = "[]"
@@ -122,11 +122,11 @@ def upsert_follow_page(
     return page_key
 
 
-def delete_follow_page(engine: TursoEngine, *, page_key: str) -> int:
+def delete_follow_page(engine: PostgresEngine, *, page_key: str) -> int:
     key = str(page_key or "").strip()
     if not key:
         return 0
-    with turso_connect_autocommit(engine) as conn:
+    with postgres_connect_autocommit(engine) as conn:
         res = conn.execute(
             delete_follow_page_sql(FOLLOW_PAGES_TABLE),
             {"page_key": key},

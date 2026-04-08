@@ -5,7 +5,11 @@ from alphavault.db.sql.research_workbench import (
     select_security_master_by_stock_key,
     upsert_security_master_stock as upsert_security_master_stock_sql,
 )
-from alphavault.db.turso_db import TursoConnection, TursoEngine, turso_savepoint
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    run_postgres_transaction,
+)
 from alphavault.domains.stock.keys import normalize_stock_key, stock_value
 from alphavault.infra.entity_match_redis import (
     sync_stock_name_shadow_dict_best_effort,
@@ -76,7 +80,7 @@ def _build_security_master_upsert_payload(
 
 
 def upsert_security_master_stock(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_key: str,
     market: str,
@@ -120,7 +124,7 @@ def upsert_security_master_stock(
 
 
 def bulk_upsert_security_master_stocks(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     rows: list[dict[str, str]],
 ) -> int:
     if not rows:
@@ -141,19 +145,20 @@ def bulk_upsert_security_master_stocks(
     if not payloads:
         return 0
     try:
-        with use_conn(engine_or_conn) as conn:
-            with turso_savepoint(conn):
-                conn.execute(
-                    upsert_security_master_stock_sql(RESEARCH_SECURITY_MASTER_TABLE),
-                    payloads,
-                )
+        def _upsert_many(conn: PostgresConnection) -> None:
+            conn.execute(
+                upsert_security_master_stock_sql(RESEARCH_SECURITY_MASTER_TABLE),
+                payloads,
+            )
+
+        run_postgres_transaction(engine_or_conn, _upsert_many)
     except BaseException as err:
         handle_turso_error(engine_or_conn, err)
     return len(payloads)
 
 
 def get_stock_keys_by_official_names(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     official_names: list[str],
 ) -> dict[str, str]:
     cleaned_names = [_clean_text(item) for item in official_names if _clean_text(item)]

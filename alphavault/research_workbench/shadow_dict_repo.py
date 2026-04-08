@@ -4,7 +4,7 @@ from alphavault.db.sql.research_workbench import (
     select_all_security_master,
     select_all_stock_alias_relations,
 )
-from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
 from alphavault.domains.stock.keys import normalize_stock_key
 from alphavault.infra.entity_match_redis import (
     replace_stock_dict_shadow_best_effort,
@@ -42,7 +42,7 @@ def _select_unique_mapping(rows: list[tuple[str, str]]) -> dict[str, str]:
 
 
 def rebuild_stock_dict_shadow_best_effort(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
 ) -> bool:
     try:
         with use_conn(engine_or_conn) as conn:

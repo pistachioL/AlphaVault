@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from alphavault.db.sql.research_workbench import upsert_research_relation
-from alphavault.db.turso_db import TursoConnection, TursoEngine
-from alphavault.db.turso_db import run_turso_transaction
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    run_postgres_transaction,
+)
 from alphavault.infra.entity_match_redis import (
     sync_stock_alias_shadow_dict_best_effort,
 )
@@ -23,7 +26,7 @@ def _now_str() -> str:
 
 
 def record_relation(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     relation_type: str,
     left_key: str,
@@ -52,13 +55,13 @@ def record_relation(
 
 
 def record_stock_sector_relation(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_key: str,
     sector_key: str,
     source: str,
 ) -> None:
-    def _record(conn: TursoConnection) -> None:
+    def _record(conn: PostgresConnection) -> None:
         record_relation(
             conn,
             relation_type=RELATION_TYPE_STOCK_SECTOR,
@@ -68,17 +71,17 @@ def record_stock_sector_relation(
             source=source,
         )
 
-    run_turso_transaction(engine_or_conn, _record)
+    run_postgres_transaction(engine_or_conn, _record)
 
 
 def record_stock_alias_relation(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_key: str,
     alias_key: str,
     source: str,
 ) -> None:
-    def _record(conn: TursoConnection) -> None:
+    def _record(conn: PostgresConnection) -> None:
         record_relation(
             conn,
             relation_type=RELATION_TYPE_STOCK_ALIAS,
@@ -88,7 +91,7 @@ def record_stock_alias_relation(
             source=source,
         )
 
-    run_turso_transaction(engine_or_conn, _record)
+    run_postgres_transaction(engine_or_conn, _record)
     try:
         sync_stock_alias_shadow_dict_best_effort(
             stock_key=stock_key,

@@ -8,7 +8,7 @@ from alphavault.db.sql.research_workbench import (
     upsert_alias_resolve_task_attempt,
     upsert_alias_resolve_task_status,
 )
-from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
 from alphavault.timeutil import now_cst_str
 
 from .schema import RESEARCH_ALIAS_RESOLVE_TASKS_TABLE, handle_turso_error, use_conn
@@ -32,7 +32,7 @@ def _now_str() -> str:
 
 
 def get_alias_resolve_tasks_map(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     alias_keys: list[str],
 ) -> dict[str, AliasResolveTaskInfo]:
     cleaned = [
@@ -72,7 +72,7 @@ def get_alias_resolve_tasks_map(
 
 
 def increment_alias_resolve_attempts(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     alias_keys: list[str],
 ) -> dict[str, int]:
     cleaned = [
@@ -106,7 +106,7 @@ def increment_alias_resolve_attempts(
 
 
 def set_alias_resolve_task_status(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     alias_key: str,
     status: str,
@@ -140,7 +140,7 @@ def set_alias_resolve_task_status(
 
 
 def list_manual_alias_resolve_tasks(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     limit: int | None = None,
 ) -> list[dict[str, object]]:
@@ -166,7 +166,7 @@ def list_manual_alias_resolve_tasks(
 
 
 def list_pending_alias_resolve_tasks(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     limit: int | None = None,
 ) -> list[dict[str, object]]:
