@@ -1,0 +1,40 @@
+[tools]
+postgres = "latest"
+
+[tasks."test:db-hook"]
+description = "给 pre-commit 使用的临时数据库测试"
+# 使用 mise 运行，确保能找到 postgres 二进制文件
+run = """
+#!/bin/bash
+set -euo pipefail
+
+# 1. 设置临时数据目录
+export PGDATA="$PWD/.tmp/test_db"
+export PGPORT=5433  # 使用非标端口避免冲突
+export PGLOG="$PGDATA/log"
+mkdir -p "$PGDATA"
+
+# 2. 清理函数：无论脚本成功还是失败，都会关闭数据库
+cleanup() {
+    echo "Stopping ephemeral postgres..."
+    pg_ctl stop -m immediate || true
+    rm -rf "$PGDATA"
+}
+trap cleanup EXIT
+
+# 3. 初始化并启动
+echo "Initializing ephemeral postgres..."
+initdb --auth=trust --auth-host=trust --auth-local=trust --locale=en_US.UTF-8 > /dev/null
+pg_ctl start -o "-k $PGDATA -p $PGPORT" -l "$PGLOG" -w
+
+# 4. 执行你的测试或检查 (例如运行迁移脚本或测试)
+echo "Running database checks..."
+export TEST_POSTGRES_DSN="${TEST_POSTGRES_DSN:-postgresql://$(id -un)@127.0.0.1:$PGPORT/postgres}"
+if [[ -n "${DB_TEST_CMD:-}" ]]; then
+    eval "$DB_TEST_CMD"
+else
+    psql -p $PGPORT -d postgres -c "SELECT 1;"
+fi
+
+echo "Check passed!"
+"""
