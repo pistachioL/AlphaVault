@@ -51,3 +51,43 @@ def test_thread_root_info_for_post_keeps_compact_weibo_raw_text() -> None:
     )
 
     assert root_segment == "回复@甲:叶//@乙:根"
+
+
+def test_build_topic_runtime_context_includes_manual_feedback_hint_in_ai_topic_package() -> (
+    None
+):
+    focus = "老王"
+    raw_text = f"{focus}：原文说先看看"
+    root_key, root_segment, root_content_key = thread_root_info_for_post(
+        raw_text=raw_text,
+        author=focus,
+    )
+
+    ctx, _truncated = build_topic_runtime_context(
+        root_key=root_key,
+        root_segment=root_segment,
+        root_content_key=root_content_key,
+        focus_username=focus,
+        posts=[
+            {
+                "post_uid": "weibo:1",
+                "platform_post_id": "1",
+                "author": focus,
+                "created_at": "2026-04-09 10:00:00",
+                "raw_text": raw_text,
+            }
+        ],
+        manual_feedback_hint={
+            "feedback_tag": "动作错了",
+            "feedback_note": "原文是先看看，不是直接买入",
+            "submitted_at": "2026-04-09 11:00:00",
+        },
+    )
+
+    ai_topic_package = ctx["ai_topic_package"]
+    assert isinstance(ai_topic_package, dict)
+    assert ai_topic_package["manual_feedback_hint"] == {
+        "feedback_tag": "动作错了",
+        "feedback_note": "原文是先看看，不是直接买入",
+        "submitted_at": "2026-04-09 11:00:00",
+    }

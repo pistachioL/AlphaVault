@@ -5,6 +5,10 @@ import reflex as rx
 
 from alphavault.db.postgres_env import infer_platform_from_post_uid
 from alphavault.homework_trade_feed import HOMEWORK_DEFAULT_VIEW_KEY
+from alphavault_reflex.services.analysis_feedback import (
+    ENTRYPOINT_HOMEWORK_TREE,
+    submit_post_analysis_feedback,
+)
 from alphavault_reflex.services.homework_constants import (
     TRADE_BOARD_DEFAULT_WINDOW_DAYS,
     TRADE_BOARD_MAX_WINDOW_DAYS,
@@ -61,12 +65,31 @@ class HomeworkState(rx.State):
 
     tree_dialog_open: bool = False
     tree_loading: bool = False
+    selected_tree_post_uid: str = ""
     selected_tree_label: str = ""
     selected_tree_text: str = ""
     selected_tree_message: str = ""
     selected_tree_debug_text: str = ""
     tree_wrap_lines: bool = True
     tree_show_full_text: bool = False
+    feedback_dialog_open: bool = False
+    feedback_submitting: bool = False
+    feedback_post_uid: str = ""
+    feedback_tag: str = ""
+    feedback_note: str = ""
+    feedback_error: str = ""
+    feedback_success: str = ""
+
+    def _reset_feedback_state(self, *, close_dialog: bool, clear_success: bool) -> None:
+        if close_dialog:
+            self.feedback_dialog_open = False
+        self.feedback_submitting = False
+        self.feedback_post_uid = ""
+        self.feedback_tag = ""
+        self.feedback_note = ""
+        self.feedback_error = ""
+        if clear_success:
+            self.feedback_success = ""
 
     @rx.var
     def trade_filter_options(self) -> list[str]:
@@ -237,6 +260,7 @@ class HomeworkState(rx.State):
         self.selected_tree_debug_text = ""
         self.tree_wrap_lines = True
         self.tree_show_full_text = False
+        self._reset_feedback_state(close_dialog=True, clear_success=True)
 
     @rx.event
     def toggle_tree_wrap_lines(self) -> None:
@@ -251,13 +275,68 @@ class HomeworkState(rx.State):
         self.tree_show_full_text = False
 
     @rx.event
+    def set_feedback_dialog_open(self, value: bool) -> None:
+        if value:
+            self.feedback_dialog_open = True
+            return
+        self.close_feedback_dialog()
+
+    @rx.event
+    def open_feedback_dialog(self, post_uid: str) -> None:
+        self._reset_feedback_state(close_dialog=False, clear_success=True)
+        self.feedback_dialog_open = True
+        self.feedback_post_uid = str(
+            post_uid or self.selected_tree_post_uid or ""
+        ).strip()
+
+    @rx.event
+    def close_feedback_dialog(self) -> None:
+        self._reset_feedback_state(close_dialog=True, clear_success=False)
+
+    @rx.event
+    def set_feedback_tag(self, value: str) -> None:
+        self.feedback_tag = str(value or "").strip()
+        self.feedback_error = ""
+
+    @rx.event
+    def set_feedback_note(self, value: str) -> None:
+        self.feedback_note = str(value or "")
+        self.feedback_error = ""
+
+    @rx.event
+    def submit_feedback(self) -> None:
+        self.feedback_submitting = True
+        self.feedback_error = ""
+        self.feedback_success = ""
+        result = submit_post_analysis_feedback(
+            post_uid=str(
+                self.feedback_post_uid or self.selected_tree_post_uid or ""
+            ).strip(),
+            feedback_tag=str(self.feedback_tag or "").strip(),
+            feedback_note=str(self.feedback_note or ""),
+            entrypoint=ENTRYPOINT_HOMEWORK_TREE,
+        )
+        self.feedback_submitting = False
+        if str(result.get("ok") or "") != "1":
+            self.feedback_error = str(result.get("message") or "").strip()
+            return
+
+        success_message = str(result.get("message") or "").strip()
+        self._reset_feedback_state(close_dialog=True, clear_success=False)
+        self.feedback_success = success_message
+        clear_reflex_source_caches()
+        self._refresh()
+
+    @rx.event
     def open_tree_dialog(self, post_uid: str):
         uid = normalize_tree_lookup_post_uid(post_uid)
         debug_platform = infer_platform_from_post_uid(uid) or TREE_DEBUG_UNKNOWN
         debug_posts_count: int | None = None
         debug_slice_count: int | None = None
+        self._reset_feedback_state(close_dialog=True, clear_success=True)
         self.tree_dialog_open = True
         self.tree_loading = True
+        self.selected_tree_post_uid = uid
         self.selected_tree_label = ""
         self.selected_tree_text = ""
         self.selected_tree_message = ""
@@ -371,6 +450,7 @@ def _build_tree_debug_text(
 
 
 def _clear_selected_tree(state: HomeworkState) -> None:
+    state.selected_tree_post_uid = ""
     state.selected_tree_label = ""
     state.selected_tree_text = ""
     state.selected_tree_message = ""

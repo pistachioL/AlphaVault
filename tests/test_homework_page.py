@@ -33,8 +33,13 @@ def _sample_row() -> dict[str, str]:
 def _tree_dialog_close_button():
     dialog = _tree_dialog()
     content = dialog.children[0]
-    footer = content.children[3]
-    return _find_component_with_event(footer, "on_click")
+    return _find_component_with_handler(content, "close_tree_dialog")
+
+
+def _tree_dialog_header():
+    dialog = _tree_dialog()
+    content = dialog.children[0]
+    return content.children[0]
 
 
 def _find_component_with_event(component, event_name: str):
@@ -43,6 +48,22 @@ def _find_component_with_event(component, event_name: str):
         return component
     for child in getattr(component, "children", []):
         matched = _find_component_with_event(child, event_name)
+        if matched is not None:
+            return matched
+    return None
+
+
+def _find_component_with_handler(component, handler_name: str):
+    triggers = getattr(component, "event_triggers", {})
+    for trigger in triggers.values():
+        events = getattr(trigger, "events", [])
+        for event in events:
+            handler = getattr(event, "handler", None)
+            fn = getattr(handler, "fn", None)
+            if getattr(fn, "__name__", "") == handler_name:
+                return component
+    for child in getattr(component, "children", []):
+        matched = _find_component_with_handler(child, handler_name)
         if matched is not None:
             return matched
     return None
@@ -86,3 +107,19 @@ def test_tree_dialog_includes_debug_text_binding() -> None:
     payload = str(rendered)
 
     assert "selected_tree_debug_text_rx_state_" in payload
+
+
+def test_tree_dialog_renders_feedback_controls() -> None:
+    payload = str(_tree_dialog().render())
+
+    assert "feedback_dialog_open_rx_state_" in payload
+    assert "selected_tree_post_uid_rx_state_" in payload
+    assert "open_feedback_dialog" in payload
+    assert "submit_feedback" in payload
+
+
+def test_tree_dialog_places_feedback_entry_in_header_row() -> None:
+    header = _tree_dialog_header()
+
+    assert getattr(header, "tag", None) == "Flex"
+    assert _find_component_with_handler(header, "open_feedback_dialog") is not None

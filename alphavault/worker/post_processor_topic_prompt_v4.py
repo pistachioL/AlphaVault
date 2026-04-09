@@ -11,6 +11,10 @@ from alphavault.ai.analyze import (
     normalize_action,
 )
 from alphavault.ai.tag_validate import validate_topic_prompt_v4_ai_result
+from alphavault.db.analysis_feedback import (
+    load_latest_pending_feedback,
+    mark_feedback_applied,
+)
 from alphavault.db.postgres_db import PostgresEngine
 from alphavault.db.turso_queue import (
     CloudPost,
@@ -39,6 +43,27 @@ from alphavault.worker.topic_prompt_v4 import (
     build_topic_prompt_v4_with_prompt_chars_limit,
     to_one_line_tail,
 )
+
+MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS = 300
+
+
+def _build_manual_feedback_hint(
+    feedback_row: dict[str, str] | None,
+) -> dict[str, object] | None:
+    if not isinstance(feedback_row, dict):
+        return None
+    feedback_tag = str(feedback_row.get("feedback_tag") or "").strip()
+    feedback_note = str(feedback_row.get("feedback_note") or "").strip()
+    if len(feedback_note) > MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS:
+        feedback_note = feedback_note[:MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS].rstrip()
+    submitted_at = str(feedback_row.get("submitted_at") or "").strip()
+    if not feedback_tag and not feedback_note:
+        return None
+    return {
+        "feedback_tag": feedback_tag,
+        "feedback_note": feedback_note,
+        "submitted_at": submitted_at,
+    }
 
 
 def _build_top_level_mentions_lookup(
@@ -241,6 +266,8 @@ def process_one_post_uid_topic_prompt_v4(
         if prefetched_post is not None
         else load_cloud_post(engine, post_uid)
     )
+    latest_pending_feedback = load_latest_pending_feedback(engine, post_uid=post_uid)
+    manual_feedback_hint = _build_manual_feedback_hint(latest_pending_feedback)
     focus = str(post.author or "").strip()
     root_key, root_segment, root_content_key = thread_root_info_for_post(
         raw_text=post.raw_text or "",
@@ -278,6 +305,7 @@ def process_one_post_uid_topic_prompt_v4(
         root_content_key=root_content_key,
         focus_username=focus,
         posts=kept,
+        manual_feedback_hint=manual_feedback_hint,
         max_prompt_chars=MAX_TOPIC_PROMPT_CHARS,
     )
     if (
@@ -404,6 +432,21 @@ def process_one_post_uid_topic_prompt_v4(
                 ),
                 prefetched_ingested_at=int(time.time()),
             )
+            if latest_pending_feedback is not None:
+                try:
+                    mark_feedback_applied(
+                        engine,
+                        feedback_id=str(
+                            latest_pending_feedback.get("feedback_id") or ""
+                        ).strip(),
+                        applied_at=now_str(),
+                    )
+                except Exception:
+                    if config.verbose:
+                        print(
+                            f"[ai_topic] mark_feedback_applied_failed post_uid={uid}",
+                            flush=True,
+                        )
 
             if rows:
                 try:

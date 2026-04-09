@@ -6,6 +6,16 @@ from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import research_page_loading_var
 from alphavault_reflex.research_state import stock_page_title_var
 from alphavault_reflex.pages.thread_tree_components import tree_line_row
+from alphavault_reflex.services.analysis_feedback import (
+    ANALYSIS_FEEDBACK_CANCEL_TEXT,
+    ANALYSIS_FEEDBACK_DIALOG_TITLE,
+    ANALYSIS_FEEDBACK_NOTE_LABEL,
+    ANALYSIS_FEEDBACK_NOTE_PLACEHOLDER,
+    ANALYSIS_FEEDBACK_SUBMIT_TEXT,
+    ANALYSIS_FEEDBACK_TAG_LABEL,
+    ANALYSIS_FEEDBACK_TAG_OPTIONS,
+    ANALYSIS_FEEDBACK_TAG_PLACEHOLDER,
+)
 from alphavault_reflex.services.stock_related_feed import StockRelatedPostRow
 from alphavault_reflex.services.research_status_text import (
     BACKGROUND_PROCESSING_TEXT,
@@ -121,10 +131,79 @@ def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
                 ),
                 rx.el.span(""),
             ),
+            rx.cond(
+                row["post_uid"] != "",
+                rx.button(
+                    "标错并重跑",
+                    on_click=lambda: ResearchState.open_feedback_dialog(
+                        row["post_uid"]
+                    ),
+                    variant="soft",
+                ),
+                rx.el.span(""),
+            ),
             spacing="3",
             margin_top="10px",
         ),
         class_name="av-research-card",
+    )
+
+
+def _feedback_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title(ANALYSIS_FEEDBACK_DIALOG_TITLE),
+            rx.vstack(
+                rx.text(ANALYSIS_FEEDBACK_TAG_LABEL, class_name="av-label"),
+                rx.select(
+                    ANALYSIS_FEEDBACK_TAG_OPTIONS,
+                    value=ResearchState.feedback_tag,
+                    on_change=ResearchState.set_feedback_tag,
+                    placeholder=ANALYSIS_FEEDBACK_TAG_PLACEHOLDER,
+                    width="100%",
+                ),
+                rx.text(ANALYSIS_FEEDBACK_NOTE_LABEL, class_name="av-label"),
+                rx.text_area(
+                    value=ResearchState.feedback_note,
+                    on_change=ResearchState.set_feedback_note,
+                    placeholder=ANALYSIS_FEEDBACK_NOTE_PLACEHOLDER,
+                    min_height="120px",
+                    width="100%",
+                ),
+                rx.cond(
+                    ResearchState.feedback_error != "",
+                    rx.text(ResearchState.feedback_error, class_name="av-error-text"),
+                    rx.el.div(),
+                ),
+                rx.hstack(
+                    rx.dialog.close(
+                        rx.button(
+                            ANALYSIS_FEEDBACK_CANCEL_TEXT,
+                            variant="soft",
+                            on_click=ResearchState.close_feedback_dialog,
+                        )
+                    ),
+                    rx.spacer(),
+                    rx.button(
+                        ANALYSIS_FEEDBACK_SUBMIT_TEXT,
+                        on_click=ResearchState.submit_feedback,
+                        loading=ResearchState.feedback_submitting,
+                        disabled=(
+                            ResearchState.feedback_submitting
+                            | (ResearchState.feedback_post_uid == "")
+                            | (ResearchState.feedback_tag == "")
+                        ),
+                    ),
+                    width="100%",
+                    align="center",
+                ),
+                spacing="3",
+                align="stretch",
+            ),
+            style={"max_width": "min(560px, 92vw)"},
+        ),
+        open=ResearchState.feedback_dialog_open,
+        on_open_change=ResearchState.set_feedback_dialog_open,
     )
 
 
@@ -274,6 +353,11 @@ def stock_research_page() -> rx.Component:
             rx.el.div(),
         ),
         rx.cond(
+            ResearchState.feedback_success != "",
+            rx.text(ResearchState.feedback_success, class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
             ResearchState.worker_next_run_at != "",
             rx.text(
                 "下一轮时间：" + ResearchState.worker_next_run_at,
@@ -367,6 +451,7 @@ def stock_research_page() -> rx.Component:
             ),
             class_name="av-research-layout av-stock-research-layout",
         ),
+        _feedback_dialog(),
         _stock_sidebar(),
         class_name="av-research-page",
     )
