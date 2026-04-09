@@ -8,7 +8,8 @@ from typing import Any
 from alphavault.constants import (
     ENV_WORKER_STOCK_HOT_CACHE_INTERVAL_SECONDS,
 )
-from alphavault.db.turso_db import ensure_turso_engine
+from alphavault.db.postgres_db import ensure_postgres_engine
+from alphavault.db.postgres_env import require_postgres_source_from_env
 from alphavault.worker.cli import RSSSourceConfig
 from alphavault.worker.redis_queue import try_get_redis
 from alphavault.worker.runtime_models import WorkerSourceConfig, WorkerSourceRuntime
@@ -57,18 +58,23 @@ def build_source_runtimes(
     multi_source = len(source_configs) > 1
     sources: list[WorkerSourceRuntime] = []
     for cfg in source_configs:
+        source = require_postgres_source_from_env(cfg.name)
         config = WorkerSourceConfig(
             name=cfg.name,
             platform=cfg.platform,
             rss_urls=list(cfg.rss_urls),
             author=cfg.author,
             user_id=cfg.user_id,
-            database_url=cfg.database_url,
-            auth_token=cfg.auth_token,
+            database_url=source.dsn,
+            auth_token="",
+            schema_name=source.schema,
         )
         runtime = WorkerSourceRuntime(
             config=config,
-            engine=ensure_turso_engine(config.database_url, config.auth_token),
+            engine=ensure_postgres_engine(
+                config.database_url,
+                schema_name=config.schema_name,
+            ),
             spool_dir=build_source_spool_dir(
                 base_spool_dir=base_spool_dir,
                 source_name=config.name,

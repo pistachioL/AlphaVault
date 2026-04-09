@@ -12,10 +12,12 @@ def _setup_single_source(monkeypatch) -> None:
     monkeypatch.setattr(stock_hot_read, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
         stock_hot_read,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [SimpleNamespace(name="weibo", url="u1", token="t1")],
     )
-    monkeypatch.setattr(stock_hot_read, "ensure_turso_engine", lambda *_args: object())
+    monkeypatch.setattr(
+        stock_hot_read, "ensure_postgres_engine", lambda *_args: object()
+    )
     monkeypatch.setattr(
         stock_hot_read,
         "load_stock_alias_relations_from_env",
@@ -369,10 +371,12 @@ def test_load_stock_cached_view_returns_relation_error_when_standard_alias_fails
     monkeypatch.setattr(stock_hot_read, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
         stock_hot_read,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [SimpleNamespace(name="weibo", url="u1", token="t1")],
     )
-    monkeypatch.setattr(stock_hot_read, "ensure_turso_engine", lambda *_args: object())
+    monkeypatch.setattr(
+        stock_hot_read, "ensure_postgres_engine", lambda *_args: object()
+    )
     monkeypatch.setattr(
         stock_hot_read,
         "load_stock_alias_relations_from_env",

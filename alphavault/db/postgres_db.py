@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence, TypeVar
 
@@ -13,7 +14,13 @@ from alphavault.constants import ENV_POSTGRES_POOL_MAX_SIZE
 _DEFAULT_POSTGRES_POOL_MAX_SIZE = 4
 _NAMED_TO_PYFORMAT = sqlparams.SQLParams("named", "pyformat", escape_char=True)
 _QMARK_TO_FORMAT = sqlparams.SQLParams("qmark", "format", escape_char=True)
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _T = TypeVar("_T")
+
+
+def is_fatal_base_exception(err: BaseException) -> bool:
+    return isinstance(err, _FATAL_BASE_EXCEPTIONS)
 
 
 def _to_sql_text(statement: Any) -> str:
@@ -70,6 +77,31 @@ def _normalize_batch_params(params: Any) -> list[Any]:
     if isinstance(params, tuple):
         return list(params)
     raise TypeError(f"unsupported_sql_batch_params_type: {type(params).__name__}")
+
+
+def _normalize_identifier(name: str, *, label: str) -> str:
+    resolved = str(name or "").strip()
+    if not resolved:
+        raise RuntimeError(f"missing_postgres_{label}")
+    if _IDENTIFIER_RE.fullmatch(resolved) is None:
+        raise RuntimeError(f"invalid_postgres_{label}:{resolved}")
+    return resolved
+
+
+def require_postgres_schema_name(engine_or_conn: object) -> str:
+    return _normalize_identifier(
+        str(getattr(engine_or_conn, "schema_name", "") or ""),
+        label="schema_name",
+    )
+
+
+def qualify_postgres_table(schema_name: str, table_name: str) -> str:
+    return ".".join(
+        (
+            _normalize_identifier(schema_name, label="schema_name"),
+            _normalize_identifier(table_name, label="table_name"),
+        )
+    )
 
 
 class PostgresMappingsResult:
@@ -149,10 +181,12 @@ class PostgresConnection:
         raw_conn: psycopg.Connection[Any],
         *,
         _pool: ConnectionPool[psycopg.Connection[Any]] | None = None,
+        schema_name: str = "",
     ) -> None:
         self._raw = raw_conn
         self._pool = _pool
         self._closed = False
+        self.schema_name = str(schema_name or "").strip()
 
     def __enter__(self) -> PostgresConnection:
         return self
@@ -202,6 +236,7 @@ class PostgresConnection:
 class PostgresEngine:
     dsn: str
     max_connections: int = _DEFAULT_POSTGRES_POOL_MAX_SIZE
+    schema_name: str = ""
     _pool: ConnectionPool[psycopg.Connection[Any]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -212,15 +247,20 @@ class PostgresEngine:
         self._pool = ConnectionPool(
             conninfo=self.dsn,
             kwargs={"autocommit": True},
-            min_size=1,
+            min_size=0,
             max_size=self.max_connections,
+            max_idle=1.0,
             open=True,
         )
 
     def connect(self, *, autocommit: bool = True) -> PostgresConnection:
         if not autocommit:
             raise ValueError("postgres_connection_requires_autocommit")
-        return PostgresConnection(self._pool.getconn(), _pool=self._pool)
+        return PostgresConnection(
+            self._pool.getconn(),
+            _pool=self._pool,
+            schema_name=self.schema_name,
+        )
 
     def dispose(self) -> None:
         self._pool.close()
@@ -254,22 +294,26 @@ def _max_postgres_pool_size_from_env() -> int:
     return max(1, int(value))
 
 
-def ensure_postgres_engine(dsn: str) -> PostgresEngine:
+def ensure_postgres_engine(dsn: str, *, schema_name: str = "") -> PostgresEngine:
     resolved_dsn = str(dsn or "").strip()
     if not resolved_dsn:
         raise RuntimeError("Missing Postgres dsn")
     return PostgresEngine(
         dsn=resolved_dsn,
         max_connections=_max_postgres_pool_size_from_env(),
+        schema_name=str(schema_name or "").strip(),
     )
 
 
 __all__ = [
+    "is_fatal_base_exception",
     "PostgresConnection",
     "PostgresCursorResult",
     "PostgresEngine",
     "PostgresMappingsResult",
     "ensure_postgres_engine",
+    "qualify_postgres_table",
     "postgres_connect_autocommit",
+    "require_postgres_schema_name",
     "run_postgres_transaction",
 ]

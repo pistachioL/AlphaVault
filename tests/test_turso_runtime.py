@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
+from typing import cast
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.worker import turso_runtime
 
 
@@ -11,12 +13,15 @@ def test_ensure_turso_ready_only_checks_connectivity(monkeypatch) -> None:
 
     @contextmanager
     def _fake_connect(engine):  # type: ignore[no-untyped-def]
-        calls.append(str(engine.remote_url))
+        calls.append(str(engine.dsn))
         yield object()
 
-    monkeypatch.setattr(turso_runtime, "turso_connect_autocommit", _fake_connect)
+    monkeypatch.setattr(turso_runtime, "postgres_connect_autocommit", _fake_connect)
 
-    engine = TursoEngine(remote_url="libsql://unit.test", auth_token="token")
+    engine = cast(
+        PostgresEngine,
+        SimpleNamespace(dsn="postgresql://unit.test/postgres"),
+    )
 
     assert (
         turso_runtime.ensure_turso_ready(
@@ -27,4 +32,4 @@ def test_ensure_turso_ready_only_checks_connectivity(monkeypatch) -> None:
         )
         is True
     )
-    assert calls == ["libsql://unit.test"]
+    assert calls == ["postgresql://unit.test/postgres"]

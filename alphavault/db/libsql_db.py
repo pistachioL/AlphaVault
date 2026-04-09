@@ -1,21 +1,16 @@
 from __future__ import annotations
 
-import os
 import queue
 import re
 import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Mapping, Sequence, TypeVar
+from typing import Any, Iterator, Mapping, Sequence
 
 import libsql
 import sqlparams
 
-from alphavault.constants import (
-    ENV_TURSO_MAX_CONNECTIONS,
-)
-from alphavault.db.turso_env import require_configured_turso_sources_from_env
 # NOTE: This module keeps Turso engine creation + connection helpers.
 
 SQL_BEGIN = "BEGIN"
@@ -30,7 +25,6 @@ _NAMED_TO_QMARK = sqlparams.SQLParams("named", "qmark", escape_char=True)
 _DEFAULT_EXECUTE_RETRIES = 2
 _DEFAULT_TRANSACTION_RETRIES = 1
 _RETRY_BASE_SLEEP_SECONDS = 0.2
-_T = TypeVar("_T")
 
 
 def is_fatal_base_exception(err: BaseException) -> bool:
@@ -124,7 +118,7 @@ def is_turso_retryable_error(err: BaseException) -> bool:
 
 
 def maybe_dispose_turso_engine_on_transient_error(
-    engine: "TursoEngine | None", err: BaseException
+    engine: "LibsqlEngine | None", err: BaseException
 ) -> bool:
     if engine is None:
         return False
@@ -269,9 +263,13 @@ class TursoCursorResult:
         return TursoMappingsResult(self._cursor)
 
 
-class TursoConnection:
+class LibsqlConnection:
     def __init__(
-        self, raw_conn: Any, *, _engine: TursoEngine | None = None, _generation: int = 0
+        self,
+        raw_conn: Any,
+        *,
+        _engine: LibsqlEngine | None = None,
+        _generation: int = 0,
     ):
         self._raw = raw_conn
         self._engine = _engine
@@ -279,7 +277,7 @@ class TursoConnection:
         self._closed = False
         self._in_transaction = False
 
-    def __enter__(self) -> "TursoConnection":
+    def __enter__(self) -> "LibsqlConnection":
         return self
 
     def __exit__(self, _exc_type, exc, _tb) -> None:
@@ -370,7 +368,7 @@ class TursoConnection:
 
 
 @dataclass
-class TursoEngine:
+class LibsqlEngine:
     remote_url: str
     auth_token: str
     max_connections: int = _DEFAULT_TURSO_MAX_CONNECTIONS
@@ -459,11 +457,11 @@ class TursoEngine:
         except queue.Full:
             self._close_raw_and_decrement(raw_conn)
 
-    def connect(self, *, autocommit: bool = True) -> TursoConnection:
+    def connect(self, *, autocommit: bool = True) -> LibsqlConnection:
         if not bool(autocommit):
             raise ValueError("turso_connection_requires_autocommit")
         raw_conn, gen = self._acquire_raw()
-        return TursoConnection(raw_conn, _engine=self, _generation=int(gen))
+        return LibsqlConnection(raw_conn, _engine=self, _generation=int(gen))
 
     def dispose(self) -> None:
         with self._pool_lock:
@@ -476,17 +474,10 @@ class TursoEngine:
             self._close_raw_and_decrement(raw_conn)
 
 
-def turso_connect_autocommit(engine: TursoEngine) -> TursoConnection:
-    """
-    Return an autocommit connection for Turso.
-    """
-    return engine.connect(autocommit=True)
-
-
 @contextmanager
 def turso_savepoint(
-    conn: TursoConnection, name: str = TURSO_SAVEPOINT_NAME
-) -> Iterator[TursoConnection]:
+    conn: LibsqlConnection, name: str = TURSO_SAVEPOINT_NAME
+) -> Iterator[LibsqlConnection]:
     """
     Keep the old helper API, but use SQL BEGIN/COMMIT/ROLLBACK.
     """
@@ -513,78 +504,3 @@ def turso_savepoint(
         conn.execute(SQL_COMMIT)
     finally:
         conn._in_transaction = False
-
-
-def run_turso_transaction(
-    engine_or_conn: TursoEngine | TursoConnection,
-    fn: Callable[[TursoConnection], _T],
-    *,
-    retry_count: int = _DEFAULT_TRANSACTION_RETRIES,
-) -> _T:
-    if isinstance(engine_or_conn, TursoConnection):
-        with turso_savepoint(engine_or_conn):
-            return fn(engine_or_conn)
-
-    engine = engine_or_conn
-    retries = max(0, int(retry_count))
-    for attempt in range(retries + 1):
-        try:
-            with turso_connect_autocommit(engine) as conn:
-                with turso_savepoint(conn):
-                    return fn(conn)
-        except BaseException as err:
-            if is_fatal_base_exception(err):
-                raise
-            maybe_dispose_turso_engine_on_transient_error(engine, err)
-            should_retry = bool(
-                is_turso_retryable_error(err) or is_turso_libsql_panic_error(err)
-            )
-            if attempt >= retries or not should_retry:
-                raise
-            time.sleep(_RETRY_BASE_SLEEP_SECONDS * (2**attempt))
-    raise RuntimeError("turso_transaction_unreachable")
-
-
-def _normalize_turso_url(url: str) -> str:
-    resolved = str(url or "").strip()
-    if not resolved:
-        return ""
-    if resolved.startswith("https://"):
-        return f"libsql://{resolved[len('https://') :]}"
-    return resolved
-
-
-def _max_turso_connections_from_env() -> int:
-    raw = os.getenv(ENV_TURSO_MAX_CONNECTIONS, "").strip()
-    if not raw:
-        return _DEFAULT_TURSO_MAX_CONNECTIONS
-    try:
-        value = int(raw)
-    except ValueError:
-        return _DEFAULT_TURSO_MAX_CONNECTIONS
-    return max(1, int(value))
-
-
-def ensure_turso_engine(url: str, token: str) -> TursoEngine:
-    normalized_url = _normalize_turso_url(url)
-    if not normalized_url:
-        raise RuntimeError("Missing Turso database url")
-    return TursoEngine(
-        remote_url=normalized_url,
-        auth_token=str(token or "").strip(),
-        max_connections=_max_turso_connections_from_env(),
-    )
-
-
-def get_turso_engine_from_env() -> TursoEngine:
-    """
-    Return the default Turso engine from env.
-
-    This helper prefers WEIBO_... if configured, otherwise XUEQIU_....
-    """
-    from alphavault.env import load_dotenv_if_present
-
-    load_dotenv_if_present()
-    sources = require_configured_turso_sources_from_env()
-    preferred = next((s for s in sources if s.name == "weibo"), sources[0])
-    return ensure_turso_engine(preferred.url, str(preferred.token or "").strip())

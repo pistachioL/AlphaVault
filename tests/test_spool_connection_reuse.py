@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine as TursoEngine
 from alphavault.worker import spool
 from alphavault.worker import redis_queue as redis_queue_module
 
@@ -74,7 +74,9 @@ def test_flush_spool_to_turso_reuses_single_connection(monkeypatch, tmp_path) ->
     spool.spool_write(tmp_path, "weibo:1", _build_payload("weibo:1", "1", "作者A", 100))
     spool.spool_write(tmp_path, "weibo:2", _build_payload("weibo:2", "2", "作者B", 101))
 
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
     processed, turso_error = spool.flush_spool_to_turso(
@@ -115,7 +117,9 @@ def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -
     spool.spool_write(
         tmp_path, "weibo:10", _build_payload("weibo:10", "10", "作者A", 110)
     )
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
     processed, turso_error = spool.flush_spool_to_turso(
@@ -160,7 +164,9 @@ def test_flush_spool_to_turso_recovers_stale_processing_file(
     stale_ts = int(time.time()) - 3600
     os.utime(processing_path, (stale_ts, stale_ts))
 
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
     processed, turso_error = spool.flush_spool_to_turso(
@@ -204,7 +210,9 @@ def test_flush_spool_to_turso_skips_fresh_processing_file(
         _build_payload("weibo:30", "30", "作者C", 130),
     )
 
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
     processed, turso_error = spool.flush_spool_to_turso(
@@ -243,7 +251,9 @@ def test_flush_spool_to_turso_restores_json_when_turso_write_fails(
     spool.spool_write(
         tmp_path, "weibo:40", _build_payload("weibo:40", "40", "作者D", 140)
     )
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
     processed, turso_error = spool.flush_spool_to_turso(
@@ -281,7 +291,9 @@ def test_flush_spool_to_turso_keeps_json_when_redis_push_succeeds(
     spool.spool_write(
         tmp_path, "weibo:50", _build_payload("weibo:50", "50", "作者E", 150)
     )
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
     monkeypatch.setattr(
         redis_queue_module,
@@ -381,7 +393,9 @@ def test_recover_spool_to_turso_and_redis_restores_missing_requeues_pending_and_
         _build_payload("weibo:done", "62", "作者H", 162),
     )
 
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(spool, "load_post_processed_at", _fake_load_processed_at)
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
@@ -439,7 +453,9 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
         _build_payload("weibo:pending-error", "63", "作者I", 163),
     )
 
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect, raising=False)
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
     monkeypatch.setattr(
         spool,
         "load_post_processed_at",

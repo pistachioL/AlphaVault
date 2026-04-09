@@ -1,59 +1,44 @@
 """
-Turso queue helpers.
+Source queue helpers.
 
-This module treats Turso (libsql) as the single source of truth for:
-- RSS items (raw_text)
-- Final AI outputs (assertions + processed posts)
+This module still keeps the old file name, but source queue reads and writes now
+go to Postgres source schemas such as `weibo` and `xueqiu`.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, Optional
 
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    qualify_postgres_table,
+    require_postgres_schema_name,
+    postgres_connect_autocommit,
+    run_postgres_transaction,
+)
+from alphavault.db.sql import turso_queue as source_queue_sql
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.sql.turso_queue import (
-    DELETE_ASSERTION_ENTITIES_ALL,
-    DELETE_ASSERTION_MENTIONS_ALL,
-    DELETE_ASSERTIONS_ALL,
-    DELETE_ASSERTION_ENTITIES_BY_POST_UID,
-    DELETE_ASSERTION_MENTIONS_BY_POST_UID,
-    DELETE_ASSERTIONS_BY_POST_UID,
-    INSERT_ASSERTION,
-    INSERT_ASSERTION_ENTITY,
-    RESET_ALL_POSTS_TO_PENDING,
-    INSERT_ASSERTION_MENTION,
-    SELECT_ASSERTION_COUNT_ALL,
-    SELECT_POST_PROCESSED_AT,
-    SELECT_POST_COUNT_ALL,
-    SELECT_CLOUD_POST,
-    SELECT_UNPROCESSED_POST_QUEUE_ROWS,
-    SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM,
-    UPDATE_POST_DONE,
-    UPSERT_PENDING_POST,
-    delete_assertion_entities_by_post_uids,
-    delete_assertion_mentions_by_post_uids,
-    delete_assertions_by_post_uids,
-    reset_posts_to_pending_by_post_uids,
-    select_assertion_count_by_post_uids,
-    select_post_count_by_post_uids,
-)
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    is_fatal_base_exception,
-    maybe_dispose_turso_engine_on_transient_error,
-    run_turso_transaction,
-    turso_connect_autocommit,
-)
+from alphavault.db.postgres_db import is_fatal_base_exception
 from alphavault.rss.utils import now_str
 
 if TYPE_CHECKING:
     from alphavault.domains.entity_match.resolve import EntityMatchResult
 
 
+SELECT_POST_PROCESSED_AT = source_queue_sql.SELECT_POST_PROCESSED_AT
+UPDATE_POST_DONE = source_queue_sql.UPDATE_POST_DONE
+
+_POSTS_TABLE_NAME = "posts"
+_ASSERTIONS_TABLE_NAME = "assertions"
+_ASSERTION_MENTIONS_TABLE_NAME = "assertion_mentions"
+_ASSERTION_ENTITIES_TABLE_NAME = "assertion_entities"
+
+
 class TursoWriteError(RuntimeError):
-    """Raised when Turso write fails with a non-fatal BaseException."""
+    """Raised when source queue write fails with a non-fatal BaseException."""
 
 
 @dataclass(frozen=True)
@@ -66,6 +51,40 @@ class CloudPost:
     url: str
     raw_text: str
     ai_retry_count: int
+
+
+def _source_table(engine_or_conn: object, table_name: str) -> str:
+    return qualify_postgres_table(
+        require_postgres_schema_name(engine_or_conn),
+        table_name,
+    )
+
+
+def _posts_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _POSTS_TABLE_NAME)
+
+
+def _assertions_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _ASSERTIONS_TABLE_NAME)
+
+
+def _assertion_mentions_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _ASSERTION_MENTIONS_TABLE_NAME)
+
+
+def _assertion_entities_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _ASSERTION_ENTITIES_TABLE_NAME)
+
+
+@contextmanager
+def _use_conn(
+    engine_or_conn: PostgresConnection | PostgresEngine,
+) -> Iterator[PostgresConnection]:
+    if isinstance(engine_or_conn, PostgresConnection):
+        yield engine_or_conn
+        return
+    with postgres_connect_autocommit(engine_or_conn) as conn:
+        yield conn
 
 
 def _make_assertion_id(
@@ -96,7 +115,8 @@ def _chunk_post_uids(post_uids: Iterable[str], *, chunk_size: int) -> list[list[
 
 
 def persist_entity_match_followups(
-    engine_or_conn: TursoConnection | TursoEngine, result: "EntityMatchResult"
+    engine_or_conn: PostgresConnection | PostgresEngine,
+    result: "EntityMatchResult",
 ) -> None:
     from alphavault.domains.entity_match.resolve import (
         persist_entity_match_followups as persist_followups,
@@ -105,7 +125,7 @@ def persist_entity_match_followups(
     persist_followups(engine_or_conn, result)
 
 
-def get_research_workbench_engine_from_env() -> TursoEngine:
+def get_research_workbench_engine_from_env() -> PostgresEngine:
     from alphavault.research_workbench.service import (
         get_research_workbench_engine_from_env as load_engine,
     )
@@ -114,22 +134,22 @@ def get_research_workbench_engine_from_env() -> TursoEngine:
 
 
 def persist_entity_match_followups_batch(
-    engine_or_conn: TursoConnection | TursoEngine,
+    engine_or_conn: PostgresConnection | PostgresEngine,
     results: Iterable["EntityMatchResult"],
 ) -> None:
     resolved_results = list(results)
     if not resolved_results:
         return
 
-    def _write(conn: TursoConnection) -> None:
+    def _write(conn: PostgresConnection) -> None:
         for result in resolved_results:
             persist_entity_match_followups(conn, result)
 
-    run_turso_transaction(engine_or_conn, _write)
+    run_postgres_transaction(engine_or_conn, _write)
 
 
 def _execute_upsert_pending_post(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     post_uid: str,
     platform: str,
@@ -141,14 +161,8 @@ def _execute_upsert_pending_post(
     archived_at: str,
     ingested_at: int,
 ) -> None:
-    """
-    Insert a new RSS item as a pending AI task.
-
-    NOTE: Cloud posts.final_status is required by existing schema, so we set a placeholder
-    final_status='irrelevant' and keep processed_at=NULL until AI is done.
-    """
     conn.execute(
-        UPSERT_PENDING_POST,
+        source_queue_sql.upsert_pending_post_sql(_posts_table(conn)),
         {
             "post_uid": post_uid,
             "platform": platform,
@@ -165,7 +179,7 @@ def _execute_upsert_pending_post(
 
 
 def upsert_pending_post(
-    conn_or_engine: TursoConnection | TursoEngine,
+    conn_or_engine: PostgresConnection | PostgresEngine,
     *,
     post_uid: str,
     platform: str,
@@ -177,14 +191,7 @@ def upsert_pending_post(
     archived_at: str,
     ingested_at: int,
 ) -> None:
-    """
-    Insert a new RSS item as a pending AI task.
-
-    Supports both call styles:
-    - upsert_pending_post(conn, ...)
-    - upsert_pending_post(engine, ...)
-    """
-    if isinstance(conn_or_engine, TursoConnection):
+    if isinstance(conn_or_engine, PostgresConnection):
         _execute_upsert_pending_post(
             conn_or_engine,
             post_uid=post_uid,
@@ -199,9 +206,8 @@ def upsert_pending_post(
         )
         return
 
-    engine = conn_or_engine
     try:
-        with turso_connect_autocommit(engine) as conn:
+        with postgres_connect_autocommit(conn_or_engine) as conn:
             _execute_upsert_pending_post(
                 conn,
                 post_uid=post_uid,
@@ -217,15 +223,17 @@ def upsert_pending_post(
     except BaseException as err:
         if is_fatal_base_exception(err):
             raise
-        maybe_dispose_turso_engine_on_transient_error(engine, err)
         raise TursoWriteError("upsert_pending_post_failed") from err
 
 
-def load_cloud_post(engine: TursoEngine, post_uid: str) -> CloudPost:
-    with turso_connect_autocommit(engine) as conn:
+def load_cloud_post(
+    engine_or_conn: PostgresConnection | PostgresEngine,
+    post_uid: str,
+) -> CloudPost:
+    with _use_conn(engine_or_conn) as conn:
         row = (
             conn.execute(
-                SELECT_CLOUD_POST,
+                source_queue_sql.select_cloud_post_sql(_posts_table(conn)),
                 {"post_uid": post_uid},
             )
             .mappings()
@@ -245,10 +253,10 @@ def load_cloud_post(engine: TursoEngine, post_uid: str) -> CloudPost:
         )
 
 
-def load_post_processed_at(conn: TursoConnection, *, post_uid: str) -> str | None:
+def load_post_processed_at(conn: PostgresConnection, *, post_uid: str) -> str | None:
     row = (
         conn.execute(
-            SELECT_POST_PROCESSED_AT,
+            source_queue_sql.select_post_processed_at_sql(_posts_table(conn)),
             {"post_uid": str(post_uid or "").strip()},
         )
         .mappings()
@@ -260,27 +268,31 @@ def load_post_processed_at(conn: TursoConnection, *, post_uid: str) -> str | Non
 
 
 def load_unprocessed_post_queue_rows(
-    engine: TursoEngine,
+    engine: PostgresEngine,
     *,
     limit: int,
     platform: Optional[str] = None,
 ) -> list[dict[str, object]]:
     resolved_platform = str(platform or "").strip().lower() or None
     query = (
-        SELECT_UNPROCESSED_POST_QUEUE_ROWS_BY_PLATFORM
+        source_queue_sql.select_unprocessed_post_queue_rows_by_platform_sql(
+            _posts_table(engine)
+        )
         if resolved_platform
-        else SELECT_UNPROCESSED_POST_QUEUE_ROWS
+        else source_queue_sql.select_unprocessed_post_queue_rows_sql(
+            _posts_table(engine)
+        )
     )
     params: dict[str, object] = {"limit": max(0, int(limit))}
     if resolved_platform:
         params["platform"] = resolved_platform
-    with turso_connect_autocommit(engine) as conn:
+    with postgres_connect_autocommit(engine) as conn:
         rows = conn.execute(query, params).mappings().fetchall()
-        return [dict(r) for r in rows if r]
+        return [dict(row) for row in rows if row]
 
 
 def _ensure_post_row_exists_for_done(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     post_uid: str,
     archived_at: str,
@@ -307,27 +319,47 @@ def _ensure_post_row_exists_for_done(
 
 
 def reset_ai_results_all(
-    engine: TursoEngine,
+    engine: PostgresEngine,
     *,
     archived_at: str,
 ) -> tuple[int, int]:
-    def _reset(conn: TursoConnection) -> tuple[int, int]:
-        deleted = int(conn.execute(SELECT_ASSERTION_COUNT_ALL).scalar() or 0)
-        updated = int(conn.execute(SELECT_POST_COUNT_ALL).scalar() or 0)
-        conn.execute(DELETE_ASSERTION_ENTITIES_ALL)
-        conn.execute(DELETE_ASSERTION_MENTIONS_ALL)
-        conn.execute(DELETE_ASSERTIONS_ALL)
+    def _reset(conn: PostgresConnection) -> tuple[int, int]:
+        posts_table = _posts_table(conn)
+        assertions_table = _assertions_table(conn)
+        deleted = int(
+            conn.execute(
+                source_queue_sql.select_assertion_count_all_sql(assertions_table)
+            ).scalar()
+            or 0
+        )
+        updated = int(
+            conn.execute(
+                source_queue_sql.select_post_count_all_sql(posts_table)
+            ).scalar()
+            or 0
+        )
         conn.execute(
-            RESET_ALL_POSTS_TO_PENDING,
+            source_queue_sql.delete_assertion_entities_all_sql(
+                _assertion_entities_table(conn)
+            )
+        )
+        conn.execute(
+            source_queue_sql.delete_assertion_mentions_all_sql(
+                _assertion_mentions_table(conn)
+            )
+        )
+        conn.execute(source_queue_sql.delete_assertions_all_sql(assertions_table))
+        conn.execute(
+            source_queue_sql.reset_all_posts_to_pending_sql(posts_table),
             {"archived_at": str(archived_at or "").strip()},
         )
         return deleted, updated
 
-    return run_turso_transaction(engine, _reset)
+    return run_postgres_transaction(engine, _reset)
 
 
 def reset_ai_results_for_post_uids(
-    engine: TursoEngine,
+    engine: PostgresEngine,
     *,
     post_uids: Iterable[str],
     archived_at: str,
@@ -338,7 +370,11 @@ def reset_ai_results_for_post_uids(
         return 0, 0
     resolved_archived_at = str(archived_at or "").strip()
 
-    def _reset(conn: TursoConnection) -> tuple[int, int]:
+    def _reset(conn: PostgresConnection) -> tuple[int, int]:
+        posts_table = _posts_table(conn)
+        assertions_table = _assertions_table(conn)
+        assertion_mentions_table = _assertion_mentions_table(conn)
+        assertion_entities_table = _assertion_entities_table(conn)
         deleted_total = 0
         updated_total = 0
         for chunk in chunks:
@@ -346,23 +382,52 @@ def reset_ai_results_for_post_uids(
             params = make_in_params(prefix="uid", values=chunk)
             deleted_total += int(
                 conn.execute(
-                    select_assertion_count_by_post_uids(placeholders),
+                    source_queue_sql.select_assertion_count_by_post_uids_sql(
+                        assertions_table,
+                        placeholders,
+                    ),
                     params,
                 ).scalar()
                 or 0
             )
             updated_total += int(
                 conn.execute(
-                    select_post_count_by_post_uids(placeholders),
+                    source_queue_sql.select_post_count_by_post_uids_sql(
+                        posts_table,
+                        placeholders,
+                    ),
                     params,
                 ).scalar()
                 or 0
             )
-            conn.execute(delete_assertion_entities_by_post_uids(placeholders), params)
-            conn.execute(delete_assertion_mentions_by_post_uids(placeholders), params)
-            conn.execute(delete_assertions_by_post_uids(placeholders), params)
             conn.execute(
-                reset_posts_to_pending_by_post_uids(placeholders),
+                source_queue_sql.delete_assertion_entities_by_post_uids_sql(
+                    assertion_entities_table,
+                    assertions_table,
+                    placeholders,
+                ),
+                params,
+            )
+            conn.execute(
+                source_queue_sql.delete_assertion_mentions_by_post_uids_sql(
+                    assertion_mentions_table,
+                    assertions_table,
+                    placeholders,
+                ),
+                params,
+            )
+            conn.execute(
+                source_queue_sql.delete_assertions_by_post_uids_sql(
+                    assertions_table,
+                    placeholders,
+                ),
+                params,
+            )
+            conn.execute(
+                source_queue_sql.reset_posts_to_pending_by_post_uids_sql(
+                    posts_table,
+                    placeholders,
+                ),
                 {
                     **params,
                     "archived_at": resolved_archived_at,
@@ -370,11 +435,11 @@ def reset_ai_results_for_post_uids(
             )
         return deleted_total, updated_total
 
-    return run_turso_transaction(engine, _reset)
+    return run_postgres_transaction(engine, _reset)
 
 
 def write_assertions_and_mark_done(
-    engine: TursoEngine,
+    engine: PostgresConnection | PostgresEngine,
     *,
     post_uid: str,
     final_status: str,
@@ -388,15 +453,13 @@ def write_assertions_and_mark_done(
     prefetched_post: CloudPost | None = None,
     prefetched_ingested_at: int = 0,
 ) -> None:
-    """
-    Commit AI outputs in a single atomic unit, without DBAPI commit/rollback.
-    - overwrite assertions for post_uid
-    - persist entity-match followups
-    - mark posts row as done
-    """
     resolved_entity_match_results = list(entity_match_results or [])
 
-    def _write(conn: TursoConnection) -> None:
+    def _write(conn: PostgresConnection) -> None:
+        posts_table = _posts_table(conn)
+        assertions_table = _assertions_table(conn)
+        assertion_mentions_table = _assertion_mentions_table(conn)
+        assertion_entities_table = _assertion_entities_table(conn)
         _ensure_post_row_exists_for_done(
             conn,
             post_uid=str(post_uid or "").strip(),
@@ -404,31 +467,46 @@ def write_assertions_and_mark_done(
             prefetched_post=prefetched_post,
             prefetched_ingested_at=int(prefetched_ingested_at),
         )
-        conn.execute(DELETE_ASSERTION_ENTITIES_BY_POST_UID, {"post_uid": post_uid})
-        conn.execute(DELETE_ASSERTION_MENTIONS_BY_POST_UID, {"post_uid": post_uid})
-        conn.execute(DELETE_ASSERTIONS_BY_POST_UID, {"post_uid": post_uid})
+        conn.execute(
+            source_queue_sql.delete_assertion_entities_by_post_uid_sql(
+                assertion_entities_table,
+                assertions_table,
+            ),
+            {"post_uid": post_uid},
+        )
+        conn.execute(
+            source_queue_sql.delete_assertion_mentions_by_post_uid_sql(
+                assertion_mentions_table,
+                assertions_table,
+            ),
+            {"post_uid": post_uid},
+        )
+        conn.execute(
+            source_queue_sql.delete_assertions_by_post_uid_sql(assertions_table),
+            {"post_uid": post_uid},
+        )
         assertion_payloads: list[dict[str, object]] = []
         mention_payloads: list[dict[str, object]] = []
         entity_payloads: list[dict[str, object]] = []
-        for idx, a in enumerate(assertions, start=1):
+        for idx, raw_assertion in enumerate(assertions, start=1):
             assertion_id = _make_assertion_id(
                 post_uid=post_uid,
                 idx=idx,
-                raw_assertion=a,
+                raw_assertion=raw_assertion,
             )
             assertion_payloads.append(
                 {
                     "assertion_id": assertion_id,
                     "post_uid": post_uid,
                     "idx": int(idx),
-                    "action": a["action"],
-                    "action_strength": int(a["action_strength"]),
-                    "summary": a["summary"],
-                    "evidence": a["evidence"],
-                    "created_at": str(a.get("created_at") or "").strip(),
+                    "action": raw_assertion["action"],
+                    "action_strength": int(raw_assertion["action_strength"]),
+                    "summary": raw_assertion["summary"],
+                    "evidence": raw_assertion["evidence"],
+                    "created_at": str(raw_assertion.get("created_at") or "").strip(),
                 }
             )
-            raw_mentions = a.get("assertion_mentions")
+            raw_mentions = raw_assertion.get("assertion_mentions")
             mentions = raw_mentions if isinstance(raw_mentions, list) else []
             for mention_seq, raw_mention in enumerate(mentions, start=1):
                 if not isinstance(raw_mention, dict):
@@ -452,7 +530,7 @@ def write_assertions_and_mark_done(
                         "confidence": float(raw_mention.get("confidence") or 0.0),
                     }
                 )
-            raw_entities = a.get("assertion_entities")
+            raw_entities = raw_assertion.get("assertion_entities")
             entities = raw_entities if isinstance(raw_entities, list) else []
             for raw_entity in entities:
                 if not isinstance(raw_entity, dict):
@@ -471,13 +549,22 @@ def write_assertions_and_mark_done(
                     }
                 )
         if assertion_payloads:
-            conn.execute(INSERT_ASSERTION, assertion_payloads)
+            conn.execute(
+                source_queue_sql.insert_assertion_sql(assertions_table),
+                assertion_payloads,
+            )
         if mention_payloads:
-            conn.execute(INSERT_ASSERTION_MENTION, mention_payloads)
+            conn.execute(
+                source_queue_sql.insert_assertion_mention_sql(assertion_mentions_table),
+                mention_payloads,
+            )
         if entity_payloads:
-            conn.execute(INSERT_ASSERTION_ENTITY, entity_payloads)
+            conn.execute(
+                source_queue_sql.insert_assertion_entity_sql(assertion_entities_table),
+                entity_payloads,
+            )
         conn.execute(
-            UPDATE_POST_DONE,
+            source_queue_sql.update_post_done_sql(posts_table),
             {
                 "post_uid": post_uid,
                 "final_status": final_status,
@@ -489,7 +576,7 @@ def write_assertions_and_mark_done(
             },
         )
 
-    run_turso_transaction(engine, _write)
+    run_postgres_transaction(engine, _write)
     if resolved_entity_match_results:
         persist_entity_match_followups_batch(
             get_research_workbench_engine_from_env(),

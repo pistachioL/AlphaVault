@@ -81,3 +81,18 @@ Uses `uv` (lockfile: `uv.lock`).
 ## Configuration & Secrets
 - Copy `.env.example` → `.env` and fill in values; never commit secrets (Turso tokens, API keys).
 - Common variables: `*_TURSO_DATABASE_URL`, `*_TURSO_AUTH_TOKEN`, `REDIS_URL`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`.
+
+## 子代理派发策略
+
+  - 任何 `spawn_agent` 调用都必须显式设置 `model` 与 `reasoning_effort`，禁止省略，禁止依赖默认继承，禁止交由平台自行决定。
+  - 除非存在更高优先级指令的强制覆盖，子代理模型仅允许使用 `gpt-5.4` 与 `gpt-5.3-codex`。
+  - 子代理默认使用 `gpt-5.4`。
+  - 仅当任务以代码实现、测试修复、局部重构、单模块阅读与分析为主，且不需要复杂跨模块推理时，才可使用 `gpt-5.3-codex`。
+  - `reasoning_effort` 仅允许使用 `high` 或 `xhigh`，严格禁止使用 `medium`、`low` 或任何更低等级，也不得省略。
+  - 推理等级选择规则：
+    - `high`：常规实现、测试补充、局部修复、单模块分析
+    - `xhigh`：复杂排障、跨模块重构、架构设计、多约束权衡、高不确定性任务
+  - 若任务复杂度存在明显歧义，一律上调为 `xhigh`，不得下调到 `medium` 及以下。
+  - 派发前应先判断是否确有委派价值；一旦决定派发，必须在回复中简要说明本次选择该模型与推理等级的原因。
+  - 子代理继续派发下级子代理时，必须完整继承本节约束，不得自行放宽。
+  - 若因平台限制或更高优先级规则被迫偏离本策略，必须在回复中明确说明触发原因、实际使用的模型与推理等级，以及偏离范围。

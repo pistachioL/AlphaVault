@@ -1,42 +1,24 @@
 from __future__ import annotations
 
 
-from alphavault.db.turso_db import (
-    TursoEngine,
-    is_turso_libsql_panic_error,
-    is_turso_stream_not_found_error,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    PostgresEngine,
+    postgres_connect_autocommit,
 )
 
 
 def maybe_dispose_turso_engine_on_transient_error(
     *,
-    engine: TursoEngine,
+    engine: PostgresEngine,
     err: BaseException,
     verbose: bool,
 ) -> None:
-    reason = ""
-    if is_turso_stream_not_found_error(err):
-        reason = "stream_not_found"
-    elif is_turso_libsql_panic_error(err):
-        reason = "libsql_panic"
-    else:
-        return
-    try:
-        engine.dispose()
-        if verbose:
-            print(f"[turso] disposed_engine reason={reason}", flush=True)
-    except Exception as dispose_err:
-        if verbose:
-            print(
-                f"[turso] dispose_engine_failed {type(dispose_err).__name__}: {dispose_err}",
-                flush=True,
-            )
+    del engine, err, verbose
 
 
 def ensure_turso_ready(
     *,
-    engine: TursoEngine,
+    engine: PostgresEngine,
     verbose: bool,
     turso_ready: bool,
     source_name: str = "",
@@ -50,7 +32,7 @@ def ensure_turso_ready(
         return True
     prefix = f"[turso:{source_name}]" if source_name else "[turso]"
     try:
-        with turso_connect_autocommit(engine):
+        with postgres_connect_autocommit(engine):
             pass
         print(f"{prefix} ready", flush=True)
         return True

@@ -6,8 +6,12 @@ import json
 
 import pandas as pd
 
-from alphavault.db.turso_db import ensure_turso_engine
-from alphavault.db.turso_env import load_configured_turso_sources_from_env
+from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
+from alphavault.db.postgres_db import ensure_postgres_engine
+from alphavault.db.postgres_env import (
+    load_configured_postgres_sources_from_env,
+    PostgresSource,
+)
 from alphavault.domains.stock.keys import (
     normalize_stock_key as _canonical_stock_key,
     stock_key_lookup_candidates,
@@ -28,6 +32,23 @@ from alphavault.worker.job_state import (
 )
 
 _STOCK_SIGNAL_CAP = 500
+_SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
+
+
+def _load_source_schemas_from_env() -> list[PostgresSource]:
+    return [
+        source
+        for source in load_configured_postgres_sources_from_env()
+        if str(getattr(source, "schema", getattr(source, "name", "")) or "").strip()
+        in _SOURCE_SCHEMA_NAMES
+    ]
+
+
+def _build_source_engine(db_url: str, *, source_name: str):
+    try:
+        return ensure_postgres_engine(db_url, schema_name=source_name)
+    except TypeError:
+        return ensure_postgres_engine(db_url)
 
 
 def _normalize_stock_key(value: str) -> str:
@@ -41,7 +62,8 @@ def _load_stock_hot_payload_cached(
     source_name: str,
     stock_key: str,
 ) -> tuple[dict[str, object], dict[str, object]]:
-    engine = ensure_turso_engine(db_url, auth_token)
+    del auth_token
+    engine = _build_source_engine(db_url, source_name=source_name)
     hot = load_entity_page_signal_snapshot(engine, stock_key=stock_key)
     progress: dict[str, object] = {}
     cycle_state_key = worker_progress_state_key(
@@ -269,7 +291,7 @@ def load_stock_cached_view_from_env(
             "worker_running": False,
         }
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = _load_source_schemas_from_env()
     if not sources:
         return {
             "entity_key": normalized,

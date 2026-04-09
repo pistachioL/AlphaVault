@@ -7,21 +7,31 @@ from typing import Any, cast
 import libsql
 import pytest
 
-from alphavault.db import turso_db, turso_queue
+from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
+from alphavault.db.cloud_schema import apply_cloud_schema
+from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
+from alphavault.db import turso_queue
 from alphavault.db.sql.turso_queue import (
-    INSERT_ASSERTION,
-    INSERT_ASSERTION_ENTITY,
-    INSERT_ASSERTION_MENTION,
-    UPSERT_PENDING_POST,
+    insert_assertion_entity_sql,
+    insert_assertion_mention_sql,
+    insert_assertion_sql,
+    select_post_processed_at_sql,
+    update_post_done_sql,
+    upsert_pending_post_sql,
 )
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
+from alphavault.db.libsql_db import (
+    LibsqlConnection as TursoConnection,
+    LibsqlEngine as TursoEngine,
     is_turso_stream_not_found_error,
     turso_savepoint,
 )
 from alphavault.domains.entity_match.resolve import EntityMatchResult
 from alphavault.worker.ingest import _build_raw_text
+
+
+def _source_pg_conn(pg_conn, *, schema_name: str) -> PostgresConnection:
+    apply_cloud_schema(pg_conn, target="source", schema_name=schema_name)
+    return PostgresConnection(pg_conn, schema_name=schema_name)
 
 
 def test_is_turso_stream_not_found_error_true() -> None:
@@ -172,7 +182,7 @@ def test_upsert_pending_post_refreshes_author_for_processed_rows() -> None:
         )
 
         conn.execute(
-            UPSERT_PENDING_POST,
+            upsert_pending_post_sql("posts"),
             {
                 "post_uid": "xueqiu:123",
                 "platform": "xueqiu",
@@ -265,7 +275,7 @@ def test_upsert_pending_post_preserves_processed_weibo_raw_text() -> None:
         )
 
         conn.execute(
-            UPSERT_PENDING_POST,
+            upsert_pending_post_sql("posts"),
             {
                 "post_uid": "weibo:123",
                 "platform": "weibo",
@@ -349,152 +359,14 @@ def test_turso_connection_execute_disposes_engine_on_libsql_panic() -> None:
     assert engine.dispose_calls == 1
 
 
-def test_run_turso_transaction_retries_on_stream_not_found_with_new_connection(
-    monkeypatch,
-) -> None:
-    class _FakeCursor:
-        rowcount = 1
-
-        def fetchone(self):  # type: ignore[no-untyped-def]
-            return None
-
-        def fetchall(self):  # type: ignore[no-untyped-def]
-            return []
-
-    class _FakeConn:
-        def __init__(self, name: str, *, fail_on_query: bool) -> None:
-            self.name = name
-            self.fail_on_query = fail_on_query
-
-        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
-            del params
-            sql = str(query).strip()
-            if sql == "SELECT 1" and self.fail_on_query:
-                self.fail_on_query = False
-                raise ValueError("stream not found: abc")
-            return _FakeCursor()
-
-    class _FakeEngine:
-        def __init__(self) -> None:
-            self.dispose_calls = 0
-
-        def dispose(self) -> None:
-            self.dispose_calls += 1
-
-    connect_calls: list[str] = []
-    body_calls: list[str] = []
-    connections = [
-        _FakeConn("conn-1", fail_on_query=True),
-        _FakeConn("conn-2", fail_on_query=False),
-    ]
-
-    @contextmanager
-    def _fake_connect(_engine):  # type: ignore[no-untyped-def]
-        conn = connections[len(connect_calls)]
-        connect_calls.append(conn.name)
-        yield conn
-
-    def _body(conn):  # type: ignore[no-untyped-def]
-        body_calls.append(conn.name)
-        conn.execute("SELECT 1")
-        return conn.name
-
-    monkeypatch.setattr(turso_db, "turso_connect_autocommit", _fake_connect)
-
-    helper = getattr(turso_db, "run_turso_transaction")
-    engine = _FakeEngine()
-    assert helper(engine, _body) == "conn-2"
-    assert connect_calls == ["conn-1", "conn-2"]
-    assert body_calls == ["conn-1", "conn-2"]
-    assert engine.dispose_calls == 1
-
-
-def test_run_turso_transaction_uses_existing_connection_without_opening_new_one(
-    monkeypatch,
-) -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        conn.execute("CREATE TABLE t(id INTEGER PRIMARY KEY)")
-
-        @contextmanager
-        def _fail_connect(_engine):  # type: ignore[no-untyped-def]
-            raise AssertionError("should_not_open_new_connection")
-            yield
-
-        def _body(tx_conn):  # type: ignore[no-untyped-def]
-            tx_conn.execute("INSERT INTO t(id) VALUES (:id)", {"id": 1})
-            return tx_conn.execute("SELECT COUNT(*) FROM t").scalar()
-
-        monkeypatch.setattr(turso_db, "turso_connect_autocommit", _fail_connect)
-
-        helper = getattr(turso_db, "run_turso_transaction")
-        assert helper(conn, _body) == 1
-    finally:
-        conn.close()
-
-
-def test_run_turso_transaction_drops_bad_connection_on_connection_reset(
-    monkeypatch,
-) -> None:
-    class _FakeCursor:
-        rowcount = 1
-
-        def fetchone(self):  # type: ignore[no-untyped-def]
-            return None
-
-        def fetchall(self):  # type: ignore[no-untyped-def]
-            return []
-
-    class _RawConn:
-        def __init__(self, name: str, *, fail_on_query: bool) -> None:
-            self.name = name
-            self.fail_on_query = fail_on_query
-            self.close_calls = 0
-
-        def execute(self, query, params=None):  # type: ignore[no-untyped-def]
-            del params
-            sql = str(query).strip()
-            if sql == "SELECT 1" and self.fail_on_query:
-                raise RuntimeError("connection reset by peer")
-            return _FakeCursor()
-
-        def close(self) -> None:
-            self.close_calls += 1
-
-    raw_1 = _RawConn("raw-1", fail_on_query=True)
-    raw_2 = _RawConn("raw-2", fail_on_query=False)
-    created = [raw_1, raw_2]
-    body_calls: list[str] = []
-    engine = TursoEngine(
-        remote_url="libsql://unit.test",
-        auth_token="token",
-        max_connections=1,
-    )
-
-    def _fake_open_raw_connection():  # type: ignore[no-untyped-def]
-        return created.pop(0)
-
-    def _body(conn: TursoConnection) -> str:
-        body_calls.append(str(conn._raw.name))
-        conn.execute("SELECT 1")
-        return str(conn._raw.name)
-
-    monkeypatch.setattr(engine, "_open_raw_connection", _fake_open_raw_connection)
-    monkeypatch.setattr(turso_db.time, "sleep", lambda _seconds: None)
-
-    helper = getattr(turso_db, "run_turso_transaction")
-    assert helper(engine, _body) == "raw-2"
-    assert body_calls == ["raw-1", "raw-2"]
-    assert raw_1.close_calls == 1
-    assert raw_2.close_calls == 0
-
-
 def test_upsert_pending_post_wraps_nonfatal_base_exception(monkeypatch) -> None:
     PanicException = type(
         "PanicException", (BaseException,), {"__module__": "pyo3_runtime"}
     )
 
     class _FakeConn:
+        schema_name = SCHEMA_WEIBO
+
         def __enter__(self):  # type: ignore[no-untyped-def]
             return self
 
@@ -512,7 +384,7 @@ def test_upsert_pending_post_wraps_nonfatal_base_exception(monkeypatch) -> None:
             self.dispose_calls += 1
 
     monkeypatch.setattr(
-        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+        turso_queue, "postgres_connect_autocommit", lambda _engine: _FakeConn()
     )
     engine = _FakeEngine()
     with pytest.raises(turso_queue.TursoWriteError) as err:
@@ -529,11 +401,13 @@ def test_upsert_pending_post_wraps_nonfatal_base_exception(monkeypatch) -> None:
             ingested_at=1,
         )
     assert isinstance(err.value.__cause__, PanicException)
-    assert engine.dispose_calls == 1
+    assert engine.dispose_calls == 0
 
 
 def test_upsert_pending_post_reraises_fatal_base_exception(monkeypatch) -> None:
     class _FakeConn:
+        schema_name = SCHEMA_WEIBO
+
         def __enter__(self):  # type: ignore[no-untyped-def]
             return self
 
@@ -551,7 +425,7 @@ def test_upsert_pending_post_reraises_fatal_base_exception(monkeypatch) -> None:
             self.dispose_calls += 1
 
     monkeypatch.setattr(
-        turso_queue, "turso_connect_autocommit", lambda _engine: _FakeConn()
+        turso_queue, "postgres_connect_autocommit", lambda _engine: _FakeConn()
     )
     engine = _FakeEngine()
     with pytest.raises(KeyboardInterrupt):
@@ -584,6 +458,8 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     calls: list[tuple[str, object]] = []
 
     class _FakeConn:
+        schema_name = SCHEMA_WEIBO
+
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             calls.append((str(query), params))
             return self
@@ -591,7 +467,7 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
         return fn(_FakeConn())
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
+    monkeypatch.setattr(turso_queue, "run_postgres_transaction", _fake_run)
 
     turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
@@ -624,7 +500,10 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     )
 
     mention_calls = [
-        item for item in calls if item[0].strip() == INSERT_ASSERTION_MENTION.strip()
+        item
+        for item in calls
+        if item[0].strip()
+        == insert_assertion_mention_sql(f"{SCHEMA_WEIBO}.assertion_mentions").strip()
     ]
     assert len(mention_calls) == 1
     mention_params = cast(list[dict[str, object]], mention_calls[0][1])
@@ -641,7 +520,9 @@ def test_write_assertions_and_mark_done_writes_assertion_mentions(
     ]
 
     assertion_calls = [
-        item for item in calls if item[0].strip() == INSERT_ASSERTION.strip()
+        item
+        for item in calls
+        if item[0].strip() == insert_assertion_sql(f"{SCHEMA_WEIBO}.assertions").strip()
     ]
     assert len(assertion_calls) == 1
     assertion_params = cast(list[dict[str, object]], assertion_calls[0][1])
@@ -665,6 +546,8 @@ def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_d
     calls: list[tuple[str, object]] = []
 
     class _FakeConn:
+        schema_name = SCHEMA_XUEQIU
+
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             calls.append((str(query).strip(), params))
             return self
@@ -678,7 +561,7 @@ def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_d
     def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
         return fn(_FakeConn())
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
+    monkeypatch.setattr(turso_queue, "run_postgres_transaction", _fake_run)
 
     turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
@@ -702,8 +585,8 @@ def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_d
         ),
     )
 
-    assert calls[0][0] == turso_queue.SELECT_POST_PROCESSED_AT.strip()
-    assert calls[1][0] == UPSERT_PENDING_POST.strip()
+    assert calls[0][0] == select_post_processed_at_sql(f"{SCHEMA_XUEQIU}.posts").strip()
+    assert calls[1][0] == upsert_pending_post_sql(f"{SCHEMA_XUEQIU}.posts").strip()
     assert calls[1][1] == {
         "post_uid": "xueqiu:2",
         "platform": "xueqiu",
@@ -716,7 +599,7 @@ def test_write_assertions_and_mark_done_upserts_missing_prefetched_post_before_d
         "archived_at": "2026-03-28 12:00:01",
         "ingested_at": 0,
     }
-    assert calls[-1][0] == turso_queue.UPDATE_POST_DONE.strip()
+    assert calls[-1][0] == update_post_done_sql(f"{SCHEMA_XUEQIU}.posts").strip()
 
 
 def test_write_assertions_and_mark_done_writes_assertion_entities(
@@ -725,6 +608,8 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
     calls: list[tuple[str, object]] = []
 
     class _FakeConn:
+        schema_name = SCHEMA_WEIBO
+
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             calls.append((str(query), params))
             return self
@@ -732,7 +617,7 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
     def _fake_run(_engine_or_conn, fn):  # type: ignore[no-untyped-def]
         return fn(_FakeConn())
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
+    monkeypatch.setattr(turso_queue, "run_postgres_transaction", _fake_run)
 
     turso_queue.write_assertions_and_mark_done(
         cast(Any, object()),
@@ -764,7 +649,10 @@ def test_write_assertions_and_mark_done_writes_assertion_entities(
     )
 
     entity_calls = [
-        item for item in calls if item[0].strip() == INSERT_ASSERTION_ENTITY.strip()
+        item
+        for item in calls
+        if item[0].strip()
+        == insert_assertion_entity_sql(f"{SCHEMA_WEIBO}.assertion_entities").strip()
     ]
     assert len(entity_calls) == 1
     entity_params = cast(list[dict[str, object]], entity_calls[0][1])
@@ -790,6 +678,7 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_after_do
     class _FakeConn:
         def __init__(self, *, label: str) -> None:
             self.label = label
+            self.schema_name = SCHEMA_WEIBO if label == "source" else "standard"
 
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             del params
@@ -805,7 +694,7 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_after_do
         label = "standard" if _engine_or_conn is standard_engine else "source"
         return fn(_FakeConn(label=label))
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
+    monkeypatch.setattr(turso_queue, "run_postgres_transaction", _fake_run)
     monkeypatch.setattr(
         turso_queue,
         "get_research_workbench_engine_from_env",
@@ -868,12 +757,12 @@ def test_write_assertions_and_mark_done_persists_entity_match_followups_after_do
     )
 
     assert len(followup_calls) == 1
-    assert calls.index(INSERT_ASSERTION_ENTITY.strip()) < calls.index(
-        turso_queue.UPDATE_POST_DONE.strip()
-    )
-    assert calls.index(turso_queue.UPDATE_POST_DONE.strip()) < calls.index(
-        "__persist_entity_match_followups__"
-    )
+    assert calls.index(
+        insert_assertion_entity_sql(f"{SCHEMA_WEIBO}.assertion_entities").strip()
+    ) < calls.index(update_post_done_sql(f"{SCHEMA_WEIBO}.posts").strip())
+    assert calls.index(
+        update_post_done_sql(f"{SCHEMA_WEIBO}.posts").strip()
+    ) < calls.index("__persist_entity_match_followups__")
 
 
 def test_write_assertions_and_mark_done_raises_after_mark_done_when_followups_fail(
@@ -886,6 +775,7 @@ def test_write_assertions_and_mark_done_raises_after_mark_done_when_followups_fa
     class _FakeConn:
         def __init__(self, *, label: str) -> None:
             self.label = label
+            self.schema_name = SCHEMA_WEIBO if label == "source" else "standard"
 
         def execute(self, query, params=None):  # type: ignore[no-untyped-def]
             del params
@@ -896,7 +786,7 @@ def test_write_assertions_and_mark_done_raises_after_mark_done_when_followups_fa
         label = "standard" if _engine_or_conn is standard_engine else "source"
         return fn(_FakeConn(label=label))
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run)
+    monkeypatch.setattr(turso_queue, "run_postgres_transaction", _fake_run)
     monkeypatch.setattr(
         turso_queue,
         "get_research_workbench_engine_from_env",
@@ -944,7 +834,105 @@ def test_write_assertions_and_mark_done_raises_after_mark_done_when_followups_fa
             ],
         )
 
-    assert turso_queue.UPDATE_POST_DONE.strip() in calls
+    assert update_post_done_sql(f"{SCHEMA_WEIBO}.posts").strip() in calls
+
+
+def test_write_assertions_and_mark_done_writes_weibo_schema(pg_conn) -> None:
+    conn = _source_pg_conn(pg_conn, schema_name=SCHEMA_WEIBO)
+
+    turso_queue.write_assertions_and_mark_done(
+        conn,
+        post_uid="weibo:200",
+        final_status="relevant",
+        invest_score=0.85,
+        processed_at="2026-04-08 10:00:00",
+        model="gpt-5.4",
+        prompt_version="topic-prompt-v4",
+        archived_at="2026-04-08 10:00:01",
+        assertions=[
+            {
+                "assertion_id": "weibo:200#1",
+                "action": "trade.buy",
+                "action_strength": 2,
+                "summary": "开始买了",
+                "evidence": "我今天开始买 601899",
+                "created_at": "2026-04-08 09:59:00",
+                "assertion_mentions": [
+                    {
+                        "mention_text": "601899",
+                        "mention_norm": "601899",
+                        "mention_type": "stock_code",
+                        "evidence": "我今天开始买 601899",
+                        "confidence": 0.9,
+                    }
+                ],
+                "assertion_entities": [
+                    {
+                        "entity_key": "stock:601899.SH",
+                        "entity_type": "stock",
+                        "match_source": "stock_code",
+                        "is_primary": 1,
+                    }
+                ],
+            }
+        ],
+        prefetched_post=turso_queue.CloudPost(
+            post_uid="weibo:200",
+            platform="weibo",
+            platform_post_id="200",
+            author="alice",
+            created_at="2026-04-08 09:58:00",
+            url="https://weibo.com/200",
+            raw_text="原文",
+            ai_retry_count=0,
+        ),
+    )
+
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM weibo.assertions WHERE post_uid = :post_uid",
+            {"post_uid": "weibo:200"},
+        ).scalar()
+        == 1
+    )
+    assert (
+        conn.execute(
+            """
+SELECT COUNT(*)
+FROM weibo.assertion_mentions
+WHERE assertion_id = :assertion_id
+""",
+            {"assertion_id": "weibo:200#1"},
+        ).scalar()
+        == 1
+    )
+    assert (
+        conn.execute(
+            """
+SELECT COUNT(*)
+FROM weibo.assertion_entities
+WHERE assertion_id = :assertion_id
+""",
+            {"assertion_id": "weibo:200#1"},
+        ).scalar()
+        == 1
+    )
+    row = (
+        conn.execute(
+            """
+SELECT final_status, processed_at
+FROM weibo.posts
+WHERE post_uid = :post_uid
+""",
+            {"post_uid": "weibo:200"},
+        )
+        .mappings()
+        .fetchone()
+    )
+    assert row == {
+        "final_status": "relevant",
+        "processed_at": "2026-04-08 10:00:00",
+    }
 
 
 def test_reset_ai_results_all_uses_run_turso_transaction(monkeypatch) -> None:
@@ -960,15 +948,17 @@ def test_reset_ai_results_all_uses_run_turso_transaction(monkeypatch) -> None:
         raise AssertionError("old_transaction_path_used")
         yield
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run, raising=False)
-    monkeypatch.setattr(turso_queue, "turso_connect_autocommit", _fail_connect)
+    monkeypatch.setattr(
+        turso_queue, "run_postgres_transaction", _fake_run, raising=False
+    )
+    monkeypatch.setattr(turso_queue, "postgres_connect_autocommit", _fail_connect)
 
     engine = TursoEngine(
         remote_url="libsql://unit.test",
         auth_token="token",
     )
     assert turso_queue.reset_ai_results_all(
-        engine, archived_at="2026-04-07 10:00:00"
+        cast(PostgresEngine, engine), archived_at="2026-04-07 10:00:00"
     ) == (
         3,
         4,
@@ -989,15 +979,17 @@ def test_reset_ai_results_for_post_uids_uses_run_turso_transaction(monkeypatch) 
         raise AssertionError("old_transaction_path_used")
         yield
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run, raising=False)
-    monkeypatch.setattr(turso_queue, "turso_connect_autocommit", _fail_connect)
+    monkeypatch.setattr(
+        turso_queue, "run_postgres_transaction", _fake_run, raising=False
+    )
+    monkeypatch.setattr(turso_queue, "postgres_connect_autocommit", _fail_connect)
 
     engine = TursoEngine(
         remote_url="libsql://unit.test",
         auth_token="token",
     )
     result = turso_queue.reset_ai_results_for_post_uids(
-        engine,
+        cast(PostgresEngine, engine),
         post_uids=["weibo:1"],
         archived_at="2026-04-07 10:00:00",
         chunk_size=100,
@@ -1019,15 +1011,17 @@ def test_write_assertions_and_mark_done_uses_run_turso_transaction(monkeypatch) 
         raise AssertionError("old_transaction_path_used")
         yield
 
-    monkeypatch.setattr(turso_queue, "run_turso_transaction", _fake_run, raising=False)
-    monkeypatch.setattr(turso_queue, "turso_connect_autocommit", _fail_connect)
+    monkeypatch.setattr(
+        turso_queue, "run_postgres_transaction", _fake_run, raising=False
+    )
+    monkeypatch.setattr(turso_queue, "postgres_connect_autocommit", _fail_connect)
 
     engine = TursoEngine(
         remote_url="libsql://unit.test",
         auth_token="token",
     )
     turso_queue.write_assertions_and_mark_done(
-        engine,
+        cast(PostgresEngine, engine),
         post_uid="weibo:7",
         final_status="relevant",
         invest_score=0.9,

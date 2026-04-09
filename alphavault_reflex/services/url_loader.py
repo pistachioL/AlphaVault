@@ -3,29 +3,41 @@ from __future__ import annotations
 from functools import lru_cache
 
 
-from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
-from alphavault.db.turso_env import (
+from alphavault.db.postgres_db import (
+    ensure_postgres_engine,
+    postgres_connect_autocommit,
+)
+from alphavault.db.postgres_env import (
     infer_platform_from_post_uid,
-    load_configured_turso_sources_from_env,
 )
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
     MISSING_TURSO_SOURCES_ERROR,
+    load_configured_source_schemas_from_env,
+    source_table,
 )
 
 
 @lru_cache(maxsize=32)
 def load_post_urls_cached(
-    db_url: str, auth_token: str, post_uids: tuple[str, ...]
+    db_url: str,
+    auth_token: str,
+    source_name: str,
+    post_uids: tuple[str, ...],
 ) -> dict[str, str]:
     if not post_uids:
         return {}
-    engine = ensure_turso_engine(db_url, auth_token)
+    del auth_token
+    schema_name = str(source_name or "").strip()
+    engine = ensure_postgres_engine(db_url, schema_name=schema_name)
     placeholders = ", ".join(["?"] * len(post_uids))
-    sql = f"SELECT post_uid, url FROM posts WHERE post_uid IN ({placeholders})"
-    with turso_connect_autocommit(engine) as conn:
+    sql = (
+        f"SELECT post_uid, url FROM {source_table(schema_name, 'posts')} "
+        f"WHERE post_uid IN ({placeholders})"
+    )
+    with postgres_connect_autocommit(engine) as conn:
         df = turso_read_sql_df(conn, sql, params=list(post_uids))
     if df.empty or "post_uid" not in df.columns or "url" not in df.columns:
         return {}
@@ -49,7 +61,7 @@ def load_post_urls_from_env(
         return {}, ""
 
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = load_configured_source_schemas_from_env()
     if not sources:
         return {}, MISSING_TURSO_SOURCES_ERROR
 
@@ -67,10 +79,24 @@ def load_post_urls_from_env(
     try:
         for platform, group_uids in groups.items():
             source = sources_by_name[platform]
-            out.update(load_cached_fn(source.url, source.token, tuple(group_uids)))
+            out.update(
+                load_cached_fn(
+                    source.url,
+                    source.token,
+                    platform,
+                    tuple(group_uids),
+                )
+            )
         if unknown:
             for source in sources:
-                out.update(load_cached_fn(source.url, source.token, tuple(unknown)))
+                out.update(
+                    load_cached_fn(
+                        source.url,
+                        source.token,
+                        str(getattr(source, "name", "") or "").strip(),
+                        tuple(unknown),
+                    )
+                )
     except BaseException as err:
         if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
             raise

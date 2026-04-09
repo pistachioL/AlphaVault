@@ -6,16 +6,15 @@ from contextlib import ExitStack, contextmanager
 from typing import Iterator, TypedDict
 
 from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    ensure_turso_engine,
-    run_turso_transaction,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    ensure_postgres_engine,
+    postgres_connect_autocommit,
+    run_postgres_transaction,
 )
-from alphavault.db.turso_env import require_turso_source_from_env
+from alphavault.db.postgres_env import require_postgres_source_from_env
 from alphavault.env import load_dotenv_if_present
-from alphavault.research_workbench import get_research_workbench_engine_from_env
 
 _SOURCE_STANDARD = "standard"
 _SOURCE_WEIBO = PLATFORM_WEIBO
@@ -81,7 +80,7 @@ _TABLE_SPECS: dict[str, _TableSpec] = {
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Migrate old history tables from weibo/xueqiu Turso to standard Turso"
+        description="Migrate old history tables from weibo/xueqiu schemas to standard schema"
     )
     parser.add_argument("--dry-run", action="store_true", help="只打印对帐，不写标准库")
     parser.add_argument(
@@ -95,17 +94,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 @contextmanager
 def _use_conn(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> Iterator[TursoConnection]:
-    if isinstance(engine_or_conn, TursoConnection):
+    engine_or_conn: PostgresEngine | PostgresConnection,
+) -> Iterator[PostgresConnection]:
+    if isinstance(engine_or_conn, PostgresConnection):
+        _set_search_path(engine_or_conn)
         yield engine_or_conn
         return
-    with turso_connect_autocommit(engine_or_conn) as conn:
+    with postgres_connect_autocommit(engine_or_conn) as conn:
+        _set_search_path(conn)
         yield conn
 
 
 def _load_table_rows(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     table_name: str,
     columns: tuple[str, ...],
@@ -142,10 +143,10 @@ def _iter_row_batches(
 @contextmanager
 def _use_migration_connections(
     *,
-    weibo_conn: TursoEngine | TursoConnection,
-    xueqiu_conn: TursoEngine | TursoConnection,
-    standard_conn: TursoEngine | TursoConnection,
-) -> Iterator[tuple[TursoConnection, TursoConnection, TursoConnection]]:
+    weibo_conn: PostgresEngine | PostgresConnection,
+    xueqiu_conn: PostgresEngine | PostgresConnection,
+    standard_conn: PostgresEngine | PostgresConnection,
+) -> Iterator[tuple[PostgresConnection, PostgresConnection, PostgresConnection]]:
     with ExitStack() as stack:
         yield (
             stack.enter_context(_use_conn(weibo_conn)),
@@ -217,7 +218,7 @@ def _merge_rows(
 
 
 def _replace_table_rows_in_conn(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     table_name: str,
     columns: tuple[str, ...],
@@ -251,12 +252,13 @@ def _replace_table_rows_in_conn(
 
 
 def _replace_all_table_rows(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     merged_rows_by_table: dict[str, list[dict[str, object]]],
     batch_size: int,
 ) -> dict[str, int]:
-    def _write(conn: TursoConnection) -> dict[str, int]:
+    def _write(conn: PostgresConnection) -> dict[str, int]:
+        _set_search_path(conn)
         counts: dict[str, int] = {}
         for table_name, spec in _TABLE_SPECS.items():
             columns: tuple[str, ...] = tuple(spec["columns"])
@@ -269,7 +271,7 @@ def _replace_all_table_rows(
             )
         return counts
 
-    return run_turso_transaction(engine_or_conn, _write)
+    return run_postgres_transaction(engine_or_conn, _write)
 
 
 def _print_group_counts(table_name: str, rows: list[dict[str, object]]) -> None:
@@ -294,9 +296,9 @@ def _print_group_counts(table_name: str, rows: list[dict[str, object]]) -> None:
 
 def migrate_standard_history_tables(
     *,
-    weibo_conn: TursoEngine | TursoConnection,
-    xueqiu_conn: TursoEngine | TursoConnection,
-    standard_conn: TursoEngine | TursoConnection,
+    weibo_conn: PostgresEngine | PostgresConnection,
+    xueqiu_conn: PostgresEngine | PostgresConnection,
+    standard_conn: PostgresEngine | PostgresConnection,
     dry_run: bool,
     batch_size: int = _DEFAULT_BATCH_SIZE,
 ) -> dict[str, dict[str, int]]:
@@ -398,9 +400,16 @@ def migrate_standard_history_tables(
     return stats
 
 
-def _build_source_engine(platform: str) -> TursoEngine:
-    source = require_turso_source_from_env(platform)
-    return ensure_turso_engine(source.url, str(source.token or "").strip())
+def _set_search_path(conn: PostgresConnection) -> None:
+    schema_name = str(getattr(conn, "schema_name", "") or "").strip()
+    if not schema_name:
+        return
+    conn.execute(f"SET search_path TO {schema_name}")
+
+
+def _build_source_engine(platform: str) -> PostgresEngine:
+    source = require_postgres_source_from_env(platform)
+    return ensure_postgres_engine(source.dsn, schema_name=source.schema)
 
 
 def main() -> int:
@@ -408,7 +417,7 @@ def main() -> int:
     args = parse_args()
     weibo_engine = _build_source_engine(PLATFORM_WEIBO)
     xueqiu_engine = _build_source_engine(PLATFORM_XUEQIU)
-    standard_engine = get_research_workbench_engine_from_env()
+    standard_engine = _build_source_engine(_SOURCE_STANDARD)
     migrate_standard_history_tables(
         weibo_conn=weibo_engine,
         xueqiu_conn=xueqiu_engine,

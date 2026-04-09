@@ -5,7 +5,7 @@ from pathlib import Path
 import threading
 from typing import Any
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.worker import periodic_jobs
 from alphavault.worker.spool import flush_spool_to_turso
 from alphavault.worker.worker_constants import (
@@ -16,7 +16,7 @@ from alphavault.worker.worker_loop_models import SourceTickContext
 
 
 def submit_spool_flush_job(
-    sync_engine: TursoEngine,
+    sync_engine: PostgresEngine,
     *,
     spool_dir: Path,
     redis_client: Any,
@@ -45,7 +45,7 @@ def submit_spool_flush_job(
 def maybe_schedule_spool_flush(
     *,
     source,
-    active_engine: TursoEngine | None,
+    active_engine: PostgresEngine | None,
     ctx: SourceTickContext,
     spool_executor: ThreadPoolExecutor,
     wakeup_event: threading.Event,

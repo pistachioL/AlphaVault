@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import threading
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.rss.utils import CST, in_active_hours
 from alphavault.worker import periodic_jobs
 from alphavault.worker.ingest import ingest_rss_many_once
@@ -15,7 +15,7 @@ from alphavault.worker.worker_loop_runtime import seconds_until_next_active_star
 def maybe_schedule_rss_ingest(
     *,
     source,
-    active_engine: TursoEngine | None,
+    active_engine: PostgresEngine | None,
     platform: str,
     ctx: SourceTickContext,
     rss_executor: ThreadPoolExecutor,

@@ -29,7 +29,7 @@ def get_research_workbench_engine_from_env() -> PostgresEngine:
         None,
     )
     if standard_source is None:
-        raise RuntimeError(f"missing standard postgres source")
+        raise RuntimeError("missing standard postgres source")
     return _get_cached_research_workbench_engine(standard_source.dsn)
 
 

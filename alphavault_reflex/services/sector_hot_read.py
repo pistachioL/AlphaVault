@@ -5,8 +5,12 @@ from functools import lru_cache
 
 import pandas as pd
 
-from alphavault.db.turso_db import ensure_turso_engine
-from alphavault.db.turso_env import load_configured_turso_sources_from_env
+from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
+from alphavault.db.postgres_db import ensure_postgres_engine
+from alphavault.db.postgres_env import (
+    load_configured_postgres_sources_from_env,
+    PostgresSource,
+)
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_stock_cache import load_entity_page_signal_snapshot
 from alphavault.worker.sector_hot_payload_builder import normalize_sector_key
@@ -15,15 +19,34 @@ from .turso_read import MISSING_TURSO_SOURCES_ERROR
 
 
 _SECTOR_SIGNAL_CAP = 500
+_SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
+
+
+def _load_source_schemas_from_env() -> list[PostgresSource]:
+    return [
+        source
+        for source in load_configured_postgres_sources_from_env()
+        if str(getattr(source, "schema", getattr(source, "name", "")) or "").strip()
+        in _SOURCE_SCHEMA_NAMES
+    ]
+
+
+def _build_source_engine(db_url: str, *, source_name: str):
+    try:
+        return ensure_postgres_engine(db_url, schema_name=source_name)
+    except TypeError:
+        return ensure_postgres_engine(db_url)
 
 
 @lru_cache(maxsize=256)
 def _load_sector_hot_payload_cached(
     db_url: str,
     auth_token: str,
+    source_name: str,
     sector_key: str,
 ) -> dict[str, object]:
-    engine = ensure_turso_engine(db_url, auth_token)
+    del auth_token
+    engine = _build_source_engine(db_url, source_name=source_name)
     return load_entity_page_signal_snapshot(engine, stock_key=sector_key)
 
 
@@ -130,7 +153,7 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
             "snapshot_hit": False,
         }
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = _load_source_schemas_from_env()
     if not sources:
         return {
             "entity_key": normalized,
@@ -150,6 +173,7 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
                 _load_sector_hot_payload_cached,
                 source.url,
                 source.token,
+                source.name,
                 normalized,
             ): source.name
             for source in sources

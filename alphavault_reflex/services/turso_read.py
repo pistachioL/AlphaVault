@@ -12,6 +12,7 @@ from alphavault.research_workbench.service import (
 )
 from alphavault_reflex.services.cache_registry import clear_registered_caches
 from alphavault_reflex.services.source_loader import (
+    MISSING_POSTGRES_DSN_ERROR,
     MISSING_TURSO_SOURCES_ERROR,
     WANTED_POST_COLUMNS_FOR_TREE,
     WANTED_TRADE_ASSERTION_COLUMNS,
@@ -97,6 +98,7 @@ __all__ = [
     "FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE",
     "FAST_STOCK_TOTAL_TIMEOUT_SECONDS",
     "HOMEWORK_DEFAULT_VIEW_KEY",
+    "MISSING_POSTGRES_DSN_ERROR",
     "MISSING_TURSO_SOURCES_ERROR",
     "TRADE_BOARD_ASSERTION_COLUMNS",
     "WANTED_POST_COLUMNS_FOR_TREE",

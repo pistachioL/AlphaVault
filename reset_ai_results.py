@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import re
 
+from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
+from alphavault.db.postgres_db import (
+    PostgresEngine,
+    ensure_postgres_engine,
+    postgres_connect_autocommit,
+)
+from alphavault.db.postgres_env import (
+    require_postgres_source_platform,
+    require_postgres_source_from_env,
+)
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.scripts import (
     SELECT_TOTAL_ASSERTIONS,
@@ -11,7 +22,6 @@ from alphavault.db.sql.scripts import (
 )
 from alphavault.env import load_dotenv_if_present
 
-from alphavault.db.turso_db import get_turso_engine_from_env, turso_connect_autocommit
 from alphavault.db.turso_queue import (
     reset_ai_results_all,
     reset_ai_results_for_post_uids,
@@ -20,6 +30,18 @@ from alphavault.rss.utils import now_str
 
 
 DEFAULT_CHUNK_SIZE = 200
+
+
+def _source_engine_for_platform(platform: str) -> PostgresEngine:
+    source = require_postgres_source_from_env(platform)
+    return ensure_postgres_engine(source.dsn, schema_name=source.schema)
+
+
+def _iter_source_engines() -> list[tuple[str, PostgresEngine]]:
+    return [
+        (platform, _source_engine_for_platform(platform))
+        for platform in (PLATFORM_WEIBO, PLATFORM_XUEQIU)
+    ]
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,7 +93,7 @@ def _select_existing_post_uids(engine, post_uids: list[str]) -> set[str]:
     placeholders = make_in_placeholders(prefix="uid", count=len(post_uids))
     params = make_in_params(prefix="uid", values=post_uids)
     query = select_post_uids_in(placeholders)
-    with turso_connect_autocommit(engine) as conn:
+    with postgres_connect_autocommit(engine) as conn:
         rows = conn.execute(query, params).fetchall()
     return {str(r[0]) for r in rows if r and r[0]}
 
@@ -86,13 +108,18 @@ def main() -> None:
     if args.all and not args.yes:
         raise SystemExit("全量重置太危险：请加 --yes 确认")
 
-    engine = get_turso_engine_from_env()
     archived_at = now_str()
+    source_engines = dict(_iter_source_engines())
 
     if args.all:
-        with turso_connect_autocommit(engine) as conn:
-            total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
-            total_assertions = int(conn.execute(SELECT_TOTAL_ASSERTIONS).scalar() or 0)
+        total_posts = 0
+        total_assertions = 0
+        for engine in source_engines.values():
+            with postgres_connect_autocommit(engine) as conn:
+                total_posts += int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
+                total_assertions += int(
+                    conn.execute(SELECT_TOTAL_ASSERTIONS).scalar() or 0
+                )
 
         print(
             f"[reset] plan all=1 posts={total_posts} assertions={total_assertions} keep_assertions=1 dry_run={int(bool(args.dry_run))}",
@@ -101,7 +128,15 @@ def main() -> None:
         if args.dry_run:
             return
 
-        deleted, updated = reset_ai_results_all(engine, archived_at=archived_at)
+        deleted = 0
+        updated = 0
+        for engine in source_engines.values():
+            source_deleted, source_updated = reset_ai_results_all(
+                engine,
+                archived_at=archived_at,
+            )
+            deleted += int(source_deleted)
+            updated += int(source_updated)
         print(
             f"[reset] done all=1 deleted_assertions={deleted} updated_posts={updated}",
             flush=True,
@@ -109,7 +144,16 @@ def main() -> None:
         return
 
     post_uids = _parse_post_uids(args.post_uids)
-    existing = _select_existing_post_uids(engine, post_uids)
+    grouped_targets: dict[str, list[str]] = defaultdict(list)
+    for uid in post_uids:
+        platform = require_postgres_source_platform(uid)
+        grouped_targets[platform].append(uid)
+
+    existing: set[str] = set()
+    for platform, group_uids in grouped_targets.items():
+        existing.update(
+            _select_existing_post_uids(source_engines[platform], group_uids)
+        )
     missing = [uid for uid in post_uids if uid not in existing]
     targets = [uid for uid in post_uids if uid in existing]
 
@@ -133,12 +177,20 @@ def main() -> None:
     if args.dry_run or not targets:
         return
 
-    deleted, updated = reset_ai_results_for_post_uids(
-        engine,
-        post_uids=targets,
-        archived_at=archived_at,
-        chunk_size=max(1, int(args.chunk_size)),
-    )
+    deleted = 0
+    updated = 0
+    for platform, group_uids in grouped_targets.items():
+        source_targets = [uid for uid in group_uids if uid in existing]
+        if not source_targets:
+            continue
+        source_deleted, source_updated = reset_ai_results_for_post_uids(
+            source_engines[platform],
+            post_uids=source_targets,
+            archived_at=archived_at,
+            chunk_size=max(1, int(args.chunk_size)),
+        )
+        deleted += int(source_deleted)
+        updated += int(source_updated)
     print(
         f"[reset] done all=0 deleted_assertions={deleted} updated_posts={updated}",
         flush=True,

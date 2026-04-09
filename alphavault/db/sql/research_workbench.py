@@ -212,10 +212,16 @@ WHERE candidate_id = :candidate_id
 
 def upsert_alias_resolve_task_attempt(table: str) -> str:
     return f"""
-INSERT INTO {table}(alias_key, status, attempt_count, created_at, updated_at)
+INSERT INTO {table} AS target(
+    alias_key,
+    status,
+    attempt_count,
+    created_at,
+    updated_at
+)
 VALUES (:alias_key, :status, 1, :now, :now)
 ON CONFLICT(alias_key) DO UPDATE SET
-    attempt_count = attempt_count + 1,
+    attempt_count = target.attempt_count + 1,
     updated_at = excluded.updated_at
 """
 

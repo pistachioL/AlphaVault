@@ -1,13 +1,17 @@
 from __future__ import annotations
 from typing import Any, cast
 
-import libsql
-
+from alphavault.constants import SCHEMA_STANDARD
 from alphavault.db.cloud_schema import apply_cloud_schema
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.db.turso_queue import CloudPost
 from alphavault.domains.entity_match.resolve import EntityMatchResult
-from alphavault.research_workbench import RESEARCH_RELATION_CANDIDATES_TABLE
+from alphavault.research_workbench import (
+    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
+    RESEARCH_RELATION_CANDIDATES_TABLE,
+    RESEARCH_RELATIONS_TABLE,
+    RESEARCH_SECURITY_MASTER_TABLE,
+)
 from alphavault.rss.utils import RateLimiter
 from alphavault.worker import post_processor_topic_prompt_v4 as topic_prompt_module
 from alphavault.worker.post_processor_topic_prompt_v4 import (
@@ -34,6 +38,21 @@ def _build_config() -> LLMConfig:
         trace_out=None,
         verbose=False,
     )
+
+
+def _workbench_conn(pg_conn) -> PostgresConnection:
+    apply_cloud_schema(pg_conn, target="standard", schema_name=SCHEMA_STANDARD)
+    pg_conn.execute(
+        f"""
+TRUNCATE TABLE
+  {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE},
+  {RESEARCH_RELATION_CANDIDATES_TABLE},
+  {RESEARCH_RELATIONS_TABLE},
+  {RESEARCH_SECURITY_MASTER_TABLE}
+RESTART IDENTITY CASCADE
+"""
+    )
+    return PostgresConnection(pg_conn, schema_name=SCHEMA_STANDARD)
 
 
 def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_entities() -> (
@@ -410,12 +429,12 @@ def test_map_topic_prompt_assertions_to_rows_supports_commodity_layer() -> None:
 
 def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates(
     monkeypatch,
+    pg_conn,
 ) -> None:
     from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
 
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    conn = _workbench_conn(pg_conn)
     try:
-        apply_cloud_schema(conn)
         monkeypatch.setattr(
             worker_module,
             "get_research_workbench_engine_from_env",
@@ -717,12 +736,12 @@ def test_resolve_rows_entity_matches_skips_standard_lookup_without_stock_mention
 
 def test_resolve_rows_entity_matches_attaches_alias_task_sample_context(
     monkeypatch,
+    pg_conn,
 ) -> None:
     from alphavault.worker import post_processor_topic_prompt_v4 as worker_module
 
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    conn = _workbench_conn(pg_conn)
     try:
-        apply_cloud_schema(conn)
         monkeypatch.setattr(
             worker_module,
             "get_research_workbench_engine_from_env",

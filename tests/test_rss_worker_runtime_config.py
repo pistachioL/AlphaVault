@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 import requests
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine as TursoEngine
 from alphavault.rss import utils as rss_utils
 from alphavault.worker import ingest
 from alphavault.worker.cli import parse_args
@@ -149,7 +149,7 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
     monkeypatch.setattr(
-        ingest, "turso_connect_autocommit", lambda _engine: _ConnContext()
+        ingest, "postgres_connect_autocommit", lambda _engine: _ConnContext()
     )
     monkeypatch.setattr(
         ingest,
@@ -783,7 +783,7 @@ def test_ingest_rss_many_once_reuses_single_turso_connection(
         upsert_conn_ids.append(id(conn))
 
     monkeypatch.setattr(
-        ingest, "turso_connect_autocommit", _fake_connect, raising=False
+        ingest, "postgres_connect_autocommit", _fake_connect, raising=False
     )
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(
@@ -869,7 +869,7 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
             raise RuntimeError("first write failed")
 
     monkeypatch.setattr(
-        ingest, "turso_connect_autocommit", _fake_connect, raising=False
+        ingest, "postgres_connect_autocommit", _fake_connect, raising=False
     )
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(
@@ -952,7 +952,7 @@ def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
             raise RuntimeError("write failed")
 
     monkeypatch.setattr(
-        ingest, "turso_connect_autocommit", _fake_connect, raising=False
+        ingest, "postgres_connect_autocommit", _fake_connect, raising=False
     )
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(

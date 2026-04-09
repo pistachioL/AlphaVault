@@ -40,7 +40,7 @@ def test_flush_spool_to_turso_keeps_xueqiu_raw_text(monkeypatch, tmp_path) -> No
             }
         )
 
-    monkeypatch.setattr(spool, "turso_connect_autocommit", _fake_connect)
+    monkeypatch.setattr(spool, "postgres_connect_autocommit", _fake_connect)
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert_pending_post)
 
     post_uid = "xueqiu:comment:401390302"

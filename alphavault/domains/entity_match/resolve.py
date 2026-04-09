@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
 from alphavault.domains.common.assertion_entities import (
     build_assertion_entities,
     coerce_stock_code_entity_key,
@@ -166,6 +166,21 @@ def _append_entity(
     out.append(item)
 
 
+def _has_entity(
+    entities: list[dict[str, object]],
+    *,
+    entity_key: str,
+    entity_type: str,
+) -> bool:
+    wanted_key = _clean_text(entity_key)
+    wanted_type = _clean_text(entity_type)
+    return any(
+        _clean_text(item.get("entity_key")) == wanted_key
+        and _clean_text(item.get("entity_type")) == wanted_type
+        for item in entities
+    )
+
+
 def _mark_primary_entity(entities: list[dict[str, object]]) -> None:
     if not entities:
         return
@@ -253,9 +268,9 @@ def _build_alias_candidate(
 def _should_load_redis_shadow(
     engine_or_conn: object,
 ) -> bool:
-    if isinstance(engine_or_conn, TursoConnection):
-        return engine_or_conn._engine is not None
-    return isinstance(engine_or_conn, TursoEngine)
+    if isinstance(engine_or_conn, PostgresConnection):
+        return engine_or_conn._pool is not None
+    return isinstance(engine_or_conn, PostgresEngine)
 
 
 def load_entity_match_lookup_maps(
@@ -390,6 +405,12 @@ def resolve_assertion_mentions(
             target_key = _clean_text(stock_alias_targets.get(mention_text))
 
         if target_key:
+            if _has_entity(
+                entities,
+                entity_key=target_key,
+                entity_type=_STOCK_ENTITY_TYPE,
+            ):
+                continue
             _append_entity(
                 entities,
                 seen=seen_entities,

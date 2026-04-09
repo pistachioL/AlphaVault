@@ -6,6 +6,14 @@ import json
 from typing import Iterator, TypedDict
 
 from alphavault.content_hash import build_content_hash
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    qualify_postgres_table,
+    require_postgres_schema_name,
+    postgres_connect_autocommit,
+    run_postgres_transaction,
+)
 from alphavault.domains.common.assertion_entities import extract_stock_entity_keys
 from alphavault.timeutil import CST, format_cst_datetime, now_cst_str
 from alphavault.db.sql.research_stock_cache import (
@@ -14,14 +22,6 @@ from alphavault.db.sql.research_stock_cache import (
     select_research_stock_dirty_keys,
     upsert_entity_page_snapshot_hot,
     upsert_research_stock_dirty_key,
-)
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    is_turso_libsql_panic_error,
-    is_turso_stream_not_found_error,
-    run_turso_transaction,
-    turso_connect_autocommit,
 )
 
 ENTITY_PAGE_SNAPSHOT_TABLE = "entity_page_snapshot"
@@ -76,29 +76,40 @@ def _now_str() -> str:
 
 @contextmanager
 def _use_conn(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> Iterator[TursoConnection]:
-    if isinstance(engine_or_conn, TursoConnection):
+    engine_or_conn: PostgresEngine | PostgresConnection,
+) -> Iterator[PostgresConnection]:
+    if isinstance(engine_or_conn, PostgresConnection):
         yield engine_or_conn
         return
-    with turso_connect_autocommit(engine_or_conn) as conn:
+    with postgres_connect_autocommit(engine_or_conn) as conn:
         yield conn
 
 
+def _source_table(engine_or_conn: object, table_name: str) -> str:
+    return qualify_postgres_table(
+        require_postgres_schema_name(engine_or_conn),
+        table_name,
+    )
+
+
+def _entity_page_snapshot_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, ENTITY_PAGE_SNAPSHOT_TABLE)
+
+
+def _projection_dirty_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, PROJECTION_DIRTY_TABLE)
+
+
+def _topic_cluster_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _TOPIC_CLUSTER_TABLE)
+
+
 def _handle_turso_error(
-    engine_or_conn: TursoEngine | TursoConnection, err: BaseException
+    engine_or_conn: PostgresEngine | PostgresConnection, err: BaseException
 ) -> None:
+    del engine_or_conn
     if isinstance(err, _FATAL_BASE_EXCEPTIONS):
         raise err
-    engine = (
-        engine_or_conn._engine
-        if isinstance(engine_or_conn, TursoConnection)
-        else engine_or_conn
-    )
-    if engine is not None and (
-        is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)
-    ):
-        engine.dispose()
     raise err
 
 
@@ -188,13 +199,13 @@ def dirty_reason_mask_for(reason: str) -> int:
 
 
 def _select_entity_page_snapshot_row(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     entity_key: str,
 ) -> dict[str, object]:
     row = (
         conn.execute(
-            select_entity_page_snapshot(ENTITY_PAGE_SNAPSHOT_TABLE),
+            select_entity_page_snapshot(_entity_page_snapshot_table(conn)),
             {"entity_key": entity_key},
         )
         .mappings()
@@ -238,7 +249,7 @@ def _entity_page_snapshot_row_hash(row: dict[str, object]) -> str:
 
 
 def save_entity_page_signal_snapshot(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_key: str,
     payload: dict[str, object],
@@ -279,7 +290,7 @@ def save_entity_page_signal_snapshot(
             ):
                 return
             conn.execute(
-                upsert_entity_page_snapshot_hot(ENTITY_PAGE_SNAPSHOT_TABLE),
+                upsert_entity_page_snapshot_hot(_entity_page_snapshot_table(conn)),
                 {
                     "entity_key": entity_key,
                     "entity_type": entity_type,
@@ -296,7 +307,7 @@ def save_entity_page_signal_snapshot(
 
 
 def load_entity_page_signal_snapshot(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_key: str,
 ) -> dict[str, object]:
@@ -366,7 +377,7 @@ def _map_entity_page_dirty_row(
 
 
 def mark_entity_page_dirty(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_key: str,
     reason: str,
@@ -378,7 +389,7 @@ def mark_entity_page_dirty(
     try:
         with _use_conn(engine_or_conn) as conn:
             conn.execute(
-                upsert_research_stock_dirty_key(PROJECTION_DIRTY_TABLE),
+                upsert_research_stock_dirty_key(_projection_dirty_table(conn)),
                 {
                     "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
                     "target_key": key,
@@ -393,7 +404,7 @@ def mark_entity_page_dirty(
 
 
 def list_entity_page_dirty_keys(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     limit: int,
 ) -> list[str]:
@@ -404,7 +415,7 @@ def list_entity_page_dirty_keys(
         with _use_conn(engine_or_conn) as conn:
             rows = (
                 conn.execute(
-                    select_research_stock_dirty_keys(PROJECTION_DIRTY_TABLE),
+                    select_research_stock_dirty_keys(_projection_dirty_table(conn)),
                     {
                         "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
                         "limit": n,
@@ -423,7 +434,7 @@ def list_entity_page_dirty_keys(
 
 
 def list_entity_page_dirty_entries(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     limit: int,
 ) -> list[EntityPageDirtyEntry]:
@@ -434,7 +445,7 @@ def list_entity_page_dirty_entries(
         with _use_conn(engine_or_conn) as conn:
             rows = (
                 conn.execute(
-                    select_research_stock_dirty_keys(PROJECTION_DIRTY_TABLE),
+                    select_research_stock_dirty_keys(_projection_dirty_table(conn)),
                     {
                         "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
                         "limit": n,
@@ -455,7 +466,7 @@ def list_entity_page_dirty_entries(
 
 
 def remove_entity_page_dirty_keys(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_keys: list[str],
     claim_until: str = "",
@@ -465,25 +476,26 @@ def remove_entity_page_dirty_keys(
         return 0
     claim_token = str(claim_until or "").strip()
     placeholders = ", ".join(["?"] * len(keys))
-    sql = f"""
-DELETE FROM {PROJECTION_DIRTY_TABLE}
+    params: list[object] = [PROJECTION_JOB_TYPE_ENTITY_PAGE, *keys]
+
+    def _delete(conn: PostgresConnection) -> int:
+        sql = f"""
+DELETE FROM {_projection_dirty_table(conn)}
 WHERE job_type = ?
   AND target_key IN ({placeholders})
 """
-    params: list[object] = [PROJECTION_JOB_TYPE_ENTITY_PAGE, *keys]
-    if claim_token:
-        sql += "\n  AND claim_until = ?"
-        params.append(claim_token)
-
-    def _delete(conn: TursoConnection) -> int:
-        res = conn.execute(sql, params)
+        delete_params = list(params)
+        if claim_token:
+            sql += "\n  AND claim_until = ?"
+            delete_params.append(claim_token)
+        res = conn.execute(sql, delete_params)
         return int(res.rowcount or 0)
 
-    return run_turso_transaction(engine_or_conn, _delete)
+    return run_postgres_transaction(engine_or_conn, _delete)
 
 
 def claim_entity_page_dirty_entries(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     limit: int,
     claim_ttl_seconds: int,
@@ -494,10 +506,11 @@ def claim_entity_page_dirty_entries(
     now_str = _now_str()
     claim_until = _claim_until_str(now_str, claim_ttl_seconds)
 
-    def _claim(conn: TursoConnection) -> list[EntityPageDirtyEntry]:
+    def _claim(conn: PostgresConnection) -> list[EntityPageDirtyEntry]:
+        projection_dirty_table = _projection_dirty_table(conn)
         rows = (
             conn.execute(
-                select_claimable_research_stock_dirty_keys(PROJECTION_DIRTY_TABLE),
+                select_claimable_research_stock_dirty_keys(projection_dirty_table),
                 {
                     "job_type": PROJECTION_JOB_TYPE_ENTITY_PAGE,
                     "now": now_str,
@@ -515,7 +528,7 @@ def claim_entity_page_dirty_entries(
         placeholders = ", ".join(["?"] * len(keys))
         conn.execute(
             f"""
-UPDATE {PROJECTION_DIRTY_TABLE}
+UPDATE {projection_dirty_table}
 SET claim_until = ?,
     updated_at = ?
 WHERE job_type = ?
@@ -541,11 +554,11 @@ WHERE job_type = ?
             out.append(mapped)
         return out
 
-    return run_turso_transaction(engine_or_conn, _claim)
+    return run_postgres_transaction(engine_or_conn, _claim)
 
 
 def release_entity_page_dirty_claims(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_keys: list[str],
     claim_until: str,
@@ -556,16 +569,16 @@ def release_entity_page_dirty_claims(
         return 0
     placeholders = ", ".join(["?"] * len(keys))
     now_str = _now_str()
-    sql = f"""
-UPDATE {PROJECTION_DIRTY_TABLE}
+
+    def _release(conn: PostgresConnection) -> int:
+        sql = f"""
+UPDATE {_projection_dirty_table(conn)}
 SET claim_until = '',
     updated_at = ?
 WHERE job_type = ?
   AND target_key IN ({placeholders})
   AND claim_until = ?
 """
-
-    def _release(conn: TursoConnection) -> int:
         res = conn.execute(
             sql,
             [
@@ -577,11 +590,11 @@ WHERE job_type = ?
         )
         return int(res.rowcount or 0)
 
-    return run_turso_transaction(engine_or_conn, _release)
+    return run_postgres_transaction(engine_or_conn, _release)
 
 
 def fail_entity_page_dirty_claims(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_keys: list[str],
     claim_until: str,
@@ -592,8 +605,10 @@ def fail_entity_page_dirty_claims(
         return 0
     placeholders = ", ".join(["?"] * len(keys))
     now_str = _now_str()
-    sql = f"""
-UPDATE {PROJECTION_DIRTY_TABLE}
+
+    def _fail(conn: PostgresConnection) -> int:
+        sql = f"""
+UPDATE {_projection_dirty_table(conn)}
 SET claim_until = '',
     attempt_count = attempt_count + 1,
     updated_at = ?
@@ -601,8 +616,6 @@ WHERE job_type = ?
   AND target_key IN ({placeholders})
   AND claim_until = ?
 """
-
-    def _fail(conn: TursoConnection) -> int:
         res = conn.execute(
             sql,
             [
@@ -614,11 +627,11 @@ WHERE job_type = ?
         )
         return int(res.rowcount or 0)
 
-    return run_turso_transaction(engine_or_conn, _fail)
+    return run_postgres_transaction(engine_or_conn, _fail)
 
 
 def pop_entity_page_dirty_keys(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     limit: int,
 ) -> list[str]:
@@ -685,7 +698,7 @@ def _extract_topic_and_cluster_entity_keys(
 
 
 def _load_cluster_entity_keys_for_topics(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     topic_keys: list[str],
 ) -> list[str]:
@@ -696,7 +709,7 @@ def _load_cluster_entity_keys_for_topics(
         conn.execute(
             f"""
 SELECT DISTINCT cluster_key
-FROM {_TOPIC_CLUSTER_TABLE}
+FROM {_topic_cluster_table(conn)}
 WHERE topic_key IN ({placeholders})
 """,
             topic_keys,
@@ -724,7 +737,7 @@ WHERE topic_key IN ({placeholders})
 
 
 def mark_entity_page_dirty_from_assertions(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     assertions: list[dict[str, object]],
     reason: str,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine as TursoEngine
 from alphavault.rss.utils import RateLimiter
 from alphavault.worker import post_processor
 from alphavault.worker.runtime_models import LLMConfig

@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pandas as pd
 
-from alphavault.db.turso_env import TursoSource
 from alphavault.homework_trade_feed import HOMEWORK_DEFAULT_VIEW_KEY
 from alphavault_reflex.services import trade_board_loader
 from alphavault_reflex.services import turso_read
+
+
+def TursoSource(*, name: str, url: str, token: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        url=url,
+        token=token,
+        dsn=url,
+        schema=name,
+    )
 
 
 def test_query_stock_alias_relations_uses_formal_relations_table(monkeypatch) -> None:
@@ -26,8 +37,7 @@ def test_query_stock_alias_relations_uses_formal_relations_table(monkeypatch) ->
 
     assert df.empty
     assert captured_sql
-    assert "FROM relations" in captured_sql[0]
-    assert "research_relations" not in captured_sql[0]
+    assert "FROM standard.relations" in captured_sql[0]
 
 
 def test_resolve_homework_source_workers_uses_default_when_env_missing(
@@ -62,7 +72,7 @@ def test_load_homework_board_payload_from_env_merges_source_rows(
 ) -> None:
     monkeypatch.setattr(
         trade_board_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [
             TursoSource(name="weibo", url="u1", token="t1"),
             TursoSource(name="xueqiu", url="u2", token="t2"),
@@ -132,7 +142,7 @@ def test_load_homework_board_payload_from_env_returns_turso_error(
 ) -> None:
     monkeypatch.setattr(
         trade_board_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [TursoSource(name="weibo", url="u1", token="t1")],
     )
 
@@ -162,7 +172,7 @@ def test_load_homework_board_payload_from_env_keeps_partial_success(
 ) -> None:
     monkeypatch.setattr(
         trade_board_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [
             TursoSource(name="weibo", url="u1", token="t1"),
             TursoSource(name="xueqiu", url="u2", token="t2"),
@@ -208,7 +218,7 @@ def test_load_homework_board_payload_from_env_fails_on_standard_error(
 ) -> None:
     monkeypatch.setattr(
         trade_board_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [TursoSource(name="weibo", url="u1", token="t1")],
     )
 
@@ -242,7 +252,7 @@ def test_load_homework_board_payload_from_env_serial_parallel_same(
     ]
     monkeypatch.setattr(
         trade_board_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: sources,
     )
 
@@ -298,7 +308,7 @@ def test_load_homework_board_payload_from_env_dedupes_global_relations(
 ) -> None:
     monkeypatch.setattr(
         trade_board_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [
             TursoSource(name="weibo", url="u1", token="t1"),
             TursoSource(name="xueqiu", url="u2", token="t2"),
@@ -346,7 +356,7 @@ def test_load_stock_alias_relations_from_env_uses_workbench_engine(monkeypatch) 
 
     monkeypatch.setattr(
         trade_board_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: (_ for _ in ()).throw(AssertionError("should_not_read_source_env")),
     )
     monkeypatch.setattr(
@@ -373,7 +383,7 @@ def test_load_stock_alias_relations_from_env_uses_workbench_engine(monkeypatch) 
     trade_board_loader.load_stock_alias_relations_cached.cache_clear()
     monkeypatch.setattr(
         trade_board_loader,
-        "turso_connect_autocommit",
+        "postgres_connect_autocommit",
         _fake_connect,
     )
     monkeypatch.setattr(

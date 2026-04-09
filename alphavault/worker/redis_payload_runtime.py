@@ -7,7 +7,7 @@ from typing import Any
 from alphavault.db.turso_queue import (
     CloudPost,
 )
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.worker import ai_processor
 from alphavault.worker.backoff import backoff_seconds
@@ -30,7 +30,7 @@ _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 def process_one_redis_payload(
     *,
-    engine: TursoEngine,
+    engine: PostgresEngine,
     payload: dict[str, object],
     processing_msg: str,
     redis_client: Any,

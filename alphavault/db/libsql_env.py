@@ -14,7 +14,7 @@ from alphavault.constants import (
 
 
 @dataclass(frozen=True)
-class TursoSource:
+class LibsqlSource:
     name: str
     url: str
     token: str
@@ -33,8 +33,8 @@ def infer_platform_from_post_uid(post_uid: object) -> str:
     return ""
 
 
-def load_configured_turso_sources_from_env() -> list[TursoSource]:
-    sources: list[TursoSource] = []
+def load_configured_libsql_sources_from_env() -> list[LibsqlSource]:
+    sources: list[LibsqlSource] = []
 
     for name, url_env, token_env in (
         (PLATFORM_WEIBO, ENV_WEIBO_TURSO_DATABASE_URL, ENV_WEIBO_TURSO_AUTH_TOKEN),
@@ -44,13 +44,13 @@ def load_configured_turso_sources_from_env() -> list[TursoSource]:
         if not url:
             continue
         token = _env_text(token_env)
-        sources.append(TursoSource(name=name, url=url, token=token))
+        sources.append(LibsqlSource(name=name, url=url, token=token))
 
     return sources
 
 
-def require_configured_turso_sources_from_env() -> list[TursoSource]:
-    sources = load_configured_turso_sources_from_env()
+def require_configured_libsql_sources_from_env() -> list[LibsqlSource]:
+    sources = load_configured_libsql_sources_from_env()
     if sources:
         return sources
     raise RuntimeError(
@@ -58,8 +58,8 @@ def require_configured_turso_sources_from_env() -> list[TursoSource]:
     )
 
 
-def require_turso_source_from_env(platform: str) -> TursoSource:
-    sources = require_configured_turso_sources_from_env()
+def require_libsql_source_from_env(platform: str) -> LibsqlSource:
+    sources = require_configured_libsql_sources_from_env()
     wanted = str(platform or "").strip().lower()
     for source in sources:
         if source.name == wanted:
@@ -75,9 +75,9 @@ def require_turso_source_from_env(platform: str) -> TursoSource:
 __all__ = [
     "PLATFORM_WEIBO",
     "PLATFORM_XUEQIU",
-    "TursoSource",
+    "LibsqlSource",
     "infer_platform_from_post_uid",
-    "load_configured_turso_sources_from_env",
-    "require_configured_turso_sources_from_env",
-    "require_turso_source_from_env",
+    "load_configured_libsql_sources_from_env",
+    "require_configured_libsql_sources_from_env",
+    "require_libsql_source_from_env",
 ]

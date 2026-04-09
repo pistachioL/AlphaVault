@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import reflex as rx
 
-from alphavault.db.turso_env import infer_platform_from_post_uid
+from alphavault.db.postgres_env import infer_platform_from_post_uid
 from alphavault.homework_trade_feed import HOMEWORK_DEFAULT_VIEW_KEY
 from alphavault_reflex.services.homework_constants import (
     TRADE_BOARD_DEFAULT_WINDOW_DAYS,

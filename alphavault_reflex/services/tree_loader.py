@@ -4,10 +4,17 @@ from functools import lru_cache
 
 import pandas as pd
 
-from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
-from alphavault.db.turso_env import (
+from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
+from alphavault.db.postgres_db import (
+    ensure_postgres_engine,
+    postgres_connect_autocommit,
+)
+from alphavault.db.postgres_env import (
+    load_configured_postgres_sources_from_env,
+    PostgresSource,
+)
+from alphavault.db.postgres_env import (
     infer_platform_from_post_uid,
-    load_configured_turso_sources_from_env,
 )
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
@@ -16,6 +23,8 @@ from alphavault_reflex.services.source_loader import (
     MISSING_TURSO_SOURCES_ERROR,
     WANTED_POST_COLUMNS_FOR_TREE,
     load_trade_sources_cached,
+    source_schema_name,
+    source_table,
     standardize_posts,
 )
 from alphavault.domains.thread_tree.service import normalize_tree_lookup_post_uid
@@ -23,6 +32,16 @@ from alphavault_reflex.services.turso_read_utils import (
     ensure_platform_post_id,
     normalize_posts_datetime,
 )
+
+_SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
+
+
+def _load_source_schemas_from_env() -> list[PostgresSource]:
+    return [
+        source
+        for source in load_configured_postgres_sources_from_env()
+        if source_schema_name(source) in _SOURCE_SCHEMA_NAMES
+    ]
 
 
 def load_posts_for_tree_cached(
@@ -40,11 +59,13 @@ def load_single_post_for_tree_cached(
     if not uid:
         return pd.DataFrame()
 
-    engine = ensure_turso_engine(db_url, auth_token)
-    with turso_connect_autocommit(engine) as conn:
+    del auth_token
+    schema_name = source_schema_name(source_name)
+    engine = ensure_postgres_engine(db_url, schema_name=schema_name)
+    with postgres_connect_autocommit(engine) as conn:
         sql = f"""
 SELECT {", ".join(WANTED_POST_COLUMNS_FOR_TREE)}
-FROM posts
+FROM {source_table(schema_name, "posts")}
 WHERE processed_at IS NOT NULL AND post_uid = ?
 """
         posts = turso_read_sql_df(conn, sql, params=[uid])
@@ -65,7 +86,7 @@ def load_single_post_for_tree_from_env(
         return pd.DataFrame(), ""
 
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = _load_source_schemas_from_env()
     if not sources:
         return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 
@@ -96,7 +117,7 @@ def load_posts_for_tree_from_env(
     load_cached_fn=load_posts_for_tree_cached,
 ) -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = _load_source_schemas_from_env()
     if not sources:
         return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 

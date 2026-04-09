@@ -11,7 +11,7 @@ from alphavault.ai.analyze import (
     normalize_action,
 )
 from alphavault.ai.tag_validate import validate_topic_prompt_v4_ai_result
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.db.turso_queue import (
     CloudPost,
     load_cloud_post,
@@ -228,7 +228,7 @@ def resolve_rows_entity_matches(
 
 def process_one_post_uid_topic_prompt_v4(
     *,
-    engine: TursoEngine,
+    engine: PostgresEngine,
     post_uid: str,
     config: LLMConfig,
     limiter: RateLimiter,

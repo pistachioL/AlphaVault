@@ -6,7 +6,7 @@ from alphavault.ai.analyze import (
     format_llm_error_one_line,
 )
 from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.db.turso_queue import CloudPost
 from alphavault.rss.utils import RateLimiter
 from alphavault.worker.post_processor_topic_prompt_v4 import (
@@ -17,7 +17,7 @@ from alphavault.worker.runtime_models import LLMConfig
 
 def process_one_post_uid(
     *,
-    engine: TursoEngine,
+    engine: PostgresEngine,
     post_uid: str,
     config: LLMConfig,
     limiter: RateLimiter,

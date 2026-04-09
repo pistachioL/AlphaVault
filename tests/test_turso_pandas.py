@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import libsql
 
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.libsql_db import LibsqlConnection as TursoConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
 
 

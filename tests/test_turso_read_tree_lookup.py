@@ -14,7 +14,7 @@ def test_load_single_post_for_tree_from_env_keeps_xueqiu_uid(monkeypatch) -> Non
     monkeypatch.setattr(tree_loader, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
         tree_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [
             SimpleNamespace(name="weibo", url="weibo-url", token="weibo-token"),
             SimpleNamespace(name="xueqiu", url="xueqiu-url", token="xueqiu-token"),

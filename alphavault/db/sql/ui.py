@@ -12,10 +12,10 @@ WITH entity_rollup AS (
         ) AS entity_key,
         COALESCE(
             (
-                SELECT json_group_array(value)
+                SELECT CAST(json_agg(value ORDER BY value) AS TEXT)
                 FROM (
                     SELECT DISTINCT SUBSTR(e2.entity_key, 7) AS value
-                    FROM assertion_entities e2
+                    FROM {assertion_entities_table} e2
                     WHERE e2.assertion_id = ae.assertion_id
                       AND e2.entity_type = 'stock'
                       AND e2.entity_key LIKE 'stock:%'
@@ -26,10 +26,10 @@ WITH entity_rollup AS (
         ) AS stock_codes,
         COALESCE(
             (
-                SELECT json_group_array(value)
+                SELECT CAST(json_agg(value ORDER BY value) AS TEXT)
                 FROM (
                     SELECT DISTINCT SUBSTR(e2.entity_key, 10) AS value
-                    FROM assertion_entities e2
+                    FROM {assertion_entities_table} e2
                     WHERE e2.assertion_id = ae.assertion_id
                       AND e2.entity_type = 'industry'
                       AND e2.entity_key LIKE 'industry:%'
@@ -40,10 +40,10 @@ WITH entity_rollup AS (
         ) AS industries_json,
         COALESCE(
             (
-                SELECT json_group_array(value)
+                SELECT CAST(json_agg(value ORDER BY value) AS TEXT)
                 FROM (
                     SELECT DISTINCT SUBSTR(e2.entity_key, 11) AS value
-                    FROM assertion_entities e2
+                    FROM {assertion_entities_table} e2
                     WHERE e2.assertion_id = ae.assertion_id
                       AND e2.entity_type = 'commodity'
                       AND e2.entity_key LIKE 'commodity:%'
@@ -54,10 +54,10 @@ WITH entity_rollup AS (
         ) AS commodities_json,
         COALESCE(
             (
-                SELECT json_group_array(value)
+                SELECT CAST(json_agg(value ORDER BY value) AS TEXT)
                 FROM (
                     SELECT DISTINCT SUBSTR(e2.entity_key, 7) AS value
-                    FROM assertion_entities e2
+                    FROM {assertion_entities_table} e2
                     WHERE e2.assertion_id = ae.assertion_id
                       AND e2.entity_type = 'index'
                       AND e2.entity_key LIKE 'index:%'
@@ -66,7 +66,7 @@ WITH entity_rollup AS (
             ),
             '[]'
         ) AS indices_json
-    FROM assertion_entities ae
+    FROM {assertion_entities_table} ae
     GROUP BY ae.assertion_id
 ),
 mention_rollup AS (
@@ -75,10 +75,10 @@ mention_rollup AS (
         COALESCE(MAX(am.confidence), 0.5) AS confidence,
         COALESCE(
             (
-                SELECT json_group_array(value)
+                SELECT CAST(json_agg(value ORDER BY value) AS TEXT)
                 FROM (
                     SELECT DISTINCT m2.mention_text AS value
-                    FROM assertion_mentions m2
+                    FROM {assertion_mentions_table} m2
                     WHERE m2.assertion_id = am.assertion_id
                       AND m2.mention_type = 'stock_name'
                       AND TRIM(COALESCE(m2.mention_text, '')) <> ''
@@ -89,11 +89,11 @@ mention_rollup AS (
         ) AS stock_names,
         COALESCE(
             (
-                SELECT json_group_array(value)
+                SELECT CAST(json_agg(value ORDER BY value) AS TEXT)
                 FROM (
                     SELECT DISTINCT
                         COALESCE(NULLIF(TRIM(m2.mention_norm), ''), TRIM(m2.mention_text)) AS value
-                    FROM assertion_mentions m2
+                    FROM {assertion_mentions_table} m2
                     WHERE m2.assertion_id = am.assertion_id
                       AND m2.mention_type = 'keyword'
                       AND TRIM(COALESCE(m2.mention_norm, m2.mention_text, '')) <> ''
@@ -102,7 +102,7 @@ mention_rollup AS (
             ),
             '[]'
         ) AS keywords_json
-    FROM assertion_mentions am
+    FROM {assertion_mentions_table} am
     GROUP BY am.assertion_id
 ),
 cluster_rollup AS (
@@ -110,11 +110,11 @@ cluster_rollup AS (
         ae.assertion_id AS assertion_id,
         COALESCE(
             (
-                SELECT json_group_array(value)
+                SELECT CAST(json_agg(value ORDER BY value) AS TEXT)
                 FROM (
                     SELECT DISTINCT tct.cluster_key AS value
-                    FROM assertion_entities e2
-                    JOIN topic_cluster_topics tct
+                    FROM {assertion_entities_table} e2
+                    JOIN {topic_cluster_topics_table} tct
                       ON tct.topic_key = e2.entity_key
                     WHERE e2.assertion_id = ae.assertion_id
                       AND e2.entity_type IN ('industry', 'commodity', 'index', 'keyword')
@@ -124,7 +124,7 @@ cluster_rollup AS (
             ),
             '[]'
         ) AS cluster_keys_json
-    FROM assertion_entities ae
+    FROM {assertion_entities_table} ae
     GROUP BY ae.assertion_id
 )
 """
@@ -151,8 +151,17 @@ _ASSERTION_PROJECTION_BY_COLUMN = {
 }
 
 
-def build_assertion_rollup_ctes() -> str:
-    return _ASSERTION_ROLLUP_CTES
+def build_assertion_rollup_ctes(
+    *,
+    assertion_entities_table: str = "assertion_entities",
+    assertion_mentions_table: str = "assertion_mentions",
+    topic_cluster_topics_table: str = "topic_cluster_topics",
+) -> str:
+    return _ASSERTION_ROLLUP_CTES.format(
+        assertion_entities_table=assertion_entities_table,
+        assertion_mentions_table=assertion_mentions_table,
+        topic_cluster_topics_table=topic_cluster_topics_table,
+    )
 
 
 def build_assertion_rollup_joins(assertion_alias: str = "a") -> str:
@@ -182,11 +191,18 @@ def build_assertion_projection_expr(
     return ", ".join(out)
 
 
-def build_assertions_query(selected_columns: list[str]) -> str:
+def build_assertions_query(
+    selected_columns: list[str],
+    *,
+    assertions_table: str = "assertions",
+    assertion_entities_table: str = "assertion_entities",
+    assertion_mentions_table: str = "assertion_mentions",
+    topic_cluster_topics_table: str = "topic_cluster_topics",
+) -> str:
     return (
-        f"{build_assertion_rollup_ctes()}\n"
+        f"{build_assertion_rollup_ctes(assertion_entities_table=assertion_entities_table, assertion_mentions_table=assertion_mentions_table, topic_cluster_topics_table=topic_cluster_topics_table)}\n"
         f"SELECT {build_assertion_projection_expr(selected_columns)}\n"
-        "FROM assertions a\n"
+        f"FROM {assertions_table} a\n"
         f"{build_assertion_rollup_joins('a')}"
     )
 

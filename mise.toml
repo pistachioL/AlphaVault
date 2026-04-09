@@ -12,6 +12,7 @@ set -euo pipefail
 export PGDATA="$PWD/.tmp/test_db"
 export PGPORT=5433  # 使用非标端口避免冲突
 export PGLOG="$PGDATA/log"
+export POSTGRES_POOL_MAX_SIZE="${POSTGRES_POOL_MAX_SIZE:-1}"
 mkdir -p "$PGDATA"
 
 # 2. 清理函数：无论脚本成功还是失败，都会关闭数据库
@@ -25,7 +26,7 @@ trap cleanup EXIT
 # 3. 初始化并启动
 echo "Initializing ephemeral postgres..."
 initdb --auth=trust --auth-host=trust --auth-local=trust --locale=en_US.UTF-8 > /dev/null
-pg_ctl start -o "-k $PGDATA -p $PGPORT" -l "$PGLOG" -w
+pg_ctl start -o "-k $PGDATA -p $PGPORT -c shared_buffers=16MB -c max_connections=20" -l "$PGLOG" -w
 
 # 4. 执行你的测试或检查 (例如运行迁移脚本或测试)
 echo "Running database checks..."

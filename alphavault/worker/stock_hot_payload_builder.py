@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.domains.stock.keys import (
     normalize_stock_key as _normalize_stock_key,
@@ -52,7 +52,7 @@ def _window_cutoff_str(days: int) -> str:
     return cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _load_stock_alias_relations(conn: TursoConnection) -> pd.DataFrame:
+def _load_stock_alias_relations(conn: PostgresConnection) -> pd.DataFrame:
     try:
         return turso_read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
     except BaseException:
@@ -82,7 +82,7 @@ def _alias_keys_for_stock(relations: pd.DataFrame, *, stock_key: str) -> list[st
 
 
 def _load_stock_assertions(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     stock_key: str,
     stock_relations: pd.DataFrame,
@@ -157,7 +157,7 @@ LIMIT :limit
 
 
 def _load_sector_keys_by_assertion_id(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     assertion_ids: list[str],
 ) -> dict[str, list[str]]:
@@ -193,7 +193,7 @@ WHERE ae.entity_type = 'industry'
 
 
 def _load_posts_for_assertions(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     post_uids: list[str],
 ) -> pd.DataFrame:
@@ -330,7 +330,7 @@ def _build_related_sectors(rows: pd.DataFrame) -> list[dict[str, str]]:
 
 
 def build_stock_hot_payload(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     stock_key: str,
     signal_window_days: int,

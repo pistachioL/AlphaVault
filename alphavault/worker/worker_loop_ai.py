@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 import threading
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.worker import periodic_jobs
 from alphavault.worker import scheduler
 from alphavault.worker.redis_payload_runtime import process_one_redis_payload
@@ -31,7 +31,7 @@ def _schedule_ai_from_redis(**kwargs):  # type: ignore[no-untyped-def]
 def schedule_ai_for_source(
     *,
     source,
-    active_engine: TursoEngine | None,
+    active_engine: PostgresEngine | None,
     platform: str,
     ctx: SourceTickContext,
     ai_executor: ThreadPoolExecutor,

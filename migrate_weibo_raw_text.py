@@ -11,6 +11,13 @@ from typing import Iterator
 import libsql
 
 from alphavault.constants import DATETIME_FMT, PLATFORM_WEIBO
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    ensure_postgres_engine as _ensure_postgres_engine,
+    postgres_connect_autocommit,
+)
+from alphavault.db.postgres_env import require_postgres_source_from_env
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.scripts import (
     CREATE_WEIBO_RAW_TEXT_MIGRATION_STATUS_INDEX,
@@ -26,12 +33,7 @@ from alphavault.db.sql.scripts import (
     select_legacy_weibo_raw_text_rows_by_post_uids,
     select_pending_weibo_raw_text_migration_rows_by_post_uids,
 )
-from alphavault.db.turso_db import (
-    TursoConnection,
-    get_turso_engine_from_env,
-    turso_connect_autocommit,
-    turso_savepoint,
-)
+from alphavault.db.libsql_db import LibsqlConnection as TursoConnection, turso_savepoint
 from alphavault.domains.thread_tree.api import parse_weibo_csv_raw_fields
 from alphavault.env import load_dotenv_if_present
 from alphavault.weibo.thread_text import (
@@ -56,6 +58,7 @@ UPDATE posts
 SET raw_text = :new_raw_text
 WHERE post_uid = :post_uid
 """
+DbConnection = TursoConnection | PostgresConnection
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,7 +85,7 @@ def parse_args() -> argparse.Namespace:
         "--db-path",
         type=str,
         default="",
-        help="直接迁移本地 sqlite/libsql 文件，不走 Turso 环境变量",
+        help="直接迁移本地 sqlite/libsql 文件，不走 Postgres 环境变量",
     )
     parser.add_argument("--dry-run", action="store_true", help="只打印进度，不写 DB")
     parser.add_argument("--verbose", action="store_true")
@@ -114,8 +117,39 @@ def _connect_local_db(db_path: str) -> Iterator[TursoConnection]:
         conn.close()
 
 
+@contextmanager
+def _connect_postgres(engine: PostgresEngine) -> Iterator[PostgresConnection]:
+    with postgres_connect_autocommit(engine) as conn:
+        _set_search_path(conn)
+        yield conn
+
+
+@contextmanager
+def _db_savepoint(conn: DbConnection) -> Iterator[DbConnection]:
+    if isinstance(conn, PostgresConnection):
+        with conn.transaction():
+            yield conn
+        return
+    with turso_savepoint(conn):
+        yield conn
+
+
+def _set_search_path(conn: DbConnection) -> None:
+    if not isinstance(conn, PostgresConnection):
+        return
+    schema_name = str(getattr(conn, "schema_name", "") or "").strip()
+    if not schema_name:
+        return
+    conn.execute(f"SET search_path TO {schema_name}")
+
+
+def get_postgres_engine_from_env() -> PostgresEngine:
+    source = require_postgres_source_from_env(PLATFORM_WEIBO)
+    return _ensure_postgres_engine(source.dsn, schema_name=source.schema)
+
+
 def _select_batch(
-    conn: TursoConnection,
+    conn: DbConnection,
     *,
     batch_size: int,
     last_post_uid: str,
@@ -132,7 +166,7 @@ def _select_batch(
     return [dict(row) for row in rows]
 
 
-def _max_target_post_uid(conn: TursoConnection) -> str:
+def _max_target_post_uid(conn: DbConnection) -> str:
     query = max_legacy_weibo_raw_text_post_uid()
     return str(conn.execute(query).scalar() or "").strip()
 
@@ -156,9 +190,7 @@ def _parse_post_uids(value: str) -> list[str]:
     return items
 
 
-def _select_rows_by_post_uids(
-    conn: TursoConnection, post_uids: list[str]
-) -> list[dict]:
+def _select_rows_by_post_uids(conn: DbConnection, post_uids: list[str]) -> list[dict]:
     if not post_uids:
         return []
     placeholders = make_in_placeholders(prefix="uid", count=len(post_uids))
@@ -292,12 +324,23 @@ def _is_legacy_weibo_scan_target(row: dict) -> bool:
     return not _looks_like_migrated_raw_text(raw_text)
 
 
-def _ensure_migration_table(conn: TursoConnection) -> None:
+def _ensure_migration_table(conn: DbConnection) -> None:
     conn.execute(CREATE_WEIBO_RAW_TEXT_MIGRATION_TABLE)
     conn.execute(CREATE_WEIBO_RAW_TEXT_MIGRATION_STATUS_INDEX)
 
 
-def _migration_table_exists(conn: TursoConnection) -> bool:
+def _migration_table_exists(conn: DbConnection) -> bool:
+    if isinstance(conn, PostgresConnection):
+        schema_name = str(getattr(conn, "schema_name", "") or "").strip()
+        if not schema_name:
+            return False
+        qualified_name = f"{schema_name}.{WEIBO_RAW_TEXT_MIGRATION_TABLE}"
+        return bool(
+            conn.execute(
+                "SELECT to_regclass(:qualified_name) IS NOT NULL",
+                {"qualified_name": qualified_name},
+            ).scalar()
+        )
     row = (
         conn.execute(
             """
@@ -315,7 +358,7 @@ LIMIT 1
 
 
 def _upsert_migration_rows(
-    conn: TursoConnection, *, rows: list[dict], updated_at: str
+    conn: DbConnection, *, rows: list[dict], updated_at: str
 ) -> int:
     saved = 0
     for item in rows:
@@ -326,9 +369,7 @@ def _upsert_migration_rows(
     return saved
 
 
-def _select_pending_migration_rows(
-    conn: TursoConnection, batch_size: int
-) -> list[dict]:
+def _select_pending_migration_rows(conn: DbConnection, batch_size: int) -> list[dict]:
     rows = conn.execute(
         SELECT_PENDING_WEIBO_RAW_TEXT_MIGRATION_BATCH,
         {"limit": max(1, int(batch_size))},
@@ -337,7 +378,7 @@ def _select_pending_migration_rows(
 
 
 def _select_pending_migration_rows_by_post_uids(
-    conn: TursoConnection, post_uids: list[str]
+    conn: DbConnection, post_uids: list[str]
 ) -> list[dict]:
     if not post_uids:
         return []
@@ -349,7 +390,7 @@ def _select_pending_migration_rows_by_post_uids(
 
 
 def _apply_pending_migration_rows(
-    conn: TursoConnection, *, rows: list[dict], updated_at: str
+    conn: DbConnection, *, rows: list[dict], updated_at: str
 ) -> dict[str, int]:
     stats = {"applied": 0, "conflict": 0}
     for item in rows:
@@ -381,9 +422,7 @@ def _pending_updates(rows: list[dict]) -> list[dict]:
     return [item for item in rows if str(item.get("status") or "") == STATUS_PENDING]
 
 
-def _count_targets(
-    conn: TursoConnection, *, batch_size: int, stop_post_uid: str
-) -> int:
+def _count_targets(conn: DbConnection, *, batch_size: int, stop_post_uid: str) -> int:
     if not stop_post_uid:
         return 0
 
@@ -422,7 +461,7 @@ def _collect_scan_updates(
     return updates, last_post_uid
 
 
-def _apply_local_raw_text_updates(conn: TursoConnection, *, rows: list[dict]) -> int:
+def _apply_local_raw_text_updates(conn: DbConnection, *, rows: list[dict]) -> int:
     applied = 0
     for item in rows:
         res = conn.execute(
@@ -438,7 +477,7 @@ def _apply_local_raw_text_updates(conn: TursoConnection, *, rows: list[dict]) ->
 
 
 def _prepare_by_post_uids(
-    engine,
+    engine: PostgresEngine,
     *,
     post_uids: list[str],
     batch_size: int,
@@ -451,7 +490,7 @@ def _prepare_by_post_uids(
     skipped = 0
     found_uids: set[str] = set()
 
-    with turso_connect_autocommit(engine) as conn:
+    with _connect_postgres(engine) as conn:
         total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
 
     print(
@@ -459,12 +498,12 @@ def _prepare_by_post_uids(
     )
 
     if not dry_run:
-        with turso_connect_autocommit(engine) as conn:
-            with turso_savepoint(conn):
+        with _connect_postgres(engine) as conn:
+            with _db_savepoint(conn):
                 _ensure_migration_table(conn)
 
     for chunk in _chunks(post_uids, batch_size):
-        with turso_connect_autocommit(engine) as conn:
+        with _connect_postgres(engine) as conn:
             rows = _select_rows_by_post_uids(conn, chunk)
 
         updates, found_this_batch = _build_migration_rows(rows)
@@ -483,8 +522,8 @@ def _prepare_by_post_uids(
             )
             continue
 
-        with turso_connect_autocommit(engine) as conn:
-            with turso_savepoint(conn):
+        with _connect_postgres(engine) as conn:
+            with _db_savepoint(conn):
                 saved_this_batch = _upsert_migration_rows(
                     conn, rows=updates, updated_at=_now_text()
                 )
@@ -509,7 +548,7 @@ def _prepare_by_post_uids(
 
 
 def _prepare_scan(
-    engine,
+    engine: PostgresEngine,
     *,
     batch_size: int,
     limit: int,
@@ -522,7 +561,7 @@ def _prepare_scan(
     skipped = 0
     last_post_uid = ""
 
-    with turso_connect_autocommit(engine) as conn:
+    with _connect_postgres(engine) as conn:
         total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
         stop_post_uid = _max_target_post_uid(conn)
         target_total = _count_targets(
@@ -542,8 +581,8 @@ def _prepare_scan(
     )
 
     if not dry_run:
-        with turso_connect_autocommit(engine) as conn:
-            with turso_savepoint(conn):
+        with _connect_postgres(engine) as conn:
+            with _db_savepoint(conn):
                 _ensure_migration_table(conn)
 
     while True:
@@ -553,7 +592,7 @@ def _prepare_scan(
             if remaining <= 0:
                 break
 
-        with turso_connect_autocommit(engine) as conn:
+        with _connect_postgres(engine) as conn:
             rows = _select_batch(
                 conn,
                 batch_size=max(1, int(batch_size)),
@@ -578,8 +617,8 @@ def _prepare_scan(
                 f"total_processed={processed}"
             )
         else:
-            with turso_connect_autocommit(engine) as conn:
-                with turso_savepoint(conn):
+            with _connect_postgres(engine) as conn:
+                with _db_savepoint(conn):
                     saved_this_batch = _upsert_migration_rows(
                         conn, rows=updates, updated_at=_now_text()
                     )
@@ -602,7 +641,7 @@ def _prepare_scan(
 
 
 def _prepare_local_by_post_uids(
-    conn: TursoConnection,
+    conn: DbConnection,
     *,
     post_uids: list[str],
     batch_size: int,
@@ -639,7 +678,7 @@ def _prepare_local_by_post_uids(
                 f"total_processed={processed}"
             )
         else:
-            with turso_savepoint(conn):
+            with _db_savepoint(conn):
                 applied_this_batch = _apply_local_raw_text_updates(
                     conn, rows=pending_rows
                 )
@@ -671,7 +710,7 @@ def _prepare_local_by_post_uids(
 
 
 def _prepare_local_scan(
-    conn: TursoConnection,
+    conn: DbConnection,
     *,
     batch_size: int,
     limit: int,
@@ -733,7 +772,7 @@ def _prepare_local_scan(
                 f"total_processed={processed}"
             )
         else:
-            with turso_savepoint(conn):
+            with _db_savepoint(conn):
                 applied_this_batch = _apply_local_raw_text_updates(
                     conn, rows=pending_rows
                 )
@@ -762,7 +801,7 @@ def _prepare_local_scan(
 
 
 def _apply_by_post_uids(
-    engine,
+    engine: PostgresEngine,
     *,
     post_uids: list[str],
     batch_size: int,
@@ -777,17 +816,17 @@ def _apply_by_post_uids(
 
     print(f"[migrate] apply start target={len(post_uids)} by_post_uids=True")
 
-    with turso_connect_autocommit(engine) as conn:
+    with _connect_postgres(engine) as conn:
         if dry_run:
             if not _migration_table_exists(conn):
                 print("[migrate] apply dry-run done pending_rows=0")
                 return
         else:
-            with turso_savepoint(conn):
+            with _db_savepoint(conn):
                 _ensure_migration_table(conn)
 
     for chunk in _chunks(post_uids, batch_size):
-        with turso_connect_autocommit(engine) as conn:
+        with _connect_postgres(engine) as conn:
             rows = _select_pending_migration_rows_by_post_uids(conn, chunk)
 
         found_uids.update(
@@ -801,8 +840,8 @@ def _apply_by_post_uids(
             print(f"[dry-run] apply batch rows={len(rows)} total_processed={processed}")
             continue
 
-        with turso_connect_autocommit(engine) as conn:
-            with turso_savepoint(conn):
+        with _connect_postgres(engine) as conn:
+            with _db_savepoint(conn):
                 stats = _apply_pending_migration_rows(
                     conn,
                     rows=rows,
@@ -834,7 +873,7 @@ def _apply_by_post_uids(
 
 
 def _apply_scan(
-    engine,
+    engine: PostgresEngine,
     *,
     batch_size: int,
     limit: int,
@@ -847,13 +886,13 @@ def _apply_scan(
 
     print("[migrate] apply start")
 
-    with turso_connect_autocommit(engine) as conn:
+    with _connect_postgres(engine) as conn:
         if dry_run:
             if not _migration_table_exists(conn):
                 print("[migrate] apply dry-run done pending_rows=0")
                 return
         else:
-            with turso_savepoint(conn):
+            with _db_savepoint(conn):
                 _ensure_migration_table(conn)
 
     while True:
@@ -863,7 +902,7 @@ def _apply_scan(
             if remaining <= 0:
                 break
 
-        with turso_connect_autocommit(engine) as conn:
+        with _connect_postgres(engine) as conn:
             effective_batch_size = int(batch_size)
             if remaining is not None:
                 effective_batch_size = min(effective_batch_size, remaining)
@@ -877,8 +916,8 @@ def _apply_scan(
         if dry_run:
             print(f"[dry-run] apply batch rows={len(rows)} total_processed={processed}")
         else:
-            with turso_connect_autocommit(engine) as conn:
-                with turso_savepoint(conn):
+            with _connect_postgres(engine) as conn:
+                with _db_savepoint(conn):
                     stats = _apply_pending_migration_rows(
                         conn,
                         rows=rows,
@@ -934,7 +973,7 @@ def main() -> None:
             )
         return
 
-    engine = get_turso_engine_from_env()
+    engine = get_postgres_engine_from_env()
 
     if bool(args.apply_only):
         if post_uids:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.db.turso_queue import (
     load_unprocessed_post_queue_rows,
 )
@@ -29,7 +29,7 @@ _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 def run_maintenance_if_due(
     *,
     source,
-    active_engine: TursoEngine | None,
+    active_engine: PostgresEngine | None,
     source_name: str,
     platform: str,
     ctx: SourceTickContext,

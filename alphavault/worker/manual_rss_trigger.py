@@ -14,11 +14,9 @@ from alphavault.constants import (
     ENV_RSS_RETRIES,
     ENV_RSS_TIMEOUT_SECONDS,
 )
-from alphavault.db.turso_db import (
-    TursoEngine,
-    ensure_turso_engine,
-    is_turso_libsql_panic_error,
-    is_turso_stream_not_found_error,
+from alphavault.db.postgres_db import (
+    PostgresEngine,
+    ensure_postgres_engine,
 )
 from alphavault.rss.utils import env_float, env_int
 from alphavault.worker.cli import RSSSourceConfig, resolve_rss_source_configs
@@ -93,7 +91,7 @@ def _build_source_redis_queue_key(
 def _flush_source_spool_to_turso(
     *,
     spool_dir: Path,
-    engine: TursoEngine,
+    engine: PostgresEngine,
     redis_client: Any,
     redis_queue_key: str,
 ) -> tuple[int, bool]:
@@ -116,14 +114,9 @@ def _flush_source_spool_to_turso(
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
-    *, engine: TursoEngine, err: BaseException
+    *, engine: PostgresEngine, err: BaseException
 ) -> None:
-    if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
-        return
-    try:
-        engine.dispose()
-    except Exception:
-        return
+    del engine, err
 
 
 def _run_manual_ingest_for_source(
@@ -137,7 +130,7 @@ def _run_manual_ingest_for_source(
     rss_retries: int,
     rss_feed_sleep_seconds: float,
 ) -> dict[str, object]:
-    engine = ensure_turso_engine(source.database_url, source.auth_token)
+    engine = ensure_postgres_engine(source.database_url, schema_name=source.name)
     result: dict[str, object] = {
         "source": source.name,
         "platform": source.platform,

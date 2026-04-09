@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.research_signal_view import (
     build_related_stock_rows,
@@ -49,7 +49,7 @@ def _window_cutoff_str(days: int) -> str:
 
 
 def _load_sector_assertions(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     sector_slug: str,
     window_days: int,
@@ -97,7 +97,7 @@ LIMIT :limit
 
 
 def _load_posts_for_assertions(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     post_uids: list[str],
 ) -> pd.DataFrame:
@@ -121,7 +121,7 @@ WHERE post_uid IN ({placeholders})
 
 
 def build_sector_hot_payload(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     sector_key: str,
     signal_cap: int,

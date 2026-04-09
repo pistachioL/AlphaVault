@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-import libsql
 from typing import cast
 
 import pytest
 
+from alphavault.constants import SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.research_stock_cache import (
     dirty_reason_mask_for,
 )
 from alphavault.worker import research_stock_cache as stock_hot_cache
+
+_ASSERTION_ID = "weibo:worker_stock_hot_cache:1#1"
+_POST_UID = "weibo:worker_stock_hot_cache:1"
 
 
 class _FakeConn:
@@ -21,34 +24,31 @@ class _FakeConn:
         return False
 
 
-def test_list_missing_hot_cache_stock_keys_reads_assertion_entities() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        apply_cloud_schema(conn)
-        conn.execute(
-            """
-            INSERT INTO assertions(
-                assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
-            )
-            VALUES (
-                'weibo:1#1', 'weibo:1', 1, 'trade.buy', 1, '小仓试错', '原文', '2026-04-06 10:00:00'
-            )
-            """
+def test_list_missing_hot_cache_stock_keys_reads_assertion_entities(pg_conn) -> None:
+    apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
+    conn = PostgresConnection(pg_conn, schema_name=SCHEMA_WEIBO)
+    conn.execute(
+        f"""
+        INSERT INTO weibo.assertions(
+            assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
         )
-        conn.execute(
-            """
-            INSERT INTO assertion_entities(
-                assertion_id, entity_key, entity_type, match_source, is_primary
-            )
-            VALUES ('weibo:1#1', 'stock:601899.SH', 'stock', 'stock_code', 1)
-            """
+        VALUES (
+            '{_ASSERTION_ID}', '{_POST_UID}', 1, 'trade.buy', 1, '小仓试错', '原文', '2026-04-06 10:00:00'
         )
+        """
+    )
+    conn.execute(
+        f"""
+        INSERT INTO weibo.assertion_entities(
+            assertion_id, entity_key, entity_type, match_source, is_primary
+        )
+        VALUES ('{_ASSERTION_ID}', 'stock:601899.SH', 'stock', 'stock_code', 1)
+        """
+    )
 
-        keys = stock_hot_cache._list_missing_hot_cache_stock_keys(conn, limit=10)
+    keys = stock_hot_cache._list_missing_hot_cache_stock_keys(conn, limit=10)
 
-        assert keys == ["stock:601899.SH"]
-    finally:
-        conn.close()
+    assert keys == ["stock:601899.SH"]
 
 
 def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
@@ -102,7 +102,7 @@ def test_sync_stock_hot_cache_only_consumes_dirty_entries(monkeypatch) -> None:
     )
 
     stats = stock_hot_cache.sync_stock_hot_cache(
-        cast(TursoConnection, _FakeConn()),
+        cast(PostgresConnection, _FakeConn()),
         max_stocks_per_run=4,
         dirty_limit=16,
     )
@@ -164,7 +164,7 @@ def test_sync_stock_hot_cache_bootstraps_when_dirty_queue_is_empty(
     )
 
     stats = stock_hot_cache.sync_stock_hot_cache(
-        cast(TursoConnection, _FakeConn()),
+        cast(PostgresConnection, _FakeConn()),
         max_stocks_per_run=4,
         dirty_limit=16,
     )
@@ -248,7 +248,7 @@ def test_sync_stock_hot_cache_yields_to_rss_after_current_stock(monkeypatch) -> 
     )
 
     stats = stock_hot_cache.sync_stock_hot_cache(
-        cast(TursoConnection, _FakeConn()),
+        cast(PostgresConnection, _FakeConn()),
         max_stocks_per_run=4,
         dirty_limit=16,
         should_continue=lambda: False,
@@ -319,7 +319,7 @@ def test_sync_stock_hot_cache_handles_sector_keys(monkeypatch) -> None:
     )
 
     stats = stock_hot_cache.sync_stock_hot_cache(
-        cast(TursoConnection, _FakeConn()),
+        cast(PostgresConnection, _FakeConn()),
         max_stocks_per_run=4,
         dirty_limit=16,
     )
@@ -379,7 +379,7 @@ def test_sync_stock_hot_cache_marks_claim_failed_when_refresh_raises(
 
     with pytest.raises(RuntimeError, match="boom"):
         stock_hot_cache.sync_stock_hot_cache(
-            cast(TursoConnection, _FakeConn()),
+            cast(PostgresConnection, _FakeConn()),
             max_stocks_per_run=4,
             dirty_limit=16,
         )

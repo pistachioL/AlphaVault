@@ -7,24 +7,20 @@ from pathlib import Path
 
 from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
+    ENV_POSTGRES_DSN,
     ENV_STARTUP_HEALTHCHECK_TURSO_TARGET,
     ENV_REDIS_URL,
     ENV_SPOOL_DIR,
-    ENV_STANDARD_TURSO_AUTH_TOKEN,
-    ENV_STANDARD_TURSO_DATABASE_URL,
-    ENV_WEIBO_TURSO_AUTH_TOKEN,
-    ENV_WEIBO_TURSO_DATABASE_URL,
-    ENV_XUEQIU_TURSO_AUTH_TOKEN,
-    ENV_XUEQIU_TURSO_DATABASE_URL,
+    SCHEMA_STANDARD,
     PLATFORM_WEIBO,
     PLATFORM_XUEQIU,
 )
 from alphavault.db.sql.scripts import (
     SELECT_ONE,
 )
-from alphavault.db.turso_db import (
-    ensure_turso_engine,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    ensure_postgres_engine,
+    postgres_connect_autocommit,
 )
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_workbench.schema import (
@@ -37,7 +33,7 @@ from alphavault.research_workbench.schema import (
 load_dotenv_if_present()
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-_STANDARD_TURSO_TARGET = "standard"
+_STANDARD_TURSO_TARGET = SCHEMA_STANDARD
 _DEFAULT_TURSO_TARGET = _STANDARD_TURSO_TARGET
 _STANDARD_REQUIRED_TABLES = (
     RESEARCH_SECURITY_MASTER_TABLE,
@@ -45,20 +41,6 @@ _STANDARD_REQUIRED_TABLES = (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
 )
-_TURSO_TARGET_ENV_MAP = {
-    PLATFORM_WEIBO: (
-        ENV_WEIBO_TURSO_DATABASE_URL,
-        ENV_WEIBO_TURSO_AUTH_TOKEN,
-    ),
-    PLATFORM_XUEQIU: (
-        ENV_XUEQIU_TURSO_DATABASE_URL,
-        ENV_XUEQIU_TURSO_AUTH_TOKEN,
-    ),
-    _STANDARD_TURSO_TARGET: (
-        ENV_STANDARD_TURSO_DATABASE_URL,
-        ENV_STANDARD_TURSO_AUTH_TOKEN,
-    ),
-}
 
 
 def _print(msg: str) -> None:
@@ -108,7 +90,7 @@ def _healthcheck_turso_target() -> str:
     target = _env_text(ENV_STARTUP_HEALTHCHECK_TURSO_TARGET).lower()
     if not target:
         return _DEFAULT_TURSO_TARGET
-    if target in _TURSO_TARGET_ENV_MAP:
+    if target in {PLATFORM_WEIBO, PLATFORM_XUEQIU, _STANDARD_TURSO_TARGET}:
         return target
     raise RuntimeError(
         "invalid STARTUP_HEALTHCHECK_TURSO_TARGET: "
@@ -116,13 +98,12 @@ def _healthcheck_turso_target() -> str:
     )
 
 
-def _resolve_turso_target() -> tuple[str, str, str]:
+def _resolve_turso_target() -> tuple[str, str]:
     target = _healthcheck_turso_target()
-    url_env, token_env = _TURSO_TARGET_ENV_MAP[target]
-    url = _env_text(url_env)
-    if not url:
-        raise RuntimeError(f"missing {url_env}")
-    return target, url, _env_text(token_env)
+    dsn = _env_text(ENV_POSTGRES_DSN)
+    if not dsn:
+        raise RuntimeError(f"missing {ENV_POSTGRES_DSN}")
+    return target, dsn
 
 
 def _check_turso() -> None:
@@ -130,13 +111,13 @@ def _check_turso() -> None:
         for table_name in _STANDARD_REQUIRED_TABLES:
             conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
 
-    name, url, token = _resolve_turso_target()
-    prefix = f"[healthcheck] turso[{name}]"
+    name, dsn = _resolve_turso_target()
+    prefix = f"[healthcheck] postgres[{name}]"
     _print(f"{prefix} start")
-    engine = ensure_turso_engine(url, token)
+    engine = ensure_postgres_engine(dsn, schema_name=name)
 
     try:
-        with turso_connect_autocommit(engine) as conn:
+        with postgres_connect_autocommit(engine) as conn:
             conn.execute(SELECT_ONE).fetchone()
             try:
                 if name == _STANDARD_TURSO_TARGET:
@@ -145,17 +126,17 @@ def _check_turso() -> None:
                 if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                     raise
                 raise RuntimeError(
-                    f"turso[{name}] schema check failed: {type(e).__name__}: {e}"
+                    f"postgres[{name}] schema check failed: {type(e).__name__}: {e}"
                 ) from e
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
         if isinstance(e, RuntimeError) and str(e).startswith(
-            f"turso[{name}] schema check failed:"
+            f"postgres[{name}] schema check failed:"
         ):
             raise e
         raise RuntimeError(
-            f"turso[{name}] connect failed: {type(e).__name__}: {e}"
+            f"postgres[{name}] connect failed: {type(e).__name__}: {e}"
         ) from e
 
     _print(f"{prefix} ok")

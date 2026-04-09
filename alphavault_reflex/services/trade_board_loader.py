@@ -9,13 +9,20 @@ import time
 
 import pandas as pd
 
+from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
 from alphavault.db.sql.ui import (
     build_assertion_projection_expr,
     build_assertion_rollup_ctes,
     build_assertion_rollup_joins,
 )
-from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
-from alphavault.db.turso_env import load_configured_turso_sources_from_env
+from alphavault.db.postgres_db import (
+    ensure_postgres_engine,
+    postgres_connect_autocommit,
+)
+from alphavault.db.postgres_env import (
+    load_configured_postgres_sources_from_env,
+    PostgresSource,
+)
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
@@ -26,6 +33,7 @@ from alphavault_reflex.services.homework_constants import TRADE_BOARD_MAX_WINDOW
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
     MISSING_TURSO_SOURCES_ERROR,
+    source_table,
 )
 from alphavault_reflex.services.turso_read_utils import normalize_assertions_datetime
 
@@ -33,6 +41,7 @@ _logger = logging.getLogger(__name__)
 ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = "REFLEX_HOMEWORK_SOURCE_MAX_WORKERS"
 DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = 2
 _STANDARD_TURSO_ERROR_PREFIX = "turso_connect_error:standard:"
+_SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
 
 TRADE_BOARD_ASSERTION_COLUMNS = [
     "post_uid",
@@ -50,6 +59,15 @@ SELECT relation_type, left_key, right_key, relation_label, source, updated_at
 FROM {relations_table}
 WHERE relation_type = 'stock_alias' OR relation_label = 'alias_of'
 """.format(relations_table=RESEARCH_RELATIONS_TABLE)
+
+
+def _load_source_schemas_from_env() -> list[PostgresSource]:
+    return [
+        source
+        for source in load_configured_postgres_sources_from_env()
+        if str(getattr(source, "schema", getattr(source, "name", "")) or "").strip()
+        in _SOURCE_SCHEMA_NAMES
+    ]
 
 
 def trade_board_cutoff_from_utc_now(*, lookback_days: int) -> str:
@@ -74,11 +92,16 @@ def trade_board_select_expr() -> str:
 def query_trade_board_assertions(
     *, conn: object, cutoff: str, source_name: str
 ) -> pd.DataFrame:
+    posts_table = source_table(source_name, "posts")
+    assertions_table = source_table(source_name, "assertions")
+    assertion_entities_table = source_table(source_name, "assertion_entities")
+    assertion_mentions_table = source_table(source_name, "assertion_mentions")
+    topic_cluster_topics_table = source_table(source_name, "topic_cluster_topics")
     sql = f"""
-{build_assertion_rollup_ctes()}
+{build_assertion_rollup_ctes(assertion_entities_table=assertion_entities_table, assertion_mentions_table=assertion_mentions_table, topic_cluster_topics_table=topic_cluster_topics_table)}
 SELECT {trade_board_select_expr()}
-FROM posts p
-JOIN assertions a ON a.post_uid = p.post_uid
+FROM {posts_table} p
+JOIN {assertions_table} a ON a.post_uid = p.post_uid
 {build_assertion_rollup_joins("a")}
 WHERE p.processed_at IS NOT NULL
   AND p.created_at >= :cutoff
@@ -121,8 +144,9 @@ def load_trade_board_assertions_cached(
 ) -> pd.DataFrame:
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     cutoff = trade_board_cutoff_from_utc_now(lookback_days=lookback)
-    engine = ensure_turso_engine(db_url, auth_token)
-    with turso_connect_autocommit(engine) as conn:
+    del auth_token
+    engine = ensure_postgres_engine(db_url, schema_name=source_name)
+    with postgres_connect_autocommit(engine) as conn:
         return query_trade_board_assertions(
             conn=conn,
             cutoff=cutoff,
@@ -133,7 +157,7 @@ def load_trade_board_assertions_cached(
 @lru_cache(maxsize=2)
 def load_stock_alias_relations_cached() -> pd.DataFrame:
     engine = get_research_workbench_engine_from_env()
-    with turso_connect_autocommit(engine) as conn:
+    with postgres_connect_autocommit(engine) as conn:
         return query_stock_alias_relations(
             conn=conn,
             source_name="standard",
@@ -163,10 +187,11 @@ def load_homework_board_payload_cached(
     start = time.perf_counter()
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     cutoff = trade_board_cutoff_from_utc_now(lookback_days=lookback)
-    engine = ensure_turso_engine(db_url, auth_token)
+    del auth_token
+    engine = ensure_postgres_engine(db_url, schema_name=source_name)
     assertion_count = 0
     relation_count = 0
-    with turso_connect_autocommit(engine) as conn:
+    with postgres_connect_autocommit(engine) as conn:
         assertions = query_trade_board_assertions(
             conn=conn,
             cutoff=cutoff,
@@ -203,7 +228,7 @@ def load_trade_board_assertions_from_env(
     load_cached_fn=load_trade_board_assertions_cached,
 ) -> tuple[pd.DataFrame, str]:
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = _load_source_schemas_from_env()
     if not sources:
         return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 
@@ -246,7 +271,7 @@ def load_homework_board_payload_from_env(
 ) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     start = time.perf_counter()
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = _load_source_schemas_from_env()
     if not sources:
         return pd.DataFrame(), pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 

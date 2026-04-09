@@ -3,7 +3,8 @@ from __future__ import annotations
 import libsql
 from typing import cast
 
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.libsql_db import LibsqlConnection as TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.worker.sector_hot_payload_builder import build_sector_hot_payload
 
 
@@ -76,7 +77,14 @@ VALUES (:topic_key, :cluster_key, :source, :confidence, :created_at)
 """
 
 
-def _setup_tables(conn: TursoConnection) -> None:
+def _memory_conn() -> PostgresConnection:
+    return cast(
+        PostgresConnection,
+        TursoConnection(libsql.connect(":memory:", isolation_level=None)),
+    )
+
+
+def _setup_tables(conn: PostgresConnection) -> None:
     conn.execute(CREATE_POSTS_TABLE_SQL)
     conn.execute(CREATE_ASSERTIONS_TABLE_SQL)
     conn.execute(CREATE_ASSERTION_ENTITIES_TABLE_SQL)
@@ -84,7 +92,7 @@ def _setup_tables(conn: TursoConnection) -> None:
 
 
 def test_build_sector_hot_payload_groups_signals_and_related_stocks() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    conn = _memory_conn()
     try:
         _setup_tables(conn)
         conn.execute(

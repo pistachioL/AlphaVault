@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.worker.turso_runtime import ensure_turso_ready
 from alphavault.worker.worker_constants import TURSO_READY_RETRY_SECONDS
 
@@ -13,7 +13,7 @@ def ensure_source_turso_ready(
     source_name: str,
     now: float,
     verbose: bool,
-) -> TursoEngine | None:
+) -> PostgresEngine | None:
     if bool(getattr(source, "turso_ready", False)):
         return source.engine
     next_check = float(getattr(source, "turso_next_ready_check_at", 0.0) or 0.0)

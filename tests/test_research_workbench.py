@@ -9,6 +9,7 @@ from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
 from alphavault.research_workbench import candidate_repo, relation_repo
 from alphavault.research_workbench import (
+    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
@@ -28,7 +29,17 @@ from alphavault.research_workbench import (
 @pytest.fixture()
 def workbench_conn(pg_conn):
     apply_cloud_schema(pg_conn, target="standard", schema_name=SCHEMA_STANDARD)
-    return PostgresConnection(pg_conn)
+    pg_conn.execute(
+        f"""
+TRUNCATE TABLE
+  {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE},
+  {RESEARCH_RELATION_CANDIDATES_TABLE},
+  {RESEARCH_RELATIONS_TABLE},
+  {RESEARCH_SECURITY_MASTER_TABLE}
+RESTART IDENTITY CASCADE
+"""
+    )
+    return PostgresConnection(pg_conn, schema_name=SCHEMA_STANDARD)
 
 
 class _FakeRedisHashClient:
@@ -538,7 +549,9 @@ def test_rebuild_stock_dict_shadow_skips_normalized_field_conflicts(
         source="manual",
     )
 
-    assert shadow_dict_repo.rebuild_stock_dict_shadow_best_effort(workbench_conn) is True
+    assert (
+        shadow_dict_repo.rebuild_stock_dict_shadow_best_effort(workbench_conn) is True
+    )
 
     assert fake_redis.hashes[redis_mod.ENTITY_MATCH_STOCK_DICT_KEY] == {
         "name:贵州茅台": "stock:600519.SH",
@@ -690,7 +703,9 @@ def test_accept_stock_alias_candidate_refreshes_redis_shadow_dict(
         score=0.99,
         ai_status="skipped",
     )
-    accept_relation_candidate(workbench_conn, candidate_id="cand-alias-1", source="manual")
+    accept_relation_candidate(
+        workbench_conn, candidate_id="cand-alias-1", source="manual"
+    )
 
     assert synced == [("stock:600519.SH", "stock:茅台")]
 
@@ -721,7 +736,9 @@ def test_accept_non_alias_candidate_does_not_refresh_redis_shadow_dict(
         score=0.99,
         ai_status="skipped",
     )
-    accept_relation_candidate(workbench_conn, candidate_id="cand-sector-1", source="manual")
+    accept_relation_candidate(
+        workbench_conn, candidate_id="cand-sector-1", source="manual"
+    )
 
     assert synced == []
 

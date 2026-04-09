@@ -12,12 +12,10 @@ from alphavault.constants import (
     ENV_SPOOL_DIR,
     PLATFORM_WEIBO,
 )
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    is_turso_libsql_panic_error,
-    is_turso_stream_not_found_error,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    postgres_connect_autocommit,
 )
 from alphavault.db.turso_queue import load_post_processed_at, upsert_pending_post
 from alphavault.rss.utils import now_str
@@ -183,14 +181,9 @@ def _recover_stale_processing_files(*, spool_dir: Path, verbose: bool) -> int:
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
-    *, engine: TursoEngine, err: BaseException
+    *, engine: PostgresEngine, err: BaseException
 ) -> None:
-    if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
-        return
-    try:
-        engine.dispose()
-    except Exception:
-        return
+    del engine, err
 
 
 def _load_claimed_payload(
@@ -215,7 +208,7 @@ def _load_claimed_payload(
 
 
 def _upsert_spool_payload(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     payload: dict[str, Any],
 ) -> str:
@@ -279,7 +272,7 @@ def _try_push_payload_to_ai_ready(
 def flush_spool_to_turso(
     *,
     spool_dir: Path,
-    engine: Optional[TursoEngine],
+    engine: Optional[PostgresEngine],
     max_items: int,
     verbose: bool,
     redis_client=None,
@@ -297,7 +290,7 @@ def flush_spool_to_turso(
         return 0, False
     processed = 0
     try:
-        with turso_connect_autocommit(engine) as conn:
+        with postgres_connect_autocommit(engine) as conn:
             for path in paths[:max_batch]:
                 claimed_path = _claim_spool_file(path)
                 if claimed_path is None:
@@ -383,7 +376,7 @@ def flush_spool_to_turso(
 def recover_spool_to_turso_and_redis(
     *,
     spool_dir: Path,
-    engine: Optional[TursoEngine],
+    engine: Optional[PostgresEngine],
     max_items: int,
     verbose: bool,
     redis_client=None,
@@ -403,7 +396,7 @@ def recover_spool_to_turso_and_redis(
     queued_redis = 0
     deleted_done = 0
     try:
-        with turso_connect_autocommit(engine) as conn:
+        with postgres_connect_autocommit(engine) as conn:
             for path in paths[:max_batch]:
                 claimed_path = _claim_spool_file(path)
                 if claimed_path is None:

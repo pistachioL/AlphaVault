@@ -37,7 +37,7 @@ uv run pre-commit run -a
 uv run pytest
 ```
 
-## Worker（RSS → Turso → AI）
+## Worker（RSS → Postgres → AI）
 推荐用环境变量配 AI（Docker/supervisord 也用这一套）：
 ```bash
 # 只跑微博：填 WEIBO_ 这一组
@@ -46,8 +46,7 @@ export RSS_TIMEOUT_SECONDS="60"
 export RSS_RETRIES="5"
 export RSS_FEED_SLEEP_SECONDS="10"
 
-export WEIBO_TURSO_DATABASE_URL="libsql://xxx.turso.io"
-export WEIBO_TURSO_AUTH_TOKEN="YOUR_TOKEN"
+export POSTGRES_DSN="postgresql://postgres:password@db.example.com:5432/postgres"
 
 export AI_MODEL="openai/gpt-5.2"
 # 注意：AI_MODEL 要是“真实模型名”，不要写成 rss 这类占位词
@@ -68,14 +67,13 @@ uv run python weibo_rss_turso_worker.py --verbose
 
 说明：
 - `WEIBO_RSS_URLS` 支持逗号/换行分隔；也可以用 `WEIBO_RSS_URL`（只传 1 个）。
-- 你也可以同时填 `XUEQIU_RSS_URLS` + `XUEQIU_TURSO_DATABASE_URL`，worker 会同时跑两套（weibo + xueqiu）。
-- 研究台整理表单独走标准库：`STANDARD_TURSO_DATABASE_URL` / `STANDARD_TURSO_AUTH_TOKEN`。
+- 只要配一个 `POSTGRES_DSN`，worker 就会同时按 `weibo / xueqiu / standard` 三个 schema 工作。
 - source 库先手工执行 `alphavault/db/sql/source_schema.sql`；标准库先手工执行 `alphavault/db/sql/standard_schema.sql`。
 - RSS 抓取网络参数：`RSS_TIMEOUT_SECONDS`（默认 60 秒）和 `RSS_RETRIES`（默认失败后再试 5 次）。
 - RSS 抓取节奏参数：`RSS_FEED_SLEEP_SECONDS`（默认 10 秒，表示每个 feed 抓完后 sleep；设 `0` 可关闭）。
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
-- Worker 会先写本地 `spool` 文件；Redis 可用时优先走 Redis AI 队列，AI 完成后再写 Turso。
-- Redis 打开后，作者线程上下文优先读 Redis 缓存；缓存 miss 才回源 Turso。
+- Worker 会先写本地 `spool` 文件；Redis 可用时优先走 Redis AI 队列，AI 完成后再写 Postgres。
+- Redis 打开后，作者线程上下文优先读 Redis 缓存；缓存 miss 才回源 Postgres。
 - Reflex 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
 
 ## 手动触发 RSS 抓取 API
@@ -98,8 +96,8 @@ curl "http://127.0.0.1:8080/api/rss/trigger?key=YOUR_TRIGGER_KEY"
 先准备标准库：
 
 1. 对标准库手工执行 `alphavault/db/sql/standard_schema.sql`
-2. 配置 `STANDARD_TURSO_DATABASE_URL`
-3. 按需配置 `STANDARD_TURSO_AUTH_TOKEN`
+2. 配置 `POSTGRES_DSN`
+3. 确认 `standard` schema 已装好表
 4. 先执行 `uv sync`
 
 第一版清单文件在 `data/security_master.csv`，固定 4 列：
@@ -154,14 +152,9 @@ uv run python import_security_master_csv.py --csv-path /path/to/security_master.
 ```
 
 ## 补搬旧历史整理表到标准库
-先准备这 3 套库的 env：
+先准备数据库 env：
 
-- `WEIBO_TURSO_DATABASE_URL`
-- `WEIBO_TURSO_AUTH_TOKEN`
-- `XUEQIU_TURSO_DATABASE_URL`
-- `XUEQIU_TURSO_AUTH_TOKEN`
-- `STANDARD_TURSO_DATABASE_URL`
-- `STANDARD_TURSO_AUTH_TOKEN`
+- `POSTGRES_DSN`
 
 这一步只搬这 `3` 张表：
 
@@ -171,7 +164,7 @@ uv run python import_security_master_csv.py --csv-path /path/to/security_master.
 
 迁移规则：
 
-- 会同时读取 `weibo`、`xueqiu`、当前 `standard`
+- 会同时读取 `weibo`、`xueqiu`、当前 `standard` 这 3 个 schema
 - 同一主键冲突时，保留 `updated_at` 更新的那一行
 - 如果时间一样，优先保留当前 `standard` 里已有的那一行
 - 正式迁移会按 `--batch-size` 分批写标准库，默认 `500`
@@ -203,8 +196,7 @@ uv run reflex run
 
 需要：
 
-- `WEIBO_TURSO_DATABASE_URL` 或 `XUEQIU_TURSO_DATABASE_URL`（源库，token 可选）
-- `STANDARD_TURSO_DATABASE_URL`（标准库）
+- `POSTGRES_DSN`
 
 主要页面：
 - `/`：首页 + 全局搜索
@@ -379,10 +371,9 @@ uv run reflex run
 
 启动时会先做一次 startup check（失败就直接退出容器）：
 - 本地缓存：`SPOOL_DIR`（默认 `/tmp/alphavault-spool`）需要可写
-- Turso：`startup_healthcheck.py` 只检查 `1` 个目标库，目标由 `STARTUP_HEALTHCHECK_TURSO_TARGET` 控制；默认是 `standard`，可选 `weibo` 或 `xueqiu`
-- Turso：默认值是 `standard`，所以默认至少要配 `STANDARD_TURSO_DATABASE_URL`；这只影响 startup healthcheck 查哪个库，不代表 worker 不需要 source 库
-- Turso：当前 Docker 默认还是同时启动 `web + worker`；如果要让 worker 正常跑，仍然要至少再配一组 `WEIBO_*` 或 `XUEQIU_*`
-- 标准库：只有当 `STARTUP_HEALTHCHECK_TURSO_TARGET=standard` 时，才会在启动时额外检查 `security_master`、`relations`、`relation_candidates`、`alias_resolve_tasks` 这 4 张关键表；没先执行 `alphavault/db/sql/standard_schema.sql` 就会直接 fail
+- Postgres：`startup_healthcheck.py` 只检查 `1` 个目标 schema，目标由 `STARTUP_HEALTHCHECK_TURSO_TARGET` 控制；默认是 `standard`，可选 `weibo` 或 `xueqiu`
+- Postgres：只需要配置一个 `POSTGRES_DSN`
+- 标准库：只有当 `STARTUP_HEALTHCHECK_TURSO_TARGET=standard` 时，才会在启动时额外检查 `standard.security_master`、`standard.relations`、`standard.relation_candidates`、`standard.alias_resolve_tasks`；没先执行 `alphavault/db/sql/standard_schema.sql` 就会直接 fail
 - Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
 
 定时（通过 env 配）：
@@ -414,10 +405,7 @@ docker run -d --name alphavault \
 	  -e AI_TRACE_OUT="/data/trace.txt" \
 	  -e AI_BASE_URL="http://xxx/v1" \
 	  -e AI_API_KEY="YOUR_KEY" \
-	  -e WEIBO_TURSO_DATABASE_URL="libsql://xxx.turso.io" \
-	  -e WEIBO_TURSO_AUTH_TOKEN="YOUR_TOKEN" \
-	  -e STANDARD_TURSO_DATABASE_URL="libsql://standard.turso.io" \
-	  -e STANDARD_TURSO_AUTH_TOKEN="YOUR_TOKEN" \
+	  -e POSTGRES_DSN="postgresql://postgres:password@db.example.com:5432/postgres" \
 	  -e REDIS_URL="redis://:pass@host:6379/0" \
 	  -e SPOOL_DIR="/tmp/alphavault-spool" \
 	  alphavault
@@ -430,7 +418,6 @@ docker run -d --name alphavault \
 `docker-compose.yml` 只是本地省事用的；像 Render 这类平台一般只认 `Dockerfile`，你直接在它的 UI 里填 env 就行。
 
 ## 常见问题
-- `auth role not found`：Turso token 与 DB 不匹配，请重新生成 token 并核对 URL。
-- Turso 连不上：worker 不会退出，会先写 `spool`/Redis；恢复后会自动 flush + 重试 AI。
+- Postgres 连不上：worker 不会退出，会先写 `spool`/Redis；恢复后会自动 flush + 重试 AI。
 - Reflex 看不到数据：因为只展示 `processed_at IS NOT NULL`（AI 还没跑完就不会显示）。
 - RSS 抓取正常但 LLM 不跑：确认 `AI_API_KEY` / `AI_MODEL` / `AI_BASE_URL` 配置正确。

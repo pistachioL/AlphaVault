@@ -59,7 +59,16 @@ repos:
     hooks:
       - id: pytest
         name: pytest
-        entry: uv run pytest -p no:cacheprovider
+        entry: >-
+          /bin/zsh -lc 'DB_TEST_CMD="uv run pytest -p no:cacheprovider" mise run test:db-hook'
         language: system
         pass_filenames: false
         always_run: true
+
+      - id: db-integration-test
+        name: Run Ephemeral DB Tests
+        entry: mise run test:db-hook
+        language: system
+        files: ^(database/|server/models/)
+        pass_filenames: false
+        stages: [pre-commit]

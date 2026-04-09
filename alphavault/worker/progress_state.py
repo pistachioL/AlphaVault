@@ -4,7 +4,7 @@ import json
 import time
 from typing import Any
 
-from alphavault.db.turso_db import TursoConnection, TursoEngine
+from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
 from alphavault.rss.utils import now_str
 from alphavault.worker.job_state import (
     save_worker_job_cursor,
@@ -46,7 +46,7 @@ def save_worker_progress_state(
     getattr(source, "progress_state_cache", {})[cache_key] = comparable
 
     engine_or_conn = getattr(source, "engine", None)
-    if not isinstance(engine_or_conn, (TursoEngine, TursoConnection)):
+    if not isinstance(engine_or_conn, (PostgresEngine, PostgresConnection)):
         return
     try:
         save_worker_job_cursor(
@@ -58,7 +58,7 @@ def save_worker_progress_state(
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
         engine = engine_or_conn
-        if isinstance(engine, TursoEngine):
+        if isinstance(engine, PostgresEngine):
             maybe_dispose_turso_engine_on_transient_error(
                 engine=engine, err=err, verbose=bool(verbose)
             )
@@ -71,7 +71,7 @@ def save_worker_progress_state(
 
 def has_due_ai_posts(
     *,
-    engine: TursoEngine | None,
+    engine: PostgresEngine | None,
     platform: str,
     verbose: bool,
     redis_client=None,

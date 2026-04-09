@@ -1,17 +1,35 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 
+from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
 from alphavault.env import load_dotenv_if_present
 
 from alphavault.ai.tag_validate import validate_assertion_row
+from alphavault.db.postgres_db import PostgresEngine, ensure_postgres_engine
+from alphavault.db.postgres_env import (
+    require_postgres_source_from_env,
+    require_postgres_source_platform,
+)
 from alphavault.db.sql.scripts import scan_invalid_assertion_rows
-from alphavault.db.turso_db import get_turso_engine_from_env
 from alphavault.db.turso_queue import reset_ai_results_for_post_uids
 from alphavault.rss.utils import now_str
 
 
 DEFAULT_CHUNK_SIZE = 200
+
+
+def _source_engine_for_platform(platform: str) -> PostgresEngine:
+    source = require_postgres_source_from_env(platform)
+    return ensure_postgres_engine(source.dsn, schema_name=source.schema)
+
+
+def _iter_source_engines() -> list[tuple[str, PostgresEngine]]:
+    out: list[tuple[str, PostgresEngine]] = []
+    for platform in (PLATFORM_WEIBO, PLATFORM_XUEQIU):
+        out.append((platform, _source_engine_for_platform(platform)))
+    return out
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,15 +111,23 @@ def main() -> None:
     if not args.dry_run and not args.yes:
         raise SystemExit("危险操作：非 dry-run 请加 --yes 确认")
 
-    engine = get_turso_engine_from_env()
-
     limit = max(0, int(args.limit))
-    invalid_uids, _errors, scanned_rows = _scan_invalid_post_uids(
-        engine,
-        prompt_version=prompt_version,
-        limit=limit,
-        verbose=bool(args.verbose),
-    )
+    source_engines = dict(_iter_source_engines())
+    invalid_uids: list[str] = []
+    scanned_rows = 0
+    for engine in source_engines.values():
+        remaining = max(0, limit - len(invalid_uids)) if limit > 0 else 0
+        source_invalid_uids, _errors, source_scanned_rows = _scan_invalid_post_uids(
+            engine,
+            prompt_version=prompt_version,
+            limit=remaining,
+            verbose=bool(args.verbose),
+        )
+        invalid_uids.extend(source_invalid_uids)
+        scanned_rows += int(source_scanned_rows)
+        if limit > 0 and len(invalid_uids) >= limit:
+            invalid_uids = invalid_uids[:limit]
+            break
 
     print(
         " ".join(
@@ -120,12 +146,21 @@ def main() -> None:
         return
 
     archived_at = now_str()
-    _deleted, updated = reset_ai_results_for_post_uids(
-        engine,
-        post_uids=invalid_uids,
-        archived_at=archived_at,
-        chunk_size=max(1, int(args.chunk_size)),
-    )
+    grouped_uids: dict[str, list[str]] = defaultdict(list)
+    for uid in invalid_uids:
+        platform = require_postgres_source_platform(uid)
+        grouped_uids[platform].append(uid)
+
+    updated = 0
+    for platform, source_uids in grouped_uids.items():
+        engine = source_engines[platform]
+        _deleted, source_updated = reset_ai_results_for_post_uids(
+            engine,
+            post_uids=source_uids,
+            archived_at=archived_at,
+            chunk_size=max(1, int(args.chunk_size)),
+        )
+        updated += int(source_updated)
     print(
         f"[scan_reset] done bad_posts={len(invalid_uids)} updated_posts={updated}",
         flush=True,

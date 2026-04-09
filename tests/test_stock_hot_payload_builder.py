@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import libsql
+from typing import cast
 
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.libsql_db import LibsqlConnection as TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.worker.stock_hot_payload_builder import build_stock_hot_payload
 
 
@@ -61,14 +63,21 @@ VALUES (:assertion_id, :entity_key, :entity_type, :match_source, :is_primary)
 """
 
 
-def _setup_tables(conn: TursoConnection) -> None:
+def _memory_conn() -> PostgresConnection:
+    return cast(
+        PostgresConnection,
+        TursoConnection(libsql.connect(":memory:", isolation_level=None)),
+    )
+
+
+def _setup_tables(conn: PostgresConnection) -> None:
     conn.execute(CREATE_POSTS_TABLE_SQL)
     conn.execute(CREATE_ASSERTIONS_TABLE_SQL)
     conn.execute(CREATE_ASSERTION_ENTITIES_TABLE_SQL)
 
 
 def test_build_stock_hot_payload_includes_url_from_posts() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    conn = _memory_conn()
     try:
         _setup_tables(conn)
         conn.execute(
@@ -127,7 +136,7 @@ def test_build_stock_hot_payload_includes_url_from_posts() -> None:
 
 
 def test_build_stock_hot_payload_fills_missing_created_at_from_posts() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    conn = _memory_conn()
     try:
         _setup_tables(conn)
         conn.execute(
@@ -185,7 +194,7 @@ def test_build_stock_hot_payload_fills_missing_created_at_from_posts() -> None:
 
 
 def test_build_stock_hot_payload_reads_stock_entity_key_instead_of_topic_key() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    conn = _memory_conn()
     try:
         _setup_tables(conn)
         conn.execute(
@@ -249,7 +258,7 @@ def test_build_stock_hot_payload_reads_stock_entity_key_instead_of_topic_key() -
 def test_build_stock_hot_payload_reads_legacy_prefixed_cn_entity_key_for_canonical_stock() -> (
     None
 ):
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+    conn = _memory_conn()
     try:
         _setup_tables(conn)
         conn.execute(

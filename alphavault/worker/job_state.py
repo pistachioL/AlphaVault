@@ -3,12 +3,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Iterator
 
-from alphavault.timeutil import now_cst_str
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    qualify_postgres_table,
+    require_postgres_schema_name,
+    postgres_connect_autocommit,
 )
+from alphavault.timeutil import now_cst_str
 
 WORKER_STATE_TABLE = "worker_cursor"
 WORKER_LOCKS_TABLE = "worker_locks"
@@ -26,35 +28,59 @@ WORKER_PROGRESS_STAGES = (
     WORKER_PROGRESS_STAGE_STOCK_HOT,
 )
 
-SQL_UPSERT_WORKER_STATE = f"""
-INSERT INTO {WORKER_STATE_TABLE}(state_key, cursor, updated_at)
+
+def _worker_state_table(engine_or_conn: object) -> str:
+    return qualify_postgres_table(
+        require_postgres_schema_name(engine_or_conn),
+        WORKER_STATE_TABLE,
+    )
+
+
+def _worker_locks_table(engine_or_conn: object) -> str:
+    return qualify_postgres_table(
+        require_postgres_schema_name(engine_or_conn),
+        WORKER_LOCKS_TABLE,
+    )
+
+
+def _sql_upsert_worker_state(table_name: str) -> str:
+    return f"""
+INSERT INTO {table_name}(state_key, cursor, updated_at)
 VALUES (:state_key, :cursor, :now)
 ON CONFLICT(state_key) DO UPDATE SET
     cursor = excluded.cursor,
     updated_at = excluded.updated_at
 """
 
-SQL_SELECT_WORKER_CURSOR = f"""
+
+def _sql_select_worker_cursor(table_name: str) -> str:
+    return f"""
 SELECT cursor
-FROM {WORKER_STATE_TABLE}
+FROM {table_name}
 WHERE state_key = :state_key
 """
 
-SQL_TRY_INSERT_LOCK = f"""
-INSERT INTO {WORKER_LOCKS_TABLE}(lock_key, locked_until, updated_at)
+
+def _sql_try_insert_lock(table_name: str) -> str:
+    return f"""
+INSERT INTO {table_name}(lock_key, locked_until, updated_at)
 VALUES (:lock_key, :locked_until, :now)
 ON CONFLICT(lock_key) DO NOTHING
 """
 
-SQL_TRY_REFRESH_LOCK_IF_EXPIRED = f"""
-UPDATE {WORKER_LOCKS_TABLE}
+
+def _sql_try_refresh_lock_if_expired(table_name: str) -> str:
+    return f"""
+UPDATE {table_name}
 SET locked_until = :locked_until, updated_at = :now
 WHERE lock_key = :lock_key
   AND locked_until <= :now_epoch
 """
 
-SQL_RELEASE_LOCK = f"""
-UPDATE {WORKER_LOCKS_TABLE}
+
+def _sql_release_lock(table_name: str) -> str:
+    return f"""
+UPDATE {table_name}
 SET locked_until = 0, updated_at = :now
 WHERE lock_key = :lock_key
 """
@@ -74,17 +100,17 @@ def worker_progress_state_key(*, source_name: str, stage: str) -> str:
 
 @contextmanager
 def _use_conn(
-    engine_or_conn: TursoEngine | TursoConnection,
-) -> Iterator[TursoConnection]:
-    if isinstance(engine_or_conn, TursoConnection):
+    engine_or_conn: PostgresEngine | PostgresConnection,
+) -> Iterator[PostgresConnection]:
+    if isinstance(engine_or_conn, PostgresConnection):
         yield engine_or_conn
         return
-    with turso_connect_autocommit(engine_or_conn) as conn:
+    with postgres_connect_autocommit(engine_or_conn) as conn:
         yield conn
 
 
 def load_worker_job_cursor(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     state_key: str,
 ) -> str:
@@ -93,12 +119,16 @@ def load_worker_job_cursor(
         return ""
     with _use_conn(engine_or_conn) as conn:
         return str(
-            conn.execute(SQL_SELECT_WORKER_CURSOR, {"state_key": key}).scalar() or ""
+            conn.execute(
+                _sql_select_worker_cursor(_worker_state_table(conn)),
+                {"state_key": key},
+            ).scalar()
+            or ""
         ).strip()
 
 
 def save_worker_job_cursor(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     state_key: str,
     cursor: str,
@@ -108,13 +138,13 @@ def save_worker_job_cursor(
         return
     with _use_conn(engine_or_conn) as conn:
         conn.execute(
-            SQL_UPSERT_WORKER_STATE,
+            _sql_upsert_worker_state(_worker_state_table(conn)),
             {"state_key": key, "cursor": str(cursor or "").strip(), "now": _now_str()},
         )
 
 
 def try_acquire_worker_job_lock(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     lock_key: str,
     now_epoch: int,
@@ -126,13 +156,13 @@ def try_acquire_worker_job_lock(
     locked_until = int(now_epoch) + max(1, int(lease_seconds))
     with _use_conn(engine_or_conn) as conn:
         inserted = conn.execute(
-            SQL_TRY_INSERT_LOCK,
+            _sql_try_insert_lock(_worker_locks_table(conn)),
             {"lock_key": key, "locked_until": locked_until, "now": _now_str()},
         )
         if int(inserted.rowcount or 0) > 0:
             return True
         updated = conn.execute(
-            SQL_TRY_REFRESH_LOCK_IF_EXPIRED,
+            _sql_try_refresh_lock_if_expired(_worker_locks_table(conn)),
             {
                 "lock_key": key,
                 "locked_until": locked_until,
@@ -144,7 +174,7 @@ def try_acquire_worker_job_lock(
 
 
 def release_worker_job_lock(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     lock_key: str,
 ) -> None:
@@ -153,7 +183,7 @@ def release_worker_job_lock(
         return
     with _use_conn(engine_or_conn) as conn:
         conn.execute(
-            SQL_RELEASE_LOCK,
+            _sql_release_lock(_worker_locks_table(conn)),
             {"lock_key": key, "now": _now_str()},
         )
 

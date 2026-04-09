@@ -13,7 +13,12 @@ def _columns_from_description(description: Any) -> list[str]:
     for col in description:
         if not col:
             continue
-        name = col[0] if len(col) > 0 else None
+        name = getattr(col, "name", None)
+        if name is None:
+            try:
+                name = col[0] if len(col) > 0 else None
+            except Exception:
+                name = None
         if name is None:
             continue
         cols.append(str(name))

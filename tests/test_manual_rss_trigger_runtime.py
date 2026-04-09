@@ -24,7 +24,7 @@ def test_run_manual_ingest_for_source_flushes_spool_to_turso(
     flush_calls: list[int] = []
 
     monkeypatch.setattr(
-        trigger, "ensure_turso_engine", lambda *_args, **_kwargs: object()
+        trigger, "ensure_postgres_engine", lambda *_args, **_kwargs: object()
     )
     monkeypatch.setattr(
         trigger,

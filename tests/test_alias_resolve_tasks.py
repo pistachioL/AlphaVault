@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import libsql
-
+from alphavault.constants import SCHEMA_STANDARD
 from alphavault.db.cloud_schema import (
     apply_cloud_schema as ensure_research_workbench_schema,
 )
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_MANUAL,
     ALIAS_TASK_STATUS_PENDING,
@@ -18,10 +17,18 @@ from alphavault.research_workbench import (
 )
 
 
-def test_ensure_schema_creates_alias_resolve_tasks_table() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def _workbench_conn(pg_conn) -> PostgresConnection:
+    ensure_research_workbench_schema(
+        pg_conn,
+        target="standard",
+        schema_name=SCHEMA_STANDARD,
+    )
+    return PostgresConnection(pg_conn, schema_name=SCHEMA_STANDARD)
+
+
+def test_ensure_schema_creates_alias_resolve_tasks_table(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
         conn.execute(
             f"""
 SELECT alias_key, status, attempt_count,
@@ -33,11 +40,9 @@ FROM {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE}
         conn.close()
 
 
-def test_increment_attempts_creates_row_and_increments() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_increment_attempts_creates_row_and_increments(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
-
         assert get_alias_resolve_tasks_map(conn, ["stock:紫金"]) == {}
 
         first = increment_alias_resolve_attempts(conn, ["stock:紫金"])
@@ -59,11 +64,9 @@ def test_increment_attempts_creates_row_and_increments() -> None:
         conn.close()
 
 
-def test_set_status_and_list_manual() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_set_status_and_list_manual(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
-
         increment_alias_resolve_attempts(conn, ["stock:紫金"])
         set_alias_resolve_task_status(conn, alias_key="stock:紫金", status="manual")
 
@@ -76,11 +79,9 @@ def test_set_status_and_list_manual() -> None:
         conn.close()
 
 
-def test_set_status_keeps_first_sample_context() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_set_status_keeps_first_sample_context(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
-
         set_alias_resolve_task_status(
             conn,
             alias_key="stock:茅台",
@@ -111,11 +112,9 @@ def test_set_status_keeps_first_sample_context() -> None:
         conn.close()
 
 
-def test_list_pending_alias_resolve_tasks_includes_sample_context() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_list_pending_alias_resolve_tasks_includes_sample_context(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
-
         set_alias_resolve_task_status(
             conn,
             alias_key="stock:长电",
@@ -142,11 +141,9 @@ def test_list_pending_alias_resolve_tasks_includes_sample_context() -> None:
         conn.close()
 
 
-def test_list_pending_alias_resolve_tasks_respects_limit() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_list_pending_alias_resolve_tasks_respects_limit(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
-
         set_alias_resolve_task_status(
             conn,
             alias_key="stock:长电",

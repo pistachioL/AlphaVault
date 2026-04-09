@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import libsql
 import pandas as pd
 
-from alphavault.db.turso_db import TursoConnection
+from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
+from alphavault.db.cloud_schema import apply_cloud_schema
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault_reflex.services import stock_fast_loader
+
+
+def _source_pg_conn(pg_conn, *, schema_name: str) -> PostgresConnection:
+    apply_cloud_schema(pg_conn, target="source", schema_name=schema_name)
+    return PostgresConnection(pg_conn, schema_name=schema_name)
 
 
 def test_load_stock_alias_keys_cached_uses_standard_relations_table(
@@ -42,7 +48,7 @@ def test_load_stock_alias_keys_cached_uses_standard_relations_table(
 
     monkeypatch.setattr(
         stock_fast_loader,
-        "turso_connect_autocommit",
+        "postgres_connect_autocommit",
         _fake_connect,
     )
 
@@ -50,8 +56,7 @@ def test_load_stock_alias_keys_cached_uses_standard_relations_table(
 
     assert alias_keys == ("stock:茅台", "stock:小茅")
     assert seen[0] is fake_engine
-    assert "FROM relations" in str(seen[1])
-    assert "research_relations" not in str(seen[1])
+    assert "FROM standard.relations" in str(seen[1])
 
 
 def test_load_stock_alias_keys_cached_raises_standard_error_on_query_failure(
@@ -78,7 +83,7 @@ def test_load_stock_alias_keys_cached_raises_standard_error_on_query_failure(
 
     monkeypatch.setattr(
         stock_fast_loader,
-        "turso_connect_autocommit",
+        "postgres_connect_autocommit",
         _fake_connect,
     )
 
@@ -94,7 +99,7 @@ def test_load_stock_sources_fast_from_env_returns_partial_error(monkeypatch) -> 
     monkeypatch.setattr(stock_fast_loader, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
         stock_fast_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [
             SimpleNamespace(name="weibo", url="u1", token="t1"),
             SimpleNamespace(name="xueqiu", url="u2", token="t2"),
@@ -133,7 +138,7 @@ def test_load_stock_sources_fast_from_env_normalizes_stock_key(monkeypatch) -> N
     monkeypatch.setattr(stock_fast_loader, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
         stock_fast_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [SimpleNamespace(name="weibo", url="u1", token="t1")],
     )
     seen_stock_keys: list[str] = []
@@ -163,7 +168,7 @@ def test_load_stock_sources_fast_from_env_normalizes_prefixed_cn_stock_key(
     monkeypatch.setattr(stock_fast_loader, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
         stock_fast_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [SimpleNamespace(name="xueqiu", url="u1", token="t1")],
     )
     seen_calls: list[tuple[str, str]] = []
@@ -194,7 +199,7 @@ def test_load_stock_sources_fast_from_env_returns_standard_error(
     monkeypatch.setattr(stock_fast_loader, "load_dotenv_if_present", lambda: None)
     monkeypatch.setattr(
         stock_fast_loader,
-        "load_configured_turso_sources_from_env",
+        "load_configured_postgres_sources_from_env",
         lambda: [SimpleNamespace(name="weibo", url="u1", token="t1")],
     )
 
@@ -221,337 +226,125 @@ def test_load_stock_sources_fast_from_env_returns_standard_error(
 
 def test_load_stock_trade_sources_fast_cached_reads_stock_entity_key(
     monkeypatch,
+    pg_conn,
 ) -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
     stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
-    try:
-        conn.execute(
-            """
-CREATE TABLE posts(
-  post_uid TEXT PRIMARY KEY,
-  platform_post_id TEXT NOT NULL,
-  author TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  url TEXT NOT NULL,
-  raw_text TEXT NOT NULL,
-  processed_at TEXT NOT NULL
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE assertions(
-  assertion_id TEXT PRIMARY KEY,
-  post_uid TEXT NOT NULL,
-  idx INTEGER NOT NULL,
-  action TEXT NOT NULL,
-  action_strength INTEGER NOT NULL,
-  summary TEXT NOT NULL,
-  evidence TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(post_uid, idx)
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE assertion_entities(
-  assertion_id TEXT NOT NULL,
-  entity_key TEXT NOT NULL,
-  entity_type TEXT NOT NULL,
-  match_source TEXT NOT NULL,
-  is_primary INTEGER NOT NULL DEFAULT 0
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE assertion_mentions(
-  assertion_id TEXT NOT NULL,
-  mention_seq INTEGER NOT NULL,
-  mention_text TEXT NOT NULL,
-  mention_norm TEXT NOT NULL,
-  mention_type TEXT NOT NULL,
-  evidence TEXT NOT NULL,
-  confidence REAL NOT NULL DEFAULT 0
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE topic_cluster_topics(
-  topic_key TEXT NOT NULL,
-  cluster_key TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  confidence REAL NOT NULL DEFAULT 1.0,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (topic_key, cluster_key)
-)
-"""
-        )
-        conn.execute(
-            """
-INSERT INTO posts(
-  post_uid, platform_post_id, author, created_at, url, raw_text, processed_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-""",
-            (
-                "weibo:2",
-                "2",
-                "alice",
-                "2099-01-02 00:00:00",
-                "https://example.com/weibo/2",
-                "原文",
-                "2099-01-02 00:00:01",
-            ),
-        )
-        conn.execute(
-            """
-INSERT INTO assertions(
-  assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-""",
-            (
-                "weibo:2#1",
-                "weibo:2",
-                1,
-                "trade.buy",
-                2,
-                "别名行也要进正式个股页",
-                "别名行也要进正式个股页",
-                "2099-01-02 00:00:00",
-            ),
-        )
-        conn.execute(
-            """
-INSERT INTO assertion_entities(
-  assertion_id, entity_key, entity_type, match_source, is_primary
-)
-VALUES (?, ?, ?, ?, ?)
-""",
-            (
-                "weibo:2#1",
-                "stock:601899.SH",
-                "stock",
-                "stock_alias",
-                1,
-            ),
-        )
+    conn = _source_pg_conn(pg_conn, schema_name=SCHEMA_WEIBO)
+    pg_conn.execute(
+        "INSERT INTO weibo.posts(post_uid, platform, platform_post_id, author, created_at, url, raw_text, final_status, processed_at, model, prompt_version, archived_at, ingested_at) VALUES ('weibo:2', 'weibo', '2', 'alice', '2099-01-02 00:00:00', 'https://example.com/weibo/2', '原文', 'relevant', '2099-01-02 00:00:01', 'gpt', 'v1', '2099-01-02 00:00:02', 1)"
+    )
+    pg_conn.execute(
+        "INSERT INTO weibo.assertions(assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at) VALUES ('weibo:2#1', 'weibo:2', 1, 'trade.buy', 2, '别名行也要进正式个股页', '别名行也要进正式个股页', '2099-01-02 00:00:00')"
+    )
+    pg_conn.execute(
+        "INSERT INTO weibo.assertion_entities(assertion_id, entity_key, entity_type, match_source, is_primary) VALUES ('weibo:2#1', 'stock:601899.SH', 'stock', 'stock_alias', 1)"
+    )
 
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "ensure_turso_engine",
-            lambda *_args, **_kwargs: object(),
-        )
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "get_research_workbench_engine_from_env",
-            lambda: object(),
-            raising=False,
-        )
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "ensure_postgres_engine",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "get_research_workbench_engine_from_env",
+        lambda: object(),
+        raising=False,
+    )
 
-        def _fake_load_stock_alias_keys_cached(
-            _stock_key: str,
-        ) -> tuple[str, ...]:
-            return ()
+    def _fake_load_stock_alias_keys_cached(
+        _stock_key: str,
+    ) -> tuple[str, ...]:
+        return ()
 
-        _fake_load_stock_alias_keys_cached.cache_clear = lambda: None  # type: ignore[attr-defined]
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "load_stock_alias_keys_cached",
-            _fake_load_stock_alias_keys_cached,
-        )
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "turso_connect_autocommit",
-            lambda _engine: conn,
-        )
+    _fake_load_stock_alias_keys_cached.cache_clear = lambda: None  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "load_stock_alias_keys_cached",
+        _fake_load_stock_alias_keys_cached,
+    )
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "postgres_connect_autocommit",
+        lambda _engine: conn,
+    )
 
-        posts, assertions = stock_fast_loader.load_stock_trade_sources_fast_cached(
-            "libsql://example.turso.io",
-            "token",
-            "weibo",
-            "stock:601899.SH",
-            "601899.SH",
-            16,
-        )
+    posts, assertions = stock_fast_loader.load_stock_trade_sources_fast_cached(
+        "postgresql://unused",
+        "",
+        SCHEMA_WEIBO,
+        "stock:601899.SH",
+        "601899.SH",
+        16,
+    )
 
-        assert list(posts["post_uid"]) == ["weibo:2"]
-        assert list(assertions["post_uid"]) == ["weibo:2"]
-        assert assertions.iloc[0]["entity_key"] == "stock:601899.SH"
-        assert assertions.iloc[0]["summary"] == "别名行也要进正式个股页"
-    finally:
-        stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
-        stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
-        conn.close()
+    assert list(posts["post_uid"]) == ["weibo:2"]
+    assert list(assertions["post_uid"]) == ["weibo:2"]
+    assert assertions.iloc[0]["entity_key"] == "stock:601899.SH"
+    assert assertions.iloc[0]["summary"] == "别名行也要进正式个股页"
+
+    stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
+    stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
 
 
 def test_load_stock_trade_sources_fast_cached_reads_legacy_prefixed_cn_entity_key(
     monkeypatch,
+    pg_conn,
 ) -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
     stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
     stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
-    try:
-        conn.execute(
-            """
-CREATE TABLE posts(
-  post_uid TEXT PRIMARY KEY,
-  platform_post_id TEXT NOT NULL,
-  author TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  url TEXT NOT NULL,
-  raw_text TEXT NOT NULL,
-  processed_at TEXT NOT NULL
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE assertions(
-  assertion_id TEXT PRIMARY KEY,
-  post_uid TEXT NOT NULL,
-  idx INTEGER NOT NULL,
-  action TEXT NOT NULL,
-  action_strength INTEGER NOT NULL,
-  summary TEXT NOT NULL,
-  evidence TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(post_uid, idx)
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE assertion_entities(
-  assertion_id TEXT NOT NULL,
-  entity_key TEXT NOT NULL,
-  entity_type TEXT NOT NULL,
-  match_source TEXT NOT NULL,
-  is_primary INTEGER NOT NULL DEFAULT 0
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE assertion_mentions(
-  assertion_id TEXT NOT NULL,
-  mention_seq INTEGER NOT NULL,
-  mention_text TEXT NOT NULL,
-  mention_norm TEXT NOT NULL,
-  mention_type TEXT NOT NULL,
-  evidence TEXT NOT NULL,
-  confidence REAL NOT NULL DEFAULT 0
-)
-"""
-        )
-        conn.execute(
-            """
-CREATE TABLE topic_cluster_topics(
-  topic_key TEXT NOT NULL,
-  cluster_key TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'manual',
-  confidence REAL NOT NULL DEFAULT 1.0,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (topic_key, cluster_key)
-)
-"""
-        )
-        conn.execute(
-            """
-INSERT INTO posts(
-  post_uid, platform_post_id, author, created_at, url, raw_text, processed_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-""",
-            (
-                "xueqiu:1",
-                "1",
-                "alice",
-                "2099-01-03 00:00:00",
-                "https://example.com/xueqiu/1",
-                "原文",
-                "2099-01-03 00:00:01",
-            ),
-        )
-        conn.execute(
-            """
-INSERT INTO assertions(
-  assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
-)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-""",
-            (
-                "xueqiu:1#1",
-                "xueqiu:1",
-                1,
-                "trade.buy",
-                2,
-                "旧坏 key 也要被快读链路命中",
-                "旧坏 key 也要被快读链路命中",
-                "2099-01-03 00:00:00",
-            ),
-        )
-        conn.execute(
-            """
-INSERT INTO assertion_entities(
-  assertion_id, entity_key, entity_type, match_source, is_primary
-)
-VALUES (?, ?, ?, ?, ?)
-""",
-            (
-                "xueqiu:1#1",
-                "stock:SZ000725.US",
-                "stock",
-                "stock_code",
-                1,
-            ),
-        )
+    conn = _source_pg_conn(pg_conn, schema_name=SCHEMA_XUEQIU)
+    pg_conn.execute(
+        "INSERT INTO xueqiu.posts(post_uid, platform, platform_post_id, author, created_at, url, raw_text, final_status, processed_at, model, prompt_version, archived_at, ingested_at) VALUES ('xueqiu:1', 'xueqiu', '1', 'alice', '2099-01-03 00:00:00', 'https://example.com/xueqiu/1', '原文', 'relevant', '2099-01-03 00:00:01', 'gpt', 'v1', '2099-01-03 00:00:02', 1)"
+    )
+    pg_conn.execute(
+        "INSERT INTO xueqiu.assertions(assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at) VALUES ('xueqiu:1#1', 'xueqiu:1', 1, 'trade.buy', 2, '旧坏 key 也要被快读链路命中', '旧坏 key 也要被快读链路命中', '2099-01-03 00:00:00')"
+    )
+    pg_conn.execute(
+        "INSERT INTO xueqiu.assertion_entities(assertion_id, entity_key, entity_type, match_source, is_primary) VALUES ('xueqiu:1#1', 'stock:SZ000725.US', 'stock', 'stock_code', 1)"
+    )
 
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "ensure_turso_engine",
-            lambda *_args, **_kwargs: object(),
-        )
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "get_research_workbench_engine_from_env",
-            lambda: object(),
-            raising=False,
-        )
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "ensure_postgres_engine",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "get_research_workbench_engine_from_env",
+        lambda: object(),
+        raising=False,
+    )
 
-        def _fake_load_stock_alias_keys_cached(
-            _stock_key: str,
-        ) -> tuple[str, ...]:
-            return ()
+    def _fake_load_stock_alias_keys_cached(
+        _stock_key: str,
+    ) -> tuple[str, ...]:
+        return ()
 
-        _fake_load_stock_alias_keys_cached.cache_clear = lambda: None  # type: ignore[attr-defined]
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "load_stock_alias_keys_cached",
-            _fake_load_stock_alias_keys_cached,
-        )
-        monkeypatch.setattr(
-            stock_fast_loader,
-            "turso_connect_autocommit",
-            lambda _engine: conn,
-        )
+    _fake_load_stock_alias_keys_cached.cache_clear = lambda: None  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "load_stock_alias_keys_cached",
+        _fake_load_stock_alias_keys_cached,
+    )
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "postgres_connect_autocommit",
+        lambda _engine: conn,
+    )
 
-        posts, assertions = stock_fast_loader.load_stock_trade_sources_fast_cached(
-            "libsql://example.turso.io",
-            "token",
-            "xueqiu",
-            "stock:000725.SZ",
-            "000725.SZ",
-            16,
-        )
+    posts, assertions = stock_fast_loader.load_stock_trade_sources_fast_cached(
+        "postgresql://unused",
+        "",
+        SCHEMA_XUEQIU,
+        "stock:000725.SZ",
+        "000725.SZ",
+        16,
+    )
 
-        assert list(posts["post_uid"]) == ["xueqiu:1"]
-        assert list(assertions["post_uid"]) == ["xueqiu:1"]
-    finally:
-        stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
-        stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
-        conn.close()
+    assert list(posts["post_uid"]) == ["xueqiu:1"]
+    assert list(assertions["post_uid"]) == ["xueqiu:1"]
+
+    stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
+    stock_fast_loader.load_stock_alias_keys_cached.cache_clear()

@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Callable
 
-from alphavault.db.turso_db import (
-    TursoConnection,
-    TursoEngine,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    qualify_postgres_table,
+    require_postgres_schema_name,
+    postgres_connect_autocommit,
 )
 from alphavault.research_stock_cache import (
     DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT,
@@ -55,8 +57,15 @@ def _is_sector_entity_key(value: str) -> bool:
     return str(value or "").strip().startswith("cluster:")
 
 
+def _source_table(conn: PostgresConnection, table_name: str) -> str:
+    return qualify_postgres_table(
+        require_postgres_schema_name(conn),
+        table_name,
+    )
+
+
 def _load_bootstrap_cursor(conn: object) -> str:
-    if not isinstance(conn, TursoConnection):
+    if not isinstance(conn, PostgresConnection):
         return ""
     try:
         return load_worker_job_cursor(
@@ -68,7 +77,7 @@ def _load_bootstrap_cursor(conn: object) -> str:
 
 
 def _save_bootstrap_cursor(conn: object, cursor: str) -> None:
-    if not isinstance(conn, TursoConnection):
+    if not isinstance(conn, PostgresConnection):
         return
     try:
         save_worker_job_cursor(
@@ -81,11 +90,14 @@ def _save_bootstrap_cursor(conn: object, cursor: str) -> None:
 
 
 def _list_missing_hot_cache_stock_keys(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     limit: int,
     after_stock_key: str = "",
 ) -> list[str]:
+    assertions_table = _source_table(conn, "assertions")
+    assertion_entities_table = _source_table(conn, "assertion_entities")
+    entity_page_snapshot_table = _source_table(conn, ENTITY_PAGE_SNAPSHOT_TABLE)
     cursor = str(after_stock_key or "").strip()
     cursor_sql = ""
     params: dict[str, object] = {"limit": max(1, int(limit))}
@@ -94,8 +106,8 @@ def _list_missing_hot_cache_stock_keys(
         params["after_stock_key"] = cursor
     sql = f"""
 SELECT DISTINCT ae.entity_key
-FROM assertions a
-JOIN assertion_entities ae
+FROM {assertions_table} a
+JOIN {assertion_entities_table} ae
   ON ae.assertion_id = a.assertion_id
 WHERE a.action LIKE 'trade.%'
   AND ae.entity_type = 'stock'
@@ -103,7 +115,7 @@ WHERE a.action LIKE 'trade.%'
   {cursor_sql}
   AND NOT EXISTS (
     SELECT 1
-    FROM {ENTITY_PAGE_SNAPSHOT_TABLE} hot
+    FROM {entity_page_snapshot_table} hot
     WHERE hot.entity_key = ae.entity_key
   )
 ORDER BY ae.entity_key ASC
@@ -118,7 +130,7 @@ LIMIT :limit
 
 
 def _has_missing_hot_cache_stock_keys(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     after_stock_key: str = "",
 ) -> bool:
@@ -131,7 +143,7 @@ def _has_missing_hot_cache_stock_keys(
 
 
 def _release_claimed_entries(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     dirty_entries: list[EntityPageDirtyEntry],
 ) -> None:
@@ -151,7 +163,7 @@ def _release_claimed_entries(
 
 
 def refresh_stock_hot_for_key(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     stock_key: str,
     signal_window_days: int,
@@ -181,7 +193,7 @@ def refresh_stock_hot_for_key(
 
 
 def sync_stock_hot_cache(
-    engine_or_conn: TursoEngine | TursoConnection,
+    engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     max_stocks_per_run: int = STOCK_HOT_CACHE_MAX_STOCKS_PER_RUN,
     dirty_limit: int = STOCK_HOT_CACHE_DIRTY_LIMIT,
@@ -212,8 +224,8 @@ def sync_stock_hot_cache(
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
     try:
         with (
-            turso_connect_autocommit(engine_or_conn)
-            if isinstance(engine_or_conn, TursoEngine)
+            postgres_connect_autocommit(engine_or_conn)
+            if isinstance(engine_or_conn, PostgresEngine)
             else engine_or_conn
         ) as conn:
             bootstrap_keys: list[str] = []

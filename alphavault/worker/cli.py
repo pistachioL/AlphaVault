@@ -30,21 +30,18 @@ from alphavault.constants import (
     ENV_AI_RPM,
     ENV_AI_TEMPERATURE,
     ENV_AI_TIMEOUT_SEC,
+    ENV_POSTGRES_DSN,
     ENV_RSS_RETRIES,
     ENV_RSS_TIMEOUT_SECONDS,
     ENV_WEIBO_AUTHOR,
     ENV_WEIBO_RSS_URL,
     ENV_WEIBO_RSS_URLS,
-    ENV_WEIBO_TURSO_AUTH_TOKEN,
-    ENV_WEIBO_TURSO_DATABASE_URL,
     ENV_WEIBO_USER_ID,
     ENV_WORKER_ACTIVE_HOURS,
     ENV_WORKER_INTERVAL_SECONDS,
     ENV_XUEQIU_AUTHOR,
     ENV_XUEQIU_RSS_URL,
     ENV_XUEQIU_RSS_URLS,
-    ENV_XUEQIU_TURSO_AUTH_TOKEN,
-    ENV_XUEQIU_TURSO_DATABASE_URL,
     ENV_XUEQIU_USER_ID,
 )
 from alphavault.rss.utils import env_float, env_int, parse_active_hours
@@ -91,8 +88,7 @@ def _build_platform_source_config(
     name: str,
     rss_urls_env: str,
     rss_url_env: str,
-    database_url_env: str,
-    auth_token_env: str,
+    postgres_dsn: str,
     author_env: str,
     user_id_env: str,
 ) -> Optional[RSSSourceConfig]:
@@ -100,22 +96,20 @@ def _build_platform_source_config(
         _split_rss_urls_value(_env_text(rss_urls_env))
         + _split_rss_urls_value(_env_text(rss_url_env))
     )
-    database_url = _env_text(database_url_env)
-    auth_token = _env_text(auth_token_env)
     author = _env_text(author_env)
     user_id = _env_text(user_id_env) or None
 
-    if not urls and not database_url:
+    if not urls and not postgres_dsn:
         return None
-    if not database_url:
-        raise RuntimeError(f"Missing {database_url_env} for {platform}")
+    if not postgres_dsn:
+        raise RuntimeError(f"Missing {ENV_POSTGRES_DSN} for {platform}")
 
     return RSSSourceConfig(
         name=name,
         platform=platform,
         rss_urls=urls,
-        database_url=database_url,
-        auth_token=auth_token,
+        database_url=postgres_dsn,
+        auth_token="",
         author=author,
         user_id=user_id,
     )
@@ -236,14 +230,14 @@ def parse_args() -> argparse.Namespace:
 
 def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig]:
     configs: list[RSSSourceConfig] = []
+    postgres_dsn = _env_text(ENV_POSTGRES_DSN)
     for cfg in (
         _build_platform_source_config(
             platform="weibo",
             name="weibo",
             rss_urls_env=ENV_WEIBO_RSS_URLS,
             rss_url_env=ENV_WEIBO_RSS_URL,
-            database_url_env=ENV_WEIBO_TURSO_DATABASE_URL,
-            auth_token_env=ENV_WEIBO_TURSO_AUTH_TOKEN,
+            postgres_dsn=postgres_dsn,
             author_env=ENV_WEIBO_AUTHOR,
             user_id_env=ENV_WEIBO_USER_ID,
         ),
@@ -252,8 +246,7 @@ def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig
             name="xueqiu",
             rss_urls_env=ENV_XUEQIU_RSS_URLS,
             rss_url_env=ENV_XUEQIU_RSS_URL,
-            database_url_env=ENV_XUEQIU_TURSO_DATABASE_URL,
-            auth_token_env=ENV_XUEQIU_TURSO_AUTH_TOKEN,
+            postgres_dsn=postgres_dsn,
             author_env=ENV_XUEQIU_AUTHOR,
             user_id_env=ENV_XUEQIU_USER_ID,
         ),
@@ -270,9 +263,7 @@ def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig
                 )
         return configs
 
-    raise RuntimeError(
-        f"missing {ENV_WEIBO_TURSO_DATABASE_URL} or {ENV_XUEQIU_TURSO_DATABASE_URL}"
-    )
+    raise RuntimeError(f"missing {ENV_POSTGRES_DSN}")
 
 
 def _parse_worker_active_hours_from_args(

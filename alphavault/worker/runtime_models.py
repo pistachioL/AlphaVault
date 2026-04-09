@@ -15,7 +15,7 @@ from alphavault.ai.analyze import (
     DEFAULT_MODEL,
     DEFAULT_PROMPT_VERSION,
 )
-from alphavault.db.turso_db import TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.constants import (
     ENV_AI_API_KEY,
     ENV_AI_STREAM,
@@ -33,12 +33,13 @@ class WorkerSourceConfig:
     user_id: Optional[str]
     database_url: str
     auth_token: str
+    schema_name: str
 
 
 @dataclass
 class WorkerSourceRuntime:
     config: WorkerSourceConfig
-    engine: TursoEngine
+    engine: PostgresEngine
     spool_dir: Path
     redis_queue_key: str
     rss_next_ingest_at: float

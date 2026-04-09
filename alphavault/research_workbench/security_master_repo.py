@@ -145,6 +145,7 @@ def bulk_upsert_security_master_stocks(
     if not payloads:
         return 0
     try:
+
         def _upsert_many(conn: PostgresConnection) -> None:
             conn.execute(
                 upsert_security_master_stock_sql(RESEARCH_SECURITY_MASTER_TABLE),

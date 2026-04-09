@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import libsql
-
+from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO
 from alphavault.db.cloud_schema import (
     apply_cloud_schema as ensure_research_workbench_schema,
 )
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 from alphavault.domains.entity_match.resolve import (
     load_entity_match_lookup_maps,
     persist_entity_match_followups,
@@ -19,11 +18,31 @@ from alphavault.research_workbench import (
 )
 
 
-def test_resolve_assertion_mentions_creates_candidate_for_unconfirmed_alias() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    try:
-        ensure_research_workbench_schema(conn)
+def _workbench_conn(
+    pg_conn,
+    *,
+    include_source_schema: bool = False,
+) -> PostgresConnection:
+    ensure_research_workbench_schema(
+        pg_conn,
+        target="standard",
+        schema_name=SCHEMA_STANDARD,
+    )
+    if include_source_schema:
+        ensure_research_workbench_schema(
+            pg_conn,
+            target="source",
+            schema_name=SCHEMA_WEIBO,
+        )
+        pg_conn.execute(f"SET search_path TO {SCHEMA_WEIBO}, {SCHEMA_STANDARD}, public")
+    return PostgresConnection(pg_conn, schema_name=SCHEMA_STANDARD)
 
+
+def test_resolve_assertion_mentions_creates_candidate_for_unconfirmed_alias(
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn)
+    try:
         result = resolve_assertion_mentions(
             conn,
             assertion_mentions=[
@@ -58,11 +77,9 @@ def test_resolve_assertion_mentions_creates_candidate_for_unconfirmed_alias() ->
         conn.close()
 
 
-def test_resolve_assertion_mentions_normalizes_prefixed_cn_stock_code() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_resolve_assertion_mentions_normalizes_prefixed_cn_stock_code(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
-
         result = resolve_assertion_mentions(
             conn,
             assertion_mentions=[
@@ -88,10 +105,9 @@ def test_resolve_assertion_mentions_normalizes_prefixed_cn_stock_code() -> None:
         conn.close()
 
 
-def test_resolve_assertion_mentions_uses_confirmed_alias_relation() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_resolve_assertion_mentions_uses_confirmed_alias_relation(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
         record_stock_alias_relation(
             conn,
             stock_key="stock:601899.SH",
@@ -124,10 +140,9 @@ def test_resolve_assertion_mentions_uses_confirmed_alias_relation() -> None:
         conn.close()
 
 
-def test_resolve_assertion_mentions_uses_security_master_official_name() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_resolve_assertion_mentions_uses_security_master_official_name(pg_conn) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
         upsert_security_master_stock(
             conn,
             stock_key="stock:601899.SH",
@@ -161,12 +176,11 @@ def test_resolve_assertion_mentions_uses_security_master_official_name() -> None
         conn.close()
 
 
-def test_resolve_assertion_mentions_allows_stock_name_to_fallback_to_confirmed_alias() -> (
-    None
-):
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_resolve_assertion_mentions_allows_stock_name_to_fallback_to_confirmed_alias(
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
         record_stock_alias_relation(
             conn,
             stock_key="stock:600519.SH",
@@ -199,12 +213,11 @@ def test_resolve_assertion_mentions_allows_stock_name_to_fallback_to_confirmed_a
         conn.close()
 
 
-def test_resolve_assertion_mentions_does_not_use_historical_stock_name_mapping() -> (
-    None
-):
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_resolve_assertion_mentions_does_not_use_historical_stock_name_mapping(
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn, include_source_schema=True)
     try:
-        ensure_research_workbench_schema(conn)
         conn.execute(
             """
 INSERT INTO assertion_mentions(
@@ -323,11 +336,11 @@ def test_load_entity_match_lookup_maps_uses_one_redis_batch_and_batch_fallback(
     }
 
 
-def test_persist_entity_match_followups_writes_candidate_and_alias_task() -> None:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
+def test_persist_entity_match_followups_writes_candidate_and_alias_task(
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn)
     try:
-        ensure_research_workbench_schema(conn)
-
         candidate_result = resolve_assertion_mentions(
             conn,
             assertion_mentions=[

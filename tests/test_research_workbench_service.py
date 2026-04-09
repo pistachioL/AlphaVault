@@ -9,7 +9,9 @@ def test_get_research_workbench_engine_from_env_uses_postgres_dsn(
 ) -> None:
     service._get_cached_research_workbench_engine.cache_clear()
     monkeypatch.setattr(service, "load_dotenv_if_present", lambda: None)
-    monkeypatch.setenv(ENV_POSTGRES_DSN, "postgresql://postgres@127.0.0.1:5432/postgres")
+    monkeypatch.setenv(
+        ENV_POSTGRES_DSN, "postgresql://postgres@127.0.0.1:5432/postgres"
+    )
 
     captured: list[str] = []
 
@@ -30,7 +32,9 @@ def test_get_research_workbench_engine_from_env_reuses_cached_engine(
 ) -> None:
     service._get_cached_research_workbench_engine.cache_clear()
     monkeypatch.setattr(service, "load_dotenv_if_present", lambda: None)
-    monkeypatch.setenv(ENV_POSTGRES_DSN, "postgresql://postgres@127.0.0.1:5432/postgres")
+    monkeypatch.setenv(
+        ENV_POSTGRES_DSN, "postgresql://postgres@127.0.0.1:5432/postgres"
+    )
 
     captured: list[str] = []
     cached_engine = object()

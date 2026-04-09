@@ -31,7 +31,11 @@ from alphavault.constants import (
     ENV_AI_TIMEOUT_SEC,
     ENV_AI_TRACE_OUT,
 )
-from alphavault.db.turso_db import get_turso_engine_from_env
+from alphavault.db.postgres_db import PostgresEngine, ensure_postgres_engine
+from alphavault.db.postgres_env import (
+    require_postgres_source_platform,
+    require_postgres_source_from_env,
+)
 from alphavault.rss.utils import RateLimiter, env_bool, env_float, env_int
 from alphavault.worker.post_processor import process_one_post_uid
 from alphavault.worker.runtime_models import LLMConfig
@@ -173,6 +177,12 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
     )
 
 
+def _source_engine_for_platform(platform: str) -> PostgresEngine:
+    wanted = require_postgres_source_platform(platform)
+    source = require_postgres_source_from_env(wanted)
+    return ensure_postgres_engine(source.dsn, schema_name=source.schema)
+
+
 def main() -> None:
     load_dotenv_if_present()
     args = parse_args()
@@ -182,11 +192,16 @@ def main() -> None:
 
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
-    engine = get_turso_engine_from_env()
+    engine_by_platform: dict[str, PostgresEngine] = {}
 
     ok = 0
     skipped = 0
     for post_uid in post_uids:
+        platform = require_postgres_source_platform(post_uid)
+        engine = engine_by_platform.get(platform)
+        if engine is None:
+            engine = _source_engine_for_platform(platform)
+            engine_by_platform[platform] = engine
         print(
             f"[manual] run post_uid={post_uid} prompt_version={config.prompt_version}",
             flush=True,

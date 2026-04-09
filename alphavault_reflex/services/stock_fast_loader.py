@@ -6,14 +6,21 @@ from typing import Any
 
 import pandas as pd
 
+from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.ui import (
     build_assertion_projection_expr,
     build_assertion_rollup_ctes,
     build_assertion_rollup_joins,
 )
-from alphavault.db.turso_db import ensure_turso_engine, turso_connect_autocommit
-from alphavault.db.turso_env import load_configured_turso_sources_from_env
+from alphavault.db.postgres_db import (
+    ensure_postgres_engine,
+    postgres_connect_autocommit,
+)
+from alphavault.db.postgres_env import (
+    load_configured_postgres_sources_from_env,
+    PostgresSource,
+)
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.domains.stock.keys import stock_key_lookup_candidates
@@ -26,6 +33,7 @@ from alphavault_reflex.services.source_loader import (
     MISSING_TURSO_SOURCES_ERROR,
     WANTED_POST_COLUMNS_FOR_TREE,
     WANTED_TRADE_ASSERTION_COLUMNS,
+    source_table,
     standardize_assertions,
     standardize_posts,
 )
@@ -42,6 +50,7 @@ FAST_STOCK_TOTAL_TIMEOUT_SECONDS = 8.0
 
 FAST_STOCK_ALIAS_KEY_LIMIT = 64
 _STANDARD_TURSO_ERROR_PREFIX = "turso_connect_error:standard:"
+_SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
 
 FAST_STOCK_ALIAS_KEYS_SQL = """
 SELECT right_key
@@ -52,6 +61,15 @@ WHERE relation_type = 'stock_alias'
 ORDER BY right_key ASC
 LIMIT :limit
 """.format(relations_table=RESEARCH_RELATIONS_TABLE)
+
+
+def _load_source_schemas_from_env() -> list[PostgresSource]:
+    return [
+        source
+        for source in load_configured_postgres_sources_from_env()
+        if str(getattr(source, "schema", getattr(source, "name", "")) or "").strip()
+        in _SOURCE_SCHEMA_NAMES
+    ]
 
 
 def _dedupe_stock_keys(keys: list[str]) -> list[str]:
@@ -104,7 +122,7 @@ def load_stock_alias_keys_cached(stock_key: str) -> tuple[str, ...]:
         return ()
     try:
         engine = get_research_workbench_engine_from_env()
-        with turso_connect_autocommit(engine) as conn:
+        with postgres_connect_autocommit(engine) as conn:
             return tuple(_load_stock_alias_keys(conn, stock_key=normalized_key))
     except BaseException as err:
         if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
@@ -133,8 +151,14 @@ def load_stock_trade_sources_fast_cached(
     if not stock_keys:
         return pd.DataFrame(), pd.DataFrame()
 
-    engine = ensure_turso_engine(db_url, auth_token)
-    with turso_connect_autocommit(engine) as conn:
+    del auth_token
+    engine = ensure_postgres_engine(db_url, schema_name=source_name)
+    posts_table = source_table(source_name, "posts")
+    assertions_table = source_table(source_name, "assertions")
+    assertion_entities_table = source_table(source_name, "assertion_entities")
+    assertion_mentions_table = source_table(source_name, "assertion_mentions")
+    topic_cluster_topics_table = source_table(source_name, "topic_cluster_topics")
+    with postgres_connect_autocommit(engine) as conn:
         params: dict[str, object] = {"stock_key": stock_keys[0], "limit": limit}
         key_clause = "ae_filter.entity_key = :stock_key"
         if len(stock_keys) > 1:
@@ -152,10 +176,10 @@ def load_stock_trade_sources_fast_cached(
             ]
         )
         assertions_query = (
-            f"{build_assertion_rollup_ctes()}\n"
+            f"{build_assertion_rollup_ctes(assertion_entities_table=assertion_entities_table, assertion_mentions_table=assertion_mentions_table, topic_cluster_topics_table=topic_cluster_topics_table)}\n"
             f"SELECT {select_expr}\n"
-            "FROM assertions a\n"
-            "JOIN assertion_entities ae_filter\n"
+            f"FROM {assertions_table} a\n"
+            f"JOIN {assertion_entities_table} ae_filter\n"
             "  ON ae_filter.assertion_id = a.assertion_id\n"
             f"{build_assertion_rollup_joins('a')}\n"
             "WHERE a.action LIKE 'trade.%'\n"
@@ -184,7 +208,7 @@ def load_stock_trade_sources_fast_cached(
                 placeholders = ", ".join(["?"] * len(post_uids))
                 posts_query = f"""
 SELECT {", ".join(WANTED_POST_COLUMNS_FOR_TREE)}
-FROM posts
+FROM {posts_table}
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})
 """
@@ -209,7 +233,7 @@ def load_stock_sources_fast_from_env(
         return pd.DataFrame(), pd.DataFrame(), ""
 
     load_dotenv_if_present()
-    sources = load_configured_turso_sources_from_env()
+    sources = _load_source_schemas_from_env()
     if not sources:
         return pd.DataFrame(), pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
 

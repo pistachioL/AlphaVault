@@ -2,21 +2,29 @@ from __future__ import annotations
 
 import importlib
 from contextlib import contextmanager
+from types import SimpleNamespace
 
-import libsql
+import psycopg
 
+from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO, SCHEMA_XUEQIU
 from alphavault.db.cloud_schema import apply_cloud_schema
-from alphavault.db.turso_db import TursoConnection
+from alphavault.db.postgres_db import PostgresConnection
 
 
-def _make_conn() -> TursoConnection:
-    conn = TursoConnection(libsql.connect(":memory:", isolation_level=None))
-    apply_cloud_schema(conn)
+def _make_conn(
+    postgres_dsn: str,
+    *,
+    schema_name: str,
+    target: str,
+) -> PostgresConnection:
+    conn = PostgresConnection(psycopg.connect(postgres_dsn), schema_name=schema_name)
+    apply_cloud_schema(conn, target=target, schema_name=schema_name)
+    conn.execute(f"SET search_path TO {schema_name}")
     return conn
 
 
 def _insert_relation(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     relation_id: str,
     relation_type: str,
@@ -64,7 +72,7 @@ VALUES(
 
 
 def _insert_relation_candidate(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     candidate_id: str,
     relation_type: str,
@@ -128,7 +136,7 @@ VALUES(
 
 
 def _insert_alias_task(
-    conn: TursoConnection,
+    conn: PostgresConnection,
     *,
     alias_key: str,
     status: str,
@@ -175,11 +183,25 @@ VALUES(
     )
 
 
-def test_migrate_standard_history_tables_keeps_latest_rows_and_old_fields() -> None:
+def test_migrate_standard_history_tables_keeps_latest_rows_and_old_fields(
+    postgres_dsn: str,
+) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
-    weibo_conn = _make_conn()
-    xueqiu_conn = _make_conn()
-    standard_conn = _make_conn()
+    weibo_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_WEIBO,
+        target="standard",
+    )
+    xueqiu_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_XUEQIU,
+        target="standard",
+    )
+    standard_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_STANDARD,
+        target="standard",
+    )
 
     try:
         _insert_relation(
@@ -482,11 +504,24 @@ ORDER BY alias_key ASC
 
 def test_migrate_standard_history_tables_dry_run_only_prints_summary(
     capsys,
+    postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
-    weibo_conn = _make_conn()
-    xueqiu_conn = _make_conn()
-    standard_conn = _make_conn()
+    weibo_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_WEIBO,
+        target="standard",
+    )
+    xueqiu_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_XUEQIU,
+        target="standard",
+    )
+    standard_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_STANDARD,
+        target="standard",
+    )
 
     try:
         _insert_relation(
@@ -529,11 +564,24 @@ def test_migrate_standard_history_tables_dry_run_only_prints_summary(
 
 def test_migrate_standard_history_tables_rolls_back_all_tables_on_midway_failure(
     monkeypatch,
+    postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
-    weibo_conn = _make_conn()
-    xueqiu_conn = _make_conn()
-    standard_conn = _make_conn()
+    weibo_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_WEIBO,
+        target="standard",
+    )
+    xueqiu_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_XUEQIU,
+        target="standard",
+    )
+    standard_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_STANDARD,
+        target="standard",
+    )
 
     try:
         _insert_relation(
@@ -670,11 +718,24 @@ ORDER BY alias_key ASC
 
 def test_migrate_standard_history_tables_conflict_count_counts_unique_keys(
     capsys,
+    postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
-    weibo_conn = _make_conn()
-    xueqiu_conn = _make_conn()
-    standard_conn = _make_conn()
+    weibo_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_WEIBO,
+        target="standard",
+    )
+    xueqiu_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_XUEQIU,
+        target="standard",
+    )
+    standard_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_STANDARD,
+        target="standard",
+    )
 
     try:
         _insert_relation(
@@ -737,13 +798,53 @@ def test_parse_args_supports_batch_size() -> None:
     assert args.batch_size == 2
 
 
+def test_build_source_engine_uses_postgres_schema_name(monkeypatch) -> None:
+    script = importlib.import_module("migrate_standard_history_tables")
+    source = SimpleNamespace(
+        url="postgresql://db",
+        dsn="postgresql://db",
+        token="",
+        schema=SCHEMA_WEIBO,
+    )
+    seen_calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(
+        script,
+        "require_postgres_source_from_env",
+        lambda _platform: source,
+        raising=False,
+    )
+
+    def _fake_ensure(dsn: str, *, schema_name: str = "") -> str:
+        seen_calls.append((dsn, schema_name))
+        return "engine"
+
+    monkeypatch.setattr(script, "ensure_postgres_engine", _fake_ensure)
+
+    assert script._build_source_engine("weibo") == "engine"
+    assert seen_calls == [("postgresql://db", SCHEMA_WEIBO)]
+
+
 def test_migrate_standard_history_tables_writes_in_batches_and_prints_progress(
     capsys,
+    postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
-    weibo_conn = _make_conn()
-    xueqiu_conn = _make_conn()
-    standard_conn = _make_conn()
+    weibo_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_WEIBO,
+        target="standard",
+    )
+    xueqiu_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_XUEQIU,
+        target="standard",
+    )
+    standard_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_STANDARD,
+        target="standard",
+    )
 
     try:
         _insert_relation(
@@ -790,11 +891,24 @@ def test_migrate_standard_history_tables_writes_in_batches_and_prints_progress(
 
 def test_migrate_standard_history_tables_reuses_one_connection_per_db(
     monkeypatch,
+    postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
-    weibo_conn = _make_conn()
-    xueqiu_conn = _make_conn()
-    standard_conn = _make_conn()
+    weibo_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_WEIBO,
+        target="standard",
+    )
+    xueqiu_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_XUEQIU,
+        target="standard",
+    )
+    standard_conn = _make_conn(
+        postgres_dsn,
+        schema_name=SCHEMA_STANDARD,
+        target="standard",
+    )
 
     try:
         engines = {
@@ -812,7 +926,7 @@ def test_migrate_standard_history_tables_reuses_one_connection_per_db(
 
         monkeypatch.setattr(
             script,
-            "turso_connect_autocommit",
+            "postgres_connect_autocommit",
             _fake_connect,
         )
 

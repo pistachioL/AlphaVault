@@ -6,11 +6,9 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from alphavault.ai.analyze import clean_text
 from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
-from alphavault.db.turso_db import (
-    TursoEngine,
-    is_turso_libsql_panic_error,
-    is_turso_stream_not_found_error,
-    turso_connect_autocommit,
+from alphavault.db.postgres_db import (
+    PostgresEngine,
+    postgres_connect_autocommit,
 )
 from alphavault.db.turso_queue import upsert_pending_post
 from alphavault.rss.utils import (
@@ -253,20 +251,15 @@ def _coerce_nonnegative_float(value: object, *, default: float) -> float:
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
-    *, engine: TursoEngine, err: BaseException
+    *, engine: PostgresEngine, err: BaseException
 ) -> None:
-    if not (is_turso_stream_not_found_error(err) or is_turso_libsql_panic_error(err)):
-        return
-    try:
-        engine.dispose()
-    except Exception:
-        return
+    del engine, err
 
 
 def ingest_rss_many_once(
     *,
     rss_urls: list[str],
-    engine: Optional[TursoEngine],
+    engine: Optional[PostgresEngine],
     spool_dir: Path,
     redis_client,
     redis_queue_key: str,
@@ -350,7 +343,7 @@ def ingest_rss_many_once(
         if write_conn is not None:
             return write_conn
         try:
-            resolved_context = turso_connect_autocommit(engine)
+            resolved_context = postgres_connect_autocommit(engine)
             if hasattr(resolved_context, "__enter__") and hasattr(
                 resolved_context, "__exit__"
             ):
@@ -602,10 +595,7 @@ def ingest_rss_many_once(
                     if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                         raise
                     enqueue_error = True
-                    is_broken_conn = bool(
-                        is_turso_stream_not_found_error(e)
-                        or is_turso_libsql_panic_error(e)
-                    )
+                    is_broken_conn = bool(getattr(write_conn_instance, "broken", False))
                     _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
                     _close_write_conn(broken=is_broken_conn)
                     redis_status = _try_push_to_redis_status(
