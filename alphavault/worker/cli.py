@@ -123,7 +123,7 @@ def parse_args() -> argparse.Namespace:
     rss_timeout_env = env_float(ENV_RSS_TIMEOUT_SECONDS)
     rss_retries_env = env_int(ENV_RSS_RETRIES)
 
-    parser = argparse.ArgumentParser(description="RSS -> Turso queue -> AI -> Turso")
+    parser = argparse.ArgumentParser(description="RSS -> Redis -> AI -> Postgres")
     parser.add_argument(
         "--active-hours",
         default="",

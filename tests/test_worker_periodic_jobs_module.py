@@ -21,14 +21,10 @@ def _source_runtime():
 
 def test_spool_flush_state_transitions() -> None:
     source = _source_runtime()
-    wakeup_event = threading.Event()
 
     assert periodic_jobs_module.should_start_spool_flush(source=source) is False
 
-    periodic_jobs_module.mark_spool_item_ingested(
-        source=source, wakeup_event=wakeup_event
-    )
-    assert wakeup_event.is_set() is True
+    source.spool_seq_written = 1
     assert periodic_jobs_module.should_start_spool_flush(source=source) is True
 
     periodic_jobs_module.mark_spool_flush_started(source=source)
@@ -44,17 +40,11 @@ def test_spool_flush_state_transitions() -> None:
 
 def test_redis_enqueue_state_transitions() -> None:
     source = _source_runtime()
-    wakeup_event = threading.Event()
     payload = {"post_uid": "weibo:1", "raw_text": "正文"}
 
     assert periodic_jobs_module.should_start_redis_enqueue(source=source) is False
 
-    periodic_jobs_module.enqueue_redis_payload(
-        source=source,
-        payload=payload,
-        wakeup_event=wakeup_event,
-    )
-    assert wakeup_event.is_set() is True
+    source.redis_enqueue_pending.append(dict(payload))
     assert periodic_jobs_module.should_start_redis_enqueue(source=source) is True
 
     periodic_jobs_module.mark_redis_enqueue_started(source=source)
@@ -67,7 +57,6 @@ def test_redis_enqueue_state_transitions() -> None:
     periodic_jobs_module.restore_redis_enqueue_payload(
         source=source,
         payload=payload,
-        wakeup_event=wakeup_event,
     )
     periodic_jobs_module.mark_redis_enqueue_retry(
         source=source,

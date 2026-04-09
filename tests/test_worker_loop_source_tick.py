@@ -17,9 +17,11 @@ def test_worker_source_runtime_has_no_local_cache_fields() -> None:
 
     assert "local_cache_ready" not in fields
     assert "local_cache_rebuild_next_at" not in fields
+    assert "redis_enqueue_future" not in fields
+    assert "spool_flush_future" not in fields
 
 
-def test_schedule_rss_and_spool_also_schedules_redis_enqueue(monkeypatch) -> None:
+def test_schedule_rss_and_spool_only_schedules_rss_ingest(monkeypatch) -> None:
     calls: list[str] = []
 
     monkeypatch.setattr(
@@ -27,17 +29,6 @@ def test_schedule_rss_and_spool_also_schedules_redis_enqueue(monkeypatch) -> Non
         "maybe_schedule_rss_ingest",
         lambda **_kwargs: calls.append("rss"),
     )
-    monkeypatch.setattr(
-        worker_loop_source_tick,
-        "maybe_schedule_spool_flush",
-        lambda **_kwargs: calls.append("spool"),
-    )
-    monkeypatch.setattr(
-        worker_loop_source_tick,
-        "maybe_schedule_redis_enqueue",
-        lambda **_kwargs: calls.append("redis"),
-    )
-
     worker_loop_source_tick._schedule_rss_and_spool(
         source=SimpleNamespace(config=SimpleNamespace(platform="weibo")),
         active_engine=object(),
@@ -46,8 +37,6 @@ def test_schedule_rss_and_spool_also_schedules_redis_enqueue(monkeypatch) -> Non
             SourceTickExecutors,
             SimpleNamespace(
                 rss_executor=object(),
-                spool_executor=object(),
-                redis_enqueue_executor=object(),
             ),
         ),
         state=cast(
@@ -60,7 +49,7 @@ def test_schedule_rss_and_spool_also_schedules_redis_enqueue(monkeypatch) -> Non
         ),
     )
 
-    assert calls == ["rss", "spool", "redis"]
+    assert calls == ["rss"]
 
 
 def test_run_source_maintenance_only_treats_same_source_ai_as_running(
@@ -81,8 +70,6 @@ def test_run_source_maintenance_only_treats_same_source_ai_as_running(
     worker_loop_source_tick._run_source_maintenance(
         source=SimpleNamespace(
             config=SimpleNamespace(name="weibo-main", platform="weibo"),
-            redis_enqueue_future=None,
-            spool_flush_future=None,
         ),
         source_name="weibo-main",
         active_engine=object(),

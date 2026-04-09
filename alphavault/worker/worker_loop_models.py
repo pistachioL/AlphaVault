@@ -33,8 +33,6 @@ class SourceTickContext:
 class SourceTickExecutors:
     ai_executor: ThreadPoolExecutor
     stock_hot_executor: ThreadPoolExecutor
-    redis_enqueue_executor: ThreadPoolExecutor
-    spool_executor: ThreadPoolExecutor
     rss_executor: ThreadPoolExecutor
 
 

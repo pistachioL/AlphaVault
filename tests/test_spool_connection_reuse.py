@@ -347,12 +347,11 @@ def test_restore_claimed_file_keeps_old_and_new_json(tmp_path) -> None:
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_recover_spool_to_turso_and_redis_restores_missing_requeues_pending_and_deletes_done(
+def test_recover_spool_to_turso_and_redis_requeues_pending_and_deletes_done(
     monkeypatch, tmp_path
 ) -> None:
     engine_marker = cast(TursoEngine, object())
     conn_marker = object()
-    upserted: list[str] = []
     requeued: list[str] = []
 
     class _ConnContext:
@@ -374,8 +373,7 @@ def test_recover_spool_to_turso_and_redis_restores_missing_requeues_pending_and_
         }[post_uid]
 
     def _fake_upsert(conn, **kwargs) -> None:
-        assert conn is conn_marker
-        upserted.append(str(kwargs.get("post_uid") or ""))
+        raise AssertionError("should not upsert pending post during spool recovery")
 
     spool.spool_write(
         tmp_path,
@@ -409,7 +407,7 @@ def test_recover_spool_to_turso_and_redis_restores_missing_requeues_pending_and_
         _fake_requeue_status,
     )
 
-    restored_posts, queued_redis, deleted_done, has_error = (
+    handled_posts, queued_redis, deleted_done, has_error = (
         spool.recover_spool_to_turso_and_redis(
             spool_dir=tmp_path,
             engine=engine_marker,
@@ -420,14 +418,12 @@ def test_recover_spool_to_turso_and_redis_restores_missing_requeues_pending_and_
         )
     )
 
-    assert restored_posts == 1
+    assert handled_posts == 3
     assert queued_redis == 2
     assert deleted_done == 1
     assert has_error is False
-    assert upserted == ["weibo:missing"]
     assert sorted(requeued) == ["weibo:missing", "weibo:pending"]
-    remaining_json = sorted(path.name for path in tmp_path.glob("*.json"))
-    assert len(remaining_json) == 2
+    assert list(tmp_path.glob("*.json")) == []
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
@@ -467,7 +463,7 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
         lambda *_args, **_kwargs: redis_queue_module.REDIS_PUSH_STATUS_ERROR,
     )
 
-    restored_posts, queued_redis, deleted_done, has_error = (
+    handled_posts, queued_redis, deleted_done, has_error = (
         spool.recover_spool_to_turso_and_redis(
             spool_dir=tmp_path,
             engine=engine_marker,
@@ -478,9 +474,189 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
         )
     )
 
-    assert restored_posts == 0
+    assert handled_posts == 0
     assert queued_redis == 0
     assert deleted_done == 0
     assert has_error is True
     assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []
+
+
+def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_is_duplicate(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(TursoEngine, object())
+    conn_marker = object()
+
+    class _ConnContext:
+        def __enter__(self):
+            return conn_marker
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    def _fake_connect(_engine):
+        return _ConnContext()
+
+    spool.spool_write(
+        tmp_path,
+        "weibo:pending-duplicate",
+        _build_payload("weibo:pending-duplicate", "64", "作者J", 164),
+    )
+
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
+    monkeypatch.setattr(
+        spool,
+        "load_post_processed_at",
+        lambda conn, *, post_uid: "" if conn is conn_marker else post_uid,
+    )
+    monkeypatch.setattr(
+        redis_queue_module,
+        "redis_try_push_ai_dedup_status",
+        lambda *_args, **_kwargs: redis_queue_module.REDIS_PUSH_STATUS_DUPLICATE,
+    )
+
+    handled_posts, queued_redis, deleted_done, has_error = (
+        spool.recover_spool_to_turso_and_redis(
+            spool_dir=tmp_path,
+            engine=engine_marker,
+            max_items=10,
+            verbose=False,
+            redis_client=object(),
+            redis_queue_key="test:q",
+        )
+    )
+
+    assert handled_posts == 0
+    assert queued_redis == 0
+    assert deleted_done == 0
+    assert has_error is False
+    assert len(list(tmp_path.glob("*.json"))) == 1
+    assert list(tmp_path.glob("*.json.processing")) == []
+
+
+def test_recover_spool_to_turso_and_redis_reports_claim_file_error(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(TursoEngine, object())
+    conn_marker = object()
+
+    class _ConnContext:
+        def __enter__(self):
+            return conn_marker
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            del exc_type, exc, tb
+
+    def _fake_connect(_engine):
+        return _ConnContext()
+
+    json_path = spool.spool_write(
+        tmp_path,
+        "weibo:claim-error",
+        _build_payload("weibo:claim-error", "65", "作者K", 165),
+    )
+    original_rename = Path.rename
+
+    def _fake_rename(self: Path, target: Path):  # type: ignore[no-untyped-def]
+        if self == json_path:
+            raise PermissionError("denied")
+        return original_rename(self, target)
+
+    monkeypatch.setattr(
+        spool, "postgres_connect_autocommit", _fake_connect, raising=False
+    )
+    monkeypatch.setattr(Path, "rename", _fake_rename)
+
+    handled_posts, queued_redis, deleted_done, has_error = (
+        spool.recover_spool_to_turso_and_redis(
+            spool_dir=tmp_path,
+            engine=engine_marker,
+            max_items=10,
+            verbose=False,
+            redis_client=object(),
+            redis_queue_key="test:q",
+        )
+    )
+
+    assert handled_posts == 0
+    assert queued_redis == 0
+    assert deleted_done == 0
+    assert has_error is True
+    assert json_path.exists()
+    assert list(tmp_path.glob("*.json.processing")) == []
+
+
+def test_flush_spool_to_turso_reports_stale_processing_stat_error(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(TursoEngine, object())
+    processing_path = _write_processing_file(
+        tmp_path,
+        "weibo:stale-stat-error",
+        _build_payload("weibo:stale-stat-error", "66", "作者L", 166),
+    )
+    stale_ts = int(time.time()) - 3600
+    os.utime(processing_path, (stale_ts, stale_ts))
+    original_stat = Path.stat
+
+    def _fake_stat(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self == processing_path:
+            raise PermissionError("stat denied")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", _fake_stat)
+
+    processed, has_error = spool.flush_spool_to_turso(
+        spool_dir=tmp_path,
+        engine=engine_marker,
+        max_items=10,
+        verbose=False,
+    )
+
+    assert processed == 0
+    assert has_error is True
+    assert list(tmp_path.glob("*.json")) == []
+    assert len(list(tmp_path.glob("*.json.processing"))) == 1
+
+
+def test_recover_spool_to_turso_and_redis_reports_stale_processing_rename_error(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(TursoEngine, object())
+    post_uid = "weibo:stale-rename-error"
+    processing_path = _write_processing_file(
+        tmp_path,
+        post_uid,
+        _build_payload(post_uid, "67", "作者M", 167),
+    )
+    stale_ts = int(time.time()) - 3600
+    os.utime(processing_path, (stale_ts, stale_ts))
+    original_rename = Path.rename
+
+    def _fake_rename(self: Path, target: Path):  # type: ignore[no-untyped-def]
+        if self == processing_path:
+            raise PermissionError("rename denied")
+        return original_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", _fake_rename)
+
+    handled_posts, queued_redis, deleted_done, has_error = (
+        spool.recover_spool_to_turso_and_redis(
+            spool_dir=tmp_path,
+            engine=engine_marker,
+            max_items=10,
+            verbose=False,
+            redis_client=object(),
+            redis_queue_key="test:q",
+        )
+    )
+
+    assert handled_posts == 0
+    assert queued_redis == 0
+    assert deleted_done == 0
+    assert has_error is True
+    assert list(tmp_path.glob("*.json")) == []
+    assert len(list(tmp_path.glob("*.json.processing"))) == 1

@@ -401,13 +401,6 @@ def redis_ai_due_count(client, queue_key: str, *, now_epoch: int) -> int:
     return int(ready_count + delayed_due)
 
 
-def redis_ai_pending_count(client, queue_key: str) -> int:
-    ready_count = int(client.llen(redis_ai_ready_key(queue_key)) or 0)
-    processing_count = int(client.llen(redis_ai_processing_key(queue_key)) or 0)
-    delayed_count = int(client.zcard(redis_ai_delayed_key(queue_key)) or 0)
-    return int(ready_count + processing_count + delayed_count)
-
-
 def redis_ai_ack_and_cleanup(
     client,
     queue_key: str,

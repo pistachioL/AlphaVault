@@ -97,27 +97,6 @@ LIMIT 1
 """
 
 
-def select_unprocessed_post_queue_rows_sql(posts_table: str) -> str:
-    return f"""
-SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text
-FROM {posts_table}
-WHERE processed_at IS NULL OR TRIM(processed_at) = ''
-ORDER BY ingested_at DESC, post_uid DESC
-LIMIT :limit
-"""
-
-
-def select_unprocessed_post_queue_rows_by_platform_sql(posts_table: str) -> str:
-    return f"""
-SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text
-FROM {posts_table}
-WHERE platform = :platform
-  AND (processed_at IS NULL OR TRIM(processed_at) = '')
-ORDER BY ingested_at DESC, post_uid DESC
-LIMIT :limit
-"""
-
-
 def delete_assertions_by_post_uid_sql(assertions_table: str) -> str:
     return f"DELETE FROM {assertions_table} WHERE post_uid = :post_uid"
 

@@ -36,6 +36,15 @@ def _tick_ctx() -> SourceTickContext:
     )
 
 
+def test_open_executors_does_not_create_removed_queue_executors() -> None:
+    with worker_loop_runner._open_executors(ai_cap=1, source_count=1) as execs:
+        assert hasattr(execs, "ai_executor")
+        assert hasattr(execs, "stock_hot_executor")
+        assert hasattr(execs, "rss_executor")
+        assert not hasattr(execs, "redis_enqueue_executor")
+        assert not hasattr(execs, "spool_executor")
+
+
 def test_run_sources_once_schedules_all_rss_before_any_ai(monkeypatch) -> None:
     events: list[str] = []
 

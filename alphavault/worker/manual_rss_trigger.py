@@ -22,10 +22,15 @@ from alphavault.rss.utils import env_float, env_int
 from alphavault.worker.cli import RSSSourceConfig, resolve_rss_source_configs
 from alphavault.worker.ingest import ingest_rss_many_once
 from alphavault.worker.redis_queue import try_get_redis
-from alphavault.worker.spool import ensure_spool_dir, flush_spool_to_turso
+from alphavault.worker.spool import (
+    SPOOL_FILE_GLOB,
+    SPOOL_PROCESSING_GLOB,
+    ensure_spool_dir,
+    recover_spool_to_turso_and_redis,
+)
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-MANUAL_SPOOL_FLUSH_BATCH_SIZE = 200
+MANUAL_SPOOL_RECOVER_BATCH_SIZE = 200
 
 
 def _resolve_rss_timeout_seconds() -> float:
@@ -88,7 +93,13 @@ def _build_source_redis_queue_key(
     return f"{base_queue_key}:{source_name}"
 
 
-def _flush_source_spool_to_turso(
+def _count_source_spool_backlog(*, spool_dir: Path) -> int:
+    return len(list(spool_dir.glob(SPOOL_FILE_GLOB))) + len(
+        list(spool_dir.glob(SPOOL_PROCESSING_GLOB))
+    )
+
+
+def _recover_source_spool_to_redis(
     *,
     spool_dir: Path,
     engine: PostgresEngine,
@@ -96,21 +107,39 @@ def _flush_source_spool_to_turso(
     redis_queue_key: str,
 ) -> tuple[int, bool]:
     total_flushed = 0
+    base_batch_size = max(1, int(MANUAL_SPOOL_RECOVER_BATCH_SIZE))
+    scan_limit = base_batch_size
     while True:
-        flushed, has_error = flush_spool_to_turso(
+        pending_before = _count_source_spool_backlog(spool_dir=spool_dir)
+        if pending_before <= 0:
+            return total_flushed, False
+        handled, flushed, _deleted_done, has_error = recover_spool_to_turso_and_redis(
             spool_dir=spool_dir,
             engine=engine,
-            max_items=int(MANUAL_SPOOL_FLUSH_BATCH_SIZE),
+            max_items=int(scan_limit),
             verbose=False,
             redis_client=redis_client,
             redis_queue_key=redis_queue_key,
-            delete_spool_on_redis_push=True,
         )
         total_flushed += int(flushed)
         if has_error:
             return total_flushed, True
-        if int(flushed) < int(MANUAL_SPOOL_FLUSH_BATCH_SIZE):
+        pending_after = _count_source_spool_backlog(spool_dir=spool_dir)
+        if pending_after <= 0:
             return total_flushed, False
+        if int(handled) > 0:
+            scan_limit = base_batch_size
+            continue
+        if pending_after != pending_before:
+            if pending_after > scan_limit:
+                scan_limit = pending_after
+            continue
+        if scan_limit < pending_after:
+            scan_limit = pending_after
+            continue
+        # No progress after scanning the full current backlog usually means
+        # duplicate items are being kept for a later retry, not a hard error.
+        return total_flushed, False
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
@@ -166,7 +195,7 @@ def _run_manual_ingest_for_source(
             rss_feed_sleep_seconds=rss_feed_sleep_seconds,
             verbose=False,
         )
-        flushed, flush_error = _flush_source_spool_to_turso(
+        flushed, flush_error = _recover_source_spool_to_redis(
             spool_dir=spool_dir,
             engine=engine,
             redis_client=redis_client,

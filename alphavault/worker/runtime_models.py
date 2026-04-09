@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
 import os
-import threading
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
@@ -48,17 +46,6 @@ class WorkerSourceRuntime:
     maintenance_recovery_cycle_count: int = 0
     maintenance_recovery_force_next: bool = False
     rss_ingest_future: Future | None = None
-    redis_enqueue_future: Future | None = None
-    redis_enqueue_next_at: float = 0.0
-    redis_enqueue_pending: deque[dict[str, Any]] = field(default_factory=deque)
-    redis_enqueue_need_retry: bool = False
-    redis_enqueue_state_lock: threading.Lock = field(default_factory=threading.Lock)
-    spool_flush_future: Future | None = None
-    spool_flush_next_at: float = 0.0
-    spool_seq_written: int = 0
-    spool_seq_scheduled: int = 0
-    spool_need_retry: bool = False
-    spool_state_lock: threading.Lock = field(default_factory=threading.Lock)
     turso_ready: bool = False
     turso_next_ready_check_at: float = 0.0
     stock_hot_cache_future: Future | None = None
