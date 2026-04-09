@@ -6,7 +6,11 @@ from typing import Any
 import pandas as pd
 
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.postgres_db import PostgresConnection
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    qualify_postgres_table,
+    require_postgres_schema_name,
+)
 from alphavault.db.turso_pandas import turso_read_sql_df
 from alphavault.domains.stock.keys import (
     normalize_stock_key as _normalize_stock_key,
@@ -52,6 +56,15 @@ def _window_cutoff_str(days: int) -> str:
     return cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _source_table(conn: object, table_name: str) -> str:
+    if not isinstance(conn, PostgresConnection):
+        return str(table_name)
+    return qualify_postgres_table(
+        require_postgres_schema_name(conn),
+        table_name,
+    )
+
+
 def _load_stock_alias_relations(conn: PostgresConnection) -> pd.DataFrame:
     try:
         return turso_read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
@@ -89,6 +102,8 @@ def _load_stock_assertions(
     window_days: int,
     max_rows: int,
 ) -> pd.DataFrame:
+    assertions_table = _source_table(conn, "assertions")
+    assertion_entities_table = _source_table(conn, "assertion_entities")
     params: dict[str, Any] = {
         "stock_key": str(stock_key or "").strip(),
         "cutoff": _window_cutoff_str(window_days),
@@ -122,8 +137,8 @@ def _load_stock_assertions(
     )
     query = f"""
 SELECT {select_expr}
-FROM assertions a
-JOIN assertion_entities ae
+FROM {assertions_table} a
+JOIN {assertion_entities_table} ae
   ON ae.assertion_id = a.assertion_id
 WHERE a.action LIKE 'trade.%'
   AND ae.entity_type = 'stock'
@@ -161,6 +176,8 @@ def _load_sector_keys_by_assertion_id(
     *,
     assertion_ids: list[str],
 ) -> dict[str, list[str]]:
+    assertion_entities_table = _source_table(conn, "assertion_entities")
+    topic_cluster_topics_table = _source_table(conn, "topic_cluster_topics")
     cleaned = [
         str(item or "").strip() for item in assertion_ids if str(item or "").strip()
     ]
@@ -170,8 +187,8 @@ def _load_sector_keys_by_assertion_id(
     params = make_in_params(prefix="a", values=cleaned)
     query = f"""
 SELECT ae.assertion_id, tct.cluster_key
-FROM assertion_entities ae
-JOIN topic_cluster_topics tct
+FROM {assertion_entities_table} ae
+JOIN {topic_cluster_topics_table} tct
   ON tct.topic_key = ae.entity_key
 WHERE ae.entity_type = 'industry'
   AND ae.assertion_id IN ({placeholders})
@@ -197,13 +214,14 @@ def _load_posts_for_assertions(
     *,
     post_uids: list[str],
 ) -> pd.DataFrame:
+    posts_table = _source_table(conn, "posts")
     cleaned = [str(uid or "").strip() for uid in post_uids if str(uid or "").strip()]
     if not cleaned:
         return pd.DataFrame()
     placeholders = ", ".join(["?"] * len(cleaned))
     sql = f"""
 SELECT {", ".join(WANTED_POST_COLUMNS)}
-FROM posts
+FROM {posts_table}
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})
 """

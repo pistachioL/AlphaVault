@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import libsql
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
+import pandas as pd
+
+from alphavault.constants import SCHEMA_STANDARD, SCHEMA_XUEQIU
+from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.libsql_db import LibsqlConnection as TursoConnection
 from alphavault.db.postgres_db import PostgresConnection
+from alphavault.worker import stock_hot_payload_builder
 from alphavault.worker.stock_hot_payload_builder import build_stock_hot_payload
 
 
@@ -74,6 +80,12 @@ def _setup_tables(conn: PostgresConnection) -> None:
     conn.execute(CREATE_POSTS_TABLE_SQL)
     conn.execute(CREATE_ASSERTIONS_TABLE_SQL)
     conn.execute(CREATE_ASSERTION_ENTITIES_TABLE_SQL)
+
+
+def _source_pg_conn(pg_conn, *, schema_name: str) -> PostgresConnection:
+    apply_cloud_schema(pg_conn, target="source", schema_name=schema_name)
+    apply_cloud_schema(pg_conn, target="standard", schema_name=SCHEMA_STANDARD)
+    return PostgresConnection(pg_conn, schema_name=schema_name)
 
 
 def test_build_stock_hot_payload_includes_url_from_posts() -> None:
@@ -312,3 +324,137 @@ def test_build_stock_hot_payload_reads_legacy_prefixed_cn_entity_key_for_canonic
         assert signal_top[0].get("post_uid") == "xueqiu:1"
     finally:
         conn.close()
+
+
+def test_build_stock_hot_payload_uses_xueqiu_schema_tables(monkeypatch) -> None:
+    seen_sql: list[str] = []
+
+    def _fake_read_sql_df(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
+        del conn, params
+        seen_sql.append(str(sql))
+        if "standard.relations" in str(sql):
+            return pd.DataFrame()
+        if "assertions" in str(sql):
+            return pd.DataFrame(
+                [
+                    {
+                        "assertion_id": "xueqiu:stock_hot:1#1",
+                        "post_uid": "xueqiu:stock_hot:1",
+                        "action": "trade.buy",
+                        "action_strength": 2,
+                        "summary": "雪球 source schema 也要能读到",
+                        "created_at": "2099-01-04 00:00:00",
+                        "resolved_entity_key": "stock:000725.SZ",
+                    }
+                ]
+            )
+        return pd.DataFrame(
+            [
+                {
+                    "post_uid": "xueqiu:stock_hot:1",
+                    "platform_post_id": "1",
+                    "author": "alice",
+                    "created_at": "2099-01-04 00:00:00",
+                    "url": "https://example.com/xueqiu/stock-hot-1",
+                    "raw_text": "原文",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        stock_hot_payload_builder, "turso_read_sql_df", _fake_read_sql_df
+    )
+    monkeypatch.setattr(
+        stock_hot_payload_builder,
+        "_load_sector_keys_by_assertion_id",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        stock_hot_payload_builder,
+        "build_post_tree_map",
+        lambda **_kwargs: {},
+    )
+
+    conn = PostgresConnection(
+        cast(Any, SimpleNamespace()),
+        schema_name=SCHEMA_XUEQIU,
+    )
+
+    payload = build_stock_hot_payload(
+        conn,
+        stock_key="stock:000725.SZ",
+        signal_window_days=30,
+        signal_cap=10,
+    )
+
+    assert any("FROM xueqiu.assertions a" in sql for sql in seen_sql)
+    assert any("JOIN xueqiu.assertion_entities ae" in sql for sql in seen_sql)
+    assert any("FROM xueqiu.posts" in sql for sql in seen_sql)
+    assert payload.get("entity_key") == "stock:000725.SZ"
+
+
+def test_build_stock_hot_payload_requires_schema_name_for_postgres() -> None:
+    conn = PostgresConnection(cast(Any, SimpleNamespace()), schema_name="")
+
+    try:
+        build_stock_hot_payload(
+            conn,
+            stock_key="stock:000725.SZ",
+            signal_window_days=30,
+            signal_cap=10,
+        )
+    except RuntimeError as err:
+        assert str(err) == "missing_postgres_schema_name"
+    else:
+        raise AssertionError("expected missing_postgres_schema_name")
+
+
+def test_build_stock_hot_payload_reads_xueqiu_source_schema_tables(pg_conn) -> None:
+    conn = _source_pg_conn(pg_conn, schema_name=SCHEMA_XUEQIU)
+    conn.execute(
+        """
+        INSERT INTO xueqiu.posts(
+          post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+          final_status, processed_at, model, prompt_version, archived_at, ingested_at
+        )
+        VALUES (
+          'xueqiu:stock_hot:1', 'xueqiu', '1', 'alice', '2099-01-04 00:00:00',
+          'https://example.com/xueqiu/stock-hot-1', '原文', 'relevant',
+          '2099-01-04 00:00:01', '', '', '', 1
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO xueqiu.assertions(
+          assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+        )
+        VALUES (
+          'xueqiu:stock_hot:1#1', 'xueqiu:stock_hot:1', 1, 'trade.buy', 2,
+          '雪球 source schema 也要能读到', '雪球 source schema 也要能读到', '2099-01-04 00:00:00'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO xueqiu.assertion_entities(
+          assertion_id, entity_key, entity_type, match_source, is_primary
+        )
+        VALUES (
+          'xueqiu:stock_hot:1#1', 'stock:000725.SZ', 'stock', 'stock_code', 1
+        )
+        """
+    )
+
+    payload = build_stock_hot_payload(
+        conn,
+        stock_key="stock:000725.SZ",
+        signal_window_days=30,
+        signal_cap=10,
+    )
+
+    signal_top = payload.get("signal_top") or []
+    assert isinstance(signal_top, list)
+    assert signal_top
+    assert payload.get("entity_key") == "stock:000725.SZ"
+    assert signal_top[0].get("post_uid") == "xueqiu:stock_hot:1"

@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import libsql
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
+import pandas as pd
+
+from alphavault.constants import SCHEMA_XUEQIU
+from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.libsql_db import LibsqlConnection as TursoConnection
 from alphavault.db.postgres_db import PostgresConnection
+from alphavault.worker import sector_hot_payload_builder
 from alphavault.worker.sector_hot_payload_builder import build_sector_hot_payload
 
 
@@ -91,6 +97,11 @@ def _setup_tables(conn: PostgresConnection) -> None:
     conn.execute(CREATE_TOPIC_CLUSTER_TOPICS_TABLE_SQL)
 
 
+def _source_pg_conn(pg_conn, *, schema_name: str) -> PostgresConnection:
+    apply_cloud_schema(pg_conn, target="source", schema_name=schema_name)
+    return PostgresConnection(pg_conn, schema_name=schema_name)
+
+
 def test_build_sector_hot_payload_groups_signals_and_related_stocks() -> None:
     conn = _memory_conn()
     try:
@@ -175,3 +186,148 @@ def test_build_sector_hot_payload_groups_signals_and_related_stocks() -> None:
         ]
     finally:
         conn.close()
+
+
+def test_build_sector_hot_payload_uses_xueqiu_schema_tables(monkeypatch) -> None:
+    seen_sql: list[str] = []
+
+    def _fake_read_sql_df(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
+        del conn, params
+        seen_sql.append(str(sql))
+        if "topic_cluster_topics" in str(sql):
+            return pd.DataFrame(
+                [
+                    {
+                        "assertion_id": "xueqiu:sector_hot:1#1",
+                        "post_uid": "xueqiu:sector_hot:1",
+                        "stock_key": "stock:600519.SH",
+                        "action": "trade.buy",
+                        "action_strength": 2,
+                        "summary": "雪球板块页也要能读到",
+                        "created_at": "2099-01-04 00:00:00",
+                    }
+                ]
+            )
+        return pd.DataFrame(
+            [
+                {
+                    "post_uid": "xueqiu:sector_hot:1",
+                    "platform_post_id": "1",
+                    "author": "alice",
+                    "created_at": "2099-01-04 00:00:00",
+                    "url": "https://example.com/xueqiu/sector-hot-1",
+                    "raw_text": "白酒继续走强",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        sector_hot_payload_builder,
+        "turso_read_sql_df",
+        _fake_read_sql_df,
+    )
+
+    conn = PostgresConnection(
+        cast(Any, SimpleNamespace()),
+        schema_name=SCHEMA_XUEQIU,
+    )
+
+    payload = build_sector_hot_payload(
+        conn,
+        sector_key="cluster:white_liquor",
+        signal_cap=10,
+    )
+
+    assert any("FROM xueqiu.assertions a" in sql for sql in seen_sql)
+    assert any(
+        "JOIN xueqiu.assertion_entities sector_entities" in sql for sql in seen_sql
+    )
+    assert any("JOIN xueqiu.topic_cluster_topics tct" in sql for sql in seen_sql)
+    assert any(
+        "LEFT JOIN xueqiu.assertion_entities stock_entities" in sql for sql in seen_sql
+    )
+    assert any("FROM xueqiu.posts" in sql for sql in seen_sql)
+    assert payload["entity_key"] == "cluster:white_liquor"
+
+
+def test_build_sector_hot_payload_requires_schema_name_for_postgres() -> None:
+    conn = PostgresConnection(cast(Any, SimpleNamespace()), schema_name="")
+
+    try:
+        build_sector_hot_payload(
+            conn,
+            sector_key="cluster:white_liquor",
+            signal_cap=10,
+        )
+    except RuntimeError as err:
+        assert str(err) == "missing_postgres_schema_name"
+    else:
+        raise AssertionError("expected missing_postgres_schema_name")
+
+
+def test_build_sector_hot_payload_reads_xueqiu_source_schema_tables(pg_conn) -> None:
+    conn = _source_pg_conn(pg_conn, schema_name=SCHEMA_XUEQIU)
+    conn.execute(
+        """
+        INSERT INTO xueqiu.posts(
+          post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+          final_status, processed_at, model, prompt_version, archived_at, ingested_at
+        )
+        VALUES (
+          'xueqiu:sector_hot:1', 'xueqiu', '1', 'alice', '2099-01-04 00:00:00',
+          'https://example.com/xueqiu/sector-hot-1', '白酒继续走强', 'relevant',
+          '2099-01-04 00:00:01', '', '', '', 1
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO xueqiu.assertions(
+          assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+        )
+        VALUES (
+          'xueqiu:sector_hot:1#1', 'xueqiu:sector_hot:1', 1, 'trade.buy', 2,
+          '雪球板块页也要能读到', '雪球板块页也要能读到', '2099-01-04 00:00:00'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO xueqiu.assertion_entities(
+          assertion_id, entity_key, entity_type, match_source, is_primary
+        )
+        VALUES
+          ('xueqiu:sector_hot:1#1', 'stock:600519.SH', 'stock', 'stock_code', 1),
+          ('xueqiu:sector_hot:1#1', 'industry:白酒', 'industry', 'industry_name', 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO xueqiu.topic_cluster_topics(
+          topic_key, cluster_key, source, confidence, created_at
+        )
+        VALUES (
+          'industry:白酒', 'white_liquor', 'manual', 1.0, '2099-01-04 00:00:00'
+        )
+        """
+    )
+
+    payload = build_sector_hot_payload(
+        conn,
+        sector_key="cluster:white_liquor",
+        signal_cap=10,
+    )
+
+    signal_top = cast(list[dict[str, str]], payload["signal_top"])
+    related = cast(list[dict[str, str]], payload["related"])
+
+    assert payload["entity_key"] == "cluster:white_liquor"
+    assert signal_top
+    assert signal_top[0]["post_uid"] == "xueqiu:sector_hot:1"
+    assert related == [
+        {
+            "entity_key": "stock:600519.SH",
+            "entity_type": "stock",
+            "mention_count": "1",
+        }
+    ]
