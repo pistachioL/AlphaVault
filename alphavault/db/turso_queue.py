@@ -267,6 +267,30 @@ def load_post_processed_at(conn: PostgresConnection, *, post_uid: str) -> str | 
     return str(row.get("processed_at") or "")
 
 
+def load_unprocessed_post_queue_rows(
+    engine: PostgresEngine,
+    *,
+    limit: int,
+    platform: Optional[str] = None,
+) -> list[dict[str, object]]:
+    resolved_platform = str(platform or "").strip().lower() or None
+    query = (
+        source_queue_sql.select_unprocessed_post_queue_rows_by_platform_sql(
+            _posts_table(engine)
+        )
+        if resolved_platform
+        else source_queue_sql.select_unprocessed_post_queue_rows_sql(
+            _posts_table(engine)
+        )
+    )
+    params: dict[str, object] = {"limit": max(0, int(limit))}
+    if resolved_platform:
+        params["platform"] = resolved_platform
+    with postgres_connect_autocommit(engine) as conn:
+        rows = conn.execute(query, params).mappings().fetchall()
+        return [dict(row) for row in rows if row]
+
+
 def _ensure_post_row_exists_for_done(
     conn: PostgresConnection,
     *,
