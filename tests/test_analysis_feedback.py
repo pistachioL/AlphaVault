@@ -62,7 +62,7 @@ def test_submit_post_analysis_feedback_supersedes_old_pending_and_keeps_new_pend
 
     monkeypatch.setattr(
         analysis_feedback,
-        "redis_try_push_ai_dedup_status",
+        "redis_try_push_ai_message_status",
         _fake_push_status,
     )
     monkeypatch.setattr(
@@ -117,6 +117,7 @@ ORDER BY submitted_at ASC
     push_payload = push_calls[0]["payload"]
     assert isinstance(push_payload, dict)
     assert push_payload["raw_text"] == "茅台我觉得可以买"
+    assert push_payload["skip_db_processed_guard"] is True
 
 
 def test_submit_post_analysis_feedback_marks_queue_failed_on_push_error(
@@ -140,7 +141,7 @@ def test_submit_post_analysis_feedback_marks_queue_failed_on_push_error(
     )
     monkeypatch.setattr(
         analysis_feedback,
-        "redis_try_push_ai_dedup_status",
+        "redis_try_push_ai_message_status",
         lambda _client, _queue_key, **_kwargs: "error",
     )
     monkeypatch.setattr(

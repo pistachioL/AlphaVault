@@ -22,13 +22,14 @@ from alphavault.db.postgres_env import (
 from alphavault.db.turso_queue import CloudPost, load_cloud_post
 from alphavault.env import load_dotenv_if_present
 from alphavault.rss.utils import now_str
-from alphavault.worker.redis_queue import (
+from alphavault.worker.redis_queue import try_get_redis
+from alphavault.worker.redis_stream_queue import (
     REDIS_PUSH_STATUS_DUPLICATE,
     REDIS_PUSH_STATUS_ERROR,
     REDIS_PUSH_STATUS_PUSHED,
-    redis_try_push_ai_dedup_status,
+    redis_try_push_ai_message_status,
+    resolve_redis_ai_queue_maxlen,
     resolve_redis_dedup_ttl_seconds,
-    try_get_redis,
 )
 from alphavault.worker.source_runtime import build_source_redis_queue_key
 
@@ -136,6 +137,7 @@ def _cloud_post_payload(post: CloudPost) -> dict[str, object]:
         "created_at": _clean_text(post.created_at),
         "url": _clean_text(post.url),
         "raw_text": str(post.raw_text or ""),
+        "skip_db_processed_guard": True,
     }
 
 
@@ -319,12 +321,13 @@ def submit_post_analysis_feedback(
         post = load_cloud_post(engine_or_conn, resolved_post_uid)
         platform = require_postgres_source_platform(resolved_post_uid)
         redis_client, queue_key = _load_feedback_redis_runtime(source_name=platform)
-        queue_status = redis_try_push_ai_dedup_status(
+        queue_status = redis_try_push_ai_message_status(
             redis_client,
             queue_key,
             post_uid=resolved_post_uid,
             payload=_cloud_post_payload(post),
             ttl_seconds=resolve_redis_dedup_ttl_seconds(),
+            queue_maxlen=resolve_redis_ai_queue_maxlen(),
             verbose=False,
         )
     except BaseException as err:
