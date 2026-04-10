@@ -227,7 +227,7 @@ def test_schedule_ai_requires_redis_queue() -> None:
 
 
 def test_process_one_redis_payload_passes_empty_prefetched_recent() -> None:
-    final_ack_calls: list[tuple[str, str]] = []
+    ack_calls: list[tuple[str, str]] = []
     seen: dict[str, object] = {}
 
     def _process_one_post_uid(**kwargs) -> bool:  # type: ignore[no-untyped-def]
@@ -256,17 +256,15 @@ def test_process_one_redis_payload_passes_empty_prefetched_recent() -> None:
         process_one_post_uid_fn=_process_one_post_uid,
         mark_post_failed_fn=lambda **_kwargs: None,
         redis_ai_push_retry_fn=lambda *_args, **_kwargs: None,
-        redis_ai_ack_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("success path should use final ack helper")
+        redis_ai_ack_fn=lambda _client, queue_key, message_id: ack_calls.append(
+            (str(queue_key), str(message_id))
         ),
         redis_ai_ack_and_push_retry_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("success path should not use retry handoff")
         ),
-        redis_ai_ack_and_clear_dedup_fn=lambda _client,
-        _queue_key,
-        *,
-        message_id,
-        post_uid: final_ack_calls.append((str(message_id), str(post_uid))),
+        redis_ai_ack_and_clear_dedup_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("success path should not clear dedup")
+        ),
         payload_retry_count_fn=lambda _payload: 0,
         backoff_seconds_fn=lambda _count: 1,
         now_epoch_fn=lambda: 100,
@@ -275,11 +273,11 @@ def test_process_one_redis_payload_passes_empty_prefetched_recent() -> None:
     )
 
     assert seen["prefetched_recent"] == []
-    assert final_ack_calls == [("1-0", "weibo:1")]
+    assert ack_calls == [("queue", "1-0")]
 
 
-def test_process_one_redis_payload_skips_ai_when_post_already_processed() -> None:
-    final_ack_calls: list[tuple[str, str]] = []
+def test_process_one_redis_payload_skips_ai_when_post_already_processed(capsys) -> None:
+    ack_calls: list[tuple[str, str]] = []
     guard_calls: list[str] = []
 
     def _is_post_already_processed_success(
@@ -298,7 +296,7 @@ def test_process_one_redis_payload_skips_ai_when_post_already_processed() -> Non
         redis_queue_key="queue",
         config=_config(),
         limiter=object(),
-        verbose=False,
+        verbose=True,
         payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
             post_uid="weibo:done",
             platform="weibo",
@@ -314,17 +312,15 @@ def test_process_one_redis_payload_skips_ai_when_post_already_processed() -> Non
         ),
         mark_post_failed_fn=lambda **_kwargs: None,
         redis_ai_push_retry_fn=lambda *_args, **_kwargs: None,
-        redis_ai_ack_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("already processed path should use final ack helper")
+        redis_ai_ack_fn=lambda _client, queue_key, message_id: ack_calls.append(
+            (str(queue_key), str(message_id))
         ),
         redis_ai_ack_and_push_retry_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("already processed path should not use retry handoff")
         ),
-        redis_ai_ack_and_clear_dedup_fn=lambda _client,
-        _queue_key,
-        *,
-        message_id,
-        post_uid: final_ack_calls.append((str(message_id), str(post_uid))),
+        redis_ai_ack_and_clear_dedup_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("already processed path should not clear dedup")
+        ),
         payload_retry_count_fn=lambda _payload: 0,
         backoff_seconds_fn=lambda _count: 1,
         now_epoch_fn=lambda: 100,
@@ -334,11 +330,14 @@ def test_process_one_redis_payload_skips_ai_when_post_already_processed() -> Non
     )
 
     assert guard_calls == ["weibo:done"]
-    assert final_ack_calls == [("done-1", "weibo:done")]
+    assert ack_calls == [("queue", "done-1")]
+    captured = capsys.readouterr()
+    assert "[ai] skip_db_already_processed_success" in captured.out
+    assert "post_uid=weibo:done" in captured.out
 
 
 def test_process_one_redis_payload_skip_db_guard_does_not_recheck_database() -> None:
-    final_ack_calls: list[tuple[str, str]] = []
+    ack_calls: list[tuple[str, str]] = []
     process_calls: list[str] = []
 
     def _process_one_post_uid(**kwargs) -> bool:  # type: ignore[no-untyped-def]
@@ -367,17 +366,15 @@ def test_process_one_redis_payload_skip_db_guard_does_not_recheck_database() -> 
         process_one_post_uid_fn=_process_one_post_uid,
         mark_post_failed_fn=lambda **_kwargs: None,
         redis_ai_push_retry_fn=lambda *_args, **_kwargs: None,
-        redis_ai_ack_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("success path should use final ack helper")
+        redis_ai_ack_fn=lambda _client, queue_key, message_id: ack_calls.append(
+            (str(queue_key), str(message_id))
         ),
         redis_ai_ack_and_push_retry_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("success path should not use retry handoff")
         ),
-        redis_ai_ack_and_clear_dedup_fn=lambda _client,
-        _queue_key,
-        *,
-        message_id,
-        post_uid: final_ack_calls.append((str(message_id), str(post_uid))),
+        redis_ai_ack_and_clear_dedup_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("success path should not clear dedup")
+        ),
         payload_retry_count_fn=lambda _payload: 0,
         backoff_seconds_fn=lambda _count: 1,
         now_epoch_fn=lambda: 100,
@@ -393,7 +390,7 @@ def test_process_one_redis_payload_skip_db_guard_does_not_recheck_database() -> 
     )
 
     assert process_calls == ["weibo:requeue"]
-    assert final_ack_calls == [("requeue-1", "weibo:requeue")]
+    assert ack_calls == [("queue", "requeue-1")]
 
 
 def test_process_one_redis_payload_acks_when_payload_cannot_build_cloud_post() -> None:
