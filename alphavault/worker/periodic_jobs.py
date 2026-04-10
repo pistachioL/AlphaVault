@@ -4,6 +4,8 @@ from concurrent.futures import Future
 from datetime import datetime
 from typing import Any, Callable
 
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
 
 def should_start_redis_enqueue(*, source: Any) -> bool:
     with source.redis_enqueue_state_lock:
@@ -101,9 +103,19 @@ def prune_inflight_futures(
     done = {f for f in inflight_futures if f.done()}
     if not done:
         return
-    inflight_futures.difference_update(done)
     for fut in done:
-        inflight_owner_by_future.pop(fut, None)
+        inflight_futures.discard(fut)
+        owner = str(inflight_owner_by_future.pop(fut, "") or "").strip()
+        try:
+            fut.result()
+        except BaseException as err:
+            if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+                raise
+            print(
+                f"[ai] future_error owner={owner or '(unknown)'} "
+                f"{type(err).__name__}: {err}",
+                flush=True,
+            )
 
 
 def format_epoch_to_cst(value: float, *, cst_tz: Any) -> str:
