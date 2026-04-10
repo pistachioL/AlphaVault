@@ -117,7 +117,7 @@ def test_run_manual_db_requeue_once_dry_run_reads_failed_rows_without_enqueue(
 def test_run_manual_db_requeue_once_enqueues_rows_when_capacity_allows(
     monkeypatch,
 ) -> None:
-    pushed: list[str] = []
+    pushed: list[dict[str, object]] = []
 
     def _push_status(
         _client,
@@ -129,8 +129,13 @@ def test_run_manual_db_requeue_once_enqueues_rows_when_capacity_allows(
         queue_maxlen,
         verbose,
     ) -> str:
-        del payload, ttl_seconds, queue_maxlen, verbose
-        pushed.append(str(post_uid or ""))
+        del ttl_seconds, queue_maxlen, verbose
+        pushed.append(
+            {
+                "post_uid": str(post_uid or ""),
+                "payload": dict(payload),
+            }
+        )
         return trigger.REDIS_PUSH_STATUS_PUSHED
 
     monkeypatch.setattr(
@@ -192,7 +197,11 @@ def test_run_manual_db_requeue_once_enqueues_rows_when_capacity_allows(
     )
 
     assert result["enqueued_total"] == 2
-    assert pushed == ["weibo:1", "weibo:2"]
+    assert [item["post_uid"] for item in pushed] == ["weibo:1", "weibo:2"]
+    assert all(
+        bool(cast(dict[str, object], item["payload"]).get("skip_db_processed_guard"))
+        for item in pushed
+    )
 
 
 def test_run_manual_db_requeue_once_skips_duplicate_rows_without_error(

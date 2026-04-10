@@ -5,6 +5,7 @@ from typing import Any
 
 from alphavault.db.turso_queue import (
     CloudPost,
+    is_post_already_processed_success,
     mark_post_failed,
 )
 from alphavault.db.postgres_db import PostgresEngine
@@ -87,6 +88,7 @@ def process_one_redis_payload(
         redis_ai_ack_and_clear_dedup_fn=redis_ai_ack_and_clear_dedup,
         redis_ai_ack_and_push_retry_fn=redis_ai_ack_and_push_retry,
         payload_retry_count_fn=_payload_retry_count,
+        is_post_already_processed_success_fn=is_post_already_processed_success,
         backoff_seconds_fn=backoff_seconds,
         now_epoch_fn=lambda: int(time.time()),
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,

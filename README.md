@@ -92,6 +92,36 @@ export WORKER_ADMIN_TRIGGER_KEY="YOUR_TRIGGER_KEY"
 curl "http://127.0.0.1:8080/api/rss/trigger?key=YOUR_TRIGGER_KEY"
 ```
 
+## 循环补送 AI 重排任务
+这个脚本会循环调用 `/api/admin/requeue-from-db`，默认顺序是：
+
+- `failed`
+- `legacy_unprocessed`
+
+用途：
+
+- 单次接口有 `limit`，脚本会一轮一轮补送
+- 每轮会先真的补送一批，再用 `dry_run=1` 看还剩多少
+- 只要 `dry_run` 看到 `scanned_total = 0` 就停
+- `queue_backlog` 只是拿来观察当前队列压力，不作为停止条件
+- 需要配合正在运行的 worker 一起用，不然只会把任务继续堆进队列
+- 如果 `--platform` 写错，接口没找到任何 source，脚本会直接报错停下
+
+先设置鉴权 key：
+```bash
+export WORKER_ADMIN_TRIGGER_KEY="YOUR_TRIGGER_KEY"
+```
+
+示例：
+```bash
+uv run python scripts/requeue_all_ai_from_db.py --platform weibo --limit 200 --sleep-seconds 5 --max-rounds 200
+```
+
+如果想同时跑所有平台，把 `--platform` 去掉：
+```bash
+uv run python scripts/requeue_all_ai_from_db.py --limit 200 --sleep-seconds 5 --max-rounds 200
+```
+
 ## 导入 `security_master` 标准清单
 先准备标准库：
 

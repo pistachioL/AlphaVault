@@ -97,6 +97,18 @@ LIMIT 1
 """
 
 
+def select_post_processed_success_sql(posts_table: str) -> str:
+    return f"""
+SELECT 1
+FROM {posts_table}
+WHERE post_uid = :post_uid
+  AND processed_at IS NOT NULL
+  AND TRIM(processed_at) <> ''
+  AND final_status IN ('relevant', 'irrelevant')
+LIMIT 1
+"""
+
+
 def select_unprocessed_post_queue_rows_sql(posts_table: str) -> str:
     return f"""
 SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text

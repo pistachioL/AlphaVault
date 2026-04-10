@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Callable
 
 
+def _always_false(*_args: object, **_kwargs: object) -> bool:
+    return False
+
+
 def payload_retry_count(
     payload: dict[str, object],
     *,
@@ -53,6 +57,7 @@ def process_one_redis_payload(
     redis_ai_ack_and_clear_dedup_fn: Callable[..., object],
     redis_ai_ack_and_push_retry_fn: Callable[..., object],
     payload_retry_count_fn: Callable[[dict[str, object]], int],
+    is_post_already_processed_success_fn: Callable[..., bool] = _always_false,
     backoff_seconds_fn: Callable[[int], int],
     now_epoch_fn: Callable[[], int],
     fatal_exceptions: tuple[type[BaseException], ...],
@@ -67,6 +72,18 @@ def process_one_redis_payload(
         return
 
     resolved_post_uid = str(getattr(cloud_post, "post_uid", "") or "").strip()
+    if (
+        resolved_post_uid
+        and not bool(payload.get("skip_db_processed_guard"))
+        and is_post_already_processed_success_fn(engine, post_uid=resolved_post_uid)
+    ):
+        redis_ai_ack_and_clear_dedup_fn(
+            redis_client,
+            redis_queue_key,
+            message_id=message_id,
+            post_uid=resolved_post_uid,
+        )
+        return
 
     prefetched_recent: list[dict[str, object]] = []
 

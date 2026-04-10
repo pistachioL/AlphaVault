@@ -231,6 +231,7 @@ def _build_requeue_payload(row: dict[str, object]) -> dict[str, object]:
         "created_at": str(row.get("created_at") or "").strip(),
         "url": str(row.get("url") or "").strip(),
         "raw_text": str(row.get("raw_text") or ""),
+        "skip_db_processed_guard": True,
     }
 
 

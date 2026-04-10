@@ -267,6 +267,22 @@ def load_post_processed_at(conn: PostgresConnection, *, post_uid: str) -> str | 
     return str(row.get("processed_at") or "")
 
 
+def is_post_already_processed_success(
+    engine_or_conn: PostgresConnection | PostgresEngine,
+    *,
+    post_uid: str,
+) -> bool:
+    resolved_post_uid = str(post_uid or "").strip()
+    if not resolved_post_uid:
+        return False
+    with _use_conn(engine_or_conn) as conn:
+        row = conn.execute(
+            source_queue_sql.select_post_processed_success_sql(_posts_table(conn)),
+            {"post_uid": resolved_post_uid},
+        ).fetchone()
+        return row is not None
+
+
 def load_unprocessed_post_queue_rows(
     engine: PostgresEngine,
     *,

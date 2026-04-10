@@ -278,6 +278,124 @@ def test_process_one_redis_payload_passes_empty_prefetched_recent() -> None:
     assert final_ack_calls == [("1-0", "weibo:1")]
 
 
+def test_process_one_redis_payload_skips_ai_when_post_already_processed() -> None:
+    final_ack_calls: list[tuple[str, str]] = []
+    guard_calls: list[str] = []
+
+    def _is_post_already_processed_success(
+        _engine: object,
+        *,
+        post_uid: str,
+    ) -> bool:
+        guard_calls.append(str(post_uid))
+        return True
+
+    ai_processor_module.process_one_redis_payload(
+        engine=object(),
+        payload={"post_uid": "weibo:done"},
+        message_id="done-1",
+        redis_client=object(),
+        redis_queue_key="queue",
+        config=_config(),
+        limiter=object(),
+        verbose=False,
+        payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
+            post_uid="weibo:done",
+            platform="weibo",
+            platform_post_id="done",
+            author="作者Done",
+            created_at="2026-03-28 10:00:00",
+            url="https://example.com/post/done",
+            raw_text="正文",
+            ai_retry_count=1,
+        ),
+        process_one_post_uid_fn=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("already processed path should not call AI")
+        ),
+        mark_post_failed_fn=lambda **_kwargs: None,
+        redis_ai_push_retry_fn=lambda *_args, **_kwargs: None,
+        redis_ai_ack_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("already processed path should use final ack helper")
+        ),
+        redis_ai_ack_and_push_retry_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("already processed path should not use retry handoff")
+        ),
+        redis_ai_ack_and_clear_dedup_fn=lambda _client,
+        _queue_key,
+        *,
+        message_id,
+        post_uid: final_ack_calls.append((str(message_id), str(post_uid))),
+        payload_retry_count_fn=lambda _payload: 0,
+        backoff_seconds_fn=lambda _count: 1,
+        now_epoch_fn=lambda: 100,
+        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
+        max_retry_count=3,
+        is_post_already_processed_success_fn=_is_post_already_processed_success,
+    )
+
+    assert guard_calls == ["weibo:done"]
+    assert final_ack_calls == [("done-1", "weibo:done")]
+
+
+def test_process_one_redis_payload_skip_db_guard_does_not_recheck_database() -> None:
+    final_ack_calls: list[tuple[str, str]] = []
+    process_calls: list[str] = []
+
+    def _process_one_post_uid(**kwargs) -> bool:  # type: ignore[no-untyped-def]
+        process_calls.append(str(kwargs.get("post_uid") or ""))
+        return True
+
+    ai_processor_module.process_one_redis_payload(
+        engine=object(),
+        payload={"post_uid": "weibo:requeue", "skip_db_processed_guard": True},
+        message_id="requeue-1",
+        redis_client=object(),
+        redis_queue_key="queue",
+        config=_config(),
+        limiter=object(),
+        verbose=False,
+        payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
+            post_uid="weibo:requeue",
+            platform="weibo",
+            platform_post_id="requeue",
+            author="作者Requeue",
+            created_at="2026-03-28 10:00:00",
+            url="https://example.com/post/requeue",
+            raw_text="正文",
+            ai_retry_count=1,
+        ),
+        process_one_post_uid_fn=_process_one_post_uid,
+        mark_post_failed_fn=lambda **_kwargs: None,
+        redis_ai_push_retry_fn=lambda *_args, **_kwargs: None,
+        redis_ai_ack_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("success path should use final ack helper")
+        ),
+        redis_ai_ack_and_push_retry_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("success path should not use retry handoff")
+        ),
+        redis_ai_ack_and_clear_dedup_fn=lambda _client,
+        _queue_key,
+        *,
+        message_id,
+        post_uid: final_ack_calls.append((str(message_id), str(post_uid))),
+        payload_retry_count_fn=lambda _payload: 0,
+        backoff_seconds_fn=lambda _count: 1,
+        now_epoch_fn=lambda: 100,
+        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
+        max_retry_count=3,
+        is_post_already_processed_success_fn=lambda _engine, *, post_uid: (
+            _ for _ in ()
+        ).throw(
+            AssertionError(
+                f"skip-db-guard path should not recheck database: {post_uid}"
+            )
+        ),
+    )
+
+    assert process_calls == ["weibo:requeue"]
+    assert final_ack_calls == [("requeue-1", "weibo:requeue")]
+
+
 def test_process_one_redis_payload_acks_when_payload_cannot_build_cloud_post() -> None:
     ack_calls: list[str] = []
 
