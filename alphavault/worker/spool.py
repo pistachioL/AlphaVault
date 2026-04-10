@@ -491,3 +491,13 @@ def recover_spool_to_turso_and_redis(
         return handled_posts, queued_redis, deleted_done, True
 
     return handled_posts, queued_redis, deleted_done, False
+
+
+__all__ = [
+    "sha1_short",
+    "ensure_spool_dir",
+    "spool_write",
+    "spool_delete",
+    "flush_spool_to_turso",
+    "recover_spool_to_turso_and_redis",
+]

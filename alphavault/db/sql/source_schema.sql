@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.posts (
     created_at TEXT NOT NULL,
     url TEXT NOT NULL,
     raw_text TEXT NOT NULL,
-    final_status TEXT NOT NULL CHECK (final_status IN ('relevant', 'irrelevant')),
+    final_status TEXT NOT NULL CHECK (final_status IN ('relevant', 'irrelevant', 'failed')),
     invest_score REAL,
     processed_at TEXT,
     model TEXT,

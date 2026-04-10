@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 import json
-from pathlib import Path
+import time
 from typing import Any, Callable, Sequence
 
 
@@ -62,7 +62,7 @@ def dedup_post_uids(post_uids: Sequence[object]) -> list[str]:
     return deduped
 
 
-def schedule_ai_from_redis(
+def schedule_ai_from_stream(
     *,
     executor: Any,
     engine: Any,
@@ -71,6 +71,7 @@ def schedule_ai_from_redis(
     inflight_futures: set[Future],
     inflight_owner_by_future: dict[Future, str],
     inflight_owner: str,
+    consumer_name: str,
     wakeup_event: Any,
     config: Any,
     limiter: Any,
@@ -78,17 +79,19 @@ def schedule_ai_from_redis(
     redis_client: Any,
     redis_queue_key: str,
     source_name: str = "",
-    spool_dir: Path | str,
-    lease_seconds: int = 3600,
     prune_inflight_futures_fn: Callable[[set[Future], dict[Future, str]], None],
     compute_rss_available_slots_fn: Callable[..., int],
-    pop_to_processing_fn: Callable[..., str | None],
-    ack_processing_fn: Callable[..., None],
+    move_due_retry_to_stream_fn: Callable[..., int],
+    claim_stuck_messages_fn: Callable[..., list[dict[str, str]]],
+    read_group_messages_fn: Callable[..., list[dict[str, str]]],
+    ack_message_fn: Callable[..., None],
     process_one_redis_payload_fn: Callable[..., None],
     fatal_exceptions: tuple[type[BaseException], ...],
+    stuck_seconds: int,
 ) -> tuple[int, bool]:
     prune_inflight_futures_fn(inflight_futures, inflight_owner_by_future)
     rss_inflight_now = int(len(inflight_futures))
+    has_error = False
     try:
         low_inflight_now = max(0, int(low_inflight_now_get()))
     except Exception:
@@ -101,42 +104,97 @@ def schedule_ai_from_redis(
     if available <= 0:
         return 0, False
 
-    scheduled = 0
-    for _ in range(max(1, int(available))):
-        if scheduled >= available:
-            break
+    messages: list[dict[str, str]] = []
+    try:
+        move_due_retry_to_stream_fn(
+            redis_client,
+            redis_queue_key,
+            now_epoch=int(time.time()),
+            max_items=int(available),
+            verbose=bool(verbose),
+        )
+    except BaseException as err:
+        if isinstance(err, fatal_exceptions):
+            raise
+        has_error = True
+        if verbose:
+            print(
+                f"[ai] redis_retry_to_stream_error owner={inflight_owner} "
+                f"{type(err).__name__}: {err}",
+                flush=True,
+            )
+    try:
+        messages.extend(
+            claim_stuck_messages_fn(
+                redis_client,
+                redis_queue_key,
+                consumer_name=str(consumer_name or "").strip(),
+                min_idle_ms=max(1, int(stuck_seconds)) * 1000,
+                count=int(available),
+            )
+        )
+    except BaseException as err:
+        if isinstance(err, fatal_exceptions):
+            raise
+        if verbose:
+            print(
+                f"[ai] redis_claim_error owner={inflight_owner} {type(err).__name__}: {err}",
+                flush=True,
+            )
+        return 0, True
+
+    remaining = max(0, int(available) - len(messages))
+    if remaining > 0:
         try:
-            msg = pop_to_processing_fn(redis_client, redis_queue_key)
+            messages.extend(
+                read_group_messages_fn(
+                    redis_client,
+                    redis_queue_key,
+                    consumer_name=str(consumer_name or "").strip(),
+                    count=int(remaining),
+                )
+            )
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
             if verbose:
                 print(
-                    f"[ai] redis_pop_error owner={inflight_owner} {type(err).__name__}: {err}",
+                    f"[ai] redis_read_error owner={inflight_owner} {type(err).__name__}: {err}",
                     flush=True,
                 )
-            return scheduled, True
-        if not msg:
+            return 0, True
+
+    scheduled = 0
+    for message in messages:
+        if scheduled >= available:
             break
+        message_id = str(message.get("message_id") or "").strip()
+        payload_text = str(message.get("payload") or "").strip()
+        if not message_id or not payload_text:
+            continue
         try:
-            payload = json.loads(msg)
+            payload = json.loads(payload_text)
         except Exception as err:
             if verbose:
-                print(f"[ai] redis_bad_payload {type(err).__name__}: {err}", flush=True)
+                print(
+                    f"[ai] redis_bad_payload message_id={message_id} "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
             try:
-                ack_processing_fn(redis_client, redis_queue_key, str(msg))
+                ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
                 pass
             continue
         if not isinstance(payload, dict):
             try:
-                ack_processing_fn(redis_client, redis_queue_key, str(msg))
+                ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
                 pass
             continue
         if not str(payload.get("post_uid") or "").strip():
             try:
-                ack_processing_fn(redis_client, redis_queue_key, str(msg))
+                ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
                 pass
             continue
@@ -145,21 +203,20 @@ def schedule_ai_from_redis(
             process_one_redis_payload_fn,
             engine=engine,
             payload=payload,
-            processing_msg=str(msg),
+            message_id=str(message_id),
             redis_client=redis_client,
             redis_queue_key=redis_queue_key,
             source_name=str(source_name or "").strip(),
-            spool_dir=spool_dir,
             config=config,
             limiter=limiter,
             verbose=bool(verbose),
-            lease_seconds=max(1, int(lease_seconds)),
+            max_retry_count=max(0, int(getattr(config, "ai_retries", 0) or 0)),
         )
         fut.add_done_callback(lambda _f: wakeup_event.set())
         inflight_futures.add(fut)
         inflight_owner_by_future[fut] = str(inflight_owner or "").strip()
         scheduled += 1
-    return scheduled, False
+    return scheduled, bool(has_error)
 
 
 def schedule_ai(
@@ -172,6 +229,7 @@ def schedule_ai(
     inflight_futures: set[Future],
     inflight_owner_by_future: dict[Future, str],
     inflight_owner: str,
+    consumer_name: str,
     wakeup_event: Any,
     config: Any,
     limiter: Any,
@@ -179,21 +237,20 @@ def schedule_ai(
     redis_client: Any,
     redis_queue_key: str,
     source_name: str = "",
-    spool_dir: Path | None,
-    lease_seconds: int = 3600,
-    schedule_ai_from_redis_fn: Callable[..., tuple[int, bool]],
+    schedule_ai_from_stream_fn: Callable[..., tuple[int, bool]],
+    stuck_seconds: int = 3600,
 ) -> tuple[int, bool]:
     if engine is None:
         return 0, False
     has_redis_queue = bool(redis_client) and bool(str(redis_queue_key or "").strip())
-    if not has_redis_queue or spool_dir is None:
+    if not has_redis_queue:
         if verbose:
             print(
                 f"[ai] redis_required owner={inflight_owner} platform={platform}",
                 flush=True,
             )
         return 0, True
-    return schedule_ai_from_redis_fn(
+    return schedule_ai_from_stream_fn(
         executor=executor,
         engine=engine,
         ai_cap=ai_cap,
@@ -201,6 +258,7 @@ def schedule_ai(
         inflight_futures=inflight_futures,
         inflight_owner_by_future=inflight_owner_by_future,
         inflight_owner=inflight_owner,
+        consumer_name=consumer_name,
         wakeup_event=wakeup_event,
         config=config,
         limiter=limiter,
@@ -208,8 +266,7 @@ def schedule_ai(
         redis_client=redis_client,
         redis_queue_key=str(redis_queue_key),
         source_name=str(source_name or "").strip(),
-        spool_dir=spool_dir,
-        lease_seconds=max(1, int(lease_seconds)),
+        stuck_seconds=max(1, int(stuck_seconds)),
     )
 
 
@@ -219,5 +276,5 @@ __all__ = [
     "compute_rss_available_slots",
     "dedup_post_uids",
     "schedule_ai",
-    "schedule_ai_from_redis",
+    "schedule_ai_from_stream",
 ]

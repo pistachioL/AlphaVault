@@ -48,9 +48,6 @@ def test_open_executors_does_not_create_removed_queue_executors() -> None:
 def test_run_sources_once_schedules_all_rss_before_any_ai(monkeypatch) -> None:
     events: list[str] = []
 
-    def _record_redis_due(**kwargs):  # type: ignore[no-untyped-def]
-        events.append(f"redis_due:{kwargs['source'].config.name}")
-
     def _record_maintenance(**kwargs):  # type: ignore[no-untyped-def]
         events.append(f"maintenance:{kwargs['source'].config.name}")
         return False
@@ -82,11 +79,6 @@ def test_run_sources_once_schedules_all_rss_before_any_ai(monkeypatch) -> None:
             },
             False,
         ),
-    )
-    monkeypatch.setattr(
-        worker_loop_source_tick,
-        "_run_redis_due_maintenance",
-        _record_redis_due,
     )
     monkeypatch.setattr(
         worker_loop_source_tick,
@@ -151,9 +143,7 @@ def test_run_sources_once_schedules_all_rss_before_any_ai(monkeypatch) -> None:
     assert events == [
         "rss:weibo",
         "rss:xueqiu",
-        "redis_due:weibo",
         "maintenance:weibo",
-        "redis_due:xueqiu",
         "maintenance:xueqiu",
         "ai:weibo",
         "ai:xueqiu",
@@ -164,9 +154,6 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
     monkeypatch,
 ) -> None:
     events: list[str] = []
-
-    def _record_redis_due(**kwargs):  # type: ignore[no-untyped-def]
-        events.append(f"redis_due:{kwargs['source'].config.name}")
 
     def _record_maintenance(**kwargs):  # type: ignore[no-untyped-def]
         events.append(f"maintenance:{kwargs['source'].config.name}")
@@ -199,11 +186,6 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
             },
             False,
         ),
-    )
-    monkeypatch.setattr(
-        worker_loop_source_tick,
-        "_run_redis_due_maintenance",
-        _record_redis_due,
     )
     monkeypatch.setattr(
         worker_loop_source_tick,
@@ -269,9 +251,7 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
     assert events == [
         "rss:weibo",
         "rss:xueqiu",
-        "redis_due:weibo",
         "maintenance:weibo",
-        "redis_due:xueqiu",
         "maintenance:xueqiu",
         "ai:weibo",
         "low:weibo",

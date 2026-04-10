@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import time
 
 from alphavault.rss.utils import CST
 from alphavault.worker import cycle_runner
-from alphavault.worker import maintenance
 from alphavault.worker import periodic_jobs
 from alphavault.worker.job_state import WORKER_PROGRESS_STAGE_CYCLE
 from alphavault.worker.progress_state import save_worker_progress_state
-from alphavault.worker.redis_queue import redis_ai_move_due_delayed_to_ready
-from alphavault.worker.worker_constants import REDIS_AI_DUE_MAINTENANCE_MAX_ITEMS
 from alphavault.worker.worker_loop_ai import schedule_ai_for_source
 from alphavault.worker.worker_loop_jobs import collect_finished_jobs
 from alphavault.worker.worker_loop_low_priority import schedule_low_priority_jobs
@@ -22,8 +18,6 @@ from alphavault.worker.worker_loop_models import (
 )
 from alphavault.worker.worker_loop_rss import maybe_schedule_rss_ingest
 from alphavault.worker.worker_loop_turso import ensure_source_turso_ready
-
-_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 @dataclass(frozen=True)
@@ -38,19 +32,6 @@ def _resolve_source_identity(source) -> tuple[str, str]:
     source_name = str(source.config.name or "").strip()
     platform = str(source.config.platform or "").strip()
     return source_name, platform
-
-
-def _run_redis_due_maintenance(*, source, ctx: SourceTickContext) -> None:
-    maintenance.maybe_run_redis_due_maintenance(
-        source=source,
-        redis_client=ctx.redis_client,
-        worker_interval_seconds=float(ctx.worker_interval_seconds),
-        verbose=ctx.verbose,
-        now_fn=time.time,
-        move_due_delayed_to_ready_fn=redis_ai_move_due_delayed_to_ready,
-        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
-        max_items=int(REDIS_AI_DUE_MAINTENANCE_MAX_ITEMS),
-    )
 
 
 def _schedule_rss_and_spool(
@@ -251,7 +232,6 @@ def run_prepared_source_maintenance(
     state: SourceTickState,
 ) -> PreparedSourceTick:
     errors = dict(prepared.errors)
-    _run_redis_due_maintenance(source=source, ctx=ctx)
     errors["maintenance_error"] = _run_source_maintenance(
         source=source,
         source_name=prepared.source_name,

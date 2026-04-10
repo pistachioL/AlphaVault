@@ -43,8 +43,6 @@ class WorkerSourceRuntime:
     rss_next_ingest_at: float
     redis_due_maintenance_next_at: float = 0.0
     redis_due_maintenance_empty_checks: int = 0
-    maintenance_recovery_cycle_count: int = 0
-    maintenance_recovery_force_next: bool = False
     rss_ingest_future: Future | None = None
     turso_ready: bool = False
     turso_next_ready_check_at: float = 0.0

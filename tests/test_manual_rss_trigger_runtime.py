@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from alphavault.worker import manual_rss_trigger as trigger
 from alphavault.worker.cli import RSSSourceConfig
@@ -11,38 +12,25 @@ def _build_source_config() -> RSSSourceConfig:
         name="weibo",
         platform="weibo",
         rss_urls=["https://example.com/rss"],
-        database_url="libsql://example.turso.io",
+        database_url="postgres://example",
         auth_token="token",
         author="",
         user_id=None,
     )
 
 
-def test_run_manual_ingest_for_source_recovers_spool_to_redis(
-    monkeypatch, tmp_path
-) -> None:
-    recover_calls: list[int] = []
-    (Path(tmp_path) / "pending.json").write_text("{}", encoding="utf-8")
+def test_run_manual_ingest_for_source_uses_stream_only(monkeypatch, tmp_path) -> None:
+    seen: dict[str, object] = {}
 
     monkeypatch.setattr(
         trigger, "ensure_postgres_engine", lambda *_args, **_kwargs: object()
     )
-    monkeypatch.setattr(
-        trigger,
-        "ingest_rss_many_once",
-        lambda **_kwargs: (2, False),
-    )
 
-    def _fake_recover_spool(**kwargs):  # type: ignore[no-untyped-def]
-        recover_calls.append(int(kwargs.get("max_items", 0)))
-        return 0, 0, 0, False
+    def _fake_ingest(**kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return 2, False
 
-    monkeypatch.setattr(
-        trigger,
-        "recover_spool_to_turso_and_redis",
-        _fake_recover_spool,
-        raising=False,
-    )
+    monkeypatch.setattr(trigger, "ingest_rss_many_once", _fake_ingest)
 
     result = trigger._run_manual_ingest_for_source(
         source=_build_source_config(),
@@ -57,182 +45,278 @@ def test_run_manual_ingest_for_source_recovers_spool_to_redis(
 
     assert result["accepted"] == 2
     assert result["enqueue_error"] is False
-    assert len(recover_calls) >= 1
+    assert seen["redis_queue_key"] == "q"
+    assert Path(str(seen["spool_dir"])) == Path(tmp_path)
 
 
-def test_recover_source_spool_to_redis_keeps_looping_when_files_remain(
-    monkeypatch, tmp_path
+def test_run_manual_db_requeue_once_dry_run_reads_failed_rows_without_enqueue(
+    monkeypatch,
 ) -> None:
-    recover_calls = {"count": 0}
-    pending_path = Path(tmp_path) / "pending.json"
-    pending_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        trigger,
+        "resolve_rss_source_configs",
+        lambda _args: [_build_source_config()],
+    )
+    monkeypatch.setattr(
+        trigger, "ensure_postgres_engine", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(trigger, "try_get_redis", lambda: (object(), "queue"))
+    monkeypatch.setattr(
+        trigger,
+        "load_failed_post_queue_rows",
+        lambda _engine, *, limit: [
+            {
+                "post_uid": "weibo:1",
+                "platform": "weibo",
+                "platform_post_id": "1",
+                "author": "作者A",
+                "created_at": "2026-04-09 10:00:00",
+                "url": "https://example.com/1",
+                "raw_text": "正文1",
+            }
+        ][:limit],
+    )
+    monkeypatch.setattr(
+        trigger,
+        "load_unprocessed_post_queue_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry run failed mode should not read legacy rows")
+        ),
+    )
+    monkeypatch.setattr(
+        trigger,
+        "redis_ai_pressure_snapshot",
+        lambda *_args, **_kwargs: {
+            "pending_count": 0,
+            "unread_count": 0,
+            "retry_count": 0,
+            "total_backlog": 0,
+        },
+    )
+    monkeypatch.setattr(
+        trigger,
+        "redis_try_push_ai_message_status",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("dry run should not enqueue")
+        ),
+    )
 
-    monkeypatch.setattr(trigger, "MANUAL_SPOOL_RECOVER_BATCH_SIZE", 2)
+    result = trigger.run_manual_db_requeue_once(
+        mode="failed",
+        platform=None,
+        limit=10,
+        dry_run=True,
+    )
 
-    def _fake_recover_spool(**_kwargs):  # type: ignore[no-untyped-def]
-        recover_calls["count"] += 1
-        if int(recover_calls["count"]) == 1:
-            return 1, 1, 0, False
-        pending_path.unlink(missing_ok=True)
-        return 1, 1, 0, False
+    assert result["mode"] == "failed"
+    assert result["dry_run"] is True
+    assert result["scanned_total"] == 1
+    assert result["enqueued_total"] == 0
+
+
+def test_run_manual_db_requeue_once_enqueues_rows_when_capacity_allows(
+    monkeypatch,
+) -> None:
+    pushed: list[str] = []
+
+    def _push_status(
+        _client,
+        _queue_key,
+        *,
+        post_uid,
+        payload,
+        ttl_seconds,
+        queue_maxlen,
+        verbose,
+    ) -> str:
+        del payload, ttl_seconds, queue_maxlen, verbose
+        pushed.append(str(post_uid or ""))
+        return trigger.REDIS_PUSH_STATUS_PUSHED
 
     monkeypatch.setattr(
         trigger,
-        "recover_spool_to_turso_and_redis",
-        _fake_recover_spool,
-        raising=False,
+        "resolve_rss_source_configs",
+        lambda _args: [_build_source_config()],
+    )
+    monkeypatch.setattr(
+        trigger, "ensure_postgres_engine", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(trigger, "try_get_redis", lambda: (object(), "queue"))
+    monkeypatch.setattr(trigger, "resolve_redis_ai_queue_maxlen", lambda: 100)
+    monkeypatch.setattr(trigger, "resolve_redis_dedup_ttl_seconds", lambda: 123)
+    monkeypatch.setattr(
+        trigger,
+        "load_failed_post_queue_rows",
+        lambda _engine, *, limit: [
+            {
+                "post_uid": "weibo:1",
+                "platform": "weibo",
+                "platform_post_id": "1",
+                "author": "作者A",
+                "created_at": "2026-04-09 10:00:00",
+                "url": "https://example.com/1",
+                "raw_text": "正文1",
+            },
+            {
+                "post_uid": "weibo:2",
+                "platform": "weibo",
+                "platform_post_id": "2",
+                "author": "作者B",
+                "created_at": "2026-04-09 10:01:00",
+                "url": "https://example.com/2",
+                "raw_text": "正文2",
+            },
+        ][:limit],
+    )
+    monkeypatch.setattr(
+        trigger,
+        "redis_ai_pressure_snapshot",
+        lambda *_args, **_kwargs: {
+            "pending_count": 1,
+            "unread_count": 1,
+            "retry_count": 0,
+            "total_backlog": 2,
+        },
+    )
+    monkeypatch.setattr(
+        trigger,
+        "redis_try_push_ai_message_status",
+        _push_status,
     )
 
-    flushed, has_error = trigger._recover_source_spool_to_redis(
-        spool_dir=Path(tmp_path),
-        engine=object(),  # type: ignore[arg-type]
-        redis_client=object(),
-        redis_queue_key="q",
+    result = trigger.run_manual_db_requeue_once(
+        mode="failed",
+        platform="weibo",
+        limit=2,
+        dry_run=False,
     )
 
-    assert flushed == 2
-    assert has_error is False
-    assert int(recover_calls["count"]) == 2
+    assert result["enqueued_total"] == 2
+    assert pushed == ["weibo:1", "weibo:2"]
 
 
-def test_recover_source_spool_to_redis_does_not_fail_when_new_file_appears(
-    monkeypatch, tmp_path
+def test_run_manual_db_requeue_once_skips_duplicate_rows_without_error(
+    monkeypatch,
 ) -> None:
-    recover_calls = {"count": 0}
-    existing_path = Path(tmp_path) / "existing-duplicate.json"
-    pending_path = Path(tmp_path) / "new-pending.json"
-    existing_path.write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr(trigger, "MANUAL_SPOOL_RECOVER_BATCH_SIZE", 2)
-
-    def _fake_recover_spool(**_kwargs):  # type: ignore[no-untyped-def]
-        recover_calls["count"] += 1
-        if int(recover_calls["count"]) == 1:
-            pending_path.write_text("{}", encoding="utf-8")
-            return 0, 0, 0, False
-        if int(recover_calls["count"]) == 2:
-            pending_path.unlink(missing_ok=True)
-            return 1, 1, 0, False
-        return 0, 0, 0, False
+    pushed: list[str] = []
 
     monkeypatch.setattr(
         trigger,
-        "recover_spool_to_turso_and_redis",
-        _fake_recover_spool,
-        raising=False,
+        "resolve_rss_source_configs",
+        lambda _args: [_build_source_config()],
+    )
+    monkeypatch.setattr(
+        trigger, "ensure_postgres_engine", lambda *_args, **_kwargs: object()
+    )
+    monkeypatch.setattr(trigger, "try_get_redis", lambda: (object(), "queue"))
+    monkeypatch.setattr(trigger, "resolve_redis_ai_queue_maxlen", lambda: 100)
+    monkeypatch.setattr(trigger, "resolve_redis_dedup_ttl_seconds", lambda: 123)
+    monkeypatch.setattr(
+        trigger,
+        "load_failed_post_queue_rows",
+        lambda _engine, *, limit: [
+            {
+                "post_uid": "weibo:1",
+                "platform": "weibo",
+                "platform_post_id": "1",
+                "author": "作者A",
+                "created_at": "2026-04-09 10:00:00",
+                "url": "https://example.com/1",
+                "raw_text": "正文1",
+            },
+            {
+                "post_uid": "weibo:2",
+                "platform": "weibo",
+                "platform_post_id": "2",
+                "author": "作者B",
+                "created_at": "2026-04-09 10:01:00",
+                "url": "https://example.com/2",
+                "raw_text": "正文2",
+            },
+        ][:limit],
+    )
+    monkeypatch.setattr(
+        trigger,
+        "redis_ai_pressure_snapshot",
+        lambda *_args, **_kwargs: {
+            "pending_count": 0,
+            "unread_count": 0,
+            "retry_count": 0,
+            "total_backlog": 0,
+        },
     )
 
-    flushed, has_error = trigger._recover_source_spool_to_redis(
-        spool_dir=Path(tmp_path),
-        engine=object(),  # type: ignore[arg-type]
-        redis_client=object(),
-        redis_queue_key="q",
-    )
-
-    assert flushed == 1
-    assert has_error is False
-    assert int(recover_calls["count"]) == 3
-
-
-def test_recover_source_spool_to_redis_duplicate_file_is_not_reported_as_error(
-    monkeypatch, tmp_path
-) -> None:
-    pending_path = Path(tmp_path) / "duplicate.json"
-    pending_path.write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr(trigger, "MANUAL_SPOOL_RECOVER_BATCH_SIZE", 2)
-
-    def _fake_recover_spool(**_kwargs):  # type: ignore[no-untyped-def]
-        return 0, 0, 0, False
+    def _push_status(
+        _client,
+        _queue_key,
+        *,
+        post_uid,
+        payload,
+        ttl_seconds,
+        queue_maxlen,
+        verbose,
+    ) -> str:
+        del payload, ttl_seconds, queue_maxlen, verbose
+        resolved_post_uid = str(post_uid or "")
+        if resolved_post_uid == "weibo:1":
+            return trigger.REDIS_PUSH_STATUS_DUPLICATE
+        pushed.append(resolved_post_uid)
+        return trigger.REDIS_PUSH_STATUS_PUSHED
 
     monkeypatch.setattr(
         trigger,
-        "recover_spool_to_turso_and_redis",
-        _fake_recover_spool,
-        raising=False,
+        "redis_try_push_ai_message_status",
+        _push_status,
     )
 
-    flushed, has_error = trigger._recover_source_spool_to_redis(
-        spool_dir=Path(tmp_path),
-        engine=object(),  # type: ignore[arg-type]
-        redis_client=object(),
-        redis_queue_key="q",
+    result = trigger.run_manual_db_requeue_once(
+        mode="failed",
+        platform="weibo",
+        limit=2,
+        dry_run=False,
     )
 
-    assert flushed == 0
-    assert has_error is False
-    assert pending_path.exists()
+    assert result["scanned_total"] == 2
+    assert result["enqueued_total"] == 1
+    assert pushed == ["weibo:2"]
 
 
-def test_recover_source_spool_to_redis_runs_when_only_processing_file_exists(
-    monkeypatch, tmp_path
-) -> None:
-    recover_calls = {"count": 0}
-    processing_path = Path(tmp_path) / "pending.json.processing"
-    processing_path.write_text("{}", encoding="utf-8")
-
-    def _fake_recover_spool(**_kwargs):  # type: ignore[no-untyped-def]
-        recover_calls["count"] += 1
-        processing_path.unlink(missing_ok=True)
-        return 0, 0, 0, False
-
+def test_run_manual_db_requeue_once_skips_when_queue_is_full(monkeypatch) -> None:
     monkeypatch.setattr(
         trigger,
-        "recover_spool_to_turso_and_redis",
-        _fake_recover_spool,
-        raising=False,
+        "resolve_rss_source_configs",
+        lambda _args: [_build_source_config()],
     )
-
-    flushed, has_error = trigger._recover_source_spool_to_redis(
-        spool_dir=Path(tmp_path),
-        engine=object(),  # type: ignore[arg-type]
-        redis_client=object(),
-        redis_queue_key="q",
+    monkeypatch.setattr(
+        trigger, "ensure_postgres_engine", lambda *_args, **_kwargs: object()
     )
-
-    assert flushed == 0
-    assert has_error is False
-    assert int(recover_calls["count"]) == 1
-
-
-def test_recover_source_spool_to_redis_expands_scan_when_front_batch_is_duplicate(
-    monkeypatch, tmp_path
-) -> None:
-    recover_calls: list[int] = []
-    duplicate_a = Path(tmp_path) / "a-duplicate.json"
-    duplicate_b = Path(tmp_path) / "b-duplicate.json"
-    recoverable = Path(tmp_path) / "c-recoverable.json"
-    duplicate_a.write_text("{}", encoding="utf-8")
-    duplicate_b.write_text("{}", encoding="utf-8")
-    recoverable.write_text("{}", encoding="utf-8")
-
-    monkeypatch.setattr(trigger, "MANUAL_SPOOL_RECOVER_BATCH_SIZE", 2)
-
-    def _fake_recover_spool(**kwargs):  # type: ignore[no-untyped-def]
-        max_items = int(kwargs.get("max_items", 0))
-        recover_calls.append(max_items)
-        if len(recover_calls) == 1:
-            return 0, 0, 0, False
-        if len(recover_calls) == 2:
-            recoverable.unlink(missing_ok=True)
-            return 1, 1, 0, False
-        return 0, 0, 0, False
-
+    monkeypatch.setattr(trigger, "try_get_redis", lambda: (object(), "queue"))
+    monkeypatch.setattr(trigger, "resolve_redis_ai_queue_maxlen", lambda: 100)
     monkeypatch.setattr(
         trigger,
-        "recover_spool_to_turso_and_redis",
-        _fake_recover_spool,
-        raising=False,
+        "redis_ai_pressure_snapshot",
+        lambda *_args, **_kwargs: {
+            "pending_count": 40,
+            "unread_count": 40,
+            "retry_count": 20,
+            "total_backlog": 100,
+        },
+    )
+    monkeypatch.setattr(
+        trigger,
+        "load_failed_post_queue_rows",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("full queue should skip DB scan")
+        ),
     )
 
-    flushed, has_error = trigger._recover_source_spool_to_redis(
-        spool_dir=Path(tmp_path),
-        engine=object(),  # type: ignore[arg-type]
-        redis_client=object(),
-        redis_queue_key="q",
+    result = trigger.run_manual_db_requeue_once(
+        mode="failed",
+        platform="weibo",
+        limit=10,
+        dry_run=False,
     )
 
-    assert flushed == 1
-    assert has_error is False
-    assert len(recover_calls) >= 2
-    assert max(recover_calls) >= 3
+    assert result["enqueued_total"] == 0
+    source_results = cast(list[dict[str, object]], result["sources"])
+    assert source_results[0]["skipped_pressure"] is True

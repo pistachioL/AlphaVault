@@ -118,6 +118,16 @@ LIMIT :limit
 """
 
 
+def select_failed_post_queue_rows_sql(posts_table: str) -> str:
+    return f"""
+SELECT post_uid, platform, platform_post_id, author, created_at, url, raw_text
+FROM {posts_table}
+WHERE final_status = 'failed'
+ORDER BY processed_at DESC, ingested_at DESC, post_uid DESC
+LIMIT :limit
+"""
+
+
 def delete_assertions_by_post_uid_sql(assertions_table: str) -> str:
     return f"DELETE FROM {assertions_table} WHERE post_uid = :post_uid"
 

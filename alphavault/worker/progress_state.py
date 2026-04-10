@@ -10,7 +10,7 @@ from alphavault.worker.job_state import (
     save_worker_job_cursor,
     worker_progress_state_key,
 )
-from alphavault.worker.redis_queue import (
+from alphavault.worker.redis_stream_queue import (
     redis_ai_due_count,
 )
 from alphavault.worker.turso_runtime import (

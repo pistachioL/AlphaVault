@@ -79,7 +79,7 @@ uv run python weibo_rss_turso_worker.py --verbose
 ## 手动触发 RSS 抓取 API
 先设置鉴权 key：
 ```bash
-export RSS_MANUAL_TRIGGER_KEY="YOUR_TRIGGER_KEY"
+export WORKER_ADMIN_TRIGGER_KEY="YOUR_TRIGGER_KEY"
 ```
 
 接口：

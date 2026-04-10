@@ -23,14 +23,14 @@ from alphavault.weibo.thread_text import (
     format_weibo_thread_text,
     IMAGE_LINE_TEMPLATE,
 )
-from alphavault.worker.redis_queue import (
+from alphavault.worker.redis_stream_queue import (
     REDIS_PUSH_STATUS_DUPLICATE,
     REDIS_PUSH_STATUS_ERROR,
     REDIS_PUSH_STATUS_PUSHED,
+    resolve_redis_ai_queue_maxlen,
     resolve_redis_dedup_ttl_seconds,
-    redis_try_push_ai_dedup_status,
+    redis_try_push_ai_message_status,
 )
-from alphavault.worker.spool import spool_write
 
 RSS_LOG_PREFIX = "[rss]"
 RSS_LOG_EVENT_ACCEPTED = "accepted"
@@ -108,12 +108,13 @@ def _try_push_to_redis_status(
 ) -> str:
     if not redis_client or not redis_queue_key or not post_uid:
         return REDIS_PUSH_STATUS_ERROR
-    return redis_try_push_ai_dedup_status(
+    return redis_try_push_ai_message_status(
         redis_client,
         redis_queue_key,
         post_uid=post_uid,
         payload=payload,
         ttl_seconds=resolve_redis_dedup_ttl_seconds(),
+        queue_maxlen=resolve_redis_ai_queue_maxlen(),
         verbose=bool(verbose),
     )
 
@@ -271,6 +272,7 @@ def ingest_rss_many_once(
 ) -> Tuple[int, bool]:
     del engine
     del enqueue_spooled_payload
+    del spool_dir
     accepted = 0
     accepted_per_user: dict[str, int] = {}
     enqueue_error = False
@@ -430,31 +432,11 @@ def ingest_rss_many_once(
                     REDIS_PUSH_STATUS_PUSHED,
                 ):
                     enqueue_error = True
-
-            try:
-                spool_write(spool_dir, post_uid, payload)
-            except Exception as err:
-                enqueue_error = True
-                if verbose:
-                    print(
-                        f"[spool] enqueue_error post_uid={post_uid} "
-                        f"spool={type(err).__name__}: {err} "
-                        f"redis_fallback={1 if redis_status != REDIS_PUSH_STATUS_ERROR else 0}",
-                        flush=True,
-                    )
                 continue
 
-            _mark_item_accepted(
-                post_uid=post_uid,
-                resolved_author=resolved_author,
-                entry_index=entry_index,
-                entry_total=entry_total,
-                feed_index=feed_index,
-                feed_total=feed_total,
-                feed_counter_key=feed_counter_key,
-            )
-            seen_post_uids.add(post_uid)
-            seen_urls.add(link)
+            if redis_status == REDIS_PUSH_STATUS_DUPLICATE:
+                continue
+            enqueue_error = True
 
         if verbose:
             print(

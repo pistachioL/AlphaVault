@@ -524,3 +524,28 @@ def redis_ai_ack_and_cleanup(
             pass
     del lease_token
     return True
+
+
+__all__ = [
+    "try_get_redis",
+    "resolve_redis_dedup_ttl_seconds",
+    "resolve_redis_ai_queue_maxlen",
+    "redis_ai_ready_key",
+    "redis_ai_processing_key",
+    "redis_ai_delayed_key",
+    "redis_ai_lease_key",
+    "redis_try_push_dedup_status",
+    "redis_try_push_dedup",
+    "redis_try_push_ai_dedup_status",
+    "redis_ai_try_claim_lease",
+    "redis_ai_release_lease",
+    "redis_ai_requeue_processing_without_lease",
+    "redis_ai_pop_to_processing",
+    "redis_ai_ack_processing",
+    "redis_ai_push_delayed",
+    "redis_ai_move_due_delayed_to_ready",
+    "redis_ai_due_count",
+    "redis_ai_pending_count",
+    "redis_ai_clear_stale_dedup",
+    "redis_ai_ack_and_cleanup",
+]

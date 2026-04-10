@@ -8,7 +8,8 @@ from starlette.responses import JSONResponse
 
 from alphavault.env import load_dotenv_if_present
 from alphavault.worker.manual_rss_trigger import (
-    load_manual_rss_trigger_key,
+    load_worker_admin_trigger_key,
+    run_manual_db_requeue_once,
     run_manual_rss_ingest_once,
 )
 from alphavault_reflex.organizer_state import OrganizerState
@@ -24,6 +25,7 @@ from alphavault_reflex.research_state import stock_browser_title_var
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 MANUAL_RSS_TRIGGER_API_PATH = "/api/rss/trigger"
+MANUAL_DB_REQUEUE_API_PATH = "/api/admin/requeue-from-db"
 
 load_dotenv_if_present()
 
@@ -66,7 +68,7 @@ app.add_page(
 
 
 async def _manual_rss_trigger_get(request: Request) -> JSONResponse:
-    expected_key = load_manual_rss_trigger_key()
+    expected_key = load_worker_admin_trigger_key()
     if not expected_key:
         return JSONResponse(
             {"ok": False, "error": "missing_manual_trigger_key"},
@@ -96,6 +98,66 @@ async def _manual_rss_trigger_get(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=200)
 
 
+def _parse_query_int(value: object, *, default: int) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return int(default)
+    try:
+        return int(text)
+    except Exception:
+        return int(default)
+
+
+def _parse_query_bool(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "on"}
+
+
+async def _manual_db_requeue_get(request: Request) -> JSONResponse:
+    expected_key = load_worker_admin_trigger_key()
+    if not expected_key:
+        return JSONResponse(
+            {"ok": False, "error": "missing_manual_trigger_key"},
+            status_code=500,
+        )
+
+    passed_key = str(request.query_params.get("key") or "").strip()
+    if passed_key != expected_key:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+
+    mode = str(request.query_params.get("mode") or "").strip().lower()
+    if mode not in {"failed", "legacy_unprocessed"}:
+        return JSONResponse({"ok": False, "error": "invalid_mode"}, status_code=400)
+
+    platform = str(request.query_params.get("platform") or "").strip().lower() or None
+    limit = _parse_query_int(request.query_params.get("limit"), default=200)
+    dry_run = _parse_query_bool(request.query_params.get("dry_run"))
+
+    started_at = time.perf_counter()
+    try:
+        result = run_manual_db_requeue_once(
+            mode=mode,
+            platform=platform,
+            limit=int(limit),
+            dry_run=bool(dry_run),
+        )
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        return JSONResponse(
+            {"ok": False, "error": "manual_db_requeue_failed"},
+            status_code=500,
+        )
+
+    payload: dict[str, object] = {
+        "ok": True,
+        "duration_ms": int((time.perf_counter() - started_at) * 1000),
+    }
+    payload.update(result)
+    return JSONResponse(payload, status_code=200)
+
+
 app._api.add_route(
     MANUAL_RSS_TRIGGER_API_PATH, _manual_rss_trigger_get, methods=["GET"]
 )
+app._api.add_route(MANUAL_DB_REQUEUE_API_PATH, _manual_db_requeue_get, methods=["GET"])
