@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from alphavault.domains.stock.keys import normalize_stock_key, stock_value
-from alphavault.worker.redis_queue import try_get_redis
+from alphavault.worker.redis_client import try_get_redis
 
 ENTITY_MATCH_STOCK_DICT_KEY = "av:entity_match:stock_dict"
 _NAME_FIELD_PREFIX = "name:"

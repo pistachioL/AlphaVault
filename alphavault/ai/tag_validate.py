@@ -26,7 +26,9 @@ ALLOWED_MENTION_TYPES = {
 }
 
 _CN_LIST_SEPARATOR = "、"
-_BAD_SEPARATORS = {",", "，", "、"}
+# Keep Chinese separators rejected to prevent packing multiple objects into one mention_text.
+# Do NOT reject the ASCII comma (",") because it is common inside English titles.
+_BAD_SEPARATORS = {"，", "、"}
 _MENTION_TYPES_ALLOWING_CN_LIST_SEPARATOR = {"industry_name"}
 
 

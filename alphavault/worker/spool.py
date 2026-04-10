@@ -265,20 +265,22 @@ def _try_push_payload_to_ai_ready_status(
     if not redis_client or not str(redis_queue_key or "").strip() or not post_uid:
         return "error"
     try:
-        from alphavault.worker.redis_queue import (
+        from alphavault.worker.redis_stream_queue import (
             REDIS_PUSH_STATUS_DUPLICATE,
             REDIS_PUSH_STATUS_ERROR,
             REDIS_PUSH_STATUS_PUSHED,
-            redis_try_push_ai_dedup_status,
+            redis_try_push_ai_message_status,
+            resolve_redis_ai_queue_maxlen,
             resolve_redis_dedup_ttl_seconds,
         )
 
-        status = redis_try_push_ai_dedup_status(
+        status = redis_try_push_ai_message_status(
             redis_client,
             str(redis_queue_key),
             post_uid=post_uid,
             payload=payload,
             ttl_seconds=resolve_redis_dedup_ttl_seconds(),
+            queue_maxlen=resolve_redis_ai_queue_maxlen(),
             verbose=bool(verbose),
         )
     except Exception as e:
@@ -341,19 +343,25 @@ def flush_spool_to_turso(
                     pushed = False
                     if redis_client and redis_queue_key:
                         try:
-                            from alphavault.worker.redis_queue import (
+                            from alphavault.constants import (
                                 DEFAULT_REDIS_DEDUP_TTL_SECONDS,
-                                redis_try_push_dedup,
+                            )
+                            from alphavault.worker.redis_stream_queue import (
+                                REDIS_PUSH_STATUS_PUSHED,
+                                redis_try_push_ai_message_status,
+                                resolve_redis_ai_queue_maxlen,
                             )
 
-                            pushed = redis_try_push_dedup(
+                            status = redis_try_push_ai_message_status(
                                 redis_client,
                                 redis_queue_key,
                                 post_uid=post_uid,
                                 payload=payload,
                                 ttl_seconds=DEFAULT_REDIS_DEDUP_TTL_SECONDS,
+                                queue_maxlen=resolve_redis_ai_queue_maxlen(),
                                 verbose=bool(verbose),
                             )
+                            pushed = status == REDIS_PUSH_STATUS_PUSHED
                         except Exception:
                             pushed = False
                     if pushed:

@@ -86,6 +86,32 @@ def redis_ensure_ai_consumer_group(client, queue_key: str) -> None:
             raise
 
 
+def redis_ai_reset_consumer_group(client, queue_key: str, *, verbose: bool) -> bool:
+    """
+    Reset consumer group metadata (pending list, consumers) for single-worker restarts.
+
+    This keeps the stream messages but makes them readable again after a restart.
+    """
+    resolved_queue_key = str(queue_key or "").strip()
+    if not client or not resolved_queue_key:
+        return False
+
+    stream_key = redis_ai_stream_key(resolved_queue_key)
+    destroyed = 0
+    try:
+        destroyed = int(client.xgroup_destroy(stream_key, REDIS_AI_CONSUMER_GROUP) or 0)
+    except Exception:
+        destroyed = 0
+
+    redis_ensure_ai_consumer_group(client, resolved_queue_key)
+    if verbose:
+        print(
+            f"[redis] ai_group_reset queue={resolved_queue_key} destroyed={destroyed}",
+            flush=True,
+        )
+    return True
+
+
 def _xadd_payload(
     client,
     *,
@@ -477,6 +503,7 @@ __all__ = [
     "redis_ai_ack",
     "redis_ai_ack_and_clear_dedup",
     "redis_ai_ack_and_push_retry",
+    "redis_ai_reset_consumer_group",
     "redis_ai_claim_stuck_messages",
     "redis_ai_due_count",
     "redis_ai_move_due_retries_to_stream",

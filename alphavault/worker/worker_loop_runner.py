@@ -13,6 +13,7 @@ from alphavault.worker import periodic_jobs
 from alphavault.worker.progress_state import has_due_ai_posts
 from alphavault.worker.runtime_cache import memoize_bool_with_ttl
 from alphavault.worker.runtime_models import LLMConfig, WorkerSourceRuntime
+from alphavault.worker.redis_stream_queue import redis_ai_reset_consumer_group
 from alphavault.worker.source_runtime import log_source_runtime
 from alphavault.worker.worker_constants import DUE_AI_CHECK_CACHE_TTL_SECONDS
 from alphavault.worker.worker_loop_models import (
@@ -110,6 +111,33 @@ def _build_settings(args) -> WorkerLoopSettings:
         limit_or_none=limit_or_none,
         stuck_seconds=int(stuck_seconds),
     )
+
+
+def _recover_redis_ai_pending_on_start(
+    *,
+    sources: list[WorkerSourceRuntime],
+    redis_client: Any,
+    verbose: bool,
+) -> None:
+    if not redis_client:
+        return
+    queue_keys = {
+        str(getattr(source, "redis_queue_key", "") or "").strip() for source in sources
+    }
+    for queue_key in sorted(key for key in queue_keys if key):
+        try:
+            redis_ai_reset_consumer_group(
+                redis_client,
+                queue_key,
+                verbose=bool(verbose),
+            )
+        except Exception as err:
+            if verbose:
+                print(
+                    f"[redis] ai_group_reset_error queue={queue_key} "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
 
 
 def _compute_maintenance(
@@ -317,6 +345,11 @@ def run_worker_forever(
     worker_interval_seconds: float,
 ) -> None:
     settings = _build_settings(args)
+    _recover_redis_ai_pending_on_start(
+        sources=sources,
+        redis_client=redis_client,
+        verbose=settings.verbose,
+    )
     for src in sources:
         log_source_runtime(
             verbose=settings.verbose,

@@ -115,6 +115,40 @@ def test_topic_prompt_v4_ok_commodity_mention() -> None:
     validate_topic_prompt_v4_ai_result(parsed)
 
 
+def test_topic_prompt_v4_allows_ascii_comma_in_keyword_mention_text() -> None:
+    mention_text = "《Steam, Steel, and Infinite Minds》"
+    parsed = {
+        "topic_status_id": "status-keyword-ascii-comma-1",
+        "topic_summary": "他提到了一篇文章标题。",
+        "assertions": [
+            {
+                "speaker": "老王",
+                "relation_to_topic": "new",
+                "action": "trade.watch",
+                "action_strength": 1,
+                "summary": "他说先看看这篇文章。",
+                "evidence_refs": [
+                    {
+                        "source_kind": "status",
+                        "source_id": "7007",
+                        "quote": f"{mention_text} 先看看",
+                    }
+                ],
+                "mentions": [mention_text],
+            }
+        ],
+        "mentions": [
+            {
+                "mention_text": mention_text,
+                "mention_type": "keyword",
+                "evidence": f"{mention_text} 先看看",
+                "confidence": 0.94,
+            }
+        ],
+    }
+    validate_topic_prompt_v4_ai_result(parsed)
+
+
 def test_topic_prompt_v4_ok_industry_name_with_cn_list_separator() -> None:
     parsed = {
         "topic_status_id": "status-industry-1",
