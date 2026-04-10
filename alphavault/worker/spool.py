@@ -99,8 +99,6 @@ def _claim_spool_file(path: Path) -> Optional[Path]:
         path.rename(claimed_path)
     except FileNotFoundError:
         return None
-    except Exception:
-        return None
     try:
         os.utime(claimed_path, None)
     except Exception:
@@ -163,7 +161,7 @@ def _recover_stale_processing_files(*, spool_dir: Path, verbose: bool) -> int:
         except FileNotFoundError:
             continue
         except Exception:
-            continue
+            raise
         if int(st.st_mtime) > stale_before:
             continue
         if target_path.exists():
@@ -174,7 +172,7 @@ def _recover_stale_processing_files(*, spool_dir: Path, verbose: bool) -> int:
         except FileNotFoundError:
             continue
         except Exception:
-            continue
+            raise
     if recovered > 0 and verbose:
         print(f"[spool] recover_stale_processing recovered={recovered}", flush=True)
     return recovered
@@ -242,10 +240,33 @@ def _try_push_payload_to_ai_ready(
     payload: dict[str, Any],
     verbose: bool,
 ) -> tuple[int, bool]:
+    status = _try_push_payload_to_ai_ready_status(
+        redis_client=redis_client,
+        redis_queue_key=redis_queue_key,
+        post_uid=post_uid,
+        payload=payload,
+        verbose=verbose,
+    )
+    if status == "error":
+        return 0, True
+    if status == "pushed":
+        return 1, False
+    return 0, False
+
+
+def _try_push_payload_to_ai_ready_status(
+    *,
+    redis_client: Any,
+    redis_queue_key: str,
+    post_uid: str,
+    payload: dict[str, Any],
+    verbose: bool,
+) -> str:
     if not redis_client or not str(redis_queue_key or "").strip() or not post_uid:
-        return 0, False
+        return "error"
     try:
         from alphavault.worker.redis_queue import (
+            REDIS_PUSH_STATUS_DUPLICATE,
             REDIS_PUSH_STATUS_ERROR,
             REDIS_PUSH_STATUS_PUSHED,
             redis_try_push_ai_dedup_status,
@@ -263,10 +284,14 @@ def _try_push_payload_to_ai_ready(
     except Exception as e:
         if verbose:
             print(f"[redis] ai_requeue_error {type(e).__name__}: {e}", flush=True)
-        return 0, True
+        return "error"
+    if status == REDIS_PUSH_STATUS_PUSHED:
+        return REDIS_PUSH_STATUS_PUSHED
+    if status == REDIS_PUSH_STATUS_DUPLICATE:
+        return REDIS_PUSH_STATUS_DUPLICATE
     if status == REDIS_PUSH_STATUS_ERROR:
-        return 0, True
-    return (1 if status == REDIS_PUSH_STATUS_PUSHED else 0), False
+        return REDIS_PUSH_STATUS_ERROR
+    return "error"
 
 
 def flush_spool_to_turso(
@@ -284,12 +309,12 @@ def flush_spool_to_turso(
     max_batch = max(0, int(max_items))
     if max_batch <= 0:
         return 0, False
-    _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
-    paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
-    if not paths:
-        return 0, False
     processed = 0
     try:
+        _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
+        paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
+        if not paths:
+            return 0, False
         with postgres_connect_autocommit(engine) as conn:
             for path in paths[:max_batch]:
                 claimed_path = _claim_spool_file(path)
@@ -387,15 +412,14 @@ def recover_spool_to_turso_and_redis(
     max_batch = max(0, int(max_items))
     if max_batch <= 0:
         return 0, 0, 0, False
-    _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
-    paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
-    if not paths:
-        return 0, 0, 0, False
-
-    restored_posts = 0
+    handled_posts = 0
     queued_redis = 0
     deleted_done = 0
     try:
+        _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
+        paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
+        if not paths:
+            return 0, 0, 0, False
         with postgres_connect_autocommit(engine) as conn:
             for path in paths[:max_batch]:
                 claimed_path = _claim_spool_file(path)
@@ -423,56 +447,38 @@ def recover_spool_to_turso_and_redis(
                         claimed_path=claimed_path,
                         target_path=path,
                     )
-                    return restored_posts, queued_redis, deleted_done, True
-
-                if processed_at is None:
-                    try:
-                        _upsert_spool_payload(conn, payload=payload)
-                    except BaseException as e:
-                        if isinstance(e, _FATAL_BASE_EXCEPTIONS):
-                            raise
-                        _maybe_dispose_turso_engine_on_transient_error(
-                            engine=engine,
-                            err=e,
-                        )
-                        if verbose:
-                            print(
-                                f"[spool] recover_upsert_error {path.name} "
-                                f"{type(e).__name__}: {e}",
-                                flush=True,
-                            )
-                        _restore_claimed_file_for_retry(
-                            claimed_path=claimed_path,
-                            target_path=path,
-                        )
-                        return restored_posts, queued_redis, deleted_done, True
-                    restored_posts += 1
-                    processed_at = ""
+                    return handled_posts, queued_redis, deleted_done, True
 
                 if str(processed_at or "").strip():
                     _cleanup_spool_file(claimed_path)
+                    handled_posts += 1
                     deleted_done += 1
                     continue
 
-                pushed, push_error = _try_push_payload_to_ai_ready(
+                push_status = _try_push_payload_to_ai_ready_status(
                     redis_client=redis_client,
                     redis_queue_key=redis_queue_key,
                     post_uid=post_uid,
                     payload=payload,
                     verbose=bool(verbose),
                 )
-                queued_redis += int(pushed)
-                if push_error:
+                if push_status == "error":
                     _restore_claimed_file_for_retry(
                         claimed_path=claimed_path,
                         target_path=path,
                     )
-                    return restored_posts, queued_redis, deleted_done, True
+                    return handled_posts, queued_redis, deleted_done, True
+                if push_status == "duplicate":
+                    _restore_claimed_file_for_retry(
+                        claimed_path=claimed_path,
+                        target_path=path,
+                    )
+                    continue
 
-                _restore_claimed_file_for_retry(
-                    claimed_path=claimed_path,
-                    target_path=path,
-                )
+                _cleanup_spool_file(claimed_path)
+                handled_posts += 1
+                if push_status == "pushed":
+                    queued_redis += 1
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
@@ -482,6 +488,16 @@ def recover_spool_to_turso_and_redis(
                 f"[spool] recover_connect_error {type(e).__name__}: {e}",
                 flush=True,
             )
-        return restored_posts, queued_redis, deleted_done, True
+        return handled_posts, queued_redis, deleted_done, True
 
-    return restored_posts, queued_redis, deleted_done, False
+    return handled_posts, queued_redis, deleted_done, False
+
+
+__all__ = [
+    "sha1_short",
+    "ensure_spool_dir",
+    "spool_write",
+    "spool_delete",
+    "flush_spool_to_turso",
+    "recover_spool_to_turso_and_redis",
+]

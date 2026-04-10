@@ -232,6 +232,46 @@ def _extract_post_uid_from_ai_message(msg: object) -> str:
     return str(payload.get("post_uid") or "").strip()
 
 
+def _queue_contains_post_uid(
+    client,
+    queue_key: str,
+    *,
+    post_uid: str,
+    sorted_set: bool,
+) -> bool:
+    resolved_queue_key = str(queue_key or "").strip()
+    resolved_post_uid = str(post_uid or "").strip()
+    if not client or not resolved_queue_key or not resolved_post_uid:
+        return False
+    scan_batch_size = max(1, int(REDIS_AI_REQUEUE_SCAN_BATCH_SIZE))
+    if sorted_set:
+        total = int(client.zcard(resolved_queue_key) or 0)
+        if total <= 0:
+            return False
+        for start in range(0, total, scan_batch_size):
+            msgs = list(
+                client.zrange(resolved_queue_key, start, start + scan_batch_size - 1)
+            )
+            if any(
+                _extract_post_uid_from_ai_message(msg) == resolved_post_uid
+                for msg in msgs
+            ):
+                return True
+        return False
+
+    total = int(client.llen(resolved_queue_key) or 0)
+    if total <= 0:
+        return False
+    for start in range(0, total, scan_batch_size):
+        end = start + scan_batch_size - 1
+        msgs = list(client.lrange(resolved_queue_key, start, end) or [])
+        if any(
+            _extract_post_uid_from_ai_message(msg) == resolved_post_uid for msg in msgs
+        ):
+            return True
+    return False
+
+
 def redis_ai_try_claim_lease(
     client,
     queue_key: str,
@@ -408,6 +448,58 @@ def redis_ai_pending_count(client, queue_key: str) -> int:
     return int(ready_count + processing_count + delayed_count)
 
 
+def redis_ai_clear_stale_dedup(
+    client,
+    queue_key: str,
+    *,
+    post_uid: str,
+    verbose: bool,
+) -> bool:
+    resolved_queue_key = str(queue_key or "").strip()
+    resolved_post_uid = str(post_uid or "").strip()
+    if not client or not resolved_queue_key or not resolved_post_uid:
+        return False
+    dedup_key = _redis_dedup_key(resolved_queue_key, resolved_post_uid)
+    try:
+        if not client.exists(dedup_key):
+            return False
+        if client.exists(redis_ai_lease_key(resolved_queue_key, resolved_post_uid)):
+            return False
+        if _queue_contains_post_uid(
+            client,
+            redis_ai_ready_key(resolved_queue_key),
+            post_uid=resolved_post_uid,
+            sorted_set=False,
+        ):
+            return False
+        if _queue_contains_post_uid(
+            client,
+            redis_ai_processing_key(resolved_queue_key),
+            post_uid=resolved_post_uid,
+            sorted_set=False,
+        ):
+            return False
+        if _queue_contains_post_uid(
+            client,
+            redis_ai_delayed_key(resolved_queue_key),
+            post_uid=resolved_post_uid,
+            sorted_set=True,
+        ):
+            return False
+        deleted = int(client.delete(dedup_key) or 0)
+    except Exception as e:
+        if verbose:
+            print(
+                f"[redis] ai_clear_stale_dedup_error post_uid={resolved_post_uid} "
+                f"{type(e).__name__}: {e}",
+                flush=True,
+            )
+        return False
+    if deleted and verbose:
+        print(f"[redis] ai_clear_stale_dedup post_uid={resolved_post_uid}", flush=True)
+    return deleted > 0
+
+
 def redis_ai_ack_and_cleanup(
     client,
     queue_key: str,
@@ -432,3 +524,28 @@ def redis_ai_ack_and_cleanup(
             pass
     del lease_token
     return True
+
+
+__all__ = [
+    "try_get_redis",
+    "resolve_redis_dedup_ttl_seconds",
+    "resolve_redis_ai_queue_maxlen",
+    "redis_ai_ready_key",
+    "redis_ai_processing_key",
+    "redis_ai_delayed_key",
+    "redis_ai_lease_key",
+    "redis_try_push_dedup_status",
+    "redis_try_push_dedup",
+    "redis_try_push_ai_dedup_status",
+    "redis_ai_try_claim_lease",
+    "redis_ai_release_lease",
+    "redis_ai_requeue_processing_without_lease",
+    "redis_ai_pop_to_processing",
+    "redis_ai_ack_processing",
+    "redis_ai_push_delayed",
+    "redis_ai_move_due_delayed_to_ready",
+    "redis_ai_due_count",
+    "redis_ai_pending_count",
+    "redis_ai_clear_stale_dedup",
+    "redis_ai_ack_and_cleanup",
+]

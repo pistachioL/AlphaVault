@@ -1,10 +1,10 @@
 """
-Weibo RSS -> Turso -> AI -> Turso (single instance).
+Weibo RSS -> Redis -> AI -> Postgres (single instance).
 
 Design goals:
 - No local sqlite queue required (no paid docker volume needed).
-- RSS items are inserted to Turso first (as pending), then AI runs and updates rows.
-- If Turso is temporarily down, items are spooled to local files and (optionally) Redis.
+- RSS items are pushed to Redis first, then AI runs and writes final rows.
+- If Redis is temporarily down, items are spooled to local files for retry.
 """
 
 from __future__ import annotations

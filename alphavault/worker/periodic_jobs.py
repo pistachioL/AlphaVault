@@ -5,21 +5,6 @@ from datetime import datetime
 from typing import Any, Callable
 
 
-def mark_spool_item_ingested(*, source: Any, wakeup_event: Any) -> None:
-    with source.spool_state_lock:
-        source.spool_seq_written += 1
-    wakeup_event.set()
-
-
-def enqueue_redis_payload(
-    *, source: Any, payload: dict[str, Any], wakeup_event: Any
-) -> None:
-    with source.redis_enqueue_state_lock:
-        source.redis_enqueue_pending.append(dict(payload))
-    if wakeup_event is not None:
-        wakeup_event.set()
-
-
 def should_start_redis_enqueue(*, source: Any) -> bool:
     with source.redis_enqueue_state_lock:
         return bool(

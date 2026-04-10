@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Callable
+
+
+def _always_false(*_args: object, **_kwargs: object) -> bool:
+    return False
 
 
 def payload_retry_count(
@@ -39,122 +42,123 @@ def process_one_redis_payload(
     *,
     engine: Any,
     payload: dict[str, object],
-    processing_msg: str,
+    message_id: str,
     redis_client: Any,
     redis_queue_key: str,
     source_name: str = "",
-    spool_dir: Path,
     config: Any,
     limiter: Any,
     verbose: bool,
     payload_to_cloud_post_fn: Callable[[dict[str, object]], Any | None],
-    redis_ai_try_claim_lease_fn: Callable[..., str],
     process_one_post_uid_fn: Callable[..., bool],
-    redis_ai_release_lease_fn: Callable[..., bool],
-    redis_ai_ack_and_cleanup_fn: Callable[..., bool],
-    redis_ai_push_delayed_fn: Callable[..., None],
-    redis_ai_ack_processing_fn: Callable[..., None],
+    mark_post_failed_fn: Callable[..., None],
+    redis_ai_push_retry_fn: Callable[..., None],
+    redis_ai_ack_fn: Callable[..., object],
+    redis_ai_ack_and_clear_dedup_fn: Callable[..., object],
+    redis_ai_ack_and_push_retry_fn: Callable[..., object],
     payload_retry_count_fn: Callable[[dict[str, object]], int],
+    is_post_already_processed_success_fn: Callable[..., bool] = _always_false,
     backoff_seconds_fn: Callable[[int], int],
     now_epoch_fn: Callable[[], int],
     fatal_exceptions: tuple[type[BaseException], ...],
-    lease_seconds: int,
+    max_retry_count: int,
 ) -> None:
     cloud_post = payload_to_cloud_post_fn(payload)
     if cloud_post is None:
         try:
-            redis_ai_ack_processing_fn(redis_client, redis_queue_key, processing_msg)
+            redis_ai_ack_fn(redis_client, redis_queue_key, message_id)
         except Exception:
             return
         return
 
     resolved_post_uid = str(getattr(cloud_post, "post_uid", "") or "").strip()
-    try:
-        lease_token = str(
-            redis_ai_try_claim_lease_fn(
+    if (
+        resolved_post_uid
+        and not bool(payload.get("skip_db_processed_guard"))
+        and is_post_already_processed_success_fn(engine, post_uid=resolved_post_uid)
+    ):
+        redis_ai_ack_and_clear_dedup_fn(
+            redis_client,
+            redis_queue_key,
+            message_id=message_id,
+            post_uid=resolved_post_uid,
+        )
+        return
+
+    prefetched_recent: list[dict[str, object]] = []
+
+    success = process_one_post_uid_fn(
+        engine=engine,
+        post_uid=resolved_post_uid,
+        config=config,
+        limiter=limiter,
+        prefetched_post=cloud_post,
+        prefetched_recent=prefetched_recent,
+        source_name=str(source_name or "").strip(),
+    )
+    if success:
+        redis_ai_ack_and_clear_dedup_fn(
+            redis_client,
+            redis_queue_key,
+            message_id=message_id,
+            post_uid=resolved_post_uid,
+        )
+        return
+
+    retry_count = max(1, int(payload_retry_count_fn(payload)) + 1)
+    if retry_count > max(0, int(max_retry_count)):
+        try:
+            mark_post_failed_fn(
+                engine=engine,
+                post_uid=resolved_post_uid,
+                model=str(getattr(config, "model", "") or "").strip(),
+                prompt_version=str(getattr(config, "prompt_version", "") or "").strip(),
+                prefetched_post=cloud_post,
+            )
+        except BaseException as err:
+            if isinstance(err, fatal_exceptions):
+                raise
+            if verbose:
+                print(
+                    f"[ai] mark_failed_error post_uid={resolved_post_uid} "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
+            return
+        try:
+            redis_ai_ack_and_clear_dedup_fn(
                 redis_client,
                 redis_queue_key,
+                message_id=message_id,
                 post_uid=resolved_post_uid,
-                lease_seconds=max(1, int(lease_seconds)),
             )
-            or ""
-        ).strip()
-    except BaseException as err:
-        if isinstance(err, fatal_exceptions):
-            raise
+        except Exception as err:
+            if verbose:
+                print(
+                    f"[ai] redis_final_ack_error post_uid={resolved_post_uid} "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
+        return
+
+    next_retry_at = int(now_epoch_fn()) + int(backoff_seconds_fn(retry_count))
+    retry_payload = dict(payload)
+    retry_payload["retry_count"] = int(retry_count)
+    retry_payload["next_retry_at"] = int(next_retry_at)
+    try:
+        redis_ai_ack_and_push_retry_fn(
+            redis_client,
+            redis_queue_key,
+            message_id=message_id,
+            payload=retry_payload,
+            next_retry_at=int(next_retry_at),
+        )
+    except Exception as err:
         if verbose:
             print(
-                f"[ai] redis_lease_claim_error post_uid={resolved_post_uid} "
+                f"[ai] redis_retry_handoff_error post_uid={resolved_post_uid} "
                 f"{type(err).__name__}: {err}",
                 flush=True,
             )
         return
-    if not lease_token:
-        try:
-            redis_ai_ack_processing_fn(redis_client, redis_queue_key, processing_msg)
-        except Exception:
-            pass
-        return
-
-    try:
-        prefetched_recent: list[dict[str, object]] = []
-
-        success = process_one_post_uid_fn(
-            engine=engine,
-            post_uid=resolved_post_uid,
-            config=config,
-            limiter=limiter,
-            prefetched_post=cloud_post,
-            prefetched_recent=prefetched_recent,
-            source_name=str(source_name or "").strip(),
-        )
-        if success:
-            redis_ai_ack_and_cleanup_fn(
-                redis_client,
-                redis_queue_key,
-                msg=processing_msg,
-                post_uid=resolved_post_uid,
-                spool_dir=spool_dir,
-                lease_token=lease_token,
-                verbose=bool(verbose),
-            )
-            return
-
-        retry_count = max(1, int(payload_retry_count_fn(payload)) + 1)
-        next_retry_at = int(now_epoch_fn()) + int(backoff_seconds_fn(retry_count))
-        retry_payload = dict(payload)
-        retry_payload["retry_count"] = int(retry_count)
-        retry_payload["next_retry_at"] = int(next_retry_at)
-        try:
-            redis_ai_push_delayed_fn(
-                redis_client,
-                redis_queue_key,
-                payload=retry_payload,
-                next_retry_at=int(next_retry_at),
-            )
-        except Exception as err:
-            if verbose:
-                print(
-                    f"[ai] redis_delay_push_error post_uid={getattr(cloud_post, 'post_uid', '')} "
-                    f"{type(err).__name__}: {err}",
-                    flush=True,
-                )
-            return
-        try:
-            redis_ai_ack_processing_fn(redis_client, redis_queue_key, processing_msg)
-        except Exception as err:
-            if verbose:
-                print(
-                    f"[ai] redis_ack_error post_uid={getattr(cloud_post, 'post_uid', '')} "
-                    f"{type(err).__name__}: {err}",
-                    flush=True,
-                )
-    finally:
-        if lease_token:
-            redis_ai_release_lease_fn(
-                redis_client,
-                redis_queue_key,
-                post_uid=resolved_post_uid,
-                lease_token=lease_token,
-                verbose=bool(verbose),
-            )
+    del redis_ai_push_retry_fn

@@ -1,1 +1,1 @@
-"""Worker modules (RSS -> Turso -> AI -> Turso)."""
+"""Worker modules (RSS -> Redis -> AI -> Postgres)."""

@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import Any
 
 from alphavault.db.turso_queue import (
     CloudPost,
+    is_post_already_processed_success,
+    mark_post_failed,
 )
 from alphavault.db.postgres_db import PostgresEngine
 from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.worker import ai_processor
 from alphavault.worker.backoff import backoff_seconds
 from alphavault.worker.post_processor import process_one_post_uid
-from alphavault.worker.redis_queue import (
-    redis_ai_ack_and_cleanup,
-    redis_ai_ack_processing,
-    redis_ai_push_delayed,
-    redis_ai_release_lease,
-    redis_ai_try_claim_lease,
+from alphavault.worker.redis_stream_queue import (
+    redis_ai_ack,
+    redis_ai_ack_and_clear_dedup,
+    redis_ai_ack_and_push_retry,
+    redis_ai_push_retry,
 )
 from alphavault.worker.runtime_models import (
     LLMConfig,
@@ -32,20 +32,31 @@ def process_one_redis_payload(
     *,
     engine: PostgresEngine,
     payload: dict[str, object],
-    processing_msg: str,
+    message_id: str,
     redis_client: Any,
     redis_queue_key: str,
     source_name: str = "",
-    spool_dir: Path,
     config: LLMConfig,
     limiter: RateLimiter,
     verbose: bool,
-    lease_seconds: int,
+    max_retry_count: int,
 ) -> None:
     def _payload_retry_count(inner_payload: dict[str, object]) -> int:
         return ai_processor.payload_retry_count(
             inner_payload,
             parse_int_or_default_fn=_parse_int_or_default,
+        )
+
+    def _mark_post_failed(**kwargs) -> None:  # type: ignore[no-untyped-def]
+        mark_post_failed(
+            kwargs["engine"],
+            post_uid=str(kwargs["post_uid"] or "").strip(),
+            model=str(kwargs["model"] or "").strip(),
+            prompt_version=str(kwargs["prompt_version"] or "").strip(),
+            processed_at=now_str(),
+            archived_at=now_str(),
+            prefetched_post=kwargs.get("prefetched_post"),
+            prefetched_ingested_at=int(time.time()),
         )
 
     def _payload_to_cloud_post(inner_payload: dict[str, object]) -> CloudPost | None:
@@ -62,26 +73,26 @@ def process_one_redis_payload(
     ai_processor.process_one_redis_payload(
         engine=engine,
         payload=payload,
-        processing_msg=processing_msg,
+        message_id=message_id,
         redis_client=redis_client,
         redis_queue_key=redis_queue_key,
         source_name=str(source_name or "").strip(),
-        spool_dir=spool_dir,
         config=config,
         limiter=limiter,
         verbose=bool(verbose),
         payload_to_cloud_post_fn=_payload_to_cloud_post,
-        redis_ai_try_claim_lease_fn=redis_ai_try_claim_lease,
         process_one_post_uid_fn=process_one_post_uid,
-        redis_ai_release_lease_fn=redis_ai_release_lease,
-        redis_ai_ack_and_cleanup_fn=redis_ai_ack_and_cleanup,
-        redis_ai_push_delayed_fn=redis_ai_push_delayed,
-        redis_ai_ack_processing_fn=redis_ai_ack_processing,
+        mark_post_failed_fn=_mark_post_failed,
+        redis_ai_push_retry_fn=redis_ai_push_retry,
+        redis_ai_ack_fn=redis_ai_ack,
+        redis_ai_ack_and_clear_dedup_fn=redis_ai_ack_and_clear_dedup,
+        redis_ai_ack_and_push_retry_fn=redis_ai_ack_and_push_retry,
         payload_retry_count_fn=_payload_retry_count,
+        is_post_already_processed_success_fn=is_post_already_processed_success,
         backoff_seconds_fn=backoff_seconds,
         now_epoch_fn=lambda: int(time.time()),
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
-        lease_seconds=max(1, int(lease_seconds)),
+        max_retry_count=max(0, int(max_retry_count)),
     )
 
 

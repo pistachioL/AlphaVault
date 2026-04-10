@@ -26,17 +26,17 @@ Uses `uv` (lockfile: `uv.lock`).
 ### Worker pipeline (`weibo_rss_turso_worker.py` → `alphavault/worker/`)
 The main loop runs two parallel tracks:
 
-1. **RSS ingest** (`worker_loop_rss.py`, `worker/spool.py`, `worker_loop_spool.py`, `worker_loop_redis_enqueue.py`): Fetches feeds via `alphavault/rss/utils.py`, writes each payload to local `spool/` first, upserts the raw post into `posts` via `db/turso_queue.py:upsert_pending_post`, then pushes a short payload into the Redis AI queue.
+1. **RSS ingest** (`worker_loop_rss.py`, `worker/ingest.py`, `worker/spool.py`): Fetches feeds via `alphavault/rss/utils.py`, pushes each payload straight into the Redis AI ready queue, and only writes local `spool/` when Redis is unavailable or push fails. `spool` is then only used as a recovery buffer, not as the daily primary path.
 
-2. **AI processing** (`worker_loop_ai.py`, `worker/ai_processor.py`, `worker/post_processor_topic_prompt_v4.py`): A `ThreadPoolExecutor` pops payloads from Redis, claims a Redis lease for `post_uid`, invokes the LLM, then writes assertions atomically via `write_assertions_and_mark_done`. Success acks Redis and cleans up the finished spool file; failures go to the Redis delayed retry queue.
+2. **AI processing** (`worker_loop_ai.py`, `worker/ai_processor.py`, `worker/post_processor_topic_prompt_v4.py`): A `ThreadPoolExecutor` pops payloads from Redis, claims a Redis lease for `post_uid`, invokes the LLM, then writes assertions atomically via `write_assertions_and_mark_done`. Success acks Redis and cleans up the matching spool fallback file if it exists; failures go to the Redis delayed retry queue.
 
 **State signal for posts**: the cloud `posts` table no longer stores per-post AI runtime columns. The main durable signal is `processed_at`: unprocessed rows have `processed_at IS NULL`, and processed rows have `processed_at` filled. Only posts with `processed_at IS NOT NULL` are shown in the UI.
 
-**Recovery path** (`worker_loop_maintenance.py`, `worker/spool.py`): maintenance first scans `spool/`, re-upserts missing posts into Turso, requeues unfinished rows back to Redis from `posts.processed_at IS NULL`, and requeues Redis `processing` jobs that lost their lease.
+**Recovery path** (`worker_loop_maintenance.py`, `worker/spool.py`): maintenance scans `spool/`, drops files whose posts are already done, requeues unfinished payloads back to Redis, and requeues Redis `processing` jobs that lost their lease.
 
 ### Database layer (`alphavault/db/`)
 - `turso_db.py`: `TursoEngine` (custom LIFO connection pool over `libsql`), `TursoConnection` (named→qmark param translation via `sqlparams`, retry on transient errors), `turso_savepoint` (manual `BEGIN/COMMIT/ROLLBACK` since libsql doesn't support DBAPI transactions). All SQL constants live in `db/sql/`.
-- `turso_queue.py`: main post/assertion read-write helpers (`upsert_pending_post`, `load_cloud_post`, `load_unprocessed_post_queue_rows`, `write_assertions_and_mark_done`). Redis queue state is handled in `alphavault/worker/redis_queue.py`, not in Turso runtime columns.
+- `turso_queue.py`: main post/assertion read-write helpers (`upsert_pending_post`, `load_cloud_post`, `write_assertions_and_mark_done`). Redis queue state is handled in `alphavault/worker/redis_queue.py`, not in Turso runtime columns.
 - `turso_env.py`: parses `WEIBO_TURSO_DATABASE_URL/AUTH_TOKEN` and `XUEQIU_TURSO_DATABASE_URL/AUTH_TOKEN` into source configs.
 - Two Turso databases are supported simultaneously (weibo + xueqiu); each has its own engine.
 
@@ -64,7 +64,7 @@ The main loop runs two parallel tracks:
 - Custom CSS in `assets/` (`homework_board.css`, `research_workbench.css`) plus JS (`table_resizer.js`).
 
 ### Redis (required for AI worker)
-The AI worker requires `REDIS_URL`. Redis holds the runtime queue state: ready / processing / delayed / lease / dedup. Turso remains the durable truth, and maintenance can rebuild the Redis queue from `spool/` plus `posts.processed_at IS NULL`. Without Redis the AI worker does not run.
+The AI worker requires `REDIS_URL`. Redis holds the runtime queue state: ready / processing / delayed / lease / dedup. Turso remains the durable truth, and maintenance can rebuild the Redis queue only from `spool/`. Without Redis the worker startup fails.
 
 ## Coding Style & Naming Conventions
 - Python 3.10+, 4-space indentation, type hints on public APIs.

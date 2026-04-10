@@ -6,11 +6,11 @@
 ## 功能概览
 - RSS 增量抓取（去重）
 - LLM 分析与观点抽取（写入 `posts` + `assertions`）
-- Turso 云端数据库作为队列 + 归档（幂等 upsert）
-- 可选 Redis：作为运行态主队列/缓存，降低 Turso 读取压力
+- Turso 云端数据库作为最终结果库 + 归档
+- Redis：worker 运行态主队列/缓存，降低数据库读取压力
 
 ## 目录结构（核心脚本）
-- `weibo_rss_turso_worker.py`：Worker（RSS → spool/Redis → AI → Turso）
+- `weibo_rss_turso_worker.py`：Worker（RSS → Redis → AI → Turso；Redis 失败时落 `spool` 兜底）
 - `alphavault/db/turso_queue.py`：Turso 队列字段与读写
 - `alphavault/db/turso_db.py`：Turso engine + 基础表（posts/assertions）
 - `alphavault_reflex/`：Reflex 前端（交易流、个股页、板块页、整理中心）
@@ -72,14 +72,14 @@ uv run python weibo_rss_turso_worker.py --verbose
 - RSS 抓取网络参数：`RSS_TIMEOUT_SECONDS`（默认 60 秒）和 `RSS_RETRIES`（默认失败后再试 5 次）。
 - RSS 抓取节奏参数：`RSS_FEED_SLEEP_SECONDS`（默认 10 秒，表示每个 feed 抓完后 sleep；设 `0` 可关闭）。
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
-- Worker 会先写本地 `spool` 文件；Redis 可用时优先走 Redis AI 队列，AI 完成后再写 Postgres。
+- Worker 会先直接推 Redis；只有 Redis 写失败时才写本地 `spool`，AI 完成后再写 Postgres。
 - Redis 打开后，作者线程上下文优先读 Redis 缓存；缓存 miss 才回源 Postgres。
 - Reflex 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
 
 ## 手动触发 RSS 抓取 API
 先设置鉴权 key：
 ```bash
-export RSS_MANUAL_TRIGGER_KEY="YOUR_TRIGGER_KEY"
+export WORKER_ADMIN_TRIGGER_KEY="YOUR_TRIGGER_KEY"
 ```
 
 接口：
@@ -90,6 +90,36 @@ export RSS_MANUAL_TRIGGER_KEY="YOUR_TRIGGER_KEY"
 示例：
 ```bash
 curl "http://127.0.0.1:8080/api/rss/trigger?key=YOUR_TRIGGER_KEY"
+```
+
+## 循环补送 AI 重排任务
+这个脚本会循环调用 `/api/admin/requeue-from-db`，默认顺序是：
+
+- `failed`
+- `legacy_unprocessed`
+
+用途：
+
+- 单次接口有 `limit`，脚本会一轮一轮补送
+- 每轮会先真的补送一批，再用 `dry_run=1` 看还剩多少
+- 只要 `dry_run` 看到 `scanned_total = 0` 就停
+- `queue_backlog` 只是拿来观察当前队列压力，不作为停止条件
+- 需要配合正在运行的 worker 一起用，不然只会把任务继续堆进队列
+- 如果 `--platform` 写错，接口没找到任何 source，脚本会直接报错停下
+
+先设置鉴权 key：
+```bash
+export WORKER_ADMIN_TRIGGER_KEY="YOUR_TRIGGER_KEY"
+```
+
+示例：
+```bash
+uv run python scripts/requeue_all_ai_from_db.py --platform weibo --limit 200 --sleep-seconds 5 --max-rounds 200
+```
+
+如果想同时跑所有平台，把 `--platform` 去掉：
+```bash
+uv run python scripts/requeue_all_ai_from_db.py --limit 200 --sleep-seconds 5 --max-rounds 200
 ```
 
 ## 导入 `security_master` 标准清单
@@ -374,11 +404,11 @@ uv run reflex run
 - Postgres：`startup_healthcheck.py` 只检查 `1` 个目标 schema，目标由 `STARTUP_HEALTHCHECK_TURSO_TARGET` 控制；默认是 `standard`，可选 `weibo` 或 `xueqiu`
 - Postgres：只需要配置一个 `POSTGRES_DSN`
 - 标准库：只有当 `STARTUP_HEALTHCHECK_TURSO_TARGET=standard` 时，才会在启动时额外检查 `standard.security_master`、`standard.relations`、`standard.relation_candidates`、`standard.alias_resolve_tasks`；没先执行 `alphavault/db/sql/standard_schema.sql` 就会直接 fail
-- Redis：只有配置了 `REDIS_URL` 才检查；没配就跳过
+- Redis：worker 要求 `REDIS_URL` 可用；没配或连不上会直接 fail
 
 定时（通过 env 配）：
-- Worker（全流程：AI/flush/RSS）
-  - 默认：全天；AI 空了就补单；每 10 分钟做一次维护（不用配）
+- Worker（全流程：AI/维护/RSS）
+  - 默认：全天；AI 空了就补单；每 10 分钟做一次维护。维护只做 Redis 队列自恢复和 `spool -> Redis` 补漏，不再做日常 `spool -> DB`
   - 可选：`WORKER_CRON="*/10 6-22 * * *"` 表示只在 6-22 点做事
 - RSS（只管抓取，不影响 AI/flush）
   - 可选：`RSS_CRON="*/15 6-22 * * *"` 表示只在 6-22 点抓 RSS，每 15 分钟尝试一次

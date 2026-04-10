@@ -10,7 +10,9 @@ import requests
 from alphavault.db.postgres_db import PostgresEngine as TursoEngine
 from alphavault.rss import utils as rss_utils
 from alphavault.worker import ingest
+from alphavault.worker import worker_loop_runtime
 from alphavault.worker.cli import parse_args
+from alphavault.worker.cli import RSSSourceConfig
 
 
 def test_parse_args_rss_defaults(monkeypatch) -> None:
@@ -117,15 +119,6 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
             entries=[{"link": "https://example.com/post/1", "title": "标题"}]
         )
 
-    class _ConnContext:
-        def __enter__(self):
-            return object()
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-    upsert_calls: list[str] = []
-
     def _fake_push_to_redis_status(
         redis_client, redis_queue_key, *, post_uid: str, payload, verbose: bool
     ) -> str:
@@ -149,12 +142,12 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
     monkeypatch.setattr(
-        ingest, "postgres_connect_autocommit", lambda _engine: _ConnContext()
-    )
-    monkeypatch.setattr(
         ingest,
         "upsert_pending_post",
-        lambda *_args, **_kwargs: upsert_calls.append("called"),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not write pending post inline")
+        ),
+        raising=False,
     )
     monkeypatch.setattr(ingest, "_try_push_to_redis_status", _fake_push_to_redis_status)
 
@@ -175,14 +168,13 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
 
     assert accepted == 1
     assert enqueue_error is False
-    assert upsert_calls == []
-    assert len(list(tmp_path.glob("*.json"))) == 1
+    assert len(list(tmp_path.glob("*.json"))) == 0
 
 
-def test_ingest_rss_many_once_enqueue_callback_skips_sync_redis_and_turso(
+def test_ingest_rss_many_once_ignores_enqueue_callback_and_pushes_redis_inline(
     monkeypatch, tmp_path
 ) -> None:
-    queued_payloads: list[dict[str, object]] = []
+    pushed_post_uids: list[str] = []
 
     def _fake_fetch_feed(
         url: str, timeout: float, *, retries: int = 0
@@ -212,13 +204,17 @@ def test_ingest_rss_many_once_enqueue_callback_skips_sync_redis_and_turso(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("should not write turso inline")
         ),
+        raising=False,
     )
+
+    def _fake_push_status(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        pushed_post_uids.append("weibo:1")
+        return ingest.REDIS_PUSH_STATUS_PUSHED
+
     monkeypatch.setattr(
         ingest,
         "_try_push_to_redis_status",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("should not push redis inline")
-        ),
+        _fake_push_status,
     )
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
@@ -234,25 +230,15 @@ def test_ingest_rss_many_once_enqueue_callback_skips_sync_redis_and_turso(
         rss_timeout=60.0,
         rss_retries=5,
         verbose=False,
-        enqueue_spooled_payload=lambda payload: queued_payloads.append(dict(payload)),
+        enqueue_spooled_payload=lambda _payload: (_ for _ in ()).throw(
+            AssertionError("should not use local enqueue callback")
+        ),
     )
 
     assert accepted == 1
     assert enqueue_error is False
-    assert queued_payloads == [
-        {
-            "post_uid": "weibo:1",
-            "platform": "weibo",
-            "platform_post_id": "mid1",
-            "author": "测试博主",
-            "created_at": "2026-03-28 10:00:00",
-            "url": "https://example.com/post/1",
-            "raw_text": "测试博主：标题",
-            "ingested_at": queued_payloads[0]["ingested_at"],
-        }
-    ]
-    assert isinstance(queued_payloads[0]["ingested_at"], int) is True
-    assert len(list(tmp_path.glob("*.json"))) == 1
+    assert pushed_post_uids == ["weibo:1"]
+    assert len(list(tmp_path.glob("*.json"))) == 0
 
 
 def test_build_rss_accepted_log_line_contains_id_author_and_progress() -> None:
@@ -278,6 +264,9 @@ def test_build_rss_accepted_log_line_contains_id_author_and_progress() -> None:
 def test_ingest_rss_many_once_prints_accepted_log_with_progress(
     monkeypatch, tmp_path, capsys
 ) -> None:
+    def _fake_push_to_redis_status(*_args, **_kwargs) -> str:
+        return ingest.REDIS_PUSH_STATUS_PUSHED
+
     def _fake_fetch_feed(
         url: str, timeout: float, *, retries: int = 0
     ) -> SimpleNamespace:
@@ -300,12 +289,17 @@ def test_ingest_rss_many_once_prints_accepted_log_with_progress(
     )
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        _fake_push_to_redis_status,
+    )
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
         engine=None,
         spool_dir=tmp_path,
-        redis_client=None,
-        redis_queue_key="",
+        redis_client=object(),
+        redis_queue_key="k",
         platform="weibo",
         author="",
         user_id=None,
@@ -327,6 +321,9 @@ def test_ingest_rss_many_once_prints_accepted_log_with_progress(
 def test_ingest_rss_many_once_accepted_total_is_per_user(
     monkeypatch, tmp_path, capsys
 ) -> None:
+    def _fake_push_to_redis_status(*_args, **_kwargs) -> str:
+        return ingest.REDIS_PUSH_STATUS_PUSHED
+
     feed_entries = {
         "https://example.com/rss/user_a": [
             {"id": "1", "link": "https://example.com/user_a/post/1", "title": "A1"},
@@ -371,12 +368,17 @@ def test_ingest_rss_many_once_accepted_total_is_per_user(
     )
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        _fake_push_to_redis_status,
+    )
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss/user_a", "https://example.com/rss/user_b"],
         engine=None,
         spool_dir=tmp_path,
-        redis_client=None,
-        redis_queue_key="",
+        redis_client=object(),
+        redis_queue_key="k",
         platform="weibo",
         author="",
         user_id=None,
@@ -480,6 +482,173 @@ def test_ingest_rss_many_once_calls_item_ingested_callback_on_accept(
 ) -> None:
     callback_calls = {"count": 0}
 
+    def _fake_push_to_redis_status(*_args, **_kwargs) -> str:
+        return ingest.REDIS_PUSH_STATUS_PUSHED
+
+    def _on_item_ingested() -> None:
+        callback_calls["count"] = int(callback_calls["count"]) + 1
+
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del url, timeout, retries
+        return SimpleNamespace(
+            entries=[{"link": "https://example.com/post/1", "title": "标题"}]
+        )
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: ("mid1", "weibo:1", ""),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        _fake_push_to_redis_status,
+    )
+    accepted, enqueue_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss"],
+        engine=None,
+        spool_dir=tmp_path,
+        redis_client=object(),
+        redis_queue_key="k",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        rss_feed_sleep_seconds=0.0,
+        on_item_ingested=_on_item_ingested,
+        verbose=False,
+    )
+
+    assert accepted == 1
+    assert enqueue_error is False
+    assert int(callback_calls["count"]) == 1
+
+
+def test_ingest_rss_many_once_redis_error_sets_enqueue_error(
+    monkeypatch, tmp_path
+) -> None:
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del url, timeout, retries
+        return SimpleNamespace(
+            entries=[{"link": "https://example.com/post/1", "title": "标题"}]
+        )
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: ("mid1", "weibo:1", ""),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_ERROR,
+    )
+    monkeypatch.setattr(
+        ingest,
+        "upsert_pending_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not write pending post inline")
+        ),
+        raising=False,
+    )
+
+    accepted, enqueue_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss"],
+        engine=None,
+        spool_dir=tmp_path,
+        redis_client=object(),
+        redis_queue_key="k",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        rss_feed_sleep_seconds=0.0,
+        verbose=False,
+    )
+
+    assert accepted == 0
+    assert enqueue_error is True
+
+
+def test_ingest_rss_many_once_redis_error_does_not_need_second_fallback(
+    monkeypatch, tmp_path
+) -> None:
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del url, timeout, retries
+        return SimpleNamespace(
+            entries=[{"link": "https://example.com/post/1", "title": "标题"}]
+        )
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: ("mid1", "weibo:1", ""),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_ERROR,
+    )
+    accepted, enqueue_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss"],
+        engine=None,
+        spool_dir=tmp_path,
+        redis_client=object(),
+        redis_queue_key="k",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        rss_feed_sleep_seconds=0.0,
+        verbose=False,
+    )
+
+    assert accepted == 0
+    assert enqueue_error is True
+
+
+def test_ingest_rss_many_once_without_redis_sets_enqueue_error(
+    monkeypatch, tmp_path
+) -> None:
     def _fake_fetch_feed(
         url: str, timeout: float, *, retries: int = 0
     ) -> SimpleNamespace:
@@ -515,130 +684,6 @@ def test_ingest_rss_many_once_calls_item_ingested_callback_on_accept(
         rss_timeout=60.0,
         rss_retries=5,
         rss_feed_sleep_seconds=0.0,
-        on_item_ingested=lambda: callback_calls.__setitem__(
-            "count", int(callback_calls["count"]) + 1
-        ),
-        verbose=False,
-    )
-
-    assert accepted == 1
-    assert enqueue_error is False
-    assert int(callback_calls["count"]) == 1
-
-
-def test_ingest_rss_many_once_spool_write_fallback_to_redis(
-    monkeypatch, tmp_path
-) -> None:
-    redis_push_calls: list[str] = []
-
-    def _fake_fetch_feed(
-        url: str, timeout: float, *, retries: int = 0
-    ) -> SimpleNamespace:
-        del url, timeout, retries
-        return SimpleNamespace(
-            entries=[{"link": "https://example.com/post/1", "title": "标题"}]
-        )
-
-    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
-    monkeypatch.setattr(
-        ingest,
-        "build_ids",
-        lambda entry, link, feed_user_id, platform: ("mid1", "weibo:1", ""),
-    )
-    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
-    monkeypatch.setattr(
-        ingest,
-        "choose_author",
-        lambda entry, feed, author, platform: "测试博主",
-    )
-    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
-    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
-    monkeypatch.setattr(
-        ingest,
-        "spool_write",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk_full")),
-    )
-
-    def _fake_redis_try_push_status(_client, _key, *, post_uid: str, **_kwargs) -> str:
-        redis_push_calls.append(str(post_uid))
-        return ingest.REDIS_PUSH_STATUS_PUSHED
-
-    monkeypatch.setattr(
-        ingest,
-        "redis_try_push_ai_dedup_status",
-        _fake_redis_try_push_status,
-    )
-
-    accepted, enqueue_error = ingest.ingest_rss_many_once(
-        rss_urls=["https://example.com/rss"],
-        engine=None,
-        spool_dir=tmp_path,
-        redis_client=object(),
-        redis_queue_key="k",
-        platform="weibo",
-        author="",
-        user_id=None,
-        limit=None,
-        rss_timeout=60.0,
-        rss_retries=5,
-        rss_feed_sleep_seconds=0.0,
-        verbose=False,
-    )
-
-    assert accepted == 1
-    assert enqueue_error is True
-    assert redis_push_calls == ["weibo:1"]
-
-
-def test_ingest_rss_many_once_spool_write_and_redis_both_fail(
-    monkeypatch, tmp_path
-) -> None:
-    def _fake_fetch_feed(
-        url: str, timeout: float, *, retries: int = 0
-    ) -> SimpleNamespace:
-        del url, timeout, retries
-        return SimpleNamespace(
-            entries=[{"link": "https://example.com/post/1", "title": "标题"}]
-        )
-
-    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
-    monkeypatch.setattr(
-        ingest,
-        "build_ids",
-        lambda entry, link, feed_user_id, platform: ("mid1", "weibo:1", ""),
-    )
-    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
-    monkeypatch.setattr(
-        ingest,
-        "choose_author",
-        lambda entry, feed, author, platform: "测试博主",
-    )
-    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
-    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
-    monkeypatch.setattr(
-        ingest,
-        "spool_write",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("disk_full")),
-    )
-    monkeypatch.setattr(
-        ingest,
-        "redis_try_push_ai_dedup_status",
-        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_ERROR,
-    )
-
-    accepted, enqueue_error = ingest.ingest_rss_many_once(
-        rss_urls=["https://example.com/rss"],
-        engine=None,
-        spool_dir=tmp_path,
-        redis_client=object(),
-        redis_queue_key="k",
-        platform="weibo",
-        author="",
-        user_id=None,
-        limit=None,
-        rss_timeout=60.0,
-        rss_retries=5,
-        rss_feed_sleep_seconds=0.0,
         verbose=False,
     )
 
@@ -646,10 +691,38 @@ def test_ingest_rss_many_once_spool_write_and_redis_both_fail(
     assert enqueue_error is True
 
 
+def test_build_source_runtimes_requires_redis_for_worker(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(worker_loop_runtime, "ensure_spool_dir", lambda: tmp_path)
+    monkeypatch.setattr(worker_loop_runtime, "try_get_redis", lambda: (None, ""))
+    monkeypatch.setattr(
+        worker_loop_runtime,
+        "require_postgres_source_from_env",
+        lambda name: SimpleNamespace(dsn="postgres://db", schema=str(name)),
+    )
+    monkeypatch.setattr(
+        worker_loop_runtime, "ensure_postgres_engine", lambda *args, **kwargs: object()
+    )
+
+    with pytest.raises(RuntimeError, match="REDIS_URL"):
+        worker_loop_runtime.build_source_runtimes(
+            source_configs=[
+                RSSSourceConfig(
+                    name="weibo",
+                    platform="weibo",
+                    rss_urls=["https://example.com/rss"],
+                    database_url="postgres://db",
+                    auth_token="",
+                    author="",
+                    user_id=None,
+                )
+            ]
+        )
+
+
 def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
     monkeypatch, tmp_path
 ) -> None:
-    spool_write_calls = {"count": 0}
+    push_calls = {"count": 0}
 
     def _fake_fetch_feed(
         url: str, timeout: float, *, retries: int = 0
@@ -662,11 +735,11 @@ def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
             ]
         )
 
-    def _fake_spool_write(*_args, **_kwargs):  # type: ignore[no-untyped-def]
-        spool_write_calls["count"] += 1
-        if int(spool_write_calls["count"]) == 1:
-            raise RuntimeError("disk_full")
-        return tmp_path / "ok.json"
+    def _fake_push(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        push_calls["count"] += 1
+        if int(push_calls["count"]) == 1:
+            return ingest.REDIS_PUSH_STATUS_ERROR
+        return ingest.REDIS_PUSH_STATUS_PUSHED
 
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(
@@ -682,12 +755,7 @@ def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
     )
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
-    monkeypatch.setattr(ingest, "spool_write", _fake_spool_write)
-    monkeypatch.setattr(
-        ingest,
-        "redis_try_push_ai_dedup_status",
-        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_ERROR,
-    )
+    monkeypatch.setattr(ingest, "_try_push_to_redis_status", _fake_push)
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
@@ -707,7 +775,7 @@ def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
 
     assert accepted == 1
     assert enqueue_error is True
-    assert int(spool_write_calls["count"]) == 2
+    assert int(push_calls["count"]) == 2
 
 
 def test_ingest_rss_many_once_prints_feed_sleep_log(
@@ -747,25 +815,7 @@ def test_ingest_rss_many_once_prints_feed_sleep_log(
     assert "[rss] cycle_done" in out
 
 
-def test_ingest_rss_many_once_reuses_single_turso_connection(
-    monkeypatch, tmp_path
-) -> None:
-    engine_marker = cast(TursoEngine, object())
-    conn_marker = object()
-    connect_calls: list[object] = []
-    upsert_conn_ids: list[int] = []
-
-    class _ConnContext:
-        def __enter__(self):
-            return conn_marker
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-    def _fake_connect(engine):
-        connect_calls.append(engine)
-        return _ConnContext()
-
+def test_ingest_rss_many_once_without_redis_skips_items(monkeypatch, tmp_path) -> None:
     def _fake_fetch_feed(
         url: str, timeout: float, *, retries: int = 0
     ) -> SimpleNamespace:
@@ -777,14 +827,6 @@ def test_ingest_rss_many_once_reuses_single_turso_connection(
             ]
         )
 
-    def _fake_upsert(conn, **kwargs) -> None:
-        del kwargs
-        assert conn is conn_marker
-        upsert_conn_ids.append(id(conn))
-
-    monkeypatch.setattr(
-        ingest, "postgres_connect_autocommit", _fake_connect, raising=False
-    )
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(
         ingest,
@@ -803,11 +845,18 @@ def test_ingest_rss_many_once_reuses_single_turso_connection(
     )
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
-    monkeypatch.setattr(ingest, "upsert_pending_post", _fake_upsert)
+    monkeypatch.setattr(
+        ingest,
+        "upsert_pending_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not write pending post inline")
+        ),
+        raising=False,
+    )
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
-        engine=engine_marker,
+        engine=cast(TursoEngine, object()),
         spool_dir=tmp_path,
         redis_client=None,
         redis_queue_key="",
@@ -820,57 +869,152 @@ def test_ingest_rss_many_once_reuses_single_turso_connection(
         verbose=False,
     )
 
-    assert accepted == 2
+    assert accepted == 0
+    assert enqueue_error is True
+
+
+def test_ingest_rss_many_once_redis_error_does_not_fall_back_to_turso_inline(
+    monkeypatch, tmp_path
+) -> None:
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del url, timeout, retries
+        return SimpleNamespace(
+            entries=[
+                {"id": "1", "link": "https://example.com/post/1", "title": "标题1"},
+                {"id": "2", "link": "https://example.com/post/2", "title": "标题2"},
+            ]
+        )
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: (
+            f"mid-{entry['id']}",
+            f"weibo:{entry['id']}",
+            "",
+        ),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "upsert_pending_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not write pending post inline")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_ERROR,
+    )
+
+    accepted, enqueue_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss"],
+        engine=cast(TursoEngine, object()),
+        spool_dir=tmp_path,
+        redis_client=object(),
+        redis_queue_key="queue",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        verbose=False,
+    )
+
+    assert accepted == 0
+    assert enqueue_error is True
+
+
+def test_ingest_rss_many_once_redis_duplicate_is_skipped_without_error(
+    monkeypatch, tmp_path
+) -> None:
+    def _fake_fetch_feed(
+        url: str, timeout: float, *, retries: int = 0
+    ) -> SimpleNamespace:
+        del url, timeout, retries
+        return SimpleNamespace(
+            entries=[
+                {"id": "1", "link": "https://example.com/post/1", "title": "标题1"}
+            ]
+        )
+
+    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
+    monkeypatch.setattr(
+        ingest,
+        "build_ids",
+        lambda entry, link, feed_user_id, platform: (
+            f"mid-{entry['id']}",
+            f"weibo:{entry['id']}",
+            "",
+        ),
+    )
+    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
+    monkeypatch.setattr(
+        ingest,
+        "choose_author",
+        lambda entry, feed, author, platform: "测试博主",
+    )
+    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
+    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
+    monkeypatch.setattr(
+        ingest,
+        "upsert_pending_post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should not write pending post inline")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_DUPLICATE,
+    )
+
+    accepted, enqueue_error = ingest.ingest_rss_many_once(
+        rss_urls=["https://example.com/rss"],
+        engine=cast(TursoEngine, object()),
+        spool_dir=tmp_path,
+        redis_client=object(),
+        redis_queue_key="queue",
+        platform="weibo",
+        author="",
+        user_id=None,
+        limit=None,
+        rss_timeout=60.0,
+        rss_retries=5,
+        verbose=False,
+    )
+
+    assert accepted == 0
     assert enqueue_error is False
-    assert connect_calls == [engine_marker]
-    assert len(upsert_conn_ids) == 2
 
 
-def test_ingest_rss_many_once_reconnects_after_write_error(
+def test_ingest_rss_many_once_redis_duplicate_keeps_enqueue_error_false(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
-    first_conn = object()
-    second_conn = object()
-    connect_calls: list[object] = []
-    upsert_calls: list[object] = []
-
-    class _ConnContext:
-        def __init__(self, conn_marker: object):
-            self._conn_marker = conn_marker
-
-        def __enter__(self):
-            return self._conn_marker
-
-        def __exit__(self, exc_type, exc, tb) -> None:
-            del exc_type, exc, tb
-
-    def _fake_connect(engine):
-        connect_calls.append(engine)
-        if len(connect_calls) == 1:
-            return _ConnContext(first_conn)
-        return _ConnContext(second_conn)
-
     def _fake_fetch_feed(
         url: str, timeout: float, *, retries: int = 0
     ) -> SimpleNamespace:
         del url, timeout, retries
         return SimpleNamespace(
             entries=[
-                {"id": "1", "link": "https://example.com/post/1", "title": "标题1"},
-                {"id": "2", "link": "https://example.com/post/2", "title": "标题2"},
+                {"id": "1", "link": "https://example.com/post/1", "title": "标题1"}
             ]
         )
 
-    def _fake_upsert(conn, **kwargs) -> None:
-        del kwargs
-        upsert_calls.append(conn)
-        if len(upsert_calls) == 1:
-            raise RuntimeError("first write failed")
-
-    monkeypatch.setattr(
-        ingest, "postgres_connect_autocommit", _fake_connect, raising=False
-    )
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(
         ingest,
@@ -889,14 +1033,18 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
     )
     monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
     monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
-    monkeypatch.setattr(ingest, "upsert_pending_post", _fake_upsert)
+    monkeypatch.setattr(
+        ingest,
+        "_try_push_to_redis_status",
+        lambda *_args, **_kwargs: ingest.REDIS_PUSH_STATUS_DUPLICATE,
+    )
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
-        engine=engine_marker,
+        engine=cast(TursoEngine, object()),
         spool_dir=tmp_path,
-        redis_client=None,
-        redis_queue_key="",
+        redis_client=object(),
+        redis_queue_key="queue",
         platform="weibo",
         author="",
         user_id=None,
@@ -906,93 +1054,5 @@ def test_ingest_rss_many_once_reconnects_after_write_error(
         verbose=False,
     )
 
-    assert accepted == 2
-    assert enqueue_error is True
-    assert connect_calls == [engine_marker, engine_marker]
-    assert upsert_calls == [first_conn, second_conn]
-
-
-def test_ingest_rss_many_once_closes_failed_connection_before_reconnect(
-    monkeypatch, tmp_path
-) -> None:
-    engine_marker = cast(TursoEngine, object())
-    connect_calls: list[object] = []
-    upsert_calls: list[object] = []
-
-    class _FakeConn:
-        def __init__(self, name: str):
-            self.name = name
-            self.close_calls: list[bool] = []
-
-        def close(self, *, broken: bool = False) -> None:
-            self.close_calls.append(bool(broken))
-
-    connections = [_FakeConn("c1"), _FakeConn("c2"), _FakeConn("c3")]
-
-    def _fake_connect(engine):
-        connect_calls.append(engine)
-        return connections[len(connect_calls) - 1]
-
-    def _fake_fetch_feed(
-        url: str, timeout: float, *, retries: int = 0
-    ) -> SimpleNamespace:
-        del url, timeout, retries
-        return SimpleNamespace(
-            entries=[
-                {"id": "1", "link": "https://example.com/post/1", "title": "标题1"},
-                {"id": "2", "link": "https://example.com/post/2", "title": "标题2"},
-                {"id": "3", "link": "https://example.com/post/3", "title": "标题3"},
-            ]
-        )
-
-    def _fake_upsert(conn, **kwargs) -> None:
-        del kwargs
-        upsert_calls.append(conn)
-        if len(upsert_calls) <= 2:
-            raise RuntimeError("write failed")
-
-    monkeypatch.setattr(
-        ingest, "postgres_connect_autocommit", _fake_connect, raising=False
-    )
-    monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
-    monkeypatch.setattr(
-        ingest,
-        "build_ids",
-        lambda entry, link, feed_user_id, platform: (
-            f"mid-{entry['id']}",
-            f"weibo:{entry['id']}",
-            "",
-        ),
-    )
-    monkeypatch.setattr(ingest, "parse_datetime", lambda entry: "2026-03-28 10:00:00")
-    monkeypatch.setattr(
-        ingest,
-        "choose_author",
-        lambda entry, feed, author, platform: "测试博主",
-    )
-    monkeypatch.setattr(ingest, "get_entry_content", lambda entry: "")
-    monkeypatch.setattr(ingest, "extract_image_urls_from_html", lambda html: [])
-    monkeypatch.setattr(ingest, "upsert_pending_post", _fake_upsert)
-
-    accepted, enqueue_error = ingest.ingest_rss_many_once(
-        rss_urls=["https://example.com/rss"],
-        engine=engine_marker,
-        spool_dir=tmp_path,
-        redis_client=None,
-        redis_queue_key="",
-        platform="weibo",
-        author="",
-        user_id=None,
-        limit=None,
-        rss_timeout=60.0,
-        rss_retries=5,
-        verbose=False,
-    )
-
-    assert accepted == 3
-    assert enqueue_error is True
-    assert connect_calls == [engine_marker, engine_marker, engine_marker]
-    assert upsert_calls == [connections[0], connections[1], connections[2]]
-    assert connections[0].close_calls == [False]
-    assert connections[1].close_calls == [False]
-    assert connections[2].close_calls == [False]
+    assert accepted == 0
+    assert enqueue_error is False

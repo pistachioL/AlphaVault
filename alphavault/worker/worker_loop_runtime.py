@@ -54,6 +54,10 @@ def build_source_runtimes(
 ) -> tuple[list[WorkerSourceRuntime], Any, str]:
     base_spool_dir = ensure_spool_dir()
     redis_client, base_redis_queue_key = try_get_redis()
+    if source_configs and (
+        not redis_client or not str(base_redis_queue_key or "").strip()
+    ):
+        raise RuntimeError("Missing REDIS_URL for Redis-primary worker")
 
     multi_source = len(source_configs) > 1
     sources: list[WorkerSourceRuntime] = []
