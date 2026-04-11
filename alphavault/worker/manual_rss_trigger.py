@@ -32,6 +32,7 @@ from alphavault.worker.redis_stream_queue import (
     resolve_redis_ai_queue_maxlen,
     resolve_redis_dedup_ttl_seconds,
 )
+from alphavault.worker.source_runtime import build_source_redis_queue_key
 from alphavault.worker.spool import ensure_spool_dir
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -93,11 +94,11 @@ def _build_source_spool_dir(
 def _build_source_redis_queue_key(
     *, base_queue_key: str, source_name: str, multi_source: bool
 ) -> str:
-    if not base_queue_key:
-        return ""
-    if not multi_source:
-        return base_queue_key
-    return f"{base_queue_key}:{source_name}"
+    return build_source_redis_queue_key(
+        base_queue_key=base_queue_key,
+        source_name=source_name,
+        multi_source=multi_source,
+    )
 
 
 def _maybe_dispose_turso_engine_on_transient_error(
