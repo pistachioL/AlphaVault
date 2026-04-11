@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
@@ -31,6 +32,7 @@ from alphavault.worker.runtime_models import (
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 AI_TRACE_LOG_PREFIX = "[ai_trace]"
+PROCESS_STUCK_LOG_INTERVAL_SECONDS = 30.0
 
 
 def _trace_log_value(value: object) -> str:
@@ -74,6 +76,8 @@ def _build_ai_trace_log_line(
     acked: int | None = None,
     deleted: int | None = None,
     retry_added: int | None = None,
+    step: str = "",
+    elapsed_seconds: int | None = None,
     reason: str = "",
 ) -> str:
     parts = [AI_TRACE_LOG_PREFIX, f"stage={_trace_log_value(stage)}"]
@@ -83,6 +87,7 @@ def _build_ai_trace_log_line(
     _append_trace_field(parts, "source", source)
     _append_trace_field(parts, "message_id", message_id)
     _append_trace_field(parts, "post_uid", post_uid)
+    _append_trace_field(parts, "step", step)
     _append_trace_field(parts, "reason", reason)
     if retry_count is not None:
         _append_trace_field(parts, "retry_count", int(retry_count))
@@ -96,6 +101,8 @@ def _build_ai_trace_log_line(
         _append_trace_field(parts, "deleted", int(deleted))
     if retry_added is not None:
         _append_trace_field(parts, "retry_added", int(retry_added))
+    if elapsed_seconds is not None:
+        _append_trace_field(parts, "elapsed_seconds", int(elapsed_seconds))
     return " ".join(parts)
 
 
@@ -124,7 +131,13 @@ def process_one_redis_payload(
         message_id=resolved_message_id,
         post_uid=payload_post_uid,
     )
-    trace_state = {"ack_reason": "", "post_uid": payload_post_uid}
+    trace_state = {
+        "ack_reason": "",
+        "post_uid": payload_post_uid,
+        "step": "process_start",
+    }
+    process_started_at = time.monotonic()
+    process_done_event = threading.Event()
 
     def _log_trace(
         *,
@@ -136,8 +149,13 @@ def process_one_redis_payload(
         acked: int | None = None,
         deleted: int | None = None,
         retry_added: int | None = None,
+        step: str = "",
+        elapsed_seconds: int | None = None,
         reason: str = "",
+        update_step: bool = True,
     ) -> None:
+        if update_step:
+            trace_state["step"] = str(step or stage or "").strip()
         if not verbose:
             return
         print(
@@ -155,12 +173,31 @@ def process_one_redis_payload(
                 acked=acked,
                 deleted=deleted,
                 retry_added=retry_added,
+                step=str(step or trace_state.get("step") or ""),
+                elapsed_seconds=elapsed_seconds,
                 reason=reason,
             ),
             flush=True,
         )
 
+    def _watch_long_running_process() -> None:
+        while not process_done_event.wait(
+            timeout=float(PROCESS_STUCK_LOG_INTERVAL_SECONDS)
+        ):
+            _log_trace(
+                stage="still_running",
+                step=str(trace_state.get("step") or ""),
+                elapsed_seconds=int(time.monotonic() - process_started_at),
+                update_step=False,
+            )
+
     _log_trace(stage="process_start")
+    if verbose:
+        threading.Thread(
+            target=_watch_long_running_process,
+            name="redis-payload-watchdog",
+            daemon=True,
+        ).start()
 
     def _payload_retry_count(inner_payload: dict[str, object]) -> int:
         return ai_processor.payload_retry_count(
@@ -315,30 +352,47 @@ def process_one_redis_payload(
         )
         return bool(success)
 
-    ai_processor.process_one_redis_payload(
-        engine=engine,
-        payload=payload,
-        message_id=message_id,
-        redis_client=redis_client,
-        redis_queue_key=redis_queue_key,
-        source_name=str(source_name or "").strip(),
-        config=config,
-        limiter=limiter,
-        verbose=bool(verbose),
-        payload_to_cloud_post_fn=_payload_to_cloud_post,
-        process_one_post_uid_fn=_process_one_post_uid_with_trace,
-        mark_post_failed_fn=_mark_post_failed,
-        redis_ai_push_retry_fn=redis_ai_push_retry,
-        redis_ai_ack_fn=_redis_ai_ack_with_trace,
-        redis_ai_ack_and_clear_dedup_fn=_redis_ai_ack_and_clear_dedup_with_trace,
-        redis_ai_ack_and_push_retry_fn=_redis_ai_ack_and_push_retry_with_trace,
-        payload_retry_count_fn=_payload_retry_count,
-        is_post_already_processed_success_fn=_is_post_already_processed_success,
-        backoff_seconds_fn=backoff_seconds,
-        now_epoch_fn=lambda: int(time.time()),
-        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
-        max_retry_count=max(0, int(max_retry_count)),
-    )
+    try:
+        ai_processor.process_one_redis_payload(
+            engine=engine,
+            payload=payload,
+            message_id=message_id,
+            redis_client=redis_client,
+            redis_queue_key=redis_queue_key,
+            source_name=str(source_name or "").strip(),
+            config=config,
+            limiter=limiter,
+            verbose=bool(verbose),
+            payload_to_cloud_post_fn=_payload_to_cloud_post,
+            process_one_post_uid_fn=_process_one_post_uid_with_trace,
+            mark_post_failed_fn=_mark_post_failed,
+            redis_ai_push_retry_fn=redis_ai_push_retry,
+            redis_ai_ack_fn=_redis_ai_ack_with_trace,
+            redis_ai_ack_and_clear_dedup_fn=_redis_ai_ack_and_clear_dedup_with_trace,
+            redis_ai_ack_and_push_retry_fn=_redis_ai_ack_and_push_retry_with_trace,
+            payload_retry_count_fn=_payload_retry_count,
+            is_post_already_processed_success_fn=_is_post_already_processed_success,
+            backoff_seconds_fn=backoff_seconds,
+            now_epoch_fn=lambda: int(time.time()),
+            fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
+            max_retry_count=max(0, int(max_retry_count)),
+        )
+        _log_trace(
+            stage="process_finish",
+            elapsed_seconds=int(time.monotonic() - process_started_at),
+            update_step=False,
+        )
+    except BaseException as err:
+        if not isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            _log_trace(
+                stage="process_crash",
+                reason=f"{type(err).__name__}: {err}",
+                elapsed_seconds=int(time.monotonic() - process_started_at),
+                update_step=False,
+            )
+        raise
+    finally:
+        process_done_event.set()
 
 
 __all__ = [

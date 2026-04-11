@@ -48,6 +48,13 @@ def _build_ai_trace_log_line(
     available: int | None = None,
     claimed: int | None = None,
     read: int | None = None,
+    pending: int | None = None,
+    unread: int | None = None,
+    retry: int | None = None,
+    backlog: int | None = None,
+    inflight: int | None = None,
+    consumer_pending: int | None = None,
+    consumer_idle_ms: int | None = None,
 ) -> str:
     parts = [AI_TRACE_LOG_PREFIX, f"stage={_trace_log_value(stage)}"]
     _append_trace_field(parts, "trace_id", trace_id)
@@ -64,6 +71,20 @@ def _build_ai_trace_log_line(
         _append_trace_field(parts, "claimed", int(claimed))
     if read is not None:
         _append_trace_field(parts, "read", int(read))
+    if pending is not None:
+        _append_trace_field(parts, "pending", int(pending))
+    if unread is not None:
+        _append_trace_field(parts, "unread", int(unread))
+    if retry is not None:
+        _append_trace_field(parts, "retry", int(retry))
+    if backlog is not None:
+        _append_trace_field(parts, "backlog", int(backlog))
+    if inflight is not None:
+        _append_trace_field(parts, "inflight", int(inflight))
+    if consumer_pending is not None:
+        _append_trace_field(parts, "consumer_pending", int(consumer_pending))
+    if consumer_idle_ms is not None:
+        _append_trace_field(parts, "consumer_idle_ms", int(consumer_idle_ms))
     return " ".join(parts)
 
 
@@ -149,6 +170,8 @@ def schedule_ai_from_stream(
     process_one_redis_payload_fn: Callable[..., None],
     fatal_exceptions: tuple[type[BaseException], ...],
     stuck_seconds: int,
+    pressure_snapshot_fn: Callable[[Any, str], dict[str, int]] | None = None,
+    consumer_snapshot_fn: Callable[..., dict[str, int]] | None = None,
 ) -> tuple[int, bool]:
     resolved_owner = str(inflight_owner or "").strip()
     resolved_consumer_name = str(consumer_name or "").strip()
@@ -166,6 +189,65 @@ def schedule_ai_from_stream(
         rss_inflight_now=int(rss_inflight_now),
         low_inflight_now=int(low_inflight_now),
     )
+    pressure_snapshot = {
+        "pending_count": 0,
+        "unread_count": 0,
+        "retry_count": 0,
+        "total_backlog": 0,
+    }
+    if pressure_snapshot_fn is not None:
+        try:
+            pressure_snapshot = pressure_snapshot_fn(redis_client, redis_queue_key)
+        except BaseException as err:
+            if isinstance(err, fatal_exceptions):
+                raise
+            if verbose:
+                print(
+                    f"[ai] redis_pressure_snapshot_error owner={inflight_owner} "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
+    consumer_snapshot = {
+        "consumer_pending_count": 0,
+        "consumer_idle_ms": 0,
+    }
+    if consumer_snapshot_fn is not None:
+        try:
+            consumer_snapshot = consumer_snapshot_fn(
+                redis_client,
+                redis_queue_key,
+                consumer_name=resolved_consumer_name,
+            )
+        except BaseException as err:
+            if isinstance(err, fatal_exceptions):
+                raise
+            if verbose:
+                print(
+                    f"[ai] redis_consumer_snapshot_error owner={inflight_owner} "
+                    f"{type(err).__name__}: {err}",
+                    flush=True,
+                )
+    if verbose and int(pressure_snapshot.get("total_backlog") or 0) > 0:
+        print(
+            _build_ai_trace_log_line(
+                stage="poll_snapshot",
+                owner=resolved_owner,
+                consumer=resolved_consumer_name,
+                queue=resolved_queue_key,
+                source=resolved_source_name,
+                available=int(available),
+                inflight=int(rss_inflight_now),
+                pending=int(pressure_snapshot.get("pending_count") or 0),
+                unread=int(pressure_snapshot.get("unread_count") or 0),
+                retry=int(pressure_snapshot.get("retry_count") or 0),
+                backlog=int(pressure_snapshot.get("total_backlog") or 0),
+                consumer_pending=int(
+                    consumer_snapshot.get("consumer_pending_count") or 0
+                ),
+                consumer_idle_ms=int(consumer_snapshot.get("consumer_idle_ms") or 0),
+            ),
+            flush=True,
+        )
     if available <= 0:
         return 0, False
 
@@ -252,6 +334,32 @@ def schedule_ai_from_stream(
                     flush=True,
                 )
             return 0, True
+
+    if (
+        verbose
+        and not messages
+        and int(pressure_snapshot.get("total_backlog") or 0) > 0
+    ):
+        print(
+            _build_ai_trace_log_line(
+                stage="poll_no_messages",
+                owner=resolved_owner,
+                consumer=resolved_consumer_name,
+                queue=resolved_queue_key,
+                source=resolved_source_name,
+                available=int(available),
+                inflight=int(rss_inflight_now),
+                pending=int(pressure_snapshot.get("pending_count") or 0),
+                unread=int(pressure_snapshot.get("unread_count") or 0),
+                retry=int(pressure_snapshot.get("retry_count") or 0),
+                backlog=int(pressure_snapshot.get("total_backlog") or 0),
+                consumer_pending=int(
+                    consumer_snapshot.get("consumer_pending_count") or 0
+                ),
+                consumer_idle_ms=int(consumer_snapshot.get("consumer_idle_ms") or 0),
+            ),
+            flush=True,
+        )
 
     scheduled = 0
     for delivery, message in messages:

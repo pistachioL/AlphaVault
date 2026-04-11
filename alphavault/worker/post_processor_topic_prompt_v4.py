@@ -329,11 +329,29 @@ def process_one_post_uid_topic_prompt_v4(
     prefetched_recent: list[dict[str, object]] | None = None,
     source_name: str = "",
 ) -> bool:
+    if config.verbose:
+        print(
+            _build_ai_topic_diag_log_line(
+                event="load_post_start",
+                post_uid=str(post_uid or ""),
+            ),
+            flush=True,
+        )
     post = (
         prefetched_post
         if prefetched_post is not None
         else load_cloud_post(engine, post_uid)
     )
+    if config.verbose:
+        print(
+            _build_ai_topic_diag_log_line(
+                event="load_post_done",
+                post_uid=str(post.post_uid or ""),
+                author=str(post.author or "").strip(),
+                ai_retry_count=int(post.ai_retry_count or 0),
+            ),
+            flush=True,
+        )
     focus = str(post.author or "").strip()
     root_key, root_segment, root_content_key = thread_root_info_for_post(
         raw_text=post.raw_text or "",
@@ -507,6 +525,19 @@ def process_one_post_uid_topic_prompt_v4(
             invest_score = score_from_assertions(rows)
             processed_at = now_str()
             archived_at = now_str()
+            if config.verbose:
+                print(
+                    _build_ai_topic_diag_log_line(
+                        event="db_write_start",
+                        post_uid=uid,
+                        author=focus,
+                        root_key=root_key,
+                        final_status=final_status,
+                        assertion_count=len(rows),
+                        invest_score=float(invest_score),
+                    ),
+                    flush=True,
+                )
             write_assertions_and_mark_done(
                 engine,
                 post_uid=uid,

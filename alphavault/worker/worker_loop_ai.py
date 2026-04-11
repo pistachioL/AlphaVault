@@ -11,7 +11,9 @@ from alphavault.worker.redis_stream_queue import (
     build_redis_ai_consumer_name,
     redis_ai_ack,
     redis_ai_claim_stuck_messages,
+    redis_ai_consumer_snapshot,
     redis_ai_move_due_retries_to_stream,
+    redis_ai_pressure_snapshot,
     redis_ai_read_group_messages,
 )
 from alphavault.worker.worker_loop_models import SourceTickContext
@@ -27,6 +29,8 @@ def _schedule_ai_from_stream(**kwargs):  # type: ignore[no-untyped-def]
         move_due_retry_to_stream_fn=redis_ai_move_due_retries_to_stream,
         claim_stuck_messages_fn=redis_ai_claim_stuck_messages,
         read_group_messages_fn=redis_ai_read_group_messages,
+        pressure_snapshot_fn=redis_ai_pressure_snapshot,
+        consumer_snapshot_fn=redis_ai_consumer_snapshot,
         ack_message_fn=redis_ai_ack,
         process_one_redis_payload_fn=process_one_redis_payload,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,

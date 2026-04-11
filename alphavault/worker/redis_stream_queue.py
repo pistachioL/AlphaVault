@@ -451,6 +451,61 @@ def _unread_count_from_groups(groups: object) -> int:
     return 0
 
 
+def redis_ai_consumer_snapshot(
+    client,
+    queue_key: str,
+    *,
+    consumer_name: str,
+) -> dict[str, int]:
+    if (
+        not client
+        or not str(queue_key or "").strip()
+        or not str(consumer_name or "").strip()
+    ):
+        return {
+            "consumer_pending_count": 0,
+            "consumer_idle_ms": 0,
+        }
+    redis_ensure_ai_consumer_group(client, queue_key)
+    try:
+        consumers = client.xinfo_consumers(
+            redis_ai_stream_key(queue_key),
+            REDIS_AI_CONSUMER_GROUP,
+        )
+    except Exception:
+        return {
+            "consumer_pending_count": 0,
+            "consumer_idle_ms": 0,
+        }
+    if not isinstance(consumers, list):
+        return {
+            "consumer_pending_count": 0,
+            "consumer_idle_ms": 0,
+        }
+    resolved_consumer_name = str(consumer_name or "").strip()
+    for consumer in consumers:
+        if not isinstance(consumer, dict):
+            continue
+        if str(consumer.get("name") or "").strip() != resolved_consumer_name:
+            continue
+        try:
+            pending = int(consumer.get("pending") or 0)
+        except Exception:
+            pending = 0
+        try:
+            idle_ms = int(consumer.get("idle") or 0)
+        except Exception:
+            idle_ms = 0
+        return {
+            "consumer_pending_count": max(0, pending),
+            "consumer_idle_ms": max(0, idle_ms),
+        }
+    return {
+        "consumer_pending_count": 0,
+        "consumer_idle_ms": 0,
+    }
+
+
 def redis_ai_pressure_snapshot(client, queue_key: str) -> dict[str, int]:
     if not client or not str(queue_key or "").strip():
         return {
@@ -503,6 +558,7 @@ __all__ = [
     "redis_ai_ack",
     "redis_ai_ack_and_clear_dedup",
     "redis_ai_ack_and_push_retry",
+    "redis_ai_consumer_snapshot",
     "redis_ai_reset_consumer_group",
     "redis_ai_claim_stuck_messages",
     "redis_ai_due_count",
