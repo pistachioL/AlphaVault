@@ -1,25 +1,26 @@
 from __future__ import annotations
 
+from alphavault.logging_config import get_logger
 
 from alphavault.db.postgres_db import (
     PostgresEngine,
     postgres_connect_autocommit,
 )
 
+logger = get_logger(__name__)
+
 
 def maybe_dispose_turso_engine_on_transient_error(
     *,
     engine: PostgresEngine,
     err: BaseException,
-    verbose: bool,
 ) -> None:
-    del engine, err, verbose
+    del engine, err
 
 
 def ensure_turso_ready(
     *,
     engine: PostgresEngine,
-    verbose: bool,
     turso_ready: bool,
     source_name: str = "",
     fatal_exceptions: tuple[type[BaseException], ...] = (
@@ -34,7 +35,7 @@ def ensure_turso_ready(
     try:
         with postgres_connect_autocommit(engine):
             pass
-        print(f"{prefix} ready", flush=True)
+        logger.info("%s ready", prefix)
         return True
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
@@ -42,10 +43,8 @@ def ensure_turso_ready(
         maybe_dispose_turso_engine_on_transient_error(
             engine=engine,
             err=err,
-            verbose=bool(verbose),
         )
-        if verbose:
-            print(f"{prefix} not_ready {type(err).__name__}: {err}", flush=True)
+        logger.warning("%s not_ready %s: %s", prefix, type(err).__name__, err)
         return False
 
 

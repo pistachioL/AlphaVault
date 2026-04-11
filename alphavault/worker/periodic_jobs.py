@@ -4,7 +4,10 @@ from concurrent.futures import Future
 from datetime import datetime
 from typing import Any, Callable
 
+from alphavault.logging_config import get_logger
+
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+logger = get_logger(__name__)
 
 
 def should_start_redis_enqueue(*, source: Any) -> bool:
@@ -111,10 +114,11 @@ def prune_inflight_futures(
         except BaseException as err:
             if isinstance(err, _FATAL_BASE_EXCEPTIONS):
                 raise
-            print(
-                f"[ai] future_error owner={owner or '(unknown)'} "
-                f"{type(err).__name__}: {err}",
-                flush=True,
+            logger.warning(
+                "[ai] future_error owner=%s %s: %s",
+                owner or "(unknown)",
+                type(err).__name__,
+                err,
             )
 
 

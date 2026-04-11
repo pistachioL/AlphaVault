@@ -63,7 +63,7 @@ export AI_MAX_INFLIGHT="30"
 export AI_QUEUE_ACK_TIMEOUT_SEC="3600"
 export AI_TRACE_OUT="trace.txt"
 
-uv run python weibo_rss_turso_worker.py --verbose
+uv run python weibo_rss_turso_worker.py --log-level info
 ```
 
 说明：

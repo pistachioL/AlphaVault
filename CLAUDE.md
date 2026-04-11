@@ -18,7 +18,7 @@ Uses `uv` (lockfile: `uv.lock`).
 - `uv run pytest`: run all tests.
 - `uv run pytest tests/test_foo.py::test_bar`: run a single test.
 - `uv run reflex run`: start the Reflex dev server.
-- `uv run python weibo_rss_turso_worker.py --verbose`: run the RSS → AI → Turso worker locally.
+- `uv run python weibo_rss_turso_worker.py --log-level info`: run the RSS → AI → Turso worker locally.
 - `docker compose up --build`: run the full container on `http://localhost:8080` using `.env`.
 
 ## Architecture & Data Flow

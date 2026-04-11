@@ -13,7 +13,7 @@ def test_manual_run_ai_rejects_unknown_post_uid_prefix(monkeypatch) -> None:
     monkeypatch.setattr(
         script,
         "parse_args",
-        lambda: SimpleNamespace(post_uids="bad:1"),
+        lambda: SimpleNamespace(post_uids="bad:1", log_level="info"),
     )
     monkeypatch.setattr(
         script,
@@ -44,7 +44,7 @@ def test_reset_ai_results_rejects_unknown_post_uid_prefix(monkeypatch) -> None:
             yes=False,
             chunk_size=200,
             dry_run=True,
-            verbose=False,
+            log_level="info",
         ),
     )
     monkeypatch.setattr(
@@ -72,7 +72,7 @@ def test_scan_and_reset_invalid_ai_tags_rejects_unknown_post_uid_prefix(
             chunk_size=200,
             dry_run=False,
             yes=True,
-            verbose=False,
+            log_level="info",
         ),
     )
     monkeypatch.setattr(
@@ -88,9 +88,8 @@ def test_scan_and_reset_invalid_ai_tags_rejects_unknown_post_uid_prefix(
         *,
         prompt_version: str,
         limit: int,
-        verbose: bool,
     ) -> tuple[list[str], dict[str, str], int]:
-        del prompt_version, limit, verbose
+        del prompt_version, limit
         scan_calls["count"] += 1
         if scan_calls["count"] == 1:
             return ["bad:1"], {}, 1

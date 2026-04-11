@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -31,6 +32,7 @@ from alphavault.worker.redis_stream_queue import (
     resolve_redis_dedup_ttl_seconds,
     redis_try_push_ai_message_status,
 )
+from alphavault.logging_config import get_logger
 
 RSS_LOG_PREFIX = "[rss]"
 RSS_LOG_EVENT_ACCEPTED = "accepted"
@@ -40,6 +42,7 @@ RSS_LOG_EVENT_FEED_SLEEP = "feed_sleep"
 RSS_LOG_EVENT_CYCLE_DONE = "cycle_done"
 LOG_EMPTY_VALUE = "(empty)"
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+logger = get_logger(__name__)
 
 
 def _build_raw_text(*, title: str, content_text: str) -> str:
@@ -104,7 +107,6 @@ def _try_push_to_redis_status(
     *,
     post_uid: str,
     payload: Dict[str, Any],
-    verbose: bool,
 ) -> str:
     if not redis_client or not redis_queue_key or not post_uid:
         return REDIS_PUSH_STATUS_ERROR
@@ -115,7 +117,6 @@ def _try_push_to_redis_status(
         payload=payload,
         ttl_seconds=resolve_redis_dedup_ttl_seconds(),
         queue_maxlen=resolve_redis_ai_queue_maxlen(),
-        verbose=bool(verbose),
     )
 
 
@@ -265,7 +266,6 @@ def ingest_rss_many_once(
     limit: Optional[int],
     rss_timeout: float,
     rss_retries: int,
-    verbose: bool,
     rss_feed_sleep_seconds: float = 0.0,
     enqueue_spooled_payload: Optional[Callable[[Dict[str, Any]], None]] = None,
     on_item_ingested: Optional[Callable[[], None]] = None,
@@ -281,6 +281,7 @@ def ingest_rss_many_once(
     normalized_platform = str(platform or PLATFORM_WEIBO).strip().lower()
     feed_sleep_seconds = _coerce_nonnegative_float(rss_feed_sleep_seconds, default=0.0)
     feed_total = len(rss_urls)
+    debug_enabled = logger.isEnabledFor(logging.DEBUG)
 
     def _mark_item_accepted(
         *,
@@ -302,8 +303,8 @@ def ingest_rss_many_once(
                 on_item_ingested()
             except Exception:
                 pass
-        if verbose:
-            print(
+        if debug_enabled:
+            logger.debug(
                 _build_rss_accepted_log_line(
                     platform=normalized_platform,
                     post_uid=post_uid,
@@ -313,21 +314,18 @@ def ingest_rss_many_once(
                     feed_index=feed_index,
                     feed_total=feed_total,
                     accepted_total=accepted_per_user[feed_counter_key],
-                ),
-                flush=True,
+                )
             )
 
     for feed_index, rss_url in enumerate(rss_urls, start=1):
-        if verbose:
-            print(
-                _build_rss_feed_start_log_line(
-                    platform=normalized_platform,
-                    feed_index=feed_index,
-                    feed_total=feed_total,
-                    rss_url=rss_url,
-                ),
-                flush=True,
+        logger.info(
+            _build_rss_feed_start_log_line(
+                platform=normalized_platform,
+                feed_index=feed_index,
+                feed_total=feed_total,
+                rss_url=rss_url,
             )
+        )
 
         feed_user_id = user_id
         feed_counter_key = _build_accepted_user_counter_key(
@@ -351,11 +349,12 @@ def ingest_rss_many_once(
                 entries = entries[:limit]
         except Exception as e:
             feed_error = True
-            if verbose:
-                print(
-                    f"[rss] source_error url={rss_url} {type(e).__name__}: {e}",
-                    flush=True,
-                )
+            logger.warning(
+                "[rss] source_error url=%s %s: %s",
+                rss_url,
+                type(e).__name__,
+                e,
+            )
 
         entry_total = len(entries)
         for entry_index, entry in enumerate(entries, start=1):
@@ -412,7 +411,6 @@ def ingest_rss_many_once(
                     redis_queue_key,
                     post_uid=post_uid,
                     payload=payload,
-                    verbose=bool(verbose),
                 )
                 if redis_status == REDIS_PUSH_STATUS_PUSHED:
                     _mark_item_accepted(
@@ -438,40 +436,34 @@ def ingest_rss_many_once(
                 continue
             enqueue_error = True
 
-        if verbose:
-            print(
-                _build_rss_feed_done_log_line(
+        logger.info(
+            _build_rss_feed_done_log_line(
+                platform=normalized_platform,
+                feed_index=feed_index,
+                feed_total=feed_total,
+                entry_total=entry_total,
+                accepted_in_feed=(accepted - feed_accepted_before),
+                source_error=feed_error,
+            )
+        )
+
+        if feed_index < feed_total and feed_sleep_seconds > 0:
+            logger.info(
+                _build_rss_feed_sleep_log_line(
                     platform=normalized_platform,
                     feed_index=feed_index,
                     feed_total=feed_total,
-                    entry_total=entry_total,
-                    accepted_in_feed=(accepted - feed_accepted_before),
-                    source_error=feed_error,
-                ),
-                flush=True,
-            )
-
-        if feed_index < feed_total and feed_sleep_seconds > 0:
-            if verbose:
-                print(
-                    _build_rss_feed_sleep_log_line(
-                        platform=normalized_platform,
-                        feed_index=feed_index,
-                        feed_total=feed_total,
-                        sleep_seconds=feed_sleep_seconds,
-                    ),
-                    flush=True,
+                    sleep_seconds=feed_sleep_seconds,
                 )
+            )
             time.sleep(feed_sleep_seconds)
-    if verbose:
-        print(
-            _build_rss_cycle_done_log_line(
-                platform=normalized_platform,
-                feed_total=feed_total,
-                accepted_total=accepted,
-                enqueue_error=enqueue_error,
-            ),
-            flush=True,
+    logger.info(
+        _build_rss_cycle_done_log_line(
+            platform=normalized_platform,
+            feed_total=feed_total,
+            accepted_total=accepted,
+            enqueue_error=enqueue_error,
         )
+    )
 
     return accepted, enqueue_error

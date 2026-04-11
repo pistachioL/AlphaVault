@@ -10,6 +10,11 @@ import pandas as pd
 
 from alphavault.domains.stock.key_match import normalize_stock_code
 from alphavault.domains.stock.keys import normalize_stock_key
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 
 REQUIRED_COLUMNS = ("stock_key", "market", "code", "official_name")
 DEFAULT_SECURITY_MASTER_CSV_PATH = (
@@ -33,6 +38,7 @@ HKEX_EQUITY_SUBCATEGORY_KEYWORD = "股本證券"
 HK_OPENCC_CONFIG = "hk2s.json"
 DEFAULT_MARKETS = ("sh", "sz", "hk")
 SUPPORTED_MARKETS = set(DEFAULT_MARKETS)
+logger = get_logger(__name__)
 
 
 class TextConverter(Protocol):
@@ -55,6 +61,7 @@ def parse_args() -> argparse.Namespace:
         default="sh,sz,hk",
         help="comma-separated markets: sh,sz,hk",
     )
+    add_log_level_argument(parser)
     return parser.parse_args()
 
 
@@ -365,12 +372,13 @@ def build_security_master_csv(
 
 def main() -> int:
     args = parse_args()
+    configure_logging(level=getattr(args, "log_level", ""))
     try:
         markets = parse_markets(args.markets)
         row_count = build_security_master_csv(args.output_path, markets=markets)
     except RuntimeError as err:
         raise SystemExit(str(err)) from None
-    print(f"built security_master rows: {row_count}", flush=True)
+    logger.info("built security_master rows: %s", row_count)
     return 0
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import logging
 import os
 import sqlite3
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -33,6 +34,11 @@ from alphavault.constants import (
     ENV_AI_MODEL,
     ENV_AI_PROMPT_VERSION,
 )
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 
 
 def _env_first(*keys: str, default: str = "") -> str:
@@ -58,6 +64,7 @@ DEFAULT_PROMPT_VERSION_LOCAL = _env_first(
 DEFAULT_AI_MAX_INFLIGHT = int(os.getenv("AI_MAX_INFLIGHT", "32"))
 DEFAULT_INGEST_AI_RETRIES = int(os.getenv("INGEST_AI_RETRIES", "1"))
 DEFAULT_HEARTBEAT_SECONDS = float(os.getenv("INGEST_HEARTBEAT_SECONDS", "15"))
+logger = get_logger(__name__)
 
 
 def now_str() -> str:
@@ -226,11 +233,10 @@ def build_url(row: Dict[str, str], user_id: str) -> str:
 
 
 class GlobalAiRateLimiter:
-    def __init__(self, *, ai_rpm: float, verbose: bool) -> None:
+    def __init__(self, *, ai_rpm: float) -> None:
         self._min_interval = 60.0 / ai_rpm if ai_rpm and ai_rpm > 0 else 0.0
         self._last_call_ts: Optional[float] = None
         self._lock = threading.Lock()
-        self._verbose = bool(verbose)
 
     def wait(self, *, row_index: int, post_uid: str) -> None:
         if self._min_interval <= 0:
@@ -242,11 +248,12 @@ class GlobalAiRateLimiter:
             since_last = time.time() - self._last_call_ts
             if since_last < self._min_interval:
                 wait_sec = self._min_interval - since_last
-                if self._verbose:
-                    print(
-                        f"[{row_index}] wait_rpm {post_uid} sleep={wait_sec:.2f}s",
-                        flush=True,
-                    )
+                logger.debug(
+                    "[%s] wait_rpm %s sleep=%.2fs",
+                    row_index,
+                    post_uid,
+                    wait_sec,
+                )
                 time.sleep(wait_sec)
             self._last_call_ts = time.time()
 
@@ -270,7 +277,6 @@ def analyze_with_heartbeat(
     heartbeat_seconds: float,
     timeout_seconds: float,
     ai_retries: int,
-    verbose: bool,
     api_key: str,
     model: str,
     analysis_context: Dict[str, str],
@@ -326,16 +332,19 @@ def analyze_with_heartbeat(
 
     while worker.is_alive():
         worker.join(timeout=0.5)
-        if not verbose:
+        if not logger.isEnabledFor(logging.DEBUG):
             continue
         now = time.time()
         if now < next_log_at:
             continue
         elapsed = now - started_at
-        print(
-            f"[{row_index}] wait_api {post_uid} elapsed={elapsed:.1f}s "
-            f"timeout={timeout_seconds:.1f}s retries={ai_retries}",
-            flush=True,
+        logger.debug(
+            "[%s] wait_api %s elapsed=%.1fs timeout=%.1fs retries=%s",
+            row_index,
+            post_uid,
+            elapsed,
+            timeout_seconds,
+            ai_retries,
         )
         next_log_at = now + heartbeat_seconds
 
@@ -371,7 +380,6 @@ def run_one_ai_task(
     heartbeat_seconds: float,
     timeout_seconds: float,
     ai_retries: int,
-    verbose: bool,
     api_key: str,
     model: str,
     base_url: str,
@@ -389,7 +397,6 @@ def run_one_ai_task(
         heartbeat_seconds=heartbeat_seconds,
         timeout_seconds=timeout_seconds,
         ai_retries=ai_retries,
-        verbose=verbose,
         api_key=api_key,
         model=model,
         analysis_context=task.analysis_context,
@@ -599,7 +606,6 @@ def process_csv(
     trace_out: Optional[Path],
     timeout_seconds: float,
     progress_every: int,
-    verbose: bool,
 ) -> None:
     init_workdb(db_path)
     conn = sqlite3.connect(db_path)
@@ -610,22 +616,26 @@ def process_csv(
         failed = 0
         total = 0
         max_inflight = max(1, int(ai_max_inflight))
-        limiter = GlobalAiRateLimiter(ai_rpm=ai_rpm, verbose=verbose)
+        limiter = GlobalAiRateLimiter(ai_rpm=ai_rpm)
         estimated_ai_max = estimate_ai_call_max_seconds(timeout_seconds, ai_retries)
-        if verbose:
-            print(
-                "[config] "
-                f"csv={csv_path} db={db_path} model={model} api_mode={api_mode} "
-                f"timeout={timeout_seconds:.1f}s retries={ai_retries} "
-                f"heartbeat={heartbeat_seconds:.1f}s max_inflight={max_inflight} "
-                f"ai_call_max≈{estimated_ai_max:.1f}s",
-                flush=True,
+        logger.info(
+            "[config] csv=%s db=%s model=%s api_mode=%s timeout=%.1fs retries=%s "
+            "heartbeat=%.1fs max_inflight=%s ai_call_max≈%.1fs",
+            csv_path,
+            db_path,
+            model,
+            api_mode,
+            timeout_seconds,
+            ai_retries,
+            heartbeat_seconds,
+            max_inflight,
+            estimated_ai_max,
+        )
+        if limit is not None:
+            logger.info(
+                "[config] limit=%s (counts processed success only)",
+                limit,
             )
-            if limit is not None:
-                print(
-                    f"[config] limit={limit} (counts processed success only)",
-                    flush=True,
-                )
 
         inflight: Dict[Future[AiTaskOutput], AiTaskContext] = {}
 
@@ -638,12 +648,14 @@ def process_csv(
                 try:
                     out = done.result()
                     result = out.result
-                    if verbose:
-                        print(
-                            f"[{task.row_index}] done {task.post_uid} status={result.status} "
-                            f"score={result.invest_score:.3f} cost={out.cost_seconds:.1f}s",
-                            flush=True,
-                        )
+                    logger.debug(
+                        "[%s] done %s status=%s score=%.3f cost=%.1fs",
+                        task.row_index,
+                        task.post_uid,
+                        result.status,
+                        result.invest_score,
+                        out.cost_seconds,
+                    )
 
                     if result.invest_score < relevant_threshold:
                         result = AnalyzeResult(
@@ -675,9 +687,12 @@ def process_csv(
                     if isinstance(e, (KeyboardInterrupt, SystemExit)):
                         raise
                     failed += 1
-                    print(
-                        f"[{task.row_index}] error {task.post_uid} {type(e).__name__}: {e}",
-                        flush=True,
+                    logger.warning(
+                        "[%s] error %s %s: %s",
+                        task.row_index,
+                        task.post_uid,
+                        type(e).__name__,
+                        e,
                     )
                     mark_error(
                         conn,
@@ -688,11 +703,11 @@ def process_csv(
                     conn.commit()
 
                 if sleep_seconds > 0:
-                    if verbose:
-                        print(
-                            f"[{task.row_index}] wait_row sleep={sleep_seconds:.2f}s",
-                            flush=True,
-                        )
+                    logger.debug(
+                        "[%s] wait_row sleep=%.2fs",
+                        task.row_index,
+                        sleep_seconds,
+                    )
                     time.sleep(sleep_seconds)
 
         with ThreadPoolExecutor(max_workers=max_inflight) as executor:
@@ -766,8 +781,7 @@ def process_csv(
                         analysis_context=analysis_context,
                         ai_row_meta=ai_row_meta,
                     )
-                    if verbose:
-                        print(f"[{total}] call_api {post_uid}", flush=True)
+                    logger.info("[%s] call_api %s", total, post_uid)
                     future = executor.submit(
                         run_one_ai_task,
                         task=task,
@@ -775,7 +789,6 @@ def process_csv(
                         heartbeat_seconds=heartbeat_seconds,
                         timeout_seconds=timeout_seconds,
                         ai_retries=ai_retries,
-                        verbose=verbose,
                         api_key=api_key,
                         model=model,
                         base_url=base_url,
@@ -799,9 +812,13 @@ def process_csv(
                         break
 
                     if progress_every > 0 and total % progress_every == 0:
-                        print(
-                            f"[{total}] progress processed={processed} skipped={skipped} failed={failed} inflight={len(inflight)}",
-                            flush=True,
+                        logger.info(
+                            "[%s] progress processed=%s skipped=%s failed=%s inflight=%s",
+                            total,
+                            processed,
+                            skipped,
+                            failed,
+                            len(inflight),
                         )
 
             while inflight:
@@ -814,7 +831,8 @@ def process_csv(
                     # 仅停止继续提交新任务；已在跑的任务仍会收尾并写库。
                     continue
 
-        print(
+        logger.info(
+            "%s",
             json.dumps(
                 {
                     "mode": "csv",
@@ -834,7 +852,7 @@ def process_csv(
                     "trace_out": str(trace_out) if trace_out else "",
                 },
                 ensure_ascii=False,
-            )
+            ),
         )
     finally:
         conn.close()
@@ -862,7 +880,6 @@ def process_db_status(
     trace_out: Optional[Path],
     timeout_seconds: float,
     progress_every: int,
-    verbose: bool,
 ) -> None:
     init_workdb(db_path)
     conn = sqlite3.connect(db_path)
@@ -877,22 +894,26 @@ def process_db_status(
         failed = 0
         total = 0
         max_inflight = max(1, int(ai_max_inflight))
-        limiter = GlobalAiRateLimiter(ai_rpm=ai_rpm, verbose=verbose)
+        limiter = GlobalAiRateLimiter(ai_rpm=ai_rpm)
         estimated_ai_max = estimate_ai_call_max_seconds(timeout_seconds, ai_retries)
-        if verbose:
-            print(
-                "[config] "
-                f"mode=db_status status={status_value} db={db_path} model={model} "
-                f"api_mode={api_mode} timeout={timeout_seconds:.1f}s retries={ai_retries} "
-                f"heartbeat={heartbeat_seconds:.1f}s max_inflight={max_inflight} "
-                f"ai_call_max≈{estimated_ai_max:.1f}s",
-                flush=True,
+        logger.info(
+            "[config] mode=db_status status=%s db=%s model=%s api_mode=%s "
+            "timeout=%.1fs retries=%s heartbeat=%.1fs max_inflight=%s ai_call_max≈%.1fs",
+            status_value,
+            db_path,
+            model,
+            api_mode,
+            timeout_seconds,
+            ai_retries,
+            heartbeat_seconds,
+            max_inflight,
+            estimated_ai_max,
+        )
+        if limit is not None:
+            logger.info(
+                "[config] limit=%s (counts processed success only)",
+                limit,
             )
-            if limit is not None:
-                print(
-                    f"[config] limit={limit} (counts processed success only)",
-                    flush=True,
-                )
 
         selected_rows = conn.execute(
             """
@@ -904,11 +925,7 @@ def process_db_status(
             (status_value,),
         ).fetchall()
         selected_total = len(selected_rows)
-        if verbose:
-            print(
-                f"[config] selected_rows={selected_total}",
-                flush=True,
-            )
+        logger.info("[config] selected_rows=%s", selected_total)
 
         inflight: Dict[Future[AiTaskOutput], AiTaskContext] = {}
 
@@ -921,12 +938,14 @@ def process_db_status(
                 try:
                     out = done.result()
                     result = out.result
-                    if verbose:
-                        print(
-                            f"[{task.row_index}] done {task.post_uid} status={result.status} "
-                            f"score={result.invest_score:.3f} cost={out.cost_seconds:.1f}s",
-                            flush=True,
-                        )
+                    logger.debug(
+                        "[%s] done %s status=%s score=%.3f cost=%.1fs",
+                        task.row_index,
+                        task.post_uid,
+                        result.status,
+                        result.invest_score,
+                        out.cost_seconds,
+                    )
 
                     if result.invest_score < relevant_threshold:
                         result = AnalyzeResult(
@@ -958,9 +977,12 @@ def process_db_status(
                     if isinstance(e, (KeyboardInterrupt, SystemExit)):
                         raise
                     failed += 1
-                    print(
-                        f"[{task.row_index}] error {task.post_uid} {type(e).__name__}: {e}",
-                        flush=True,
+                    logger.warning(
+                        "[%s] error %s %s: %s",
+                        task.row_index,
+                        task.post_uid,
+                        type(e).__name__,
+                        e,
                     )
                     mark_error(
                         conn,
@@ -971,11 +993,11 @@ def process_db_status(
                     conn.commit()
 
                 if sleep_seconds > 0:
-                    if verbose:
-                        print(
-                            f"[{task.row_index}] wait_row sleep={sleep_seconds:.2f}s",
-                            flush=True,
-                        )
+                    logger.debug(
+                        "[%s] wait_row sleep=%.2fs",
+                        task.row_index,
+                        sleep_seconds,
+                    )
                     time.sleep(sleep_seconds)
 
         with ThreadPoolExecutor(max_workers=max_inflight) as executor:
@@ -1030,8 +1052,7 @@ def process_db_status(
                     analysis_context=analysis_context,
                     ai_row_meta=ai_row_meta,
                 )
-                if verbose:
-                    print(f"[{total}] call_api {post_uid}", flush=True)
+                logger.info("[%s] call_api %s", total, post_uid)
                 future = executor.submit(
                     run_one_ai_task,
                     task=task,
@@ -1039,7 +1060,6 @@ def process_db_status(
                     heartbeat_seconds=heartbeat_seconds,
                     timeout_seconds=timeout_seconds,
                     ai_retries=ai_retries,
-                    verbose=verbose,
                     api_key=api_key,
                     model=model,
                     base_url=base_url,
@@ -1063,9 +1083,13 @@ def process_db_status(
                     break
 
                 if progress_every > 0 and total % progress_every == 0:
-                    print(
-                        f"[{total}] progress processed={processed} skipped={skipped} failed={failed} inflight={len(inflight)}",
-                        flush=True,
+                    logger.info(
+                        "[%s] progress processed=%s skipped=%s failed=%s inflight=%s",
+                        total,
+                        processed,
+                        skipped,
+                        failed,
+                        len(inflight),
                     )
 
             while inflight:
@@ -1077,7 +1101,8 @@ def process_db_status(
                 if limit is not None and processed >= limit:
                     continue
 
-        print(
+        logger.info(
+            "%s",
             json.dumps(
                 {
                     "mode": "db_status",
@@ -1099,7 +1124,7 @@ def process_db_status(
                     "trace_out": str(trace_out) if trace_out else "",
                 },
                 ensure_ascii=False,
-            )
+            ),
         )
     finally:
         conn.close()
@@ -1144,13 +1169,13 @@ def main() -> None:
     parser.add_argument("--ai-max-inflight", type=int, default=DEFAULT_AI_MAX_INFLIGHT)
     parser.add_argument("--trace-out", type=Path, default=None)
     parser.add_argument("--progress-every", type=int, default=100)
-    parser.add_argument("--verbose", action="store_true")
     parser.add_argument(
         "--only-status",
         default=None,
         choices=["error", "processing", "new"],
         help="可选：仅从 DB 重跑指定状态，不读取 CSV。",
     )
+    add_log_level_argument(parser)
 
     # Backward-compatible no-op args kept to avoid breaking old command snippets.
     parser.add_argument("--api-style", default="litellm")
@@ -1159,6 +1184,7 @@ def main() -> None:
     parser.add_argument("--gemini-auth", default="query")
 
     args = parser.parse_args()
+    configure_logging(level=args.log_level)
 
     api_key = ""
     if args.api_key:
@@ -1200,7 +1226,6 @@ def main() -> None:
             trace_out=args.trace_out,
             timeout_seconds=max(1.0, timeout_seconds),
             progress_every=max(0, args.progress_every),
-            verbose=args.verbose,
         )
         return
 
@@ -1231,7 +1256,6 @@ def main() -> None:
         trace_out=args.trace_out,
         timeout_seconds=max(1.0, timeout_seconds),
         progress_every=max(0, args.progress_every),
-        verbose=args.verbose,
     )
 
 

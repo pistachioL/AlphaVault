@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import importlib
+import logging
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -655,7 +656,6 @@ def test_prepare_scan_only_saves_legacy_weibo_rows_to_migration_table(
             limit=0,
             sleep_sec=0.0,
             dry_run=False,
-            verbose=False,
         )
 
         migration_rows = (
@@ -682,7 +682,7 @@ ORDER BY post_uid ASC
 
 def test_prepare_scan_limit_counts_only_legacy_targets(
     monkeypatch,
-    capsys,
+    caplog,
     postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_weibo_raw_text")
@@ -710,17 +710,16 @@ def test_prepare_scan_limit_counts_only_legacy_targets(
             raw_text="回复@甲:叶//@乙:根",
         )
 
-        script._prepare_scan(
-            object(),
-            batch_size=1,
-            limit=1,
-            sleep_sec=0.0,
-            dry_run=False,
-            verbose=False,
-        )
+        with caplog.at_level(logging.INFO):
+            script._prepare_scan(
+                object(),
+                batch_size=1,
+                limit=1,
+                sleep_sec=0.0,
+                dry_run=False,
+            )
 
-        out = capsys.readouterr().out
-        assert "source_target=1" in out
+        assert "source_target=1" in caplog.text
         migration_rows = (
             conn.execute(
                 """
@@ -794,7 +793,6 @@ def test_apply_by_post_uids_dry_run_does_not_create_migration_table(
             batch_size=10,
             dry_run=True,
             sleep_sec=0.0,
-            verbose=False,
         )
 
         assert _migration_table_exists(conn) is False

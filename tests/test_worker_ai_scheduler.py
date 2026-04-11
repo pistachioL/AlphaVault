@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from concurrent.futures import Future
 from types import SimpleNamespace
@@ -30,7 +31,6 @@ def _config() -> LLMConfig:
         ai_rpm=12.0,
         ai_timeout_seconds=30.0,
         trace_out=None,
-        verbose=False,
     )
 
 
@@ -185,7 +185,6 @@ def test_schedule_ai_prefers_redis_stream_when_available() -> None:
         wakeup_event=threading.Event(),
         config=_config(),
         limiter=object(),
-        verbose=False,
         redis_client=object(),
         redis_queue_key="queue",
         schedule_ai_from_stream_fn=_schedule_from_stream,
@@ -214,7 +213,6 @@ def test_schedule_ai_requires_redis_queue() -> None:
         wakeup_event=threading.Event(),
         config=_config(),
         limiter=object(),
-        verbose=False,
         redis_client=None,
         redis_queue_key="",
         schedule_ai_from_stream_fn=lambda **_kwargs: (_ for _ in ()).throw(
@@ -242,7 +240,6 @@ def test_process_one_redis_payload_passes_empty_prefetched_recent() -> None:
         redis_queue_key="queue",
         config=_config(),
         limiter=object(),
-        verbose=False,
         payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
             post_uid="weibo:1",
             platform="weibo",
@@ -276,7 +273,7 @@ def test_process_one_redis_payload_passes_empty_prefetched_recent() -> None:
     assert ack_calls == [("queue", "1-0")]
 
 
-def test_process_one_redis_payload_skips_ai_when_post_already_processed(capsys) -> None:
+def test_process_one_redis_payload_skips_ai_when_post_already_processed(caplog) -> None:
     ack_calls: list[tuple[str, str]] = []
     guard_calls: list[str] = []
 
@@ -288,52 +285,53 @@ def test_process_one_redis_payload_skips_ai_when_post_already_processed(capsys) 
         guard_calls.append(str(post_uid))
         return True
 
-    ai_processor_module.process_one_redis_payload(
-        engine=object(),
-        payload={"post_uid": "weibo:done"},
-        message_id="done-1",
-        redis_client=object(),
-        redis_queue_key="queue",
-        config=_config(),
-        limiter=object(),
-        verbose=True,
-        payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
-            post_uid="weibo:done",
-            platform="weibo",
-            platform_post_id="done",
-            author="作者Done",
-            created_at="2026-03-28 10:00:00",
-            url="https://example.com/post/done",
-            raw_text="正文",
-            ai_retry_count=1,
-        ),
-        process_one_post_uid_fn=lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("already processed path should not call AI")
-        ),
-        mark_post_failed_fn=lambda **_kwargs: None,
-        redis_ai_push_retry_fn=lambda *_args, **_kwargs: None,
-        redis_ai_ack_fn=lambda _client, queue_key, message_id: ack_calls.append(
-            (str(queue_key), str(message_id))
-        ),
-        redis_ai_ack_and_push_retry_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("already processed path should not use retry handoff")
-        ),
-        redis_ai_ack_and_clear_dedup_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("already processed path should not clear dedup")
-        ),
-        payload_retry_count_fn=lambda _payload: 0,
-        backoff_seconds_fn=lambda _count: 1,
-        now_epoch_fn=lambda: 100,
-        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
-        max_retry_count=3,
-        is_post_already_processed_success_fn=_is_post_already_processed_success,
-    )
+    with caplog.at_level(logging.INFO):
+        ai_processor_module.process_one_redis_payload(
+            engine=object(),
+            payload={"post_uid": "weibo:done"},
+            message_id="done-1",
+            redis_client=object(),
+            redis_queue_key="queue",
+            config=_config(),
+            limiter=object(),
+            payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
+                post_uid="weibo:done",
+                platform="weibo",
+                platform_post_id="done",
+                author="作者Done",
+                created_at="2026-03-28 10:00:00",
+                url="https://example.com/post/done",
+                raw_text="正文",
+                ai_retry_count=1,
+            ),
+            process_one_post_uid_fn=lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("already processed path should not call AI")
+            ),
+            mark_post_failed_fn=lambda **_kwargs: None,
+            redis_ai_push_retry_fn=lambda *_args, **_kwargs: None,
+            redis_ai_ack_fn=lambda _client, queue_key, message_id: ack_calls.append(
+                (str(queue_key), str(message_id))
+            ),
+            redis_ai_ack_and_push_retry_fn=lambda *_args, **_kwargs: (
+                _ for _ in ()
+            ).throw(
+                AssertionError("already processed path should not use retry handoff")
+            ),
+            redis_ai_ack_and_clear_dedup_fn=lambda *_args, **_kwargs: (
+                _ for _ in ()
+            ).throw(AssertionError("already processed path should not clear dedup")),
+            payload_retry_count_fn=lambda _payload: 0,
+            backoff_seconds_fn=lambda _count: 1,
+            now_epoch_fn=lambda: 100,
+            fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
+            max_retry_count=3,
+            is_post_already_processed_success_fn=_is_post_already_processed_success,
+        )
 
     assert guard_calls == ["weibo:done"]
     assert ack_calls == [("queue", "done-1")]
-    captured = capsys.readouterr()
-    assert "[ai] skip_db_already_processed_success" in captured.out
-    assert "post_uid=weibo:done" in captured.out
+    assert "[ai] skip_db_already_processed_success" in caplog.text
+    assert "post_uid=weibo:done" in caplog.text
 
 
 def test_process_one_redis_payload_skip_db_guard_does_not_recheck_database() -> None:
@@ -352,7 +350,6 @@ def test_process_one_redis_payload_skip_db_guard_does_not_recheck_database() -> 
         redis_queue_key="queue",
         config=_config(),
         limiter=object(),
-        verbose=False,
         payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
             post_uid="weibo:requeue",
             platform="weibo",
@@ -404,7 +401,6 @@ def test_process_one_redis_payload_acks_when_payload_cannot_build_cloud_post() -
         redis_queue_key="queue",
         config=_config(),
         limiter=object(),
-        verbose=False,
         payload_to_cloud_post_fn=lambda _payload: None,
         process_one_post_uid_fn=lambda **_kwargs: True,
         mark_post_failed_fn=lambda **_kwargs: None,
@@ -440,7 +436,6 @@ def test_process_one_redis_payload_pushes_retry_before_limit() -> None:
         redis_queue_key="queue",
         config=_config(),
         limiter=object(),
-        verbose=False,
         payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
             post_uid="weibo:retry",
             platform="weibo",
@@ -507,7 +502,6 @@ def test_process_one_redis_payload_marks_failed_at_retry_limit() -> None:
         redis_queue_key="queue",
         config=_config(),
         limiter=object(),
-        verbose=False,
         payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
             post_uid="weibo:failed",
             platform="weibo",
@@ -566,7 +560,6 @@ def test_process_one_redis_payload_does_not_ack_when_retry_enqueue_errors() -> N
         redis_queue_key="queue",
         config=_config(),
         limiter=object(),
-        verbose=False,
         payload_to_cloud_post_fn=lambda _payload: SimpleNamespace(
             post_uid="weibo:retry-error",
             platform="weibo",

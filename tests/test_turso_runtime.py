@@ -26,7 +26,6 @@ def test_ensure_turso_ready_only_checks_connectivity(monkeypatch) -> None:
     assert (
         turso_runtime.ensure_turso_ready(
             engine=engine,
-            verbose=False,
             turso_ready=False,
             source_name="unit",
         )

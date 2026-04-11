@@ -8,10 +8,12 @@ from alphavault.ai._errors import _append_trace, _mask_secret, extract_llm_error
 from alphavault.ai._extract import _collect_streamed_ai_text, _extract_ai_text
 from alphavault.ai._litellm import _import_litellm, _resolve_litellm_model_name
 from alphavault.ai._text import parse_json_text
+from alphavault.logging_config import get_logger
 
 
 DEFAULT_AI_RETRY_BACKOFF_SEC = 2.0
 DEFAULT_AI_RETRY_MAX_BACKOFF_SEC = 32.0
+logger = get_logger(__name__)
 
 
 class AiInvalidJsonError(RuntimeError):
@@ -156,7 +158,7 @@ def _call_ai_with_litellm(
             if isinstance(exc, AiValidationError):
                 tail = _to_one_line_tail(getattr(exc, "raw_ai_text", ""), max_chars=240)
                 msg = str(exc)[:400]
-                print(
+                logger.warning(
                     " ".join(
                         [
                             "[llm] validate_failed",
@@ -165,8 +167,7 @@ def _call_ai_with_litellm(
                             f"error={msg}",
                             f"raw_ai_tail={tail}",
                         ]
-                    ),
-                    flush=True,
+                    )
                 )
             _append_trace(
                 trace_out,

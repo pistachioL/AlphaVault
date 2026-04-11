@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +19,22 @@ def _load_script_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_script_can_run_directly_with_help() -> None:
+    script_path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "requeue_all_ai_from_db.py"
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "--base-url" in result.stdout
 
 
 def _args(**overrides):

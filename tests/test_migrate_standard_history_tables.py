@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from contextlib import contextmanager
+import logging
 from types import SimpleNamespace
 
 import psycopg
@@ -503,7 +504,7 @@ ORDER BY alias_key ASC
 
 
 def test_migrate_standard_history_tables_dry_run_only_prints_summary(
-    capsys,
+    caplog,
     postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
@@ -536,16 +537,16 @@ def test_migrate_standard_history_tables_dry_run_only_prints_summary(
             updated_at="2026-04-01 09:00:00",
         )
 
-        stats = script.migrate_standard_history_tables(
-            weibo_conn=weibo_conn,
-            xueqiu_conn=xueqiu_conn,
-            standard_conn=standard_conn,
-            dry_run=True,
-        )
+        with caplog.at_level(logging.INFO):
+            stats = script.migrate_standard_history_tables(
+                weibo_conn=weibo_conn,
+                xueqiu_conn=xueqiu_conn,
+                standard_conn=standard_conn,
+                dry_run=True,
+            )
 
-        out = capsys.readouterr().out
-        assert "[verify] relations" in out
-        assert "dry_run=1" in out
+        assert "[verify] relations" in caplog.text
+        assert "dry_run=1" in caplog.text
         assert stats["relations"] == {
             "weibo_source_count": 1,
             "xueqiu_source_count": 0,
@@ -717,7 +718,7 @@ ORDER BY alias_key ASC
 
 
 def test_migrate_standard_history_tables_conflict_count_counts_unique_keys(
-    capsys,
+    caplog,
     postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
@@ -772,15 +773,15 @@ def test_migrate_standard_history_tables_conflict_count_counts_unique_keys(
             updated_at="2026-04-03 08:00:00",
         )
 
-        stats = script.migrate_standard_history_tables(
-            weibo_conn=weibo_conn,
-            xueqiu_conn=xueqiu_conn,
-            standard_conn=standard_conn,
-            dry_run=True,
-        )
+        with caplog.at_level(logging.INFO):
+            stats = script.migrate_standard_history_tables(
+                weibo_conn=weibo_conn,
+                xueqiu_conn=xueqiu_conn,
+                standard_conn=standard_conn,
+                dry_run=True,
+            )
 
-        out = capsys.readouterr().out
-        assert "conflict_count=1" in out
+        assert "conflict_count=1" in caplog.text
         assert stats["relations"]["conflict_count"] == 1
         assert stats["relations"]["merged_unique_count"] == 1
     finally:
@@ -826,7 +827,7 @@ def test_build_source_engine_uses_postgres_schema_name(monkeypatch) -> None:
 
 
 def test_migrate_standard_history_tables_writes_in_batches_and_prints_progress(
-    capsys,
+    caplog,
     postgres_dsn: str,
 ) -> None:
     script = importlib.import_module("migrate_standard_history_tables")
@@ -870,18 +871,18 @@ def test_migrate_standard_history_tables_writes_in_batches_and_prints_progress(
             updated_at="2026-04-01 10:00:00",
         )
 
-        script.migrate_standard_history_tables(
-            weibo_conn=weibo_conn,
-            xueqiu_conn=xueqiu_conn,
-            standard_conn=standard_conn,
-            dry_run=False,
-            batch_size=1,
-        )
+        with caplog.at_level(logging.INFO):
+            script.migrate_standard_history_tables(
+                weibo_conn=weibo_conn,
+                xueqiu_conn=xueqiu_conn,
+                standard_conn=standard_conn,
+                dry_run=False,
+                batch_size=1,
+            )
 
-        out = capsys.readouterr().out
-        assert "[write-batch] relations batch=1/2 rows=1" in out
-        assert "[write-batch] relations batch=2/2 rows=1" in out
-        assert "batch_size=1" in out
+        assert "[write-batch] relations batch=1/2 rows=1" in caplog.text
+        assert "[write-batch] relations batch=2/2 rows=1" in caplog.text
+        assert "batch_size=1" in caplog.text
         assert standard_conn.execute("SELECT COUNT(*) FROM relations").scalar() == 2
     finally:
         weibo_conn.close()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Callable
 
+from alphavault.logging_config import get_logger
 from alphavault.db.postgres_db import (
     PostgresConnection,
     PostgresEngine,
@@ -45,12 +46,14 @@ STOCK_HOT_CACHE_SIGNAL_WINDOW_DAYS = 30
 STOCK_HOT_CACHE_SIGNAL_CAP = 500
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+logger = get_logger(__name__)
 
 
-def _log_stock_hot_cache(*, verbose: bool, message: str) -> None:
-    if not verbose:
+def _log_stock_hot_cache(*, level: str, message: str) -> None:
+    if level == "info":
+        logger.info("[stock_hot_cache] %s", message)
         return
-    print(f"[stock_hot_cache] {message}", flush=True)
+    logger.debug("[stock_hot_cache] %s", message)
 
 
 def _is_sector_entity_key(value: str) -> bool:
@@ -201,10 +204,9 @@ def sync_stock_hot_cache(
     signal_cap: int = STOCK_HOT_CACHE_SIGNAL_CAP,
     lock_lease_seconds: int = STOCK_HOT_CACHE_LOCK_LEASE_SECONDS,
     should_continue: Callable[[], bool] | None = None,
-    verbose: bool = False,
 ) -> dict[str, int | bool]:
     _log_stock_hot_cache(
-        verbose=verbose,
+        level="debug",
         message=(
             "start "
             f"max_stocks_per_run={max(1, int(max_stocks_per_run))} "
@@ -220,7 +222,7 @@ def sync_stock_hot_cache(
         now_epoch=now_epoch,
         lease_seconds=int(lock_lease_seconds),
     ):
-        _log_stock_hot_cache(verbose=verbose, message="lock_busy skip=1")
+        _log_stock_hot_cache(level="debug", message="lock_busy skip=1")
         return {"processed": 0, "written": 0, "has_more": False, "locked": True}
     try:
         with (
@@ -260,14 +262,14 @@ def sync_stock_hot_cache(
                     for key in bootstrap_keys
                 ]
             _log_stock_hot_cache(
-                verbose=verbose,
+                level="debug",
                 message=(
                     f"queue_loaded dirty={int(len(dirty_entries))} "
                     f"bootstrap={int(len(bootstrap_keys))}"
                 ),
             )
             if not dirty_entries:
-                _log_stock_hot_cache(verbose=verbose, message="queue_empty skip=1")
+                _log_stock_hot_cache(level="debug", message="queue_empty skip=1")
                 return {"processed": 0, "written": 0, "has_more": False}
 
             written = 0
@@ -301,7 +303,7 @@ def sync_stock_hot_cache(
                     processed_keys.append(stock_key)
                     written += 1
                     _log_stock_hot_cache(
-                        verbose=verbose,
+                        level="debug",
                         message=(
                             f"stock_done stock_key={stock_key} "
                             f"entity_key={entity_key} "
@@ -332,7 +334,7 @@ def sync_stock_hot_cache(
                         dirty_entries=dirty_entries[idx + 1 :],
                     )
                     _log_stock_hot_cache(
-                        verbose=verbose,
+                        level="debug",
                         message=(
                             f"yield_to_rss processed={int(len(processed_keys))} "
                             f"written={int(written)}"
@@ -348,7 +350,7 @@ def sync_stock_hot_cache(
                     after_stock_key=bootstrap_keys[-1],
                 )
             _log_stock_hot_cache(
-                verbose=verbose,
+                level="info",
                 message=(
                     f"done processed={int(len(processed_keys))} "
                     f"written={int(written)} "

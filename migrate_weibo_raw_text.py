@@ -36,6 +36,11 @@ from alphavault.db.sql.scripts import (
 from alphavault.db.libsql_db import LibsqlConnection as TursoConnection, turso_savepoint
 from alphavault.domains.thread_tree.api import parse_weibo_csv_raw_fields
 from alphavault.env import load_dotenv_if_present
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 from alphavault.weibo.thread_text import (
     IMAGE_LABEL_PREFIX,
     SEGMENT_SEPARATOR,
@@ -59,6 +64,7 @@ SET raw_text = :new_raw_text
 WHERE post_uid = :post_uid
 """
 DbConnection = TursoConnection | PostgresConnection
+logger = get_logger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,7 +94,7 @@ def parse_args() -> argparse.Namespace:
         help="直接迁移本地 sqlite/libsql 文件，不走 Postgres 环境变量",
     )
     parser.add_argument("--dry-run", action="store_true", help="只打印进度，不写 DB")
-    parser.add_argument("--verbose", action="store_true")
+    add_log_level_argument(parser)
     return parser.parse_args()
 
 
@@ -483,7 +489,6 @@ def _prepare_by_post_uids(
     batch_size: int,
     dry_run: bool,
     sleep_sec: float,
-    verbose: bool,
 ) -> None:
     processed = 0
     prepared = 0
@@ -493,8 +498,10 @@ def _prepare_by_post_uids(
     with _connect_postgres(engine) as conn:
         total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
 
-    print(
-        f"[migrate] prepare start total_posts={total_posts} target={len(post_uids)} by_post_uids=True"
+    logger.info(
+        "[migrate] prepare start total_posts=%s target=%s by_post_uids=True",
+        total_posts,
+        len(post_uids),
     )
 
     if not dry_run:
@@ -515,10 +522,12 @@ def _prepare_by_post_uids(
         skipped += skipped_this_batch
 
         if dry_run:
-            print(
-                "[dry-run] prepare batch "
-                f"rows={len(rows)} pending={prepared_this_batch} skipped={skipped_this_batch} "
-                f"total_processed={processed}"
+            logger.info(
+                "[dry-run] prepare batch rows=%s pending=%s skipped=%s total_processed=%s",
+                len(rows),
+                prepared_this_batch,
+                skipped_this_batch,
+                processed,
             )
             continue
 
@@ -527,23 +536,29 @@ def _prepare_by_post_uids(
                 saved_this_batch = _upsert_migration_rows(
                     conn, rows=updates, updated_at=_now_text()
                 )
-        print(
-            "[migrate] prepare batch "
-            f"saved={saved_this_batch} pending={prepared_this_batch} skipped={skipped_this_batch} "
-            f"total_processed={processed}"
+        logger.info(
+            "[migrate] prepare batch saved=%s pending=%s skipped=%s total_processed=%s",
+            saved_this_batch,
+            prepared_this_batch,
+            skipped_this_batch,
+            processed,
         )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
 
     missing = [uid for uid in post_uids if uid not in found_uids]
-    if missing and verbose:
+    if missing:
         head = ", ".join(missing[:10])
         tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
-        print(f"[migrate] missing_post_uids={len(missing)} {head}{tail}")
+        logger.debug("[migrate] missing_post_uids=%s %s%s", len(missing), head, tail)
 
-    print(
-        f"[migrate] prepare done pending={prepared} skipped={skipped} processed={processed} target={len(post_uids)}"
+    logger.info(
+        "[migrate] prepare done pending=%s skipped=%s processed=%s target=%s",
+        prepared,
+        skipped,
+        processed,
+        len(post_uids),
     )
 
 
@@ -554,7 +569,6 @@ def _prepare_scan(
     limit: int,
     sleep_sec: float,
     dry_run: bool,
-    verbose: bool,
 ) -> None:
     processed = 0
     prepared = 0
@@ -571,13 +585,17 @@ def _prepare_scan(
         )
 
     if not stop_post_uid or target_total <= 0:
-        print(
-            f"[migrate] nothing_to_prepare total_posts={total_posts} target={target_total}"
+        logger.info(
+            "[migrate] nothing_to_prepare total_posts=%s target=%s",
+            total_posts,
+            target_total,
         )
         return
 
-    print(
-        f"[migrate] prepare start total_posts={total_posts} source_target={target_total}"
+    logger.info(
+        "[migrate] prepare start total_posts=%s source_target=%s",
+        total_posts,
+        target_total,
     )
 
     if not dry_run:
@@ -611,10 +629,12 @@ def _prepare_scan(
         skipped += skipped_this_batch
 
         if dry_run:
-            print(
-                "[dry-run] prepare batch "
-                f"rows={len(rows)} pending={prepared_this_batch} skipped={skipped_this_batch} "
-                f"total_processed={processed}"
+            logger.info(
+                "[dry-run] prepare batch rows=%s pending=%s skipped=%s total_processed=%s",
+                len(rows),
+                prepared_this_batch,
+                skipped_this_batch,
+                processed,
             )
         else:
             with _connect_postgres(engine) as conn:
@@ -622,21 +642,29 @@ def _prepare_scan(
                     saved_this_batch = _upsert_migration_rows(
                         conn, rows=updates, updated_at=_now_text()
                     )
-            print(
-                "[migrate] prepare batch "
-                f"saved={saved_this_batch} pending={prepared_this_batch} skipped={skipped_this_batch} "
-                f"total_processed={processed}"
+            logger.info(
+                "[migrate] prepare batch saved=%s pending=%s skipped=%s total_processed=%s",
+                saved_this_batch,
+                prepared_this_batch,
+                skipped_this_batch,
+                processed,
             )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
 
-    if verbose and dry_run:
-        print(
-            f"[migrate] prepare summary pending={prepared} skipped={skipped} processed={processed}"
+    if dry_run:
+        logger.debug(
+            "[migrate] prepare summary pending=%s skipped=%s processed=%s",
+            prepared,
+            skipped,
+            processed,
         )
-    print(
-        f"[migrate] prepare done pending={prepared} skipped={skipped} processed={processed}"
+    logger.info(
+        "[migrate] prepare done pending=%s skipped=%s processed=%s",
+        prepared,
+        skipped,
+        processed,
     )
 
 
@@ -647,7 +675,6 @@ def _prepare_local_by_post_uids(
     batch_size: int,
     dry_run: bool,
     sleep_sec: float,
-    verbose: bool,
 ) -> None:
     processed = 0
     prepared = 0
@@ -656,8 +683,10 @@ def _prepare_local_by_post_uids(
     found_uids: set[str] = set()
     total_posts = int(conn.execute(SELECT_TOTAL_POSTS).scalar() or 0)
 
-    print(
-        f"[migrate] local start total_posts={total_posts} target={len(post_uids)} by_post_uids=True"
+    logger.info(
+        "[migrate] local start total_posts=%s target=%s by_post_uids=True",
+        total_posts,
+        len(post_uids),
     )
 
     for chunk in _chunks(post_uids, batch_size):
@@ -672,10 +701,12 @@ def _prepare_local_by_post_uids(
         skipped += skipped_this_batch
 
         if dry_run:
-            print(
-                "[dry-run] local batch "
-                f"rows={len(rows)} pending={prepared_this_batch} skipped={skipped_this_batch} "
-                f"total_processed={processed}"
+            logger.info(
+                "[dry-run] local batch rows=%s pending=%s skipped=%s total_processed=%s",
+                len(rows),
+                prepared_this_batch,
+                skipped_this_batch,
+                processed,
             )
         else:
             with _db_savepoint(conn):
@@ -683,29 +714,38 @@ def _prepare_local_by_post_uids(
                     conn, rows=pending_rows
                 )
             applied += applied_this_batch
-            print(
-                "[migrate] local batch "
-                f"applied={applied_this_batch} pending={prepared_this_batch} skipped={skipped_this_batch} "
-                f"total_processed={processed}"
+            logger.info(
+                "[migrate] local batch applied=%s pending=%s skipped=%s total_processed=%s",
+                applied_this_batch,
+                prepared_this_batch,
+                skipped_this_batch,
+                processed,
             )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
 
     missing = [uid for uid in post_uids if uid not in found_uids]
-    if missing and verbose:
+    if missing:
         head = ", ".join(missing[:10])
         tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
-        print(f"[migrate] missing_post_uids={len(missing)} {head}{tail}")
+        logger.debug("[migrate] missing_post_uids=%s %s%s", len(missing), head, tail)
 
     if dry_run:
-        print(
-            f"[migrate] local dry-run done pending={prepared} skipped={skipped} processed={processed}"
+        logger.info(
+            "[migrate] local dry-run done pending=%s skipped=%s processed=%s",
+            prepared,
+            skipped,
+            processed,
         )
         return
 
-    print(
-        f"[migrate] local done applied={applied} pending={prepared} skipped={skipped} processed={processed}"
+    logger.info(
+        "[migrate] local done applied=%s pending=%s skipped=%s processed=%s",
+        applied,
+        prepared,
+        skipped,
+        processed,
     )
 
 
@@ -716,7 +756,6 @@ def _prepare_local_scan(
     limit: int,
     sleep_sec: float,
     dry_run: bool,
-    verbose: bool,
 ) -> None:
     processed = 0
     prepared = 0
@@ -732,13 +771,17 @@ def _prepare_local_scan(
     )
 
     if not stop_post_uid or target_total <= 0:
-        print(
-            f"[migrate] nothing_to_prepare total_posts={total_posts} target={target_total}"
+        logger.info(
+            "[migrate] nothing_to_prepare total_posts=%s target=%s",
+            total_posts,
+            target_total,
         )
         return
 
-    print(
-        f"[migrate] local start total_posts={total_posts} source_target={target_total}"
+    logger.info(
+        "[migrate] local start total_posts=%s source_target=%s",
+        total_posts,
+        target_total,
     )
 
     while True:
@@ -766,10 +809,12 @@ def _prepare_local_scan(
         skipped += skipped_this_batch
 
         if dry_run:
-            print(
-                "[dry-run] local batch "
-                f"rows={len(rows)} pending={prepared_this_batch} skipped={skipped_this_batch} "
-                f"total_processed={processed}"
+            logger.info(
+                "[dry-run] local batch rows=%s pending=%s skipped=%s total_processed=%s",
+                len(rows),
+                prepared_this_batch,
+                skipped_this_batch,
+                processed,
             )
         else:
             with _db_savepoint(conn):
@@ -777,26 +822,38 @@ def _prepare_local_scan(
                     conn, rows=pending_rows
                 )
             applied += applied_this_batch
-            print(
-                "[migrate] local batch "
-                f"applied={applied_this_batch} pending={prepared_this_batch} skipped={skipped_this_batch} "
-                f"total_processed={processed}"
+            logger.info(
+                "[migrate] local batch applied=%s pending=%s skipped=%s total_processed=%s",
+                applied_this_batch,
+                prepared_this_batch,
+                skipped_this_batch,
+                processed,
             )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
 
-    if verbose and dry_run:
-        print(
-            f"[migrate] local summary pending={prepared} skipped={skipped} processed={processed}"
+    if dry_run:
+        logger.debug(
+            "[migrate] local summary pending=%s skipped=%s processed=%s",
+            prepared,
+            skipped,
+            processed,
         )
     if dry_run:
-        print(
-            f"[migrate] local dry-run done pending={prepared} skipped={skipped} processed={processed}"
+        logger.info(
+            "[migrate] local dry-run done pending=%s skipped=%s processed=%s",
+            prepared,
+            skipped,
+            processed,
         )
         return
-    print(
-        f"[migrate] local done applied={applied} pending={prepared} skipped={skipped} processed={processed}"
+    logger.info(
+        "[migrate] local done applied=%s pending=%s skipped=%s processed=%s",
+        applied,
+        prepared,
+        skipped,
+        processed,
     )
 
 
@@ -807,19 +864,18 @@ def _apply_by_post_uids(
     batch_size: int,
     dry_run: bool,
     sleep_sec: float,
-    verbose: bool,
 ) -> None:
     processed = 0
     applied = 0
     conflict = 0
     found_uids: set[str] = set()
 
-    print(f"[migrate] apply start target={len(post_uids)} by_post_uids=True")
+    logger.info("[migrate] apply start target=%s by_post_uids=True", len(post_uids))
 
     with _connect_postgres(engine) as conn:
         if dry_run:
             if not _migration_table_exists(conn):
-                print("[migrate] apply dry-run done pending_rows=0")
+                logger.info("[migrate] apply dry-run done pending_rows=0")
                 return
         else:
             with _db_savepoint(conn):
@@ -837,7 +893,11 @@ def _apply_by_post_uids(
         processed += len(rows)
 
         if dry_run:
-            print(f"[dry-run] apply batch rows={len(rows)} total_processed={processed}")
+            logger.info(
+                "[dry-run] apply batch rows=%s total_processed=%s",
+                len(rows),
+                processed,
+            )
             continue
 
         with _connect_postgres(engine) as conn:
@@ -849,26 +909,36 @@ def _apply_by_post_uids(
                 )
         applied += stats["applied"]
         conflict += stats["conflict"]
-        print(
-            "[migrate] apply batch "
-            f"applied={stats['applied']} conflict={stats['conflict']} total_processed={processed}"
+        logger.info(
+            "[migrate] apply batch applied=%s conflict=%s total_processed=%s",
+            stats["applied"],
+            stats["conflict"],
+            processed,
         )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
 
     missing = [uid for uid in post_uids if uid not in found_uids]
-    if missing and verbose:
+    if missing:
         head = ", ".join(missing[:10])
         tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
-        print(f"[migrate] missing_pending_post_uids={len(missing)} {head}{tail}")
+        logger.debug(
+            "[migrate] missing_pending_post_uids=%s %s%s",
+            len(missing),
+            head,
+            tail,
+        )
 
     if dry_run:
-        print(f"[migrate] apply dry-run done pending_rows={processed}")
+        logger.info("[migrate] apply dry-run done pending_rows=%s", processed)
         return
 
-    print(
-        f"[migrate] apply done applied={applied} conflict={conflict} processed={processed}"
+    logger.info(
+        "[migrate] apply done applied=%s conflict=%s processed=%s",
+        applied,
+        conflict,
+        processed,
     )
 
 
@@ -884,12 +954,12 @@ def _apply_scan(
     applied = 0
     conflict = 0
 
-    print("[migrate] apply start")
+    logger.info("[migrate] apply start")
 
     with _connect_postgres(engine) as conn:
         if dry_run:
             if not _migration_table_exists(conn):
-                print("[migrate] apply dry-run done pending_rows=0")
+                logger.info("[migrate] apply dry-run done pending_rows=0")
                 return
         else:
             with _db_savepoint(conn):
@@ -914,7 +984,11 @@ def _apply_scan(
         processed += len(rows)
 
         if dry_run:
-            print(f"[dry-run] apply batch rows={len(rows)} total_processed={processed}")
+            logger.info(
+                "[dry-run] apply batch rows=%s total_processed=%s",
+                len(rows),
+                processed,
+            )
         else:
             with _connect_postgres(engine) as conn:
                 with _db_savepoint(conn):
@@ -925,26 +999,32 @@ def _apply_scan(
                     )
             applied += stats["applied"]
             conflict += stats["conflict"]
-            print(
-                "[migrate] apply batch "
-                f"applied={stats['applied']} conflict={stats['conflict']} total_processed={processed}"
+            logger.info(
+                "[migrate] apply batch applied=%s conflict=%s total_processed=%s",
+                stats["applied"],
+                stats["conflict"],
+                processed,
             )
 
         if sleep_sec > 0:
             time.sleep(float(sleep_sec))
 
     if dry_run:
-        print(f"[migrate] apply dry-run done pending_rows={processed}")
+        logger.info("[migrate] apply dry-run done pending_rows=%s", processed)
         return
 
-    print(
-        f"[migrate] apply done applied={applied} conflict={conflict} processed={processed}"
+    logger.info(
+        "[migrate] apply done applied=%s conflict=%s processed=%s",
+        applied,
+        conflict,
+        processed,
     )
 
 
 def main() -> None:
     load_dotenv_if_present()
     args = parse_args()
+    configure_logging(level=args.log_level)
     post_uids = _parse_post_uids(getattr(args, "post_uids", ""))
     db_path = str(getattr(args, "db_path", "") or "").strip()
 
@@ -959,7 +1039,6 @@ def main() -> None:
                     batch_size=max(1, int(args.batch_size)),
                     dry_run=bool(args.dry_run),
                     sleep_sec=float(args.sleep_sec or 0.0),
-                    verbose=bool(args.verbose),
                 )
                 return
 
@@ -969,7 +1048,6 @@ def main() -> None:
                 limit=int(args.limit or 0),
                 sleep_sec=float(args.sleep_sec or 0.0),
                 dry_run=bool(args.dry_run),
-                verbose=bool(args.verbose),
             )
         return
 
@@ -983,7 +1061,6 @@ def main() -> None:
                 batch_size=max(1, int(args.batch_size)),
                 dry_run=bool(args.dry_run),
                 sleep_sec=float(args.sleep_sec or 0.0),
-                verbose=bool(args.verbose),
             )
             return
 
@@ -1003,7 +1080,6 @@ def main() -> None:
             batch_size=max(1, int(args.batch_size)),
             dry_run=bool(args.dry_run),
             sleep_sec=float(args.sleep_sec or 0.0),
-            verbose=bool(args.verbose),
         )
         return
 
@@ -1013,7 +1089,6 @@ def main() -> None:
         limit=int(args.limit or 0),
         sleep_sec=float(args.sleep_sec or 0.0),
         dry_run=bool(args.dry_run),
-        verbose=bool(args.verbose),
     )
 
 

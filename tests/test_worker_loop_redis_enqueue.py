@@ -35,7 +35,6 @@ def test_submit_redis_enqueue_job_counts_pushed_and_duplicate(monkeypatch) -> No
         source=source,
         redis_client=object(),
         redis_queue_key="test:q",
-        verbose=False,
     )
 
     assert stats == {
@@ -66,7 +65,6 @@ def test_submit_redis_enqueue_job_requeues_current_payload_on_error(
         source=source,
         redis_client=object(),
         redis_queue_key="test:q",
-        verbose=False,
     )
 
     assert stats == {

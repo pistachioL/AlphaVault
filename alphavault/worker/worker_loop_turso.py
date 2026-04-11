@@ -12,7 +12,6 @@ def ensure_source_turso_ready(
     source,
     source_name: str,
     now: float,
-    verbose: bool,
 ) -> PostgresEngine | None:
     if bool(getattr(source, "turso_ready", False)):
         return source.engine
@@ -21,7 +20,6 @@ def ensure_source_turso_ready(
         return None
     ready = ensure_turso_ready(
         engine=source.engine,
-        verbose=verbose,
         turso_ready=bool(getattr(source, "turso_ready", False)),
         source_name=source_name,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,

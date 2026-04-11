@@ -18,7 +18,6 @@ class SourceTickContext:
     ai_cap: int
     limit_or_none: int | None
     stuck_seconds: int
-    verbose: bool
     rss_active_hours: Optional[tuple[int, int]]
     rss_interval_seconds: float
     rss_feed_sleep_seconds: float

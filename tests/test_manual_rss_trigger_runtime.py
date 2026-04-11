@@ -127,9 +127,8 @@ def test_run_manual_db_requeue_once_enqueues_rows_when_capacity_allows(
         payload,
         ttl_seconds,
         queue_maxlen,
-        verbose,
     ) -> str:
-        del ttl_seconds, queue_maxlen, verbose
+        del ttl_seconds, queue_maxlen
         pushed.append(
             {
                 "post_uid": str(post_uid or ""),
@@ -263,9 +262,8 @@ def test_run_manual_db_requeue_once_skips_duplicate_rows_without_error(
         payload,
         ttl_seconds,
         queue_maxlen,
-        verbose,
     ) -> str:
-        del payload, ttl_seconds, queue_maxlen, verbose
+        del payload, ttl_seconds, queue_maxlen
         resolved_post_uid = str(post_uid or "")
         if resolved_post_uid == "weibo:1":
             return trigger.REDIS_PUSH_STATUS_DUPLICATE

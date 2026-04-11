@@ -14,7 +14,6 @@ def test_collect_periodic_job_result_reads_stats_from_finished_future() -> None:
             job_name="unit",
             future=future,
             engine=object(),
-            verbose=False,
             maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: None,
             fatal_exceptions=(KeyboardInterrupt, SystemExit, GeneratorExit),
         )
@@ -36,7 +35,6 @@ def test_collect_rss_ingest_result_nonfatal_exception_marks_error() -> None:
             source_name="weibo",
             future=future,
             engine=object(),
-            verbose=False,
             maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: disposed.__setitem__(
                 "called", True
             ),

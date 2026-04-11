@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, Mapping, Sequence
 
+from alphavault.logging_config import get_logger
 from alphavault.worker.backoff import backoff_seconds
+
+logger = get_logger(__name__)
 
 
 def compute_redis_due_maintenance_delay_seconds(
@@ -21,7 +24,6 @@ def maybe_run_redis_due_maintenance(
     source: Any,
     redis_client: Any,
     worker_interval_seconds: float,
-    verbose: bool,
     now_fn: Callable[[], float],
     move_due_retry_to_stream_fn: Callable[..., int],
     fatal_exceptions: tuple[type[BaseException], ...],
@@ -40,7 +42,6 @@ def maybe_run_redis_due_maintenance(
             queue_key,
             now_epoch=int(now),
             max_items=int(max_items),
-            verbose=bool(verbose),
         )
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
@@ -53,12 +54,12 @@ def maybe_run_redis_due_maintenance(
                 worker_interval_seconds=worker_interval_seconds,
             )
         )
-        if verbose:
-            print(
-                f"[redis] ai_retry_to_stream_error queue={queue_key} "
-                f"{type(err).__name__}: {err}",
-                flush=True,
-            )
+        logger.warning(
+            "[redis] ai_retry_to_stream_error queue=%s %s: %s",
+            queue_key,
+            type(err).__name__,
+            err,
+        )
         return 0, True
     moved = int(max(0, int(moved_due)))
     if moved > 0:
@@ -81,7 +82,6 @@ def run_turso_maintenance(
     engine: Any,
     redis_client: Any,
     redis_queue_key: str,
-    verbose: bool,
     now_fn: Callable[[], float],
     move_due_retry_to_stream_fn: Callable[..., int],
     claim_stuck_messages_fn: Callable[..., Sequence[Mapping[str, object]]],
@@ -105,18 +105,17 @@ def run_turso_maintenance(
                 str(redis_queue_key),
                 now_epoch=now_epoch,
                 max_items=int(redis_ai_requeue_max_items),
-                verbose=bool(verbose),
             )
         )
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
             raise
         has_error = True
-        if verbose:
-            print(
-                f"[redis] retry_to_stream_error {type(err).__name__}: {err}",
-                flush=True,
-            )
+        logger.warning(
+            "[redis] retry_to_stream_error %s: %s",
+            type(err).__name__,
+            err,
+        )
 
     try:
         recovered = len(
@@ -132,11 +131,11 @@ def run_turso_maintenance(
         if isinstance(err, fatal_exceptions):
             raise
         has_error = True
-        if verbose:
-            print(
-                f"[redis] claim_stuck_error {type(err).__name__}: {err}",
-                flush=True,
-            )
+        logger.warning(
+            "[redis] claim_stuck_error %s: %s",
+            type(err).__name__,
+            err,
+        )
 
     return int(recovered), int(flushed_redis), bool(has_error)
 

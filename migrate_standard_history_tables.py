@@ -15,6 +15,11 @@ from alphavault.db.postgres_db import (
 )
 from alphavault.db.postgres_env import require_postgres_source_from_env
 from alphavault.env import load_dotenv_if_present
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 
 _SOURCE_STANDARD = "standard"
 _SOURCE_WEIBO = PLATFORM_WEIBO
@@ -24,6 +29,7 @@ _TABLE_RELATIONS = "relations"
 _TABLE_RELATION_CANDIDATES = "relation_candidates"
 _TABLE_ALIAS_RESOLVE_TASKS = "alias_resolve_tasks"
 _DEFAULT_BATCH_SIZE = 500
+logger = get_logger(__name__)
 
 
 class _TableSpec(TypedDict):
@@ -89,6 +95,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_DEFAULT_BATCH_SIZE,
         help="标准库每批写入多少行（默认 500）",
     )
+    add_log_level_argument(parser)
     return parser.parse_args(argv)
 
 
@@ -117,7 +124,7 @@ def _load_table_rows(
 
 
 def _print(msg: str) -> None:
-    print(msg, flush=True)
+    logger.info("%s", msg)
 
 
 def _normalize_batch_size(batch_size: int) -> int:
@@ -288,10 +295,7 @@ def _print_group_counts(table_name: str, rows: list[dict[str, object]]) -> None:
             groups[str(row.get("status") or "").strip()] += 1
 
     for key in sorted(groups):
-        print(
-            f"[verify-group] {table_name} key={key} count={groups[key]}",
-            flush=True,
-        )
+        logger.info("[verify-group] %s key=%s count=%s", table_name, key, groups[key])
 
 
 def migrate_standard_history_tables(
@@ -415,6 +419,7 @@ def _build_source_engine(platform: str) -> PostgresEngine:
 def main() -> int:
     load_dotenv_if_present()
     args = parse_args()
+    configure_logging(level=getattr(args, "log_level", ""))
     weibo_engine = _build_source_engine(PLATFORM_WEIBO)
     xueqiu_engine = _build_source_engine(PLATFORM_XUEQIU)
     standard_engine = _build_source_engine(_SOURCE_STANDARD)

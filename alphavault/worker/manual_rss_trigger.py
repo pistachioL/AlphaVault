@@ -151,7 +151,6 @@ def _run_manual_ingest_for_source(
             rss_timeout=rss_timeout,
             rss_retries=rss_retries,
             rss_feed_sleep_seconds=rss_feed_sleep_seconds,
-            verbose=False,
         )
         result["accepted"] = int(accepted)
         result["enqueue_error"] = bool(enqueue_error)
@@ -166,7 +165,7 @@ def _run_manual_ingest_for_source(
 
 
 def run_manual_rss_ingest_once() -> dict[str, object]:
-    source_configs = resolve_rss_source_configs(argparse.Namespace(verbose=False))
+    source_configs = resolve_rss_source_configs(argparse.Namespace(log_level="info"))
     multi_source = len(source_configs) > 1
     base_spool_dir = ensure_spool_dir()
     redis_client, base_redis_queue_key = try_get_redis()
@@ -253,7 +252,7 @@ def run_manual_db_requeue_once(
 
     source_configs = [
         source
-        for source in resolve_rss_source_configs(argparse.Namespace(verbose=False))
+        for source in resolve_rss_source_configs(argparse.Namespace(log_level="info"))
         if _matches_platform(source, platform)
     ]
     redis_client, base_redis_queue_key = try_get_redis()
@@ -327,7 +326,6 @@ def run_manual_db_requeue_once(
                     payload=payload,
                     ttl_seconds=resolve_redis_dedup_ttl_seconds(),
                     queue_maxlen=resolve_redis_ai_queue_maxlen(),
-                    verbose=False,
                 )
             except BaseException as err:
                 if isinstance(err, _FATAL_BASE_EXCEPTIONS):

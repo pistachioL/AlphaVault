@@ -15,6 +15,7 @@ import feedparser
 import requests
 
 from alphavault.constants import DATETIME_FMT
+from alphavault.logging_config import get_logger
 from alphavault.timeutil import CST, format_cst_datetime, now_cst_str
 from alphavault.text.html import html_to_text
 
@@ -24,6 +25,7 @@ from alphavault.text.html import html_to_text
 BASE62_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 BASE62_INDEX = {ch: idx for idx, ch in enumerate(BASE62_ALPHABET)}
 XUEQIU_CONTEXT_SPLIT_RE = re.compile(r"\s+---\s+")
+logger = get_logger(__name__)
 
 
 def env_bool(name: str) -> Optional[bool]:
@@ -361,7 +363,7 @@ def in_active_hours(now_dt: datetime, active_hours: tuple[int, int]) -> bool:
     return hour >= start or hour <= end
 
 
-def sleep_until_active(active_hours: tuple[int, int], *, verbose: bool) -> None:
+def sleep_until_active(active_hours: tuple[int, int]) -> None:
     now_dt = datetime.now(CST)
     if in_active_hours(now_dt, active_hours):
         return
@@ -377,12 +379,13 @@ def sleep_until_active(active_hours: tuple[int, int], *, verbose: bool) -> None:
         next_dt = today_start
 
     sleep_sec = max(1.0, (next_dt - now_dt).total_seconds())
-    if verbose:
-        print(
-            f"[schedule] inactive now={now_dt.strftime(DATETIME_FMT)} "
-            f"active={start_hour}-{end_hour} sleep={int(sleep_sec)}s",
-            flush=True,
-        )
+    logger.info(
+        "[schedule] inactive now=%s active=%s-%s sleep=%ss",
+        now_dt.strftime(DATETIME_FMT),
+        start_hour,
+        end_hour,
+        int(sleep_sec),
+    )
     time.sleep(sleep_sec)
 
 

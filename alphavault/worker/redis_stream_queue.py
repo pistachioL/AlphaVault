@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any, NoReturn
 
+from alphavault.logging_config import get_logger
 from alphavault.constants import (
     DEFAULT_REDIS_AI_QUEUE_MAXLEN,
     DEFAULT_REDIS_DEDUP_TTL_SECONDS,
@@ -17,6 +18,7 @@ REDIS_PUSH_STATUS_PUSHED = "pushed"
 REDIS_PUSH_STATUS_DUPLICATE = "duplicate"
 REDIS_PUSH_STATUS_ERROR = "error"
 REDIS_AI_CONSUMER_GROUP = "alphavault-ai"
+logger = get_logger(__name__)
 
 
 def _sha1_short(value: str) -> str:
@@ -86,7 +88,7 @@ def redis_ensure_ai_consumer_group(client, queue_key: str) -> None:
             raise
 
 
-def redis_ai_reset_consumer_group(client, queue_key: str, *, verbose: bool) -> bool:
+def redis_ai_reset_consumer_group(client, queue_key: str) -> bool:
     """
     Reset consumer group metadata (pending list, consumers) for single-worker restarts.
 
@@ -104,11 +106,11 @@ def redis_ai_reset_consumer_group(client, queue_key: str, *, verbose: bool) -> b
         destroyed = 0
 
     redis_ensure_ai_consumer_group(client, resolved_queue_key)
-    if verbose:
-        print(
-            f"[redis] ai_group_reset queue={resolved_queue_key} destroyed={destroyed}",
-            flush=True,
-        )
+    logger.info(
+        "[redis] ai_group_reset queue=%s destroyed=%s",
+        resolved_queue_key,
+        destroyed,
+    )
     return True
 
 
@@ -150,7 +152,6 @@ def redis_try_push_ai_message_status(
     payload: dict[str, Any],
     ttl_seconds: int,
     queue_maxlen: int | None = None,
-    verbose: bool,
 ) -> str:
     resolved_queue_key = str(queue_key or "").strip()
     resolved_post_uid = str(post_uid or "").strip()
@@ -162,8 +163,7 @@ def redis_try_push_ai_message_status(
     try:
         ok = client.set(dedup_key, "1", nx=True, ex=max(1, int(ttl_seconds)))
     except Exception as err:
-        if verbose:
-            print(f"[redis] dedup_set_error {type(err).__name__}: {err}", flush=True)
+        logger.warning("[redis] dedup_set_error %s: %s", type(err).__name__, err)
         return REDIS_PUSH_STATUS_ERROR
     if not ok:
         return REDIS_PUSH_STATUS_DUPLICATE
@@ -190,8 +190,7 @@ def redis_try_push_ai_message_status(
             client.delete(dedup_key)
         except Exception:
             pass
-        if verbose:
-            print(f"[redis] stream_push_error {type(err).__name__}: {err}", flush=True)
+        logger.warning("[redis] stream_push_error %s: %s", type(err).__name__, err)
         return REDIS_PUSH_STATUS_ERROR
     return REDIS_PUSH_STATUS_PUSHED
 
@@ -397,7 +396,6 @@ def redis_ai_move_due_retries_to_stream(
     *,
     now_epoch: int,
     max_items: int,
-    verbose: bool,
 ) -> int:
     if not client or not str(queue_key or "").strip() or max_items <= 0:
         return 0
@@ -438,8 +436,8 @@ def redis_ai_move_due_retries_to_stream(
         )
         client.zrem(retry_key, payload_text)
         moved += 1
-    if moved and verbose:
-        print(f"[redis] ai_retry_to_stream moved={moved}", flush=True)
+    if moved:
+        logger.info("[redis] ai_retry_to_stream moved=%s", moved)
     return moved
 
 
