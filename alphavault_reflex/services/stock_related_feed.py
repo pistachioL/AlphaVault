@@ -371,19 +371,22 @@ def _normalize_context_tree_text(tree_text: str) -> str:
     return "\n".join(rebuilt).strip()
 
 
-def _normalize_root_only_tree_text(tree_text: str) -> str:
+def _normalize_full_tree_text(tree_text: str) -> str:
     lines = build_tree_render_lines(tree_text)
     if not lines:
         return str(tree_text or "").strip()
-    first = lines[0]
-    content = str(first.get("content") or "").rstrip()
-    suffix = str(first.get("id_suffix") or "").strip()
-    if suffix.startswith("[源帖 ID:"):
-        suffix = suffix.replace("[源帖 ID:", "[原帖 ID:")
-    merged = content
-    if suffix:
-        merged = f"{merged} {suffix}".rstrip()
-    return merged.strip()
+    rebuilt: list[str] = []
+    for idx, line in enumerate(lines):
+        prefix = str(line.get("prefix") or "")
+        content = str(line.get("content") or "").rstrip()
+        suffix = str(line.get("id_suffix") or "").strip()
+        if idx == 0 and suffix.startswith("[源帖 ID:"):
+            suffix = suffix.replace("[源帖 ID:", "[原帖 ID:")
+        merged = content
+        if suffix:
+            merged = f"{merged} {suffix}".rstrip()
+        rebuilt.append(prefix + merged)
+    return "\n".join(rebuilt).strip()
 
 
 def _resolve_tree_text(row: Mapping[str, object]) -> str:
@@ -403,7 +406,7 @@ def _resolve_tree_text(row: Mapping[str, object]) -> str:
     if is_reply_like:
         cleaned = _remove_source_root_if_present(tree_text)
         return _normalize_context_tree_text(cleaned)
-    return _normalize_root_only_tree_text(tree_text)
+    return _normalize_full_tree_text(tree_text)
 
 
 def _ensure_created_at_line(row: Mapping[str, object], *, now) -> str:
