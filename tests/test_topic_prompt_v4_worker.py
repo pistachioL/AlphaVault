@@ -4,7 +4,7 @@ from typing import Any, cast
 from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
-from alphavault.db.turso_queue import CloudPost
+from alphavault.db.source_queue import CloudPost
 from alphavault.domains.entity_match.resolve import EntityMatchResult
 from alphavault.research_workbench import (
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,

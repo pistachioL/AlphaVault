@@ -16,7 +16,7 @@ from alphavault.infra.entity_match_redis import (
 )
 from alphavault.timeutil import now_cst_str
 
-from .schema import RESEARCH_SECURITY_MASTER_TABLE, handle_turso_error, use_conn
+from .schema import RESEARCH_SECURITY_MASTER_TABLE, handle_db_error, use_conn
 
 
 def _now_str() -> str:
@@ -112,7 +112,7 @@ def upsert_security_master_stock(
                 payload,
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     try:
         sync_stock_name_shadow_dict_best_effort(
             stock_key=resolved_stock_key,
@@ -154,7 +154,7 @@ def bulk_upsert_security_master_stocks(
 
         run_postgres_transaction(engine_or_conn, _upsert_many)
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     return len(payloads)
 
 
@@ -175,7 +175,7 @@ def get_stock_keys_by_official_names(
         with use_conn(engine_or_conn) as conn:
             rows = conn.execute(sql, unique_norms).fetchall()
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     stock_keys_by_norm: dict[str, set[str]] = {}
     for row in rows:
         if not row:

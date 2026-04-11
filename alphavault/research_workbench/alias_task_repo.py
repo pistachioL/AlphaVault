@@ -11,7 +11,7 @@ from alphavault.db.sql.research_workbench import (
 from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
 from alphavault.timeutil import now_cst_str
 
-from .schema import RESEARCH_ALIAS_RESOLVE_TASKS_TABLE, handle_turso_error, use_conn
+from .schema import RESEARCH_ALIAS_RESOLVE_TASKS_TABLE, handle_db_error, use_conn
 
 ALIAS_TASK_STATUS_PENDING = "pending"
 ALIAS_TASK_STATUS_MANUAL = "manual"
@@ -67,7 +67,7 @@ def get_alias_resolve_tasks_map(
                     )
             return out
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     raise AssertionError("unreachable")
 
 
@@ -101,7 +101,7 @@ def increment_alias_resolve_attempts(
                 out[key] = int(task["attempt_count"]) if task else 0
             return out
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     raise AssertionError("unreachable")
 
 
@@ -136,7 +136,7 @@ def set_alias_resolve_task_status(
                 },
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
 
 
 def list_manual_alias_resolve_tasks(
@@ -161,7 +161,7 @@ def list_manual_alias_resolve_tasks(
                 .all()
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     raise AssertionError("unreachable")
 
 
@@ -187,7 +187,7 @@ def list_pending_alias_resolve_tasks(
                 .all()
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     raise AssertionError("unreachable")
 
 

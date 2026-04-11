@@ -5,7 +5,7 @@ import threading
 import time
 from typing import Any
 
-from alphavault.db.turso_queue import (
+from alphavault.db.source_queue import (
     CloudPost,
     is_post_already_processed_success,
     mark_post_failed,

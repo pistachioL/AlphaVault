@@ -22,7 +22,7 @@ from alphavault.db.postgres_db import (
     PostgresEngine,
     run_postgres_transaction,
 )
-from alphavault.db.turso_queue import (
+from alphavault.db.source_queue import (
     CloudPost,
     load_cloud_post,
     write_assertions_and_mark_done,

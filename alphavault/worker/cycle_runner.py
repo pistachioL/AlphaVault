@@ -13,7 +13,7 @@ def collect_periodic_job_result(
     job_name: str,
     future: Future | None,
     engine: Any,
-    maybe_dispose_turso_engine_on_transient_error_fn: Callable[..., None],
+    maybe_dispose_source_db_engine_on_transient_error_fn: Callable[..., None],
     fatal_exceptions: tuple[type[BaseException], ...],
 ) -> tuple[Future | None, dict[str, int | bool], bool, bool]:
     if future is None or not future.done():
@@ -23,7 +23,7 @@ def collect_periodic_job_result(
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
             raise
-        maybe_dispose_turso_engine_on_transient_error_fn(
+        maybe_dispose_source_db_engine_on_transient_error_fn(
             engine=engine,
             err=err,
         )
@@ -38,7 +38,7 @@ def collect_rss_ingest_result(
     source_name: str,
     future: Future | None,
     engine: Any,
-    maybe_dispose_turso_engine_on_transient_error_fn: Callable[..., None],
+    maybe_dispose_source_db_engine_on_transient_error_fn: Callable[..., None],
     fatal_exceptions: tuple[type[BaseException], ...],
 ) -> tuple[Future | None, int, bool, bool]:
     if future is None or not future.done():
@@ -48,7 +48,7 @@ def collect_rss_ingest_result(
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
             raise
-        maybe_dispose_turso_engine_on_transient_error_fn(
+        maybe_dispose_source_db_engine_on_transient_error_fn(
             engine=engine,
             err=err,
         )
@@ -85,7 +85,7 @@ def should_fast_retry_for_periodic_job(
     return bool(has_more) and attempted_count > 0
 
 
-def build_source_turso_error(
+def build_source_db_error(
     *,
     maintenance_error: bool,
     spool_flush_error: bool,

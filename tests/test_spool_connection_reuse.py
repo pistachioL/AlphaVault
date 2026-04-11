@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import cast
 
-from alphavault.db.postgres_db import PostgresEngine as TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.worker import spool
 from alphavault.worker import redis_stream_queue as redis_stream_queue_module
 
@@ -49,8 +49,10 @@ def test_claim_spool_file_refreshes_processing_mtime(tmp_path) -> None:
     assert int(claimed_path.stat().st_mtime) >= int(time.time()) - 5
 
 
-def test_flush_spool_to_turso_reuses_single_connection(monkeypatch, tmp_path) -> None:
-    engine_marker = cast(TursoEngine, object())
+def test_flush_spool_to_source_db_reuses_single_connection(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
     connect_calls: list[object] = []
     upsert_conn_ids: list[int] = []
@@ -79,22 +81,24 @@ def test_flush_spool_to_turso_reuses_single_connection(monkeypatch, tmp_path) ->
     )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
-    processed, turso_error = spool.flush_spool_to_turso(
+    processed, source_db_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
     )
 
     assert processed == 2
-    assert turso_error is False
+    assert source_db_error is False
     assert connect_calls == [engine_marker]
     assert len(upsert_conn_ids) == 2
     assert len(list(tmp_path.glob("*.json"))) == 2
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -> None:
-    engine_marker = cast(TursoEngine, object())
+def test_flush_spool_to_source_db_claims_file_before_upsert(
+    monkeypatch, tmp_path
+) -> None:
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
 
     class _ConnContext:
@@ -121,22 +125,22 @@ def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -
     )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
-    processed, turso_error = spool.flush_spool_to_turso(
+    processed, source_db_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
     )
 
     assert processed == 1
-    assert turso_error is False
+    assert source_db_error is False
     assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_flush_spool_to_turso_recovers_stale_processing_file(
+def test_flush_spool_to_source_db_recovers_stale_processing_file(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
     seen_post_uids: list[str] = []
 
@@ -167,23 +171,23 @@ def test_flush_spool_to_turso_recovers_stale_processing_file(
     )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
-    processed, turso_error = spool.flush_spool_to_turso(
+    processed, source_db_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
     )
 
     assert processed == 1
-    assert turso_error is False
+    assert source_db_error is False
     assert seen_post_uids == ["weibo:20"]
     assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_flush_spool_to_turso_skips_fresh_processing_file(
+def test_flush_spool_to_source_db_skips_fresh_processing_file(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
     seen_post_uids: list[str] = []
 
@@ -212,23 +216,23 @@ def test_flush_spool_to_turso_skips_fresh_processing_file(
     )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
-    processed, turso_error = spool.flush_spool_to_turso(
+    processed, source_db_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
     )
 
     assert processed == 0
-    assert turso_error is False
+    assert source_db_error is False
     assert seen_post_uids == []
     assert list(tmp_path.glob("*.json")) == []
     assert len(list(tmp_path.glob("*.json.processing"))) == 1
 
 
-def test_flush_spool_to_turso_restores_json_when_turso_write_fails(
+def test_flush_spool_to_source_db_restores_json_when_write_fails(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
 
     class _ConnContext:
@@ -252,22 +256,22 @@ def test_flush_spool_to_turso_restores_json_when_turso_write_fails(
     )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
 
-    processed, turso_error = spool.flush_spool_to_turso(
+    processed, source_db_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
     )
 
     assert processed == 0
-    assert turso_error is True
+    assert source_db_error is True
     assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_flush_spool_to_turso_keeps_json_when_redis_push_succeeds(
+def test_flush_spool_to_source_db_keeps_json_when_redis_push_succeeds(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
 
     class _ConnContext:
@@ -296,7 +300,7 @@ def test_flush_spool_to_turso_keeps_json_when_redis_push_succeeds(
         lambda *_args, **_kwargs: redis_stream_queue_module.REDIS_PUSH_STATUS_PUSHED,
     )
 
-    processed, turso_error = spool.flush_spool_to_turso(
+    processed, source_db_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
@@ -306,7 +310,7 @@ def test_flush_spool_to_turso_keeps_json_when_redis_push_succeeds(
     )
 
     assert processed == 1
-    assert turso_error is False
+    assert source_db_error is False
     assert len(list(tmp_path.glob("*.json"))) == 1
     assert list(tmp_path.glob("*.json.processing")) == []
 
@@ -341,10 +345,10 @@ def test_restore_claimed_file_keeps_old_and_new_json(tmp_path) -> None:
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_recover_spool_to_turso_and_redis_requeues_pending_and_deletes_done(
+def test_recover_spool_to_source_db_and_redis_requeues_pending_and_deletes_done(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
     requeued: list[str] = []
 
@@ -402,7 +406,7 @@ def test_recover_spool_to_turso_and_redis_requeues_pending_and_deletes_done(
     )
 
     handled_posts, queued_redis, deleted_done, has_error = (
-        spool.recover_spool_to_turso_and_redis(
+        spool.recover_spool_to_source_db_and_redis(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
@@ -420,10 +424,10 @@ def test_recover_spool_to_turso_and_redis_requeues_pending_and_deletes_done(
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
+def test_recover_spool_to_source_db_and_redis_keeps_json_when_ai_requeue_fails(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
 
     class _ConnContext:
@@ -457,7 +461,7 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
     )
 
     handled_posts, queued_redis, deleted_done, has_error = (
-        spool.recover_spool_to_turso_and_redis(
+        spool.recover_spool_to_source_db_and_redis(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
@@ -474,10 +478,10 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_is_duplicate(
+def test_recover_spool_to_source_db_and_redis_keeps_json_when_ai_requeue_is_duplicate(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
 
     class _ConnContext:
@@ -511,7 +515,7 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_is_duplicat
     )
 
     handled_posts, queued_redis, deleted_done, has_error = (
-        spool.recover_spool_to_turso_and_redis(
+        spool.recover_spool_to_source_db_and_redis(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
@@ -528,10 +532,10 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_is_duplicat
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_recover_spool_to_turso_and_redis_reports_claim_file_error(
+def test_recover_spool_to_source_db_and_redis_reports_claim_file_error(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     conn_marker = object()
 
     class _ConnContext:
@@ -562,7 +566,7 @@ def test_recover_spool_to_turso_and_redis_reports_claim_file_error(
     monkeypatch.setattr(Path, "rename", _fake_rename)
 
     handled_posts, queued_redis, deleted_done, has_error = (
-        spool.recover_spool_to_turso_and_redis(
+        spool.recover_spool_to_source_db_and_redis(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
@@ -579,10 +583,10 @@ def test_recover_spool_to_turso_and_redis_reports_claim_file_error(
     assert list(tmp_path.glob("*.json.processing")) == []
 
 
-def test_flush_spool_to_turso_reports_stale_processing_stat_error(
+def test_flush_spool_to_source_db_reports_stale_processing_stat_error(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     processing_path = _write_processing_file(
         tmp_path,
         "weibo:stale-stat-error",
@@ -599,7 +603,7 @@ def test_flush_spool_to_turso_reports_stale_processing_stat_error(
 
     monkeypatch.setattr(Path, "stat", _fake_stat)
 
-    processed, has_error = spool.flush_spool_to_turso(
+    processed, has_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
@@ -611,10 +615,10 @@ def test_flush_spool_to_turso_reports_stale_processing_stat_error(
     assert len(list(tmp_path.glob("*.json.processing"))) == 1
 
 
-def test_recover_spool_to_turso_and_redis_reports_stale_processing_rename_error(
+def test_recover_spool_to_source_db_and_redis_reports_stale_processing_rename_error(
     monkeypatch, tmp_path
 ) -> None:
-    engine_marker = cast(TursoEngine, object())
+    engine_marker = cast(PostgresEngine, object())
     post_uid = "weibo:stale-rename-error"
     processing_path = _write_processing_file(
         tmp_path,
@@ -633,7 +637,7 @@ def test_recover_spool_to_turso_and_redis_reports_stale_processing_rename_error(
     monkeypatch.setattr(Path, "rename", _fake_rename)
 
     handled_posts, queued_redis, deleted_done, has_error = (
-        spool.recover_spool_to_turso_and_redis(
+        spool.recover_spool_to_source_db_and_redis(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,

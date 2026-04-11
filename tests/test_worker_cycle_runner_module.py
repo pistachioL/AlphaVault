@@ -14,7 +14,7 @@ def test_collect_periodic_job_result_reads_stats_from_finished_future() -> None:
             job_name="unit",
             future=future,
             engine=object(),
-            maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: None,
+            maybe_dispose_source_db_engine_on_transient_error_fn=lambda **_kwargs: None,
             fatal_exceptions=(KeyboardInterrupt, SystemExit, GeneratorExit),
         )
     )
@@ -35,7 +35,7 @@ def test_collect_rss_ingest_result_nonfatal_exception_marks_error() -> None:
             source_name="weibo",
             future=future,
             engine=object(),
-            maybe_dispose_turso_engine_on_transient_error_fn=lambda **_kwargs: disposed.__setitem__(
+            maybe_dispose_source_db_engine_on_transient_error_fn=lambda **_kwargs: disposed.__setitem__(
                 "called", True
             ),
             fatal_exceptions=(KeyboardInterrupt, SystemExit, GeneratorExit),
@@ -59,7 +59,7 @@ def test_cycle_runner_helper_functions_keep_boolean_logic() -> None:
         is False
     )
     assert (
-        cycle_runner_module.build_source_turso_error(
+        cycle_runner_module.build_source_db_error(
             maintenance_error=False,
             spool_flush_error=False,
             schedule_error=True,

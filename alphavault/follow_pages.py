@@ -1,5 +1,5 @@
 """
-Follow pages (no-code configs) stored in Turso.
+Follow pages (no-code configs) stored in Postgres standard schema.
 
 One page = follow one thing:
 - follow_type: "topic" or "cluster"
@@ -23,7 +23,7 @@ from alphavault.db.sql.follow_pages import (
     upsert_follow_page as upsert_follow_page_sql,
 )
 from alphavault.db.postgres_db import PostgresEngine, postgres_connect_autocommit
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 
 
 FOLLOW_PAGES_TABLE = f"{SCHEMA_STANDARD}.follow_pages"
@@ -58,7 +58,7 @@ def try_load_follow_pages(engine: PostgresEngine) -> tuple[pd.DataFrame, str]:
     """
     try:
         with postgres_connect_autocommit(engine) as conn:
-            pages = turso_read_sql_df(conn, select_follow_pages(FOLLOW_PAGES_TABLE))
+            pages = read_sql_df(conn, select_follow_pages(FOLLOW_PAGES_TABLE))
         return pages, ""
     except Exception as exc:
         return pd.DataFrame(), f"{type(exc).__name__}: {exc}"

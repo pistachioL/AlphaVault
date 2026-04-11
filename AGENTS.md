@@ -1,11 +1,11 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-- `alphavault/`: backend core (RSS ingest, AI analysis via `litellm`, Turso/Redis persistence, worker logic).
+- `alphavault/`: backend core (RSS ingest, AI analysis via `litellm`, Postgres/Redis persistence, worker logic).
 - `alphavault_reflex/`: Reflex web UI (state, services, pages). Key entry: `alphavault_reflex/alphavault_reflex.py`; config: `rxconfig.py`.
 - `tests/`: `pytest` suite (`test_*.py`).
 - `assets/`: static CSS/JS used by the UI.
-- Root scripts: `weibo_rss_turso_worker.py` (main worker), plus one-off maintenance tools.
+- Root scripts: `weibo_rss_worker.py` (main worker), plus maintenance tools.
 - `docs/superpowers/specs/`: design/architecture specs and notes.
 
 ## Build, Test, and Development Commands
@@ -15,7 +15,7 @@ Uses `uv` (lockfile: `uv.lock`).
 - `uv run pre-commit run -a`: run format/lint/type-check/spell-check/tests (Ruff, mypy, codespell, vulture, pytest).
 - `uv run pytest`: run tests.
 - `uv run reflex run`: start the Reflex dev server.
-- `uv run python weibo_rss_turso_worker.py --log-level info`: run the RSS → AI → Turso worker locally.
+- `uv run python weibo_rss_worker.py --log-level info`: run the RSS → AI → Postgres worker locally.
 - `docker compose up --build`: run the container on `http://localhost:8080` using `.env`.
 
 ## Coding Style & Naming Conventions
@@ -42,7 +42,7 @@ Uses `uv` (lockfile: `uv.lock`).
 - YAGNI: don’t add “maybe needed later” abstractions; only add backwards-compat fallbacks when explicitly required.
 
 ## Cloud Schema Rules
-- 云端 `Turso` 表结构按库角色只认两份 SQL：
+- 云端表结构按库角色只认两份 SQL：
   - source 库：`alphavault/db/sql/source_schema.sql`
   - standard 库：`alphavault/db/sql/standard_schema.sql`
 - 新环境上线前，先对对应库手工执行对应 SQL，再启动服务和脚本。
@@ -79,8 +79,8 @@ Uses `uv` (lockfile: `uv.lock`).
 - Mermaid 语法安全：边上的文字优先用 `-.->|说明|` 这种安全写法；尽量避免在边文字里直接放 `*`、编号列表、容易触发解析错误的符号。
 
 ## Configuration & Secrets
-- Copy `.env.example` → `.env` and fill in values; never commit secrets (Turso tokens, API keys).
-- Common variables: `*_TURSO_DATABASE_URL`, `*_TURSO_AUTH_TOKEN`, `REDIS_URL`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`.
+- Copy `.env.example` → `.env` and fill in values; never commit secrets (Postgres DSN, API keys).
+- Common variables: `POSTGRES_DSN`, `REDIS_URL`, `AI_MODEL`, `AI_BASE_URL`, `AI_API_KEY`.
 
 ## 子代理派发策略
 

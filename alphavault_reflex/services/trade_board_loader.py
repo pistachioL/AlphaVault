@@ -23,7 +23,7 @@ from alphavault.db.postgres_env import (
     load_configured_postgres_sources_from_env,
     PostgresSource,
 )
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
 from alphavault.research_workbench.service import (
@@ -32,15 +32,16 @@ from alphavault.research_workbench.service import (
 from alphavault_reflex.services.homework_constants import TRADE_BOARD_MAX_WINDOW_DAYS
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
-    MISSING_TURSO_SOURCES_ERROR,
+    MISSING_POSTGRES_DSN_ERROR,
+    SOURCE_SCHEMAS_EMPTY_ERROR,
     source_table,
 )
-from alphavault_reflex.services.turso_read_utils import normalize_assertions_datetime
+from alphavault_reflex.services.source_read_utils import normalize_assertions_datetime
 
 _logger = logging.getLogger(__name__)
 ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = "REFLEX_HOMEWORK_SOURCE_MAX_WORKERS"
 DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = 2
-_STANDARD_TURSO_ERROR_PREFIX = "turso_connect_error:standard:"
+_STANDARD_POSTGRES_ERROR_PREFIX = "postgres_connect_error:standard:"
 _SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
 
 TRADE_BOARD_ASSERTION_COLUMNS = [
@@ -107,7 +108,7 @@ WHERE p.processed_at IS NOT NULL
   AND p.created_at >= :cutoff
   AND a.action LIKE 'trade.%'
 """
-    df = turso_read_sql_df(conn, sql, params={"cutoff": cutoff})
+    df = read_sql_df(conn, sql, params={"cutoff": cutoff})
     if df.empty:
         return df
     df = df.copy()
@@ -120,7 +121,7 @@ WHERE p.processed_at IS NOT NULL
 
 
 def query_stock_alias_relations(*, conn: object, source_name: str) -> pd.DataFrame:
-    df = turso_read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
+    df = read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
     if df.empty:
         return df
     df = df.copy()
@@ -128,11 +129,11 @@ def query_stock_alias_relations(*, conn: object, source_name: str) -> pd.DataFra
     return df
 
 
-def _standard_turso_error_text(err: BaseException) -> str:
+def _standard_postgres_error_text(err: BaseException) -> str:
     text = str(err or "").strip()
-    if text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+    if text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
         return text
-    return f"{_STANDARD_TURSO_ERROR_PREFIX}{type(err).__name__}"
+    return f"{_STANDARD_POSTGRES_ERROR_PREFIX}{type(err).__name__}"
 
 
 @lru_cache(maxsize=8)
@@ -204,7 +205,7 @@ def load_homework_board_payload_cached(
         except BaseException as err:
             if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                 raise
-            error_text = _standard_turso_error_text(err)
+            error_text = _standard_postgres_error_text(err)
             _logger.warning(
                 "homework_payload relation_query_failed source=%s err=%s",
                 source_name,
@@ -230,7 +231,7 @@ def load_trade_board_assertions_from_env(
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+        return pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
 
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     frames: list[pd.DataFrame] = []
@@ -255,11 +256,11 @@ def load_trade_board_assertions_from_env(
                     raise
                 return (
                     pd.DataFrame(),
-                    f"turso_connect_error:{name}:{type(err).__name__}",
+                    f"postgres_connect_error:{name}:{type(err).__name__}",
                 )
 
     if not frames:
-        return pd.DataFrame(), "turso_sources_empty"
+        return pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
     return pd.concat(frames, ignore_index=True), ""
 
 
@@ -273,7 +274,7 @@ def load_homework_board_payload_from_env(
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+        return pd.DataFrame(), pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
 
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     assertions_frames: list[pd.DataFrame] = []
@@ -295,10 +296,10 @@ def load_homework_board_payload_from_env(
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                     raise
                 error_text = str(err or "").strip()
-                if error_text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+                if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
                     return pd.DataFrame(), pd.DataFrame(), error_text
                 source_errors.append(
-                    f"turso_connect_error:{source.name}:{type(err).__name__}"
+                    f"postgres_connect_error:{source.name}:{type(err).__name__}"
                 )
                 _logger.warning(
                     "homework_payload source_failed source=%s mode=serial err=%s",
@@ -336,10 +337,10 @@ def load_homework_board_payload_from_env(
                     if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                         raise
                     error_text = str(err or "").strip()
-                    if error_text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+                    if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
                         return pd.DataFrame(), pd.DataFrame(), error_text
                     source_errors.append(
-                        f"turso_connect_error:{name}:{type(err).__name__}"
+                        f"postgres_connect_error:{name}:{type(err).__name__}"
                     )
                     _logger.warning(
                         "homework_payload source_failed source=%s mode=parallel err=%s",
@@ -360,7 +361,7 @@ def load_homework_board_payload_from_env(
     if not assertions_frames:
         if source_errors:
             return pd.DataFrame(), pd.DataFrame(), source_errors[0]
-        return pd.DataFrame(), pd.DataFrame(), "turso_sources_empty"
+        return pd.DataFrame(), pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
     assertions_all = pd.concat(assertions_frames, ignore_index=True)
     relations_all = pd.concat(relation_frames, ignore_index=True)
     if not relations_all.empty:
@@ -388,7 +389,7 @@ def load_stock_alias_relations_from_env(
             raise
         return (
             pd.DataFrame(),
-            _standard_turso_error_text(err),
+            _standard_postgres_error_text(err),
         )
 
 

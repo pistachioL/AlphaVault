@@ -38,18 +38,11 @@ def handle_db_error(
     raise err
 
 
-def handle_turso_error(
-    engine_or_conn: PostgresEngine | PostgresConnection | Any, err: BaseException
-) -> None:
-    handle_db_error(engine_or_conn, err)
-
-
 __all__ = [
     "RESEARCH_ALIAS_RESOLVE_TASKS_TABLE",
     "RESEARCH_RELATION_CANDIDATES_TABLE",
     "RESEARCH_RELATIONS_TABLE",
     "RESEARCH_SECURITY_MASTER_TABLE",
     "handle_db_error",
-    "handle_turso_error",
     "use_conn",
 ]

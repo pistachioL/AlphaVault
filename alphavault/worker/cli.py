@@ -57,7 +57,6 @@ class RSSSourceConfig:
     platform: str
     rss_urls: list[str]
     database_url: str
-    auth_token: str
     author: str
     user_id: Optional[str]
 
@@ -113,7 +112,6 @@ def _build_platform_source_config(
         platform=platform,
         rss_urls=urls,
         database_url=postgres_dsn,
-        auth_token="",
         author=author,
         user_id=user_id,
     )

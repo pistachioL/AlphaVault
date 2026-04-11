@@ -13,7 +13,6 @@ def _build_source_config() -> RSSSourceConfig:
         platform="weibo",
         rss_urls=["https://example.com/rss"],
         database_url="postgres://example",
-        auth_token="token",
         author="",
         user_id=None,
     )

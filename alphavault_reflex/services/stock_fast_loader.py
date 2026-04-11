@@ -21,7 +21,7 @@ from alphavault.db.postgres_env import (
     load_configured_postgres_sources_from_env,
     PostgresSource,
 )
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.domains.stock.keys import stock_key_lookup_candidates
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
@@ -30,14 +30,15 @@ from alphavault.research_workbench.service import (
 )
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
-    MISSING_TURSO_SOURCES_ERROR,
+    MISSING_POSTGRES_DSN_ERROR,
+    SOURCE_SCHEMAS_EMPTY_ERROR,
     WANTED_POST_COLUMNS_FOR_TREE,
     WANTED_TRADE_ASSERTION_COLUMNS,
     source_table,
     standardize_assertions,
     standardize_posts,
 )
-from alphavault_reflex.services.turso_read_utils import (
+from alphavault_reflex.services.source_read_utils import (
     ensure_platform_post_id,
     normalize_assertions_datetime,
     normalize_posts_datetime,
@@ -49,7 +50,7 @@ FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE = 240
 FAST_STOCK_TOTAL_TIMEOUT_SECONDS = 8.0
 
 FAST_STOCK_ALIAS_KEY_LIMIT = 64
-_STANDARD_TURSO_ERROR_PREFIX = "turso_connect_error:standard:"
+_STANDARD_POSTGRES_ERROR_PREFIX = "postgres_connect_error:standard:"
 _SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
 
 FAST_STOCK_ALIAS_KEYS_SQL = """
@@ -108,11 +109,11 @@ def _load_stock_alias_keys(conn: Any, *, stock_key: str) -> list[str]:
     return out
 
 
-def _standard_turso_error_text(err: BaseException) -> str:
+def _standard_postgres_error_text(err: BaseException) -> str:
     text = str(err or "").strip()
-    if text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+    if text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
         return text
-    return f"{_STANDARD_TURSO_ERROR_PREFIX}{type(err).__name__}"
+    return f"{_STANDARD_POSTGRES_ERROR_PREFIX}{type(err).__name__}"
 
 
 @lru_cache(maxsize=64)
@@ -127,7 +128,7 @@ def load_stock_alias_keys_cached(stock_key: str) -> tuple[str, ...]:
     except BaseException as err:
         if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
             raise
-        raise RuntimeError(_standard_turso_error_text(err)) from err
+        raise RuntimeError(_standard_postgres_error_text(err)) from err
 
 
 @lru_cache(maxsize=64)
@@ -190,7 +191,7 @@ def load_stock_trade_sources_fast_cached(
             "ORDER BY p.created_at DESC\n"
             "LIMIT :limit"
         )
-        assertions = turso_read_sql_df(conn, assertions_query, params=params)
+        assertions = read_sql_df(conn, assertions_query, params=params)
 
         posts = pd.DataFrame()
         if not assertions.empty:
@@ -214,7 +215,7 @@ FROM {posts_table}
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})
 """
-                posts = turso_read_sql_df(conn, posts_query, params=list(post_uids))
+                posts = read_sql_df(conn, posts_query, params=list(post_uids))
 
     posts = standardize_posts(posts, source_name=source_name)
     posts = normalize_posts_datetime(posts)
@@ -237,7 +238,7 @@ def load_stock_sources_fast_from_env(
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+        return pd.DataFrame(), pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
 
     stock_code = stock_code_from_stock_key(normalized_key)
     limit = max(1, int(per_source_limit or FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE))
@@ -266,7 +267,7 @@ def load_stock_sources_fast_from_env(
         for fut in not_done:
             source_name = futures.get(fut, "")
             fut.cancel()
-            errors.append(f"turso_timeout:{source_name}")
+            errors.append(f"postgres_timeout:{source_name}")
         for fut in as_completed(done):
             source_name = futures.get(fut, "")
             try:
@@ -275,9 +276,11 @@ def load_stock_sources_fast_from_env(
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                     raise
                 error_text = str(err or "").strip()
-                if error_text.startswith(_STANDARD_TURSO_ERROR_PREFIX):
+                if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
                     return pd.DataFrame(), pd.DataFrame(), error_text
-                errors.append(f"turso_connect_error:{source_name}:{type(err).__name__}")
+                errors.append(
+                    f"postgres_connect_error:{source_name}:{type(err).__name__}"
+                )
                 continue
             posts_frames.append(posts)
             assertions_frames.append(assertions)
@@ -285,7 +288,7 @@ def load_stock_sources_fast_from_env(
     if not posts_frames and not assertions_frames:
         if errors:
             return pd.DataFrame(), pd.DataFrame(), errors[0]
-        return pd.DataFrame(), pd.DataFrame(), "turso_sources_empty"
+        return pd.DataFrame(), pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
 
     non_empty_posts = [frame for frame in posts_frames if not frame.empty]
     non_empty_assertions = [frame for frame in assertions_frames if not frame.empty]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# SQL builders for source queue reads and writes.
+
 _POSTS_TABLE = "posts"
 _ASSERTIONS_TABLE = "assertions"
 _ASSERTION_MENTIONS_TABLE = "assertion_mentions"

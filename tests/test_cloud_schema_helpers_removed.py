@@ -8,8 +8,8 @@ import pytest
 @pytest.mark.parametrize(
     ("module_name", "attr_name"),
     [
-        ("alphavault.db.turso_queue", "ensure_cloud_queue_schema"),
-        ("alphavault.db.turso_schema", "init_cloud_schema"),
+        ("alphavault.db.source_queue", "ensure_cloud_queue_schema"),
+        ("alphavault.db.cloud_schema", "init_cloud_schema"),
         ("alphavault.research_workbench", "ensure_research_workbench_schema"),
         ("alphavault.research_workbench.schema", "ensure_research_workbench_schema"),
         ("alphavault.research_stock_cache", "ensure_research_stock_cache_schema"),

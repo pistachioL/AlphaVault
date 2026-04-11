@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 import requests
 
-from alphavault.db.postgres_db import PostgresEngine as TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.rss import utils as rss_utils
 from alphavault.worker import ingest
 from alphavault.worker import worker_loop_runtime
@@ -19,7 +19,7 @@ from alphavault.worker.cli import RSSSourceConfig
 def test_parse_args_rss_defaults(monkeypatch) -> None:
     monkeypatch.delenv("RSS_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("RSS_RETRIES", raising=False)
-    monkeypatch.setattr(sys, "argv", ["weibo_rss_turso_worker.py"])
+    monkeypatch.setattr(sys, "argv", ["weibo_rss_worker.py"])
 
     args = parse_args()
 
@@ -30,7 +30,7 @@ def test_parse_args_rss_defaults(monkeypatch) -> None:
 def test_parse_args_reads_rss_env(monkeypatch) -> None:
     monkeypatch.setenv("RSS_TIMEOUT_SECONDS", "91")
     monkeypatch.setenv("RSS_RETRIES", "7")
-    monkeypatch.setattr(sys, "argv", ["weibo_rss_turso_worker.py"])
+    monkeypatch.setattr(sys, "argv", ["weibo_rss_worker.py"])
 
     args = parse_args()
 
@@ -45,7 +45,7 @@ def test_parse_args_cli_overrides_rss_env(monkeypatch) -> None:
         sys,
         "argv",
         [
-            "weibo_rss_turso_worker.py",
+            "weibo_rss_worker.py",
             "--rss-timeout",
             "22",
             "--rss-retries",
@@ -61,7 +61,7 @@ def test_parse_args_cli_overrides_rss_env(monkeypatch) -> None:
 
 def test_parse_args_reads_ai_queue_ack_timeout_env(monkeypatch) -> None:
     monkeypatch.setenv("AI_QUEUE_ACK_TIMEOUT_SEC", "123")
-    monkeypatch.setattr(sys, "argv", ["weibo_rss_turso_worker.py"])
+    monkeypatch.setattr(sys, "argv", ["weibo_rss_worker.py"])
 
     args = parse_args()
 
@@ -70,7 +70,7 @@ def test_parse_args_reads_ai_queue_ack_timeout_env(monkeypatch) -> None:
 
 def test_parse_args_invalid_ai_queue_ack_timeout_env_uses_default(monkeypatch) -> None:
     monkeypatch.setenv("AI_QUEUE_ACK_TIMEOUT_SEC", "bad")
-    monkeypatch.setattr(sys, "argv", ["weibo_rss_turso_worker.py"])
+    monkeypatch.setattr(sys, "argv", ["weibo_rss_worker.py"])
 
     args = parse_args()
 
@@ -83,7 +83,7 @@ def test_parse_args_cli_overrides_ai_queue_ack_timeout_env(monkeypatch) -> None:
         sys,
         "argv",
         [
-            "weibo_rss_turso_worker.py",
+            "weibo_rss_worker.py",
             "--ai-stuck-seconds",
             "456",
         ],
@@ -143,7 +143,7 @@ def test_ingest_rss_many_once_passes_timeout_and_retries(monkeypatch, tmp_path) 
     assert enqueue_error is False
 
 
-def test_ingest_rss_many_once_redis_primary_skips_turso_write(
+def test_ingest_rss_many_once_redis_primary_skips_source_db_write(
     monkeypatch, tmp_path
 ) -> None:
     def _fake_fetch_feed(
@@ -236,7 +236,7 @@ def test_ingest_rss_many_once_ignores_enqueue_callback_and_pushes_redis_inline(
         ingest,
         "upsert_pending_post",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("should not write turso inline")
+            AssertionError("should not write source db inline")
         ),
         raising=False,
     )
@@ -740,7 +740,6 @@ def test_build_source_runtimes_requires_redis_for_worker(monkeypatch, tmp_path) 
                     platform="weibo",
                     rss_urls=["https://example.com/rss"],
                     database_url="postgres://db",
-                    auth_token="",
                     author="",
                     user_id=None,
                 )
@@ -771,7 +770,6 @@ def test_build_source_runtimes_always_uses_source_redis_key(
                 platform="weibo",
                 rss_urls=["https://example.com/rss"],
                 database_url="postgres://db",
-                auth_token="",
                 author="",
                 user_id=None,
             )
@@ -919,7 +917,7 @@ def test_ingest_rss_many_once_without_redis_skips_items(monkeypatch, tmp_path) -
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
-        engine=cast(TursoEngine, object()),
+        engine=cast(PostgresEngine, object()),
         spool_dir=tmp_path,
         redis_client=None,
         redis_queue_key="",
@@ -935,7 +933,7 @@ def test_ingest_rss_many_once_without_redis_skips_items(monkeypatch, tmp_path) -
     assert enqueue_error is True
 
 
-def test_ingest_rss_many_once_redis_error_does_not_fall_back_to_turso_inline(
+def test_ingest_rss_many_once_redis_error_does_not_fall_back_to_source_db_inline(
     monkeypatch, tmp_path
 ) -> None:
     def _fake_fetch_feed(
@@ -983,7 +981,7 @@ def test_ingest_rss_many_once_redis_error_does_not_fall_back_to_turso_inline(
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
-        engine=cast(TursoEngine, object()),
+        engine=cast(PostgresEngine, object()),
         spool_dir=tmp_path,
         redis_client=object(),
         redis_queue_key="queue",
@@ -1046,7 +1044,7 @@ def test_ingest_rss_many_once_redis_duplicate_is_skipped_without_error(
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
-        engine=cast(TursoEngine, object()),
+        engine=cast(PostgresEngine, object()),
         spool_dir=tmp_path,
         redis_client=object(),
         redis_queue_key="queue",
@@ -1101,7 +1099,7 @@ def test_ingest_rss_many_once_redis_duplicate_keeps_enqueue_error_false(
 
     accepted, enqueue_error = ingest.ingest_rss_many_once(
         rss_urls=["https://example.com/rss"],
-        engine=cast(TursoEngine, object()),
+        engine=cast(PostgresEngine, object()),
         spool_dir=tmp_path,
         redis_client=object(),
         redis_queue_key="queue",

@@ -9,7 +9,7 @@ from alphavault import research_stock_cache as research_stock_cache_module
 from alphavault.constants import SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
-from alphavault.db.postgres_db import PostgresEngine as TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.research_stock_cache import (
     EntityPageDirtyEntry,
     claim_entity_page_dirty_entries,
@@ -549,7 +549,7 @@ def _assert_transaction_helper_used(
     monkeypatch: pytest.MonkeyPatch,
     *,
     expected_result: object,
-    call_fn: Callable[[TursoEngine], object],
+    call_fn: Callable[[PostgresEngine], object],
 ) -> None:
     helper_calls: list[object] = []
 
@@ -563,7 +563,7 @@ def _assert_transaction_helper_used(
         raise AssertionError("old_transaction_path_used")
         yield
 
-    engine = cast(TursoEngine, object())
+    engine = cast(PostgresEngine, object())
     monkeypatch.setattr(
         research_stock_cache_module,
         "run_postgres_transaction",
@@ -579,7 +579,7 @@ def _assert_transaction_helper_used(
 def test_remove_entity_page_dirty_keys_uses_run_postgres_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _call(engine: TursoEngine) -> int:
+    def _call(engine: PostgresEngine) -> int:
         return research_stock_cache_module.remove_entity_page_dirty_keys(
             engine,
             stock_keys=["stock:601899.SH"],
@@ -607,7 +607,7 @@ def test_claim_entity_page_dirty_entries_uses_run_postgres_transaction(
         }
     ]
 
-    def _call(engine: TursoEngine) -> list[EntityPageDirtyEntry]:
+    def _call(engine: PostgresEngine) -> list[EntityPageDirtyEntry]:
         return research_stock_cache_module.claim_entity_page_dirty_entries(
             engine,
             limit=2,
@@ -624,7 +624,7 @@ def test_claim_entity_page_dirty_entries_uses_run_postgres_transaction(
 def test_release_entity_page_dirty_claims_uses_run_postgres_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _call(engine: TursoEngine) -> int:
+    def _call(engine: PostgresEngine) -> int:
         return research_stock_cache_module.release_entity_page_dirty_claims(
             engine,
             stock_keys=["stock:601899.SH"],
@@ -641,7 +641,7 @@ def test_release_entity_page_dirty_claims_uses_run_postgres_transaction(
 def test_fail_entity_page_dirty_claims_uses_run_postgres_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _call(engine: TursoEngine) -> int:
+    def _call(engine: PostgresEngine) -> int:
         return research_stock_cache_module.fail_entity_page_dirty_claims(
             engine,
             stock_keys=["stock:601899.SH"],

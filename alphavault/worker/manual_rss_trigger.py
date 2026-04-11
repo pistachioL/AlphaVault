@@ -15,7 +15,7 @@ from alphavault.constants import (
     ENV_WORKER_ADMIN_TRIGGER_KEY,
 )
 from alphavault.db.postgres_db import PostgresEngine, ensure_postgres_engine
-from alphavault.db.turso_queue import (
+from alphavault.db.source_queue import (
     load_failed_post_queue_rows,
     load_unprocessed_post_queue_rows,
 )
@@ -101,7 +101,7 @@ def _build_source_redis_queue_key(
     )
 
 
-def _maybe_dispose_turso_engine_on_transient_error(
+def _maybe_dispose_source_db_engine_on_transient_error(
     *, engine: PostgresEngine, err: BaseException
 ) -> None:
     del engine, err
@@ -159,7 +159,7 @@ def _run_manual_ingest_for_source(
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
-        _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=err)
+        _maybe_dispose_source_db_engine_on_transient_error(engine=engine, err=err)
         result["enqueue_error"] = True
         result["error"] = f"{type(err).__name__}: {err}"
         return result

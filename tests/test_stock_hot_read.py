@@ -439,7 +439,7 @@ def test_load_stock_cached_view_returns_relation_error_when_standard_alias_fails
     monkeypatch.setattr(
         stock_hot_read,
         "load_stock_alias_relations_from_env",
-        lambda: (pd.DataFrame(), "turso_connect_error:standard:RuntimeError"),
+        lambda: (pd.DataFrame(), "postgres_connect_error:standard:RuntimeError"),
     )
     monkeypatch.setattr(
         stock_hot_read,
@@ -456,5 +456,5 @@ def test_load_stock_cached_view_returns_relation_error_when_standard_alias_fails
         signal_page_size=5,
     )
 
-    assert payload["load_error"] == "turso_connect_error:standard:RuntimeError"
+    assert payload["load_error"] == "postgres_connect_error:standard:RuntimeError"
     assert payload["signals"] == []

@@ -3,11 +3,11 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Structure & Module Organization
-- `alphavault/`: backend core — RSS ingest, AI analysis via `litellm`, Turso/Redis persistence, worker logic.
+- `alphavault/`: backend core — RSS ingest, AI analysis via `litellm`, Postgres/Redis persistence, worker logic.
 - `alphavault_reflex/`: Reflex web UI (state, services, pages). Entry: `alphavault_reflex/alphavault_reflex.py`; config: `rxconfig.py`.
 - `tests/`: `pytest` suite (`test_*.py`).
 - `assets/`: static CSS/JS used by the UI.
-- Root scripts: `weibo_rss_turso_worker.py` (main worker entry), plus one-off maintenance tools (`migrate_weibo_raw_text.py`, `reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
+- Root scripts: `weibo_rss_worker.py` (main worker entry), plus maintenance tools (`reset_ai_results.py`, `scan_and_reset_invalid_ai_tags.py`).
 - `docs/superpowers/specs/`: design/architecture specs and notes.
 
 ## Build, Test, and Development Commands
@@ -18,12 +18,12 @@ Uses `uv` (lockfile: `uv.lock`).
 - `uv run pytest`: run all tests.
 - `uv run pytest tests/test_foo.py::test_bar`: run a single test.
 - `uv run reflex run`: start the Reflex dev server.
-- `uv run python weibo_rss_turso_worker.py --log-level info`: run the RSS → AI → Turso worker locally.
+- `uv run python weibo_rss_worker.py --log-level info`: run the RSS → AI → Postgres worker locally.
 - `docker compose up --build`: run the full container on `http://localhost:8080` using `.env`.
 
 ## Architecture & Data Flow
 
-### Worker pipeline (`weibo_rss_turso_worker.py` → `alphavault/worker/`)
+### Worker pipeline (`weibo_rss_worker.py` → `alphavault/worker/`)
 The main loop runs two parallel tracks:
 
 1. **RSS ingest** (`worker_loop_rss.py`, `worker/ingest.py`, `worker/spool.py`): Fetches feeds via `alphavault/rss/utils.py`, pushes each payload straight into the Redis AI ready queue, and only writes local `spool/` when Redis is unavailable or push fails. `spool` is then only used as a recovery buffer, not as the daily primary path.
@@ -35,10 +35,10 @@ The main loop runs two parallel tracks:
 **Recovery path** (`worker_loop_maintenance.py`, `worker/spool.py`): maintenance scans `spool/`, drops files whose posts are already done, requeues unfinished payloads back to Redis, and requeues Redis `processing` jobs that lost their lease.
 
 ### Database layer (`alphavault/db/`)
-- `turso_db.py`: `TursoEngine` (custom LIFO connection pool over `libsql`), `TursoConnection` (named→qmark param translation via `sqlparams`, retry on transient errors), `turso_savepoint` (manual `BEGIN/COMMIT/ROLLBACK` since libsql doesn't support DBAPI transactions). All SQL constants live in `db/sql/`.
-- `turso_queue.py`: main post/assertion read-write helpers (`upsert_pending_post`, `load_cloud_post`, `write_assertions_and_mark_done`). Redis queue state is handled in `alphavault/worker/redis_queue.py`, not in Turso runtime columns.
-- `turso_env.py`: parses `WEIBO_TURSO_DATABASE_URL/AUTH_TOKEN` and `XUEQIU_TURSO_DATABASE_URL/AUTH_TOKEN` into source configs.
-- Two Turso databases are supported simultaneously (weibo + xueqiu); each has its own engine.
+- `postgres_db.py`: shared Postgres engine, connect helpers, schema qualification, and transactions. All SQL constants live in `db/sql/`.
+- `source_queue.py`: main source post/assertion read-write helpers (`upsert_pending_post`, `load_cloud_post`, `write_assertions_and_mark_done`).
+- `postgres_env.py`: parses `POSTGRES_DSN` into `weibo / xueqiu / standard` schema configs.
+- One Postgres DSN is shared by `weibo / xueqiu / standard` schemas.
 
 ### AI layer (`alphavault/ai/`)
 - `analyze.py`: public API — `analyze_with_litellm` calls the LLM, parses JSON output, normalizes assertion `action` values (via `ALLOWED_ACTIONS` + `LEGACY_ACTION_MAP`), and validates results.
@@ -54,7 +54,7 @@ The main loop runs two parallel tracks:
 - `alphavault/infra/ai/relation_candidate_ranker.py`: optional AI ranking for relation candidates (can be disabled).
 
 ### Reflex read layer (`alphavault_reflex/services/`)
-- `turso_read.py`: a small facade; actual loaders live in `*_loader.py` (`trade_board_loader.py`, `tree_loader.py`, `stock_fast_loader.py`, `url_loader.py`, `source_loader.py`).
+- `source_read.py`: a small facade; actual loaders live in `*_loader.py` (`trade_board_loader.py`, `tree_loader.py`, `stock_fast_loader.py`, `url_loader.py`, `source_loader.py`).
 - `stock_backfill.py`: finds posts that mention a stock but lack assertions, surfaced as "待回补" on the stock research page.
 
 ### Reflex UI (`alphavault_reflex/`)
@@ -64,7 +64,7 @@ The main loop runs two parallel tracks:
 - Custom CSS in `assets/` (`homework_board.css`, `research_workbench.css`) plus JS (`table_resizer.js`).
 
 ### Redis (required for AI worker)
-The AI worker requires `REDIS_URL`. Redis holds the runtime queue state: ready / processing / delayed / lease / dedup. Turso remains the durable truth, and maintenance can rebuild the Redis queue only from `spool/`. Without Redis the worker startup fails.
+The AI worker requires `REDIS_URL`. Redis holds the runtime queue state: ready / processing / delayed / lease / dedup. Postgres remains the durable truth, and maintenance can rebuild the Redis queue only from `spool/`. Without Redis the worker startup fails.
 
 ## Coding Style & Naming Conventions
 - Python 3.10+, 4-space indentation, type hints on public APIs.
@@ -88,13 +88,13 @@ The AI worker requires `REDIS_URL`. Redis holds the runtime queue state: ready /
 
 ## Runtime Environment
 - **Hosting**: Render free tier — 0.1 CPU, 512 MB RAM, deployed via `Dockerfile`.
-- **Database**: Turso free tier (read/write quota limited; avoid unnecessary reads).
+- **Database**: Postgres (avoid unnecessary reads and writes).
 - **Cache/Queue**: Upstash Redis free tier (command quota limited; use Redis sparingly).
-- Resource constraints are real: every extra Turso read or Redis command counts against daily free quotas. Prefer batching, caching, and early-exit guards over repeated I/O.
+- Resource constraints are real: every extra Postgres query or Redis command costs latency and capacity. Prefer batching, caching, and early-exit guards over repeated I/O.
 
 ## Configuration & Secrets
 - Copy `.env.example` → `.env`; never commit secrets.
-- Key env groups: `WEIBO_TURSO_*` / `XUEQIU_TURSO_*`, `REDIS_URL`, `AI_MODEL` / `AI_BASE_URL` / `AI_API_KEY` / `AI_API_MODE`.
+- Key env groups: `POSTGRES_DSN`, `REDIS_URL`, `AI_MODEL` / `AI_BASE_URL` / `AI_API_KEY` / `AI_API_MODE`.
 - `AI_BASE_URL` must point to an OpenAI-compatible `/v1` endpoint (not a gateway homepage).
 - `AI_MODEL` must be the real model name (e.g. `openai/gpt-5.2`), not a placeholder.
 - `load_dotenv_if_present()` (in `alphavault/env.py`) loads `.env` without overriding existing env vars — safe for both local and Docker use.

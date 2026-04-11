@@ -11,7 +11,7 @@ from alphavault.db.postgres_db import (
     qualify_postgres_table,
     require_postgres_schema_name,
 )
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 from alphavault.domains.stock.keys import (
     normalize_stock_key as _normalize_stock_key,
     stock_key_lookup_candidates,
@@ -67,7 +67,7 @@ def _source_table(conn: object, table_name: str) -> str:
 
 def _load_stock_alias_relations(conn: PostgresConnection) -> pd.DataFrame:
     try:
-        return turso_read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
+        return read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
     except BaseException:
         return pd.DataFrame()
 
@@ -151,7 +151,7 @@ ORDER BY p.created_at DESC
 LIMIT :limit
 """
 
-    assertions = turso_read_sql_df(conn, query, params=params)
+    assertions = read_sql_df(conn, query, params=params)
     if assertions.empty:
         return assertions
     out = assertions.copy()
@@ -228,7 +228,7 @@ FROM {posts_table}
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})
 """
-    posts = turso_read_sql_df(conn, sql, params=cleaned)
+    posts = read_sql_df(conn, sql, params=cleaned)
     if posts.empty:
         return posts
     out = posts.copy()

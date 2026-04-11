@@ -6,10 +6,10 @@ import pandas as pd
 
 from alphavault.homework_trade_feed import HOMEWORK_DEFAULT_VIEW_KEY
 from alphavault_reflex.services import trade_board_loader
-from alphavault_reflex.services import turso_read
+from alphavault_reflex.services import source_read
 
 
-def TursoSource(*, name: str, url: str, token: str) -> SimpleNamespace:
+def SourceConfigStub(*, name: str, url: str, token: str) -> SimpleNamespace:
     return SimpleNamespace(
         name=name,
         url=url,
@@ -22,15 +22,15 @@ def TursoSource(*, name: str, url: str, token: str) -> SimpleNamespace:
 def test_query_stock_alias_relations_uses_formal_relations_table(monkeypatch) -> None:
     captured_sql: list[str] = []
 
-    def _fake_turso_read_sql_df(conn, sql, params=None):  # type: ignore[no-untyped-def]
+    def _fake_read_sql_df(conn, sql, params=None):  # type: ignore[no-untyped-def]
         del conn, params
         captured_sql.append(str(sql))
         return pd.DataFrame()
 
     monkeypatch.setattr(
         trade_board_loader,
-        "turso_read_sql_df",
-        _fake_turso_read_sql_df,
+        "read_sql_df",
+        _fake_read_sql_df,
     )
 
     df = trade_board_loader.query_stock_alias_relations(conn=object(), source_name="")
@@ -74,8 +74,8 @@ def test_load_homework_board_payload_from_env_merges_source_rows(
         trade_board_loader,
         "load_configured_postgres_sources_from_env",
         lambda: [
-            TursoSource(name="weibo", url="u1", token="t1"),
-            TursoSource(name="xueqiu", url="u2", token="t2"),
+            SourceConfigStub(name="weibo", url="u1", token="t1"),
+            SourceConfigStub(name="xueqiu", url="u2", token="t2"),
         ],
     )
 
@@ -137,13 +137,13 @@ def test_load_homework_board_payload_from_env_merges_source_rows(
     } == {"weibo", "xueqiu"}
 
 
-def test_load_homework_board_payload_from_env_returns_turso_error(
+def test_load_homework_board_payload_from_env_returns_postgres_error(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
         trade_board_loader,
         "load_configured_postgres_sources_from_env",
-        lambda: [TursoSource(name="weibo", url="u1", token="t1")],
+        lambda: [SourceConfigStub(name="weibo", url="u1", token="t1")],
     )
 
     def _raise_cached(
@@ -164,7 +164,7 @@ def test_load_homework_board_payload_from_env_returns_turso_error(
 
     assert assertions.empty
     assert relations.empty
-    assert err == "turso_connect_error:weibo:RuntimeError"
+    assert err == "postgres_connect_error:weibo:RuntimeError"
 
 
 def test_load_homework_board_payload_from_env_keeps_partial_success(
@@ -174,8 +174,8 @@ def test_load_homework_board_payload_from_env_keeps_partial_success(
         trade_board_loader,
         "load_configured_postgres_sources_from_env",
         lambda: [
-            TursoSource(name="weibo", url="u1", token="t1"),
-            TursoSource(name="xueqiu", url="u2", token="t2"),
+            SourceConfigStub(name="weibo", url="u1", token="t1"),
+            SourceConfigStub(name="xueqiu", url="u2", token="t2"),
         ],
     )
 
@@ -219,7 +219,7 @@ def test_load_homework_board_payload_from_env_fails_on_standard_error(
     monkeypatch.setattr(
         trade_board_loader,
         "load_configured_postgres_sources_from_env",
-        lambda: [TursoSource(name="weibo", url="u1", token="t1")],
+        lambda: [SourceConfigStub(name="weibo", url="u1", token="t1")],
     )
 
     def _raise_standard_error(
@@ -229,7 +229,7 @@ def test_load_homework_board_payload_from_env_fails_on_standard_error(
         lookback_days: int,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         del db_url, auth_token, source_name, lookback_days
-        raise RuntimeError("turso_connect_error:standard:RuntimeError")
+        raise RuntimeError("postgres_connect_error:standard:RuntimeError")
 
     assertions, relations, err = (
         trade_board_loader.load_homework_board_payload_from_env(
@@ -240,15 +240,15 @@ def test_load_homework_board_payload_from_env_fails_on_standard_error(
 
     assert assertions.empty
     assert relations.empty
-    assert err == "turso_connect_error:standard:RuntimeError"
+    assert err == "postgres_connect_error:standard:RuntimeError"
 
 
 def test_load_homework_board_payload_from_env_serial_parallel_same(
     monkeypatch,
 ) -> None:
     sources = [
-        TursoSource(name="weibo", url="u1", token="t1"),
-        TursoSource(name="xueqiu", url="u2", token="t2"),
+        SourceConfigStub(name="weibo", url="u1", token="t1"),
+        SourceConfigStub(name="xueqiu", url="u2", token="t2"),
     ]
     monkeypatch.setattr(
         trade_board_loader,
@@ -310,8 +310,8 @@ def test_load_homework_board_payload_from_env_dedupes_global_relations(
         trade_board_loader,
         "load_configured_postgres_sources_from_env",
         lambda: [
-            TursoSource(name="weibo", url="u1", token="t1"),
-            TursoSource(name="xueqiu", url="u2", token="t2"),
+            SourceConfigStub(name="weibo", url="u1", token="t1"),
+            SourceConfigStub(name="xueqiu", url="u2", token="t2"),
         ],
     )
 
@@ -409,19 +409,19 @@ def test_load_homework_trade_feed_from_env_uses_workbench_engine(monkeypatch) ->
         return {"rows": [{"topic": "stock:600519.SH"}]}
 
     monkeypatch.setattr(
-        turso_read,
+        source_read,
         "get_research_workbench_engine_from_env",
         lambda: fake_engine,
         raising=False,
     )
     monkeypatch.setattr(
-        turso_read,
+        source_read,
         "load_homework_trade_feed",
         _fake_load_homework_trade_feed,
         raising=False,
     )
 
-    payload = turso_read.load_homework_trade_feed_from_env()
+    payload = source_read.load_homework_trade_feed_from_env()
 
     assert payload == {"rows": [{"topic": "stock:600519.SH"}]}
     assert seen == [fake_engine, HOMEWORK_DEFAULT_VIEW_KEY]
@@ -432,19 +432,19 @@ def test_save_homework_trade_feed_from_env_uses_workbench_engine(monkeypatch) ->
     seen: list[object] = []
 
     monkeypatch.setattr(
-        turso_read,
+        source_read,
         "get_research_workbench_engine_from_env",
         lambda: fake_engine,
         raising=False,
     )
     monkeypatch.setattr(
-        turso_read,
+        source_read,
         "save_homework_trade_feed",
         lambda engine, **kwargs: seen.extend([engine, kwargs]),
         raising=False,
     )
 
-    turso_read.save_homework_trade_feed_from_env(
+    source_read.save_homework_trade_feed_from_env(
         caption="窗口：最近 3 天",
         used_window_days=3,
         rows=[{"topic": "stock:600519.SH"}],

@@ -18,8 +18,8 @@ from alphavault.domains.stock.keys import (
 )
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_stock_cache import load_entity_page_signal_snapshot
-from alphavault_reflex.services.turso_read import (
-    MISSING_TURSO_SOURCES_ERROR,
+from alphavault_reflex.services.source_read import (
+    MISSING_POSTGRES_DSN_ERROR,
     load_stock_alias_relations_from_env,
 )
 from alphavault_reflex.services.research_status_text import (
@@ -308,7 +308,7 @@ def load_stock_cached_view_from_env(
             "signal_page": 1,
             "signal_page_size": max(int(signal_page_size or 1), 1),
             "related_sectors": [],
-            "load_error": MISSING_TURSO_SOURCES_ERROR,
+            "load_error": MISSING_POSTGRES_DSN_ERROR,
             "load_warning": "",
             "worker_status_text": "",
             "worker_next_run_at": "",
@@ -358,7 +358,7 @@ def load_stock_cached_view_from_env(
                     hot, progress = fut.result()
                 except BaseException as err:
                     errors.append(
-                        f"turso_connect_error:{source_name}:{type(err).__name__}"
+                        f"postgres_connect_error:{source_name}:{type(err).__name__}"
                     )
                     continue
                 if hot:

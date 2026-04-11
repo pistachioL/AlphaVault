@@ -10,11 +10,11 @@ from alphavault.db.postgres_db import (
 from alphavault.db.postgres_env import (
     infer_platform_from_post_uid,
 )
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
-    MISSING_TURSO_SOURCES_ERROR,
+    MISSING_POSTGRES_DSN_ERROR,
     load_configured_source_schemas_from_env,
     source_table,
 )
@@ -38,7 +38,7 @@ def load_post_urls_cached(
         f"WHERE post_uid IN ({placeholders})"
     )
     with postgres_connect_autocommit(engine) as conn:
-        df = turso_read_sql_df(conn, sql, params=list(post_uids))
+        df = read_sql_df(conn, sql, params=list(post_uids))
     if df.empty or "post_uid" not in df.columns or "url" not in df.columns:
         return {}
     out: dict[str, str] = {}
@@ -63,7 +63,7 @@ def load_post_urls_from_env(
     load_dotenv_if_present()
     sources = load_configured_source_schemas_from_env()
     if not sources:
-        return {}, MISSING_TURSO_SOURCES_ERROR
+        return {}, MISSING_POSTGRES_DSN_ERROR
 
     sources_by_name = {s.name: s for s in sources}
     groups: dict[str, list[str]] = {}
@@ -100,7 +100,7 @@ def load_post_urls_from_env(
     except BaseException as err:
         if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
             raise
-        return {}, f"turso_connect_error:{type(err).__name__}"
+        return {}, f"postgres_connect_error:{type(err).__name__}"
 
     return out, ""
 

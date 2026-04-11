@@ -90,7 +90,7 @@ def test_load_stock_alias_keys_cached_raises_standard_error_on_query_failure(
     try:
         stock_fast_loader.load_stock_alias_keys_cached("stock:600519.SH")
     except RuntimeError as err:
-        assert str(err) == "turso_connect_error:standard:RuntimeError"
+        assert str(err) == "postgres_connect_error:standard:RuntimeError"
     else:
         raise AssertionError("expected standard alias lookup error")
 
@@ -212,7 +212,7 @@ def test_load_stock_sources_fast_from_env_returns_standard_error(
         per_source_limit: int,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
         del db_url, auth_token, source_name, stock_key, stock_code, per_source_limit
-        raise RuntimeError("turso_connect_error:standard:RuntimeError")
+        raise RuntimeError("postgres_connect_error:standard:RuntimeError")
 
     posts, assertions, err = stock_fast_loader.load_stock_sources_fast_from_env(
         "03316.HK",
@@ -221,7 +221,7 @@ def test_load_stock_sources_fast_from_env_returns_standard_error(
 
     assert posts.empty
     assert assertions.empty
-    assert err == "turso_connect_error:standard:RuntimeError"
+    assert err == "postgres_connect_error:standard:RuntimeError"
 
 
 def test_load_stock_trade_sources_fast_cached_reads_stock_entity_key(
@@ -334,7 +334,7 @@ def test_load_stock_trade_sources_fast_cached_orders_by_post_created_at(
 
     monkeypatch.setattr(
         stock_fast_loader,
-        "turso_read_sql_df",
+        "read_sql_df",
         _fake_read_sql_df,
     )
 

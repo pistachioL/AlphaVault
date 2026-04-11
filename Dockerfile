@@ -50,7 +50,7 @@ COPY --from=builder /app/alphavault_reflex /app/alphavault_reflex
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /app/supervisord.conf /app/supervisord.conf
 COPY --from=builder /app/startup_healthcheck.py /app/startup_healthcheck.py
-COPY --from=builder /app/weibo_rss_turso_worker.py /app/weibo_rss_turso_worker.py
+COPY --from=builder /app/weibo_rss_worker.py /app/weibo_rss_worker.py
 COPY --from=builder /app/rxconfig.py /app/rxconfig.py
 
 RUN chmod +x /app/entrypoint.sh

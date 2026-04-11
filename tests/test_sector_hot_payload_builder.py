@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import libsql
+import sqlite3
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -8,7 +8,6 @@ import pandas as pd
 
 from alphavault.constants import SCHEMA_XUEQIU
 from alphavault.db.cloud_schema import apply_cloud_schema
-from alphavault.db.libsql_db import LibsqlConnection as TursoConnection
 from alphavault.db.postgres_db import PostgresConnection
 from alphavault.worker import sector_hot_payload_builder
 from alphavault.worker.sector_hot_payload_builder import build_sector_hot_payload
@@ -85,7 +84,7 @@ VALUES (:topic_key, :cluster_key, :source, :confidence, :created_at)
 def _memory_conn() -> PostgresConnection:
     return cast(
         PostgresConnection,
-        TursoConnection(libsql.connect(":memory:", isolation_level=None)),
+        sqlite3.connect(":memory:"),
     )
 
 
@@ -221,7 +220,7 @@ def test_build_sector_hot_payload_uses_xueqiu_schema_tables(monkeypatch) -> None
 
     monkeypatch.setattr(
         sector_hot_payload_builder,
-        "turso_read_sql_df",
+        "read_sql_df",
         _fake_read_sql_df,
     )
 

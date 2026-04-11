@@ -21,7 +21,7 @@ from alphavault.app.relation.candidate_builders import (
 from alphavault_reflex.services.research_data import (
     build_search_index,
 )
-from alphavault_reflex.services.turso_read import (
+from alphavault_reflex.services.source_read import (
     clear_reflex_source_caches,
     load_stock_alias_relations_from_env,
     load_sources_from_env,

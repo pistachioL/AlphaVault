@@ -13,7 +13,7 @@ from alphavault.infra.entity_match_redis import (
 from .schema import (
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
-    handle_turso_error,
+    handle_db_error,
     use_conn,
 )
 
@@ -53,7 +53,7 @@ def rebuild_stock_dict_shadow_best_effort(
                 select_all_stock_alias_relations(RESEARCH_RELATIONS_TABLE)
             ).fetchall()
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
 
     official_name_targets = _select_unique_mapping(
         [

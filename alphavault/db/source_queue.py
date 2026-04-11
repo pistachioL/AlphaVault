@@ -1,8 +1,8 @@
 """
 Source queue helpers.
 
-This module still keeps the old file name, but source queue reads and writes now
-go to Postgres source schemas such as `weibo` and `xueqiu`.
+This module stores source queue reads and writes in Postgres source schemas such
+as `weibo` and `xueqiu`.
 """
 
 from __future__ import annotations
@@ -14,14 +14,14 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, Iterator, Optional
 from alphavault.db.postgres_db import (
     PostgresConnection,
     PostgresEngine,
+    is_fatal_base_exception,
+    postgres_connect_autocommit,
     qualify_postgres_table,
     require_postgres_schema_name,
-    postgres_connect_autocommit,
     run_postgres_transaction,
 )
-from alphavault.db.sql import turso_queue as source_queue_sql
+from alphavault.db.sql import source_queue as source_queue_sql
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
-from alphavault.db.postgres_db import is_fatal_base_exception
 from alphavault.rss.utils import now_str
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ _ASSERTION_MENTIONS_TABLE_NAME = "assertion_mentions"
 _ASSERTION_ENTITIES_TABLE_NAME = "assertion_entities"
 
 
-class TursoWriteError(RuntimeError):
+class SourceQueueWriteError(RuntimeError):
     """Raised when source queue write fails with a non-fatal BaseException."""
 
 
@@ -223,7 +223,7 @@ def upsert_pending_post(
     except BaseException as err:
         if is_fatal_base_exception(err):
             raise
-        raise TursoWriteError("upsert_pending_post_failed") from err
+        raise SourceQueueWriteError("upsert_pending_post_failed") from err
 
 
 def load_cloud_post(

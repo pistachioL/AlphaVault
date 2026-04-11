@@ -9,7 +9,7 @@ from alphavault.logging_config import configure_logging, get_logger
 from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_POSTGRES_DSN,
-    ENV_STARTUP_HEALTHCHECK_TURSO_TARGET,
+    ENV_STARTUP_HEALTHCHECK_SCHEMA_TARGET,
     ENV_REDIS_URL,
     ENV_SPOOL_DIR,
     SCHEMA_STANDARD,
@@ -34,8 +34,8 @@ from alphavault.research_workbench.schema import (
 load_dotenv_if_present()
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
-_STANDARD_TURSO_TARGET = SCHEMA_STANDARD
-_DEFAULT_TURSO_TARGET = _STANDARD_TURSO_TARGET
+_STANDARD_SCHEMA_TARGET = SCHEMA_STANDARD
+_DEFAULT_SCHEMA_TARGET = _STANDARD_SCHEMA_TARGET
 _STANDARD_REQUIRED_TABLES = (
     RESEARCH_SECURITY_MASTER_TABLE,
     RESEARCH_RELATIONS_TABLE,
@@ -88,32 +88,32 @@ def _check_spool_dir() -> None:
     _print("[healthcheck] spool ok")
 
 
-def _healthcheck_turso_target() -> str:
-    target = _env_text(ENV_STARTUP_HEALTHCHECK_TURSO_TARGET).lower()
+def _healthcheck_schema_target() -> str:
+    target = _env_text(ENV_STARTUP_HEALTHCHECK_SCHEMA_TARGET).lower()
     if not target:
-        return _DEFAULT_TURSO_TARGET
-    if target in {PLATFORM_WEIBO, PLATFORM_XUEQIU, _STANDARD_TURSO_TARGET}:
+        return _DEFAULT_SCHEMA_TARGET
+    if target in {PLATFORM_WEIBO, PLATFORM_XUEQIU, _STANDARD_SCHEMA_TARGET}:
         return target
     raise RuntimeError(
-        "invalid STARTUP_HEALTHCHECK_TURSO_TARGET: "
+        "invalid STARTUP_HEALTHCHECK_SCHEMA_TARGET: "
         f"{target} (expected weibo, xueqiu, or standard)"
     )
 
 
-def _resolve_turso_target() -> tuple[str, str]:
-    target = _healthcheck_turso_target()
+def _resolve_schema_target() -> tuple[str, str]:
+    target = _healthcheck_schema_target()
     dsn = _env_text(ENV_POSTGRES_DSN)
     if not dsn:
         raise RuntimeError(f"missing {ENV_POSTGRES_DSN}")
     return target, dsn
 
 
-def _check_turso() -> None:
+def _check_postgres() -> None:
     def check_standard_tables(conn) -> None:  # type: ignore[no-untyped-def]
         for table_name in _STANDARD_REQUIRED_TABLES:
             conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1").fetchone()
 
-    name, dsn = _resolve_turso_target()
+    name, dsn = _resolve_schema_target()
     prefix = f"[healthcheck] postgres[{name}]"
     _print(f"{prefix} start")
     engine = ensure_postgres_engine(dsn, schema_name=name)
@@ -122,7 +122,7 @@ def _check_turso() -> None:
         with postgres_connect_autocommit(engine) as conn:
             conn.execute(SELECT_ONE).fetchone()
             try:
-                if name == _STANDARD_TURSO_TARGET:
+                if name == _STANDARD_SCHEMA_TARGET:
                     check_standard_tables(conn)
             except BaseException as e:
                 if isinstance(e, _FATAL_BASE_EXCEPTIONS):
@@ -190,7 +190,7 @@ def _check_redis() -> None:
 
 def run_startup_healthcheck() -> None:
     _check_spool_dir()
-    _check_turso()
+    _check_postgres()
     _check_redis()
 
 

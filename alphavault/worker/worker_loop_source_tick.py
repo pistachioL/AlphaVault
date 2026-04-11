@@ -17,7 +17,7 @@ from alphavault.worker.worker_loop_models import (
     SourceTickState,
 )
 from alphavault.worker.worker_loop_rss import maybe_schedule_rss_ingest
-from alphavault.worker.worker_loop_turso import ensure_source_turso_ready
+from alphavault.worker.worker_loop_source_db import ensure_source_db_ready_for_tick
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ def _ensure_active_engine(
     source_name: str,
     ctx: SourceTickContext,
 ):
-    return ensure_source_turso_ready(
+    return ensure_source_db_ready_for_tick(
         source=source,
         source_name=source_name,
         now=float(ctx.now),
@@ -171,7 +171,7 @@ def _save_cycle_progress(
         ctx.maintenance_next_at,
         cst_tz=CST,
     )
-    source_turso_error = cycle_runner.build_source_turso_error(
+    source_db_error = cycle_runner.build_source_db_error(
         maintenance_error=bool(errors["maintenance_error"]),
         spool_flush_error=bool(errors.get("spool_flush_error", False)),
         schedule_error=bool(errors["schedule_error"]),
@@ -184,7 +184,7 @@ def _save_cycle_progress(
             "status": "running" if any_inflight else "idle",
             "running": bool(any_inflight),
             "next_run_at": next_run_at,
-            "turso_error": bool(source_turso_error),
+            "source_db_error": bool(source_db_error),
             "rss_error": bool(
                 rss_enqueue_error or bool(errors.get("redis_enqueue_error", False))
             ),

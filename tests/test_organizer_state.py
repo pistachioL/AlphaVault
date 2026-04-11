@@ -344,7 +344,7 @@ def test_load_search_results_returns_relation_error_when_standard_alias_fails(
     )
     monkeypatch.setattr(
         "alphavault_reflex.organizer_state.load_stock_alias_relations_from_env",
-        lambda: (None, "turso_connect_error:standard:RuntimeError"),
+        lambda: (None, "postgres_connect_error:standard:RuntimeError"),
     )
     monkeypatch.setattr(
         "alphavault_reflex.organizer_state.build_search_index",
@@ -356,4 +356,4 @@ def test_load_search_results_returns_relation_error_when_standard_alias_fails(
     rows, err = load_search_results("茅台")
 
     assert rows == []
-    assert err == "turso_connect_error:standard:RuntimeError"
+    assert err == "postgres_connect_error:standard:RuntimeError"

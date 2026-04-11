@@ -70,7 +70,6 @@ def build_source_runtimes(
             author=cfg.author,
             user_id=cfg.user_id,
             database_url=source.dsn,
-            auth_token="",
             schema_name=source.schema,
         )
         runtime = WorkerSourceRuntime(

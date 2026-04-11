@@ -23,7 +23,7 @@ from .relation_repo import (
     RELATION_TYPE_STOCK_ALIAS,
     record_relation,
 )
-from .schema import RESEARCH_RELATION_CANDIDATES_TABLE, handle_turso_error, use_conn
+from .schema import RESEARCH_RELATION_CANDIDATES_TABLE, handle_db_error, use_conn
 
 STATUS_PENDING = "pending"
 STATUS_ACCEPTED = "accepted"
@@ -69,7 +69,7 @@ def upsert_relation_candidate(
                 },
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
 
 
 def list_pending_candidates(
@@ -85,7 +85,7 @@ def list_pending_candidates(
                 .all()
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     raise AssertionError("unreachable")
 
 
@@ -111,7 +111,7 @@ def list_pending_candidates_for_left_key(
                 .all()
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     raise AssertionError("unreachable")
 
 
@@ -139,7 +139,7 @@ def list_candidate_status_map(
                 if str(row.get("candidate_id") or "").strip()
             }
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     raise AssertionError("unreachable")
 
 
@@ -161,7 +161,7 @@ def _set_candidate_status(
                 },
             )
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
 
 
 def accept_relation_candidate(
@@ -214,7 +214,7 @@ def accept_relation_candidate(
 
             run_postgres_transaction(engine_or_conn, _accept)
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     if (
         accepted_relation_type == RELATION_TYPE_STOCK_ALIAS
         and accepted_relation_label == RELATION_LABEL_ALIAS

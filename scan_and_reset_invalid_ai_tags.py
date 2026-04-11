@@ -19,7 +19,7 @@ from alphavault.db.postgres_env import (
     require_postgres_source_platform,
 )
 from alphavault.db.sql.scripts import scan_invalid_assertion_rows
-from alphavault.db.turso_queue import reset_ai_results_for_post_uids
+from alphavault.db.source_queue import reset_ai_results_for_post_uids
 from alphavault.rss.utils import now_str
 
 

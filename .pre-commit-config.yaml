@@ -45,13 +45,12 @@ repos:
         args:
           [
             --ignore-names,
-            "row_factory,do_GET,log_message,server_version,_access_log,root,healthz,user_rss,handle_starttag,SELECT_ASSERTIONS_FOR_POST_UID,slice_posts_for_single_post_tree,build_post_tree,related_stocks",
+            "row_factory,do_GET,log_message,server_version,_access_log,root,healthz,user_rss,handle_starttag,SELECT_ASSERTIONS_FOR_POST_UID,slice_posts_for_single_post_tree,build_post_tree,related_stocks,dispose,token",
             "alphavault",
-            "weibo_rss_turso_worker.py",
+            "weibo_rss_worker.py",
             "manual_run_ai.py",
             "reset_ai_results.py",
             "scan_and_reset_invalid_ai_tags.py",
-            "migrate_weibo_raw_text.py",
             "startup_healthcheck.py",
           ]
 

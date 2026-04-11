@@ -15,7 +15,7 @@ def _source_runtime(
     )
 
 
-def test_run_turso_maintenance_runs_retry_and_claim_steps() -> None:
+def test_run_source_db_maintenance_runs_retry_and_claim_steps() -> None:
     call_order: list[str] = []
 
     def _move_due(*_args, **_kwargs) -> int:
@@ -29,7 +29,7 @@ def test_run_turso_maintenance_runs_retry_and_claim_steps() -> None:
             {"message_id": "2-0", "payload": '{"post_uid":"weibo:2"}'},
         ]
 
-    recovered, flushed_redis, has_error = maintenance_module.run_turso_maintenance(
+    recovered, flushed_redis, has_error = maintenance_module.run_source_db_maintenance(
         engine=object(),
         redis_client=object(),
         redis_queue_key="queue",
@@ -48,11 +48,13 @@ def test_run_turso_maintenance_runs_retry_and_claim_steps() -> None:
     assert has_error is False
 
 
-def test_run_turso_maintenance_keeps_other_step_running_after_nonfatal_error() -> None:
+def test_run_source_db_maintenance_keeps_other_step_running_after_nonfatal_error() -> (
+    None
+):
     def _raise_move(*_args, **_kwargs) -> int:
         raise RuntimeError("redis unavailable")
 
-    recovered, flushed_redis, has_error = maintenance_module.run_turso_maintenance(
+    recovered, flushed_redis, has_error = maintenance_module.run_source_db_maintenance(
         engine=object(),
         redis_client=object(),
         redis_queue_key="queue",

@@ -6,7 +6,7 @@ from typing import Any, Iterator
 from alphavault.worker import spool
 
 
-def test_flush_spool_to_turso_keeps_xueqiu_raw_text(monkeypatch, tmp_path) -> None:
+def test_flush_spool_to_source_db_keeps_xueqiu_raw_text(monkeypatch, tmp_path) -> None:
     captured: dict[str, Any] = {}
 
     @contextmanager
@@ -56,7 +56,7 @@ def test_flush_spool_to_turso_keeps_xueqiu_raw_text(monkeypatch, tmp_path) -> No
     }
     spool.spool_write(tmp_path, post_uid, payload)
 
-    processed, had_error = spool.flush_spool_to_turso(
+    processed, had_error = spool.flush_spool_to_source_db(
         spool_dir=tmp_path,
         engine=object(),  # type: ignore[arg-type]
         max_items=10,

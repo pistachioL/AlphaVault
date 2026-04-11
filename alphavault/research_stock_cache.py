@@ -104,7 +104,7 @@ def _topic_cluster_table(engine_or_conn: object) -> str:
     return _source_table(engine_or_conn, _TOPIC_CLUSTER_TABLE)
 
 
-def _handle_turso_error(
+def _handle_db_error(
     engine_or_conn: PostgresEngine | PostgresConnection, err: BaseException
 ) -> None:
     del engine_or_conn
@@ -307,7 +307,7 @@ def save_entity_page_signal_snapshot(
                 },
             )
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
 
 
 def load_entity_page_signal_snapshot(
@@ -323,7 +323,7 @@ def load_entity_page_signal_snapshot(
         with _use_conn(engine_or_conn) as conn:
             row = _select_entity_page_snapshot_row(conn, entity_key=key)
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
     if not row:
         return {}
     payload: dict[str, object] = {
@@ -422,7 +422,7 @@ def mark_entity_page_dirty(
                 },
             )
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
 
 
 def list_entity_page_dirty_keys(
@@ -447,7 +447,7 @@ def list_entity_page_dirty_keys(
                 .all()
             )
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
     return [
         str(row.get("target_key") or "").strip()
         for row in rows
@@ -477,7 +477,7 @@ def list_entity_page_dirty_entries(
                 .all()
             )
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
     out: list[EntityPageDirtyEntry] = []
     for row in rows:
         mapped = _map_entity_page_dirty_row(dict(row))
@@ -775,7 +775,7 @@ def mark_entity_page_dirty_from_assertions(
                 _load_cluster_entity_keys_for_topics(conn, topic_keys=topic_keys)
             )
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
     for key in sorted(keys):
         mark_entity_page_dirty(engine_or_conn, stock_key=key, reason=reason)
     return len(keys)

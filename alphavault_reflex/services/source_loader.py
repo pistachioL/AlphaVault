@@ -19,9 +19,9 @@ from alphavault.db.postgres_env import (
     PostgresSource,
 )
 from alphavault.db.sql.ui import build_assertions_query
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 from alphavault.env import load_dotenv_if_present
-from alphavault_reflex.services.turso_read_utils import (
+from alphavault_reflex.services.source_read_utils import (
     ensure_platform_post_id,
     normalize_assertions_datetime,
     normalize_posts_datetime,
@@ -32,7 +32,7 @@ _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
 
 MISSING_POSTGRES_DSN_ERROR = f"Missing {ENV_POSTGRES_DSN}"
-MISSING_TURSO_SOURCES_ERROR = MISSING_POSTGRES_DSN_ERROR
+SOURCE_SCHEMAS_EMPTY_ERROR = "source_schemas_empty"
 
 WANTED_TRADE_ASSERTION_COLUMNS = [
     "post_uid",
@@ -203,8 +203,8 @@ WHERE processed_at IS NOT NULL
         )
         trade_query = f"{base_query} WHERE action LIKE 'trade.%'"
 
-        posts = turso_read_sql_df(conn, posts_query)
-        assertions = turso_read_sql_df(conn, trade_query)
+        posts = read_sql_df(conn, posts_query)
+        assertions = read_sql_df(conn, trade_query)
 
     posts = standardize_posts(posts, source_name=source_name)
     posts = normalize_posts_datetime(posts)
@@ -228,7 +228,7 @@ def load_trade_assertions_from_env(
     load_dotenv_if_present()
     sources = load_configured_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+        return pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
 
     frames: list[pd.DataFrame] = []
     for source in sources:
@@ -239,11 +239,11 @@ def load_trade_assertions_from_env(
                 raise
             return (
                 pd.DataFrame(),
-                f"turso_connect_error:{source.name}:{type(err).__name__}",
+                f"postgres_connect_error:{source.name}:{type(err).__name__}",
             )
 
     if not frames:
-        return pd.DataFrame(), "turso_sources_empty"
+        return pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
     return pd.concat(frames, ignore_index=True), ""
 
 
@@ -265,7 +265,7 @@ def load_sources_from_env(
 __all__ = [
     "DEFAULT_FATAL_EXCEPTIONS",
     "MISSING_POSTGRES_DSN_ERROR",
-    "MISSING_TURSO_SOURCES_ERROR",
+    "SOURCE_SCHEMAS_EMPTY_ERROR",
     "WANTED_POST_COLUMNS_FOR_TREE",
     "WANTED_TRADE_ASSERTION_COLUMNS",
     "load_configured_source_schemas_from_env",

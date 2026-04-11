@@ -5,7 +5,7 @@ from dataclasses import asdict
 from alphavault_reflex.services.research_data import build_sector_research_view
 from alphavault_reflex.services.sector_hot_read import load_sector_cached_view_from_env
 from alphavault_reflex.services.stock_hot_read import load_stock_cached_view_from_env
-from alphavault_reflex.services.turso_read import load_sources_from_env
+from alphavault_reflex.services.source_read import load_sources_from_env
 
 from .research_state_utils import (
     normalize_signal_page,

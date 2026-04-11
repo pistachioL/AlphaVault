@@ -16,11 +16,12 @@ from alphavault.db.postgres_env import (
 from alphavault.db.postgres_env import (
     infer_platform_from_post_uid,
 )
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
-    MISSING_TURSO_SOURCES_ERROR,
+    MISSING_POSTGRES_DSN_ERROR,
+    SOURCE_SCHEMAS_EMPTY_ERROR,
     WANTED_POST_COLUMNS_FOR_TREE,
     load_trade_sources_cached,
     source_schema_name,
@@ -28,7 +29,7 @@ from alphavault_reflex.services.source_loader import (
     standardize_posts,
 )
 from alphavault.domains.thread_tree.service import normalize_tree_lookup_post_uid
-from alphavault_reflex.services.turso_read_utils import (
+from alphavault_reflex.services.source_read_utils import (
     ensure_platform_post_id,
     normalize_posts_datetime,
 )
@@ -68,7 +69,7 @@ SELECT {", ".join(WANTED_POST_COLUMNS_FOR_TREE)}
 FROM {source_table(schema_name, "posts")}
 WHERE processed_at IS NOT NULL AND post_uid = ?
 """
-        posts = turso_read_sql_df(conn, sql, params=[uid])
+        posts = read_sql_df(conn, sql, params=[uid])
 
     posts = standardize_posts(posts, source_name=source_name)
     posts = normalize_posts_datetime(posts)
@@ -88,7 +89,7 @@ def load_single_post_for_tree_from_env(
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+        return pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
 
     sources_by_name = {source.name: source for source in sources}
     platform = infer_platform_from_post_uid(uid)
@@ -102,7 +103,7 @@ def load_single_post_for_tree_from_env(
         except BaseException as err:
             if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                 raise
-            errors.append(f"turso_connect_error:{source.name}:{type(err).__name__}")
+            errors.append(f"postgres_connect_error:{source.name}:{type(err).__name__}")
             continue
         if not posts.empty:
             return posts, ""
@@ -119,7 +120,7 @@ def load_posts_for_tree_from_env(
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), MISSING_TURSO_SOURCES_ERROR
+        return pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
 
     frames: list[pd.DataFrame] = []
     for source in sources:
@@ -130,11 +131,11 @@ def load_posts_for_tree_from_env(
                 raise
             return (
                 pd.DataFrame(),
-                f"turso_connect_error:{source.name}:{type(err).__name__}",
+                f"postgres_connect_error:{source.name}:{type(err).__name__}",
             )
 
     if not frames:
-        return pd.DataFrame(), "turso_sources_empty"
+        return pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
     return pd.concat(frames, ignore_index=True), ""
 
 

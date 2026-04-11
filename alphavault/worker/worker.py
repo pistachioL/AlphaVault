@@ -1,7 +1,7 @@
 """
 Worker entrypoint.
 
-`weibo_rss_turso_worker.py` imports `main()` from here.
+`weibo_rss_worker.py` imports `main()` from here.
 """
 
 from __future__ import annotations

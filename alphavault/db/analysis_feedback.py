@@ -19,7 +19,7 @@ from alphavault.db.postgres_env import (
     require_postgres_source_from_env,
     require_postgres_source_platform,
 )
-from alphavault.db.turso_queue import CloudPost, load_cloud_post
+from alphavault.db.source_queue import CloudPost, load_cloud_post
 from alphavault.env import load_dotenv_if_present
 from alphavault.rss.utils import now_str
 from alphavault.worker.redis_client import try_get_redis

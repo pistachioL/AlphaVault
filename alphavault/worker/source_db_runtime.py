@@ -10,7 +10,7 @@ from alphavault.db.postgres_db import (
 logger = get_logger(__name__)
 
 
-def maybe_dispose_turso_engine_on_transient_error(
+def maybe_dispose_source_db_engine_on_transient_error(
     *,
     engine: PostgresEngine,
     err: BaseException,
@@ -18,10 +18,10 @@ def maybe_dispose_turso_engine_on_transient_error(
     del engine, err
 
 
-def ensure_turso_ready(
+def ensure_source_db_ready(
     *,
     engine: PostgresEngine,
-    turso_ready: bool,
+    source_db_ready: bool,
     source_name: str = "",
     fatal_exceptions: tuple[type[BaseException], ...] = (
         KeyboardInterrupt,
@@ -29,9 +29,9 @@ def ensure_turso_ready(
         GeneratorExit,
     ),
 ) -> bool:
-    if turso_ready:
+    if source_db_ready:
         return True
-    prefix = f"[turso:{source_name}]" if source_name else "[turso]"
+    prefix = f"[source_db:{source_name}]" if source_name else "[source_db]"
     try:
         with postgres_connect_autocommit(engine):
             pass
@@ -40,7 +40,7 @@ def ensure_turso_ready(
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
             raise
-        maybe_dispose_turso_engine_on_transient_error(
+        maybe_dispose_source_db_engine_on_transient_error(
             engine=engine,
             err=err,
         )
@@ -49,6 +49,6 @@ def ensure_turso_ready(
 
 
 __all__ = [
-    "ensure_turso_ready",
-    "maybe_dispose_turso_engine_on_transient_error",
+    "ensure_source_db_ready",
+    "maybe_dispose_source_db_engine_on_transient_error",
 ]

@@ -247,7 +247,7 @@ def _coerce_nonnegative_float(value: object, *, default: float) -> float:
         return max(0.0, float(default))
 
 
-def _maybe_dispose_turso_engine_on_transient_error(
+def _maybe_dispose_source_db_engine_on_transient_error(
     *, engine: PostgresEngine, err: BaseException
 ) -> None:
     del engine, err

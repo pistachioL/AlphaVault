@@ -28,7 +28,7 @@ from alphavault.logging_config import (
     get_logger,
 )
 
-from alphavault.db.turso_queue import (
+from alphavault.db.source_queue import (
     reset_ai_results_all,
     reset_ai_results_for_post_uids,
 )

@@ -7,7 +7,7 @@ from typing import Any
 
 from alphavault.db.postgres_db import PostgresEngine
 from alphavault.worker import periodic_jobs
-from alphavault.worker.spool import flush_spool_to_turso
+from alphavault.worker.spool import flush_spool_to_source_db
 from alphavault.worker.worker_constants import (
     SPOOL_FLUSH_MAX_ITEMS_PER_RUN,
     SPOOL_FLUSH_RETRY_INTERVAL_SECONDS,
@@ -22,7 +22,7 @@ def submit_spool_flush_job(
     redis_client: Any,
     redis_queue_key: str,
 ) -> dict[str, int | bool]:
-    flushed, has_error = flush_spool_to_turso(
+    flushed, has_error = flush_spool_to_source_db(
         spool_dir=spool_dir,
         engine=sync_engine,
         max_items=int(SPOOL_FLUSH_MAX_ITEMS_PER_RUN),

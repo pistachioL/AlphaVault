@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
-from alphavault.db.postgres_db import PostgresEngine as TursoEngine
+from alphavault.db.postgres_db import PostgresEngine
 from alphavault.rss.utils import RateLimiter
 from alphavault.worker import post_processor
 from alphavault.worker.runtime_models import LLMConfig
@@ -43,7 +43,7 @@ def test_process_one_post_uid_forces_topic_prompt_v4(monkeypatch) -> None:
     )
 
     ok = post_processor.process_one_post_uid(
-        engine=cast(TursoEngine, object()),
+        engine=cast(PostgresEngine, object()),
         post_uid="weibo:1",
         config=config,
         limiter=RateLimiter(0),
@@ -56,7 +56,7 @@ def test_process_one_post_uid_forces_topic_prompt_v4(monkeypatch) -> None:
     assert config.prompt_version == "legacy-v3"
 
 
-def test_process_one_post_uid_does_not_write_turso_error_on_failure(
+def test_process_one_post_uid_does_not_write_db_error_on_failure(
     monkeypatch,
 ) -> None:
     def _raise_failure(**_kwargs):  # type: ignore[no-untyped-def]
@@ -69,7 +69,7 @@ def test_process_one_post_uid_does_not_write_turso_error_on_failure(
     )
 
     ok = post_processor.process_one_post_uid(
-        engine=cast(TursoEngine, object()),
+        engine=cast(PostgresEngine, object()),
         post_uid="weibo:2",
         config=_build_config(prompt_version=TOPIC_PROMPT_VERSION),
         limiter=RateLimiter(0),

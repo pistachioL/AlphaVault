@@ -86,7 +86,7 @@ def _build_due_ai_cached_by_source(
             return has_due_ai_posts(
                 engine=(
                     source.engine
-                    if bool(getattr(source, "turso_ready", False))
+                    if bool(getattr(source, "source_db_ready", False))
                     else None
                 ),
                 platform=str(source.config.platform or ""),

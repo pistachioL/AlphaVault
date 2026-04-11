@@ -18,7 +18,7 @@ from alphavault.db.postgres_db import (
     PostgresEngine,
     postgres_connect_autocommit,
 )
-from alphavault.db.turso_queue import load_post_processed_at, upsert_pending_post
+from alphavault.db.source_queue import load_post_processed_at, upsert_pending_post
 from alphavault.rss.utils import now_str
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -180,7 +180,7 @@ def _recover_stale_processing_files(*, spool_dir: Path) -> int:
     return recovered
 
 
-def _maybe_dispose_turso_engine_on_transient_error(
+def _maybe_dispose_source_db_engine_on_transient_error(
     *, engine: PostgresEngine, err: BaseException
 ) -> None:
     del engine, err
@@ -292,7 +292,7 @@ def _try_push_payload_to_ai_ready_status(
     return "error"
 
 
-def flush_spool_to_turso(
+def flush_spool_to_source_db(
     *,
     spool_dir: Path,
     engine: Optional[PostgresEngine],
@@ -333,7 +333,9 @@ def flush_spool_to_turso(
                 except BaseException as e:
                     if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                         raise
-                    _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+                    _maybe_dispose_source_db_engine_on_transient_error(
+                        engine=engine, err=e
+                    )
                     pushed = False
                     if redis_client and redis_queue_key:
                         try:
@@ -369,7 +371,7 @@ def flush_spool_to_turso(
                         logger.info("[spool] moved_to_redis %s", path.name)
                         continue
                     logger.warning(
-                        "[spool] turso_write_error %s %s: %s",
+                        "[spool] source_db_write_error %s %s: %s",
                         path.name,
                         type(e).__name__,
                         e,
@@ -388,14 +390,14 @@ def flush_spool_to_turso(
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
-        _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
-        logger.warning("[spool] turso_connect_error %s: %s", type(e).__name__, e)
+        _maybe_dispose_source_db_engine_on_transient_error(engine=engine, err=e)
+        logger.warning("[spool] source_db_connect_error %s: %s", type(e).__name__, e)
         return processed, True
 
     return processed, False
 
 
-def recover_spool_to_turso_and_redis(
+def recover_spool_to_source_db_and_redis(
     *,
     spool_dir: Path,
     engine: Optional[PostgresEngine],
@@ -437,7 +439,9 @@ def recover_spool_to_turso_and_redis(
                 except BaseException as e:
                     if isinstance(e, _FATAL_BASE_EXCEPTIONS):
                         raise
-                    _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+                    _maybe_dispose_source_db_engine_on_transient_error(
+                        engine=engine, err=e
+                    )
                     _restore_claimed_file_for_retry(
                         claimed_path=claimed_path,
                         target_path=path,
@@ -476,7 +480,7 @@ def recover_spool_to_turso_and_redis(
     except BaseException as e:
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
-        _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
+        _maybe_dispose_source_db_engine_on_transient_error(engine=engine, err=e)
         logger.warning(
             "[spool] recover_connect_error %s: %s",
             type(e).__name__,
@@ -492,6 +496,6 @@ __all__ = [
     "ensure_spool_dir",
     "spool_write",
     "spool_delete",
-    "flush_spool_to_turso",
-    "recover_spool_to_turso_and_redis",
+    "flush_spool_to_source_db",
+    "recover_spool_to_source_db_and_redis",
 ]

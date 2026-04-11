@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import startup_healthcheck
 
 
-HEALTHCHECK_TARGET_ENV = "STARTUP_HEALTHCHECK_TURSO_TARGET"
+HEALTHCHECK_TARGET_ENV = "STARTUP_HEALTHCHECK_SCHEMA_TARGET"
 POSTGRES_DSN = "postgresql://postgres@127.0.0.1:5432/postgres"
 
 
@@ -55,7 +55,7 @@ def _install_fake_postgres(
     return checked_targets
 
 
-def test_check_turso_defaults_to_standard_only(monkeypatch) -> None:
+def test_check_postgres_defaults_to_standard_only(monkeypatch) -> None:
     _set_postgres_env(monkeypatch)
     monkeypatch.delenv(HEALTHCHECK_TARGET_ENV, raising=False)
 
@@ -65,7 +65,7 @@ def test_check_turso_defaults_to_standard_only(monkeypatch) -> None:
         queries_by_target=queries_by_target,
     )
 
-    startup_healthcheck._check_turso()
+    startup_healthcheck._check_postgres()
 
     assert checked_targets == ["standard"]
     assert queries_by_target["standard"] == [
@@ -77,58 +77,58 @@ def test_check_turso_defaults_to_standard_only(monkeypatch) -> None:
     ]
 
 
-def test_check_turso_can_target_xueqiu_only(monkeypatch) -> None:
+def test_check_postgres_can_target_xueqiu_only(monkeypatch) -> None:
     _set_postgres_env(monkeypatch)
     monkeypatch.setenv(HEALTHCHECK_TARGET_ENV, "xueqiu")
 
     checked_targets = _install_fake_postgres(monkeypatch)
 
-    startup_healthcheck._check_turso()
+    startup_healthcheck._check_postgres()
 
     assert checked_targets == ["xueqiu"]
 
 
-def test_check_turso_can_target_weibo_only(monkeypatch) -> None:
+def test_check_postgres_can_target_weibo_only(monkeypatch) -> None:
     _set_postgres_env(monkeypatch)
     monkeypatch.setenv(HEALTHCHECK_TARGET_ENV, "weibo")
 
     checked_targets = _install_fake_postgres(monkeypatch)
 
-    startup_healthcheck._check_turso()
+    startup_healthcheck._check_postgres()
 
     assert checked_targets == ["weibo"]
 
 
-def test_check_turso_rejects_unknown_target(monkeypatch) -> None:
+def test_check_postgres_rejects_unknown_target(monkeypatch) -> None:
     _set_postgres_env(monkeypatch)
     monkeypatch.setenv(HEALTHCHECK_TARGET_ENV, "bad-target")
     _install_fake_postgres(monkeypatch)
 
     try:
-        startup_healthcheck._check_turso()
+        startup_healthcheck._check_postgres()
     except RuntimeError as err:
         assert str(err) == (
-            "invalid STARTUP_HEALTHCHECK_TURSO_TARGET: bad-target "
+            "invalid STARTUP_HEALTHCHECK_SCHEMA_TARGET: bad-target "
             "(expected weibo, xueqiu, or standard)"
         )
     else:
         raise AssertionError("expected invalid target error")
 
 
-def test_check_turso_requires_selected_target_database_url(monkeypatch) -> None:
+def test_check_postgres_requires_selected_target_database_url(monkeypatch) -> None:
     monkeypatch.delenv(startup_healthcheck.ENV_POSTGRES_DSN, raising=False)
     monkeypatch.setenv(HEALTHCHECK_TARGET_ENV, "standard")
     _install_fake_postgres(monkeypatch)
 
     try:
-        startup_healthcheck._check_turso()
+        startup_healthcheck._check_postgres()
     except RuntimeError as err:
         assert str(err) == f"missing {startup_healthcheck.ENV_POSTGRES_DSN}"
     else:
         raise AssertionError("expected missing selected target env error")
 
 
-def test_check_turso_weibo_target_skips_standard_schema_queries(monkeypatch) -> None:
+def test_check_postgres_weibo_target_skips_standard_schema_queries(monkeypatch) -> None:
     _set_postgres_env(monkeypatch)
     monkeypatch.setenv(HEALTHCHECK_TARGET_ENV, "weibo")
 
@@ -138,14 +138,14 @@ def test_check_turso_weibo_target_skips_standard_schema_queries(monkeypatch) -> 
         queries_by_target=queries_by_target,
     )
 
-    startup_healthcheck._check_turso()
+    startup_healthcheck._check_postgres()
 
     assert checked_targets == ["weibo"]
     assert queries_by_target["weibo"] == [startup_healthcheck.SELECT_ONE]
     assert "standard" not in queries_by_target
 
 
-def test_check_turso_fails_when_standard_required_table_missing(monkeypatch) -> None:
+def test_check_postgres_fails_when_standard_required_table_missing(monkeypatch) -> None:
     _set_postgres_env(monkeypatch)
     monkeypatch.delenv(HEALTHCHECK_TARGET_ENV, raising=False)
 
@@ -179,7 +179,7 @@ def test_check_turso_fails_when_standard_required_table_missing(monkeypatch) -> 
     )
 
     try:
-        startup_healthcheck._check_turso()
+        startup_healthcheck._check_postgres()
     except RuntimeError as err:
         assert str(err) == (
             "postgres[standard] schema check failed: "

@@ -15,7 +15,7 @@ from alphavault.env import load_dotenv_if_present
 from alphavault.research_stock_cache import load_entity_page_signal_snapshot
 from alphavault.worker.sector_hot_payload_builder import normalize_sector_key
 
-from .turso_read import MISSING_TURSO_SOURCES_ERROR
+from .source_read import MISSING_POSTGRES_DSN_ERROR
 
 
 _SECTOR_SIGNAL_CAP = 500
@@ -161,7 +161,7 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
             "signals": [],
             "signal_total": 0,
             "related_stocks": [],
-            "load_error": MISSING_TURSO_SOURCES_ERROR,
+            "load_error": MISSING_POSTGRES_DSN_ERROR,
             "snapshot_hit": False,
         }
     errors: list[str] = []
@@ -183,7 +183,9 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
             try:
                 hot = fut.result()
             except BaseException as err:
-                errors.append(f"turso_connect_error:{source_name}:{type(err).__name__}")
+                errors.append(
+                    f"postgres_connect_error:{source_name}:{type(err).__name__}"
+                )
                 continue
             if hot:
                 hot_rows.append(hot)
@@ -204,7 +206,7 @@ def load_sector_cached_view_from_env(sector_key: str) -> dict[str, object]:
         page_title = normalized.removeprefix("cluster:")
     load_error = ""
     if not hot_rows and not sources:
-        load_error = MISSING_TURSO_SOURCES_ERROR
+        load_error = MISSING_POSTGRES_DSN_ERROR
     elif not hot_rows and errors and len(errors) == len(sources):
         load_error = errors[0]
     return {

@@ -14,8 +14,8 @@ from alphavault.worker.job_state import (
 from alphavault.worker.redis_stream_queue import (
     redis_ai_due_count,
 )
-from alphavault.worker.turso_runtime import (
-    maybe_dispose_turso_engine_on_transient_error,
+from alphavault.worker.source_db_runtime import (
+    maybe_dispose_source_db_engine_on_transient_error,
 )
 
 
@@ -60,7 +60,7 @@ def save_worker_progress_state(
             raise
         engine = engine_or_conn
         if isinstance(engine, PostgresEngine):
-            maybe_dispose_turso_engine_on_transient_error(engine=engine, err=err)
+            maybe_dispose_source_db_engine_on_transient_error(engine=engine, err=err)
         logger.warning(
             "[progress:%s] write_error %s: %s",
             source_name,

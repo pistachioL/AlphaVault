@@ -38,7 +38,7 @@ def _use_conn(
     yield engine_or_conn
 
 
-def _handle_turso_error(
+def _handle_db_error(
     engine_or_conn: PostgresEngine | PostgresConnection | Any, err: BaseException
 ) -> None:
     del engine_or_conn
@@ -210,7 +210,7 @@ def save_homework_trade_feed(
                 },
             )
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
 
 
 def load_homework_trade_feed(
@@ -225,7 +225,7 @@ def load_homework_trade_feed(
         with _use_conn(engine_or_conn) as conn:
             row = _select_homework_trade_feed_row(conn, view_key=key)
     except BaseException as err:
-        _handle_turso_error(engine_or_conn, err)
+        _handle_db_error(engine_or_conn, err)
     if not row:
         return {}
     header = _json_load_dict(row.get("header_json"))

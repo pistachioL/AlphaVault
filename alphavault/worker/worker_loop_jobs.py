@@ -3,8 +3,8 @@ from __future__ import annotations
 from alphavault.logging_config import get_logger
 from alphavault.worker import cycle_runner
 from alphavault.worker import periodic_jobs
-from alphavault.worker.turso_runtime import (
-    maybe_dispose_turso_engine_on_transient_error,
+from alphavault.worker.source_db_runtime import (
+    maybe_dispose_source_db_engine_on_transient_error,
 )
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -23,7 +23,7 @@ def _collect_rss_ingest(
             source_name=source_name,
             future=getattr(source, "rss_ingest_future", None),
             engine=source.engine,
-            maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
+            maybe_dispose_source_db_engine_on_transient_error_fn=maybe_dispose_source_db_engine_on_transient_error,
             fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
         )
     )
@@ -54,7 +54,7 @@ def _collect_spool_flush(
         job_name=f"spool:{source_name}",
         future=getattr(source, "spool_flush_future", None),
         engine=source.engine,
-        maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
+        maybe_dispose_source_db_engine_on_transient_error_fn=maybe_dispose_source_db_engine_on_transient_error,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
     )
     if not spool_finished:
@@ -99,7 +99,7 @@ def _collect_redis_enqueue(
         job_name=f"redis_enqueue:{source_name}",
         future=getattr(source, "redis_enqueue_future", None),
         engine=source.engine,
-        maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
+        maybe_dispose_source_db_engine_on_transient_error_fn=maybe_dispose_source_db_engine_on_transient_error,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
     )
     if not redis_finished:
@@ -147,7 +147,7 @@ def _collect_periodic_job(
         job_name=job_name,
         future=future,
         engine=source.engine,
-        maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
+        maybe_dispose_source_db_engine_on_transient_error_fn=maybe_dispose_source_db_engine_on_transient_error,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
     )
     setattr(source, future_attr, next_future)

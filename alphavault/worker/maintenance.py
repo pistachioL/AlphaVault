@@ -77,7 +77,7 @@ def maybe_run_redis_due_maintenance(
     return 0, False
 
 
-def run_turso_maintenance(
+def run_source_db_maintenance(
     *,
     engine: Any,
     redis_client: Any,
@@ -143,5 +143,5 @@ def run_turso_maintenance(
 __all__ = [
     "compute_redis_due_maintenance_delay_seconds",
     "maybe_run_redis_due_maintenance",
-    "run_turso_maintenance",
+    "run_source_db_maintenance",
 ]

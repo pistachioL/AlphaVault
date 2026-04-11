@@ -11,7 +11,7 @@ from alphavault.db.postgres_db import (
     qualify_postgres_table,
     require_postgres_schema_name,
 )
-from alphavault.db.turso_pandas import turso_read_sql_df
+from alphavault.db.sql_df import read_sql_df
 from alphavault.research_signal_view import (
     build_related_stock_rows,
     build_signal_rows,
@@ -104,7 +104,7 @@ ORDER BY p.created_at DESC
 LIMIT :limit
 """
 
-    assertions = turso_read_sql_df(conn, query, params=params)
+    assertions = read_sql_df(conn, query, params=params)
     if assertions.empty:
         return assertions
     out = assertions.copy()
@@ -131,7 +131,7 @@ SELECT {", ".join(WANTED_POST_COLUMNS)}
 FROM {posts_table}
 WHERE post_uid IN ({placeholders})
 """
-    posts = turso_read_sql_df(conn, query, params=params)
+    posts = read_sql_df(conn, query, params=params)
     if posts.empty:
         return posts
     out = posts.copy()

@@ -1,18 +1,18 @@
 # AlphaVault
 
 面向投资大佬观点追踪的采集与分析系统。
-当前支持：微博 RSS 抓取、LLM 投资相关性分析、断言抽取、写入 Turso 云端库、Reflex 研究台。
+当前支持：微博 RSS 抓取、LLM 投资相关性分析、断言抽取、写入 Postgres、Reflex 研究台。
 
 ## 功能概览
 - RSS 增量抓取（去重）
 - LLM 分析与观点抽取（写入 `posts` + `assertions`）
-- Turso 云端数据库作为最终结果库 + 归档
+- Postgres 作为最终结果库 + 归档
 - Redis：worker 运行态主队列/缓存，降低数据库读取压力
 
 ## 目录结构（核心脚本）
-- `weibo_rss_turso_worker.py`：Worker（RSS → Redis → AI → Turso；Redis 失败时落 `spool` 兜底）
-- `alphavault/db/turso_queue.py`：Turso 队列字段与读写
-- `alphavault/db/turso_db.py`：Turso engine + 基础表（posts/assertions）
+- `weibo_rss_worker.py`：Worker（RSS → Redis → AI → Postgres；Redis 失败时落 `spool` 兜底）
+- `alphavault/db/source_queue.py`：source schema 队列字段与读写
+- `alphavault/db/postgres_db.py`：Postgres 连接和事务
 - `alphavault_reflex/`：Reflex 前端（交易流、个股页、板块页、整理中心）
 
 ## 环境要求
@@ -63,7 +63,7 @@ export AI_MAX_INFLIGHT="30"
 export AI_QUEUE_ACK_TIMEOUT_SEC="3600"
 export AI_TRACE_OUT="trace.txt"
 
-uv run python weibo_rss_turso_worker.py --log-level info
+uv run python weibo_rss_worker.py --log-level info
 ```
 
 说明：
@@ -398,13 +398,13 @@ uv run reflex run
 
 容器默认用 `supervisord.conf` 常驻跑 2 件事：
 - Web：Reflex
-- Worker：`weibo_rss_turso_worker.py`
+- Worker：`weibo_rss_worker.py`
 
 启动时会先做一次 startup check（失败就直接退出容器）：
 - 本地缓存：`SPOOL_DIR`（默认 `/tmp/alphavault-spool`）需要可写
-- Postgres：`startup_healthcheck.py` 只检查 `1` 个目标 schema，目标由 `STARTUP_HEALTHCHECK_TURSO_TARGET` 控制；默认是 `standard`，可选 `weibo` 或 `xueqiu`
+- Postgres：`startup_healthcheck.py` 只检查 `1` 个目标 schema，目标由 `STARTUP_HEALTHCHECK_SCHEMA_TARGET` 控制；默认是 `standard`，可选 `weibo` 或 `xueqiu`
 - Postgres：只需要配置一个 `POSTGRES_DSN`
-- 标准库：只有当 `STARTUP_HEALTHCHECK_TURSO_TARGET=standard` 时，才会在启动时额外检查 `standard.security_master`、`standard.relations`、`standard.relation_candidates`、`standard.alias_resolve_tasks`；没先执行 `alphavault/db/sql/standard_schema.sql` 就会直接 fail
+- 标准库：只有当 `STARTUP_HEALTHCHECK_SCHEMA_TARGET=standard` 时，才会在启动时额外检查 `standard.security_master`、`standard.relations`、`standard.relation_candidates`、`standard.alias_resolve_tasks`；没先执行 `alphavault/db/sql/standard_schema.sql` 就会直接 fail
 - Redis：worker 要求 `REDIS_URL` 可用；没配或连不上会直接 fail
 
 定时（通过 env 配）：

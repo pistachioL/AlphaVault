@@ -33,7 +33,6 @@ class WorkerSourceConfig:
     author: str
     user_id: Optional[str]
     database_url: str
-    auth_token: str
     schema_name: str
 
 
@@ -47,8 +46,8 @@ class WorkerSourceRuntime:
     redis_due_maintenance_next_at: float = 0.0
     redis_due_maintenance_empty_checks: int = 0
     rss_ingest_future: Future | None = None
-    turso_ready: bool = False
-    turso_next_ready_check_at: float = 0.0
+    source_db_ready: bool = False
+    source_db_next_ready_check_at: float = 0.0
     stock_hot_cache_future: Future | None = None
     stock_hot_cache_next_at: float = 0.0
     progress_state_cache: dict[str, dict] = field(default_factory=dict)

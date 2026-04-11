@@ -25,12 +25,13 @@ def _columns_from_description(description: Any) -> list[str]:
     return cols
 
 
-def turso_read_sql_df(conn: Any, sql: str, params: Any = None) -> pd.DataFrame:
+def read_sql_df(conn: Any, sql: str, params: Any = None) -> pd.DataFrame:
     """
-    Read a SELECT query from Turso (libsql) and return a pandas DataFrame.
+    Read a SELECT query from a DB-API connection and return a pandas DataFrame.
 
-    We intentionally avoid pandas SQL helpers here because our Turso connection
-    is not a SQLAlchemy connectable and pandas will emit a UserWarning.
+    We intentionally avoid pandas SQL helpers here because our project-level
+    connection helpers are not SQLAlchemy connectables and pandas will emit a
+    UserWarning.
     """
     res = conn.execute(sql, params) if params is not None else conn.execute(sql)
     cols = _columns_from_description(getattr(res, "description", None))

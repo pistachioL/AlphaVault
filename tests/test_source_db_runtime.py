@@ -5,10 +5,10 @@ from types import SimpleNamespace
 from typing import cast
 
 from alphavault.db.postgres_db import PostgresEngine
-from alphavault.worker import turso_runtime
+from alphavault.worker import source_db_runtime
 
 
-def test_ensure_turso_ready_only_checks_connectivity(monkeypatch) -> None:
+def test_ensure_source_db_ready_only_checks_connectivity(monkeypatch) -> None:
     calls: list[str] = []
 
     @contextmanager
@@ -16,7 +16,7 @@ def test_ensure_turso_ready_only_checks_connectivity(monkeypatch) -> None:
         calls.append(str(engine.dsn))
         yield object()
 
-    monkeypatch.setattr(turso_runtime, "postgres_connect_autocommit", _fake_connect)
+    monkeypatch.setattr(source_db_runtime, "postgres_connect_autocommit", _fake_connect)
 
     engine = cast(
         PostgresEngine,
@@ -24,9 +24,9 @@ def test_ensure_turso_ready_only_checks_connectivity(monkeypatch) -> None:
     )
 
     assert (
-        turso_runtime.ensure_turso_ready(
+        source_db_runtime.ensure_source_db_ready(
             engine=engine,
-            turso_ready=False,
+            source_db_ready=False,
             source_name="unit",
         )
         is True

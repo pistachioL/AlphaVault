@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Shared helpers for source-schema reads in Reflex services.
+
 import pandas as pd
 from pandas.api.types import is_datetime64_any_dtype
 
