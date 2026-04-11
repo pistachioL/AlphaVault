@@ -34,7 +34,6 @@ CREATE TABLE assertions(
   action_strength INTEGER NOT NULL,
   summary TEXT NOT NULL,
   evidence TEXT NOT NULL,
-  created_at TEXT NOT NULL,
   UNIQUE(post_uid, idx)
 )
 """
@@ -67,10 +66,10 @@ VALUES (
 """
 INSERT_ASSERTION_SQL = """
 INSERT INTO assertions(
-  assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+  assertion_id, post_uid, idx, action, action_strength, summary, evidence
 )
 VALUES (
-  :assertion_id, :post_uid, :idx, :action, :action_strength, :summary, :evidence, :created_at
+  :assertion_id, :post_uid, :idx, :action, :action_strength, :summary, :evidence
 )
 """
 INSERT_ASSERTION_ENTITY_SQL = """
@@ -128,7 +127,6 @@ def test_build_sector_hot_payload_groups_signals_and_related_stocks() -> None:
                 "action_strength": 2,
                 "summary": "板块继续走强",
                 "evidence": "白酒继续走强",
-                "created_at": "2099-01-01 00:00:00",
             },
         )
         conn.execute(
@@ -283,11 +281,11 @@ def test_build_sector_hot_payload_reads_xueqiu_source_schema_tables(pg_conn) -> 
     conn.execute(
         """
         INSERT INTO xueqiu.assertions(
-          assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+          assertion_id, post_uid, idx, action, action_strength, summary, evidence
         )
         VALUES (
           'xueqiu:sector_hot:1#1', 'xueqiu:sector_hot:1', 1, 'trade.buy', 2,
-          '雪球板块页也要能读到', '雪球板块页也要能读到', '2099-01-04 00:00:00'
+          '雪球板块页也要能读到', '雪球板块页也要能读到'
         )
         """
     )

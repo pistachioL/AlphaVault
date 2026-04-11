@@ -30,10 +30,10 @@ def test_list_missing_hot_cache_stock_keys_reads_assertion_entities(pg_conn) -> 
     conn.execute(
         f"""
         INSERT INTO weibo.assertions(
-            assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+            assertion_id, post_uid, idx, action, action_strength, summary, evidence
         )
         VALUES (
-            '{_ASSERTION_ID}', '{_POST_UID}', 1, 'trade.buy', 1, '小仓试错', '原文', '2026-04-06 10:00:00'
+            '{_ASSERTION_ID}', '{_POST_UID}', 1, 'trade.buy', 1, '小仓试错', '原文'
         )
         """
     )

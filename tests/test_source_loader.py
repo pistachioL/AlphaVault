@@ -3,10 +3,26 @@ from __future__ import annotations
 from alphavault.constants import SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
+from alphavault.db.sql.ui import build_assertions_query
 from alphavault_reflex.services import source_loader
 
 _POST_UID = "weibo:source_loader:1"
 _ASSERTION_ID = "weibo:source_loader:1#1"
+
+
+def test_build_assertions_query_reads_created_at_from_posts() -> None:
+    query = build_assertions_query(
+        ["post_uid", "created_at"],
+        posts_table="weibo.posts",
+        assertions_table="weibo.assertions",
+        assertion_entities_table="weibo.assertion_entities",
+        assertion_mentions_table="weibo.assertion_mentions",
+        topic_cluster_topics_table="weibo.topic_cluster_topics",
+    )
+
+    assert "JOIN weibo.posts p ON p.post_uid = a.post_uid" in query
+    assert "p.created_at AS created_at" in query
+    assert "a.created_at AS created_at" not in query
 
 
 def test_load_trade_sources_cached_reads_new_assertion_schema(
@@ -32,10 +48,10 @@ VALUES (
     pg_conn.execute(
         f"""
 INSERT INTO weibo.assertions(
-  assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+  assertion_id, post_uid, idx, action, action_strength, summary, evidence
 )
 VALUES (
-  '{_ASSERTION_ID}', '{_POST_UID}', 1, 'trade.buy', 3, '继续看多', '证据', '2099-01-01 00:00:00'
+  '{_ASSERTION_ID}', '{_POST_UID}', 1, 'trade.buy', 3, '继续看多', '证据'
 )
 """
     )

@@ -28,7 +28,6 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.assertions (
     action_strength INTEGER NOT NULL CHECK (action_strength BETWEEN 0 AND 3),
     summary TEXT NOT NULL,
     evidence TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT '',
     UNIQUE(post_uid, idx)
 );
 
@@ -142,9 +141,6 @@ CREATE INDEX IF NOT EXISTS idx_assertions_post_uid
 
 CREATE INDEX IF NOT EXISTS idx_assertions_action
     ON {{schema_name}}.assertions(action);
-
-CREATE INDEX IF NOT EXISTS idx_assertions_created_at
-    ON {{schema_name}}.assertions(created_at);
 
 CREATE INDEX IF NOT EXISTS idx_assertion_mentions_text
     ON {{schema_name}}.assertion_mentions(mention_text);

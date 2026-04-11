@@ -133,7 +133,7 @@ SELECT
     a.action_strength AS action_strength,
     a.summary AS summary,
     a.evidence AS evidence,
-    COALESCE(a.created_at, '') AS created_at
+    COALESCE(p.created_at, '') AS created_at
 FROM posts p
 JOIN assertions a
   ON a.post_uid = p.post_uid
