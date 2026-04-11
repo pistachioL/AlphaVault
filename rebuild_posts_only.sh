@@ -139,7 +139,7 @@ import_posts_only "$OLD_XUEQIU_FILE" "$NEW_XUEQIU_FILE" "xueqiu"
 print_rebuild_summary "weibo" "$OLD_WEIBO_FILE" "$NEW_WEIBO_FILE"
 print_rebuild_summary "xueqiu" "$OLD_XUEQIU_FILE" "$NEW_XUEQIU_FILE"
 
-uv run python "$ROOT_DIR/migrate_weibo_raw_text.py" --db-path "$NEW_WEIBO_FILE" --batch-size 200 --verbose
+uv run python "$ROOT_DIR/migrate_weibo_raw_text.py" --db-path "$NEW_WEIBO_FILE" --batch-size 200 --log-level info
 
 turso db create "$WEIBO_TURSO_DB_NAME" --from-file "$NEW_WEIBO_FILE"
 turso db create "$XUEQIU_TURSO_DB_NAME" --from-file "$NEW_XUEQIU_FILE"

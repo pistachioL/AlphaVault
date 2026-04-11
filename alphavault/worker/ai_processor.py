@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from alphavault.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def _always_false(*_args: object, **_kwargs: object) -> bool:
     return False
@@ -48,7 +52,6 @@ def process_one_redis_payload(
     source_name: str = "",
     config: Any,
     limiter: Any,
-    verbose: bool,
     payload_to_cloud_post_fn: Callable[[dict[str, object]], Any | None],
     process_one_post_uid_fn: Callable[..., bool],
     mark_post_failed_fn: Callable[..., None],
@@ -77,12 +80,11 @@ def process_one_redis_payload(
         and not bool(payload.get("skip_db_processed_guard"))
         and is_post_already_processed_success_fn(engine, post_uid=resolved_post_uid)
     ):
-        if verbose:
-            print(
-                f"[ai] skip_db_already_processed_success post_uid={resolved_post_uid} "
-                f"message_id={message_id}",
-                flush=True,
-            )
+        logger.info(
+            "[ai] skip_db_already_processed_success post_uid=%s message_id=%s",
+            resolved_post_uid,
+            message_id,
+        )
         redis_ai_ack_fn(redis_client, redis_queue_key, message_id)
         return
 
@@ -114,12 +116,12 @@ def process_one_redis_payload(
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
-            if verbose:
-                print(
-                    f"[ai] mark_failed_error post_uid={resolved_post_uid} "
-                    f"{type(err).__name__}: {err}",
-                    flush=True,
-                )
+            logger.warning(
+                "[ai] mark_failed_error post_uid=%s %s: %s",
+                resolved_post_uid,
+                type(err).__name__,
+                err,
+            )
             return
         try:
             redis_ai_ack_and_clear_dedup_fn(
@@ -129,12 +131,12 @@ def process_one_redis_payload(
                 post_uid=resolved_post_uid,
             )
         except Exception as err:
-            if verbose:
-                print(
-                    f"[ai] redis_final_ack_error post_uid={resolved_post_uid} "
-                    f"{type(err).__name__}: {err}",
-                    flush=True,
-                )
+            logger.warning(
+                "[ai] redis_final_ack_error post_uid=%s %s: %s",
+                resolved_post_uid,
+                type(err).__name__,
+                err,
+            )
         return
 
     next_retry_at = int(now_epoch_fn()) + int(backoff_seconds_fn(retry_count))
@@ -150,11 +152,11 @@ def process_one_redis_payload(
             next_retry_at=int(next_retry_at),
         )
     except Exception as err:
-        if verbose:
-            print(
-                f"[ai] redis_retry_handoff_error post_uid={resolved_post_uid} "
-                f"{type(err).__name__}: {err}",
-                flush=True,
-            )
+        logger.warning(
+            "[ai] redis_retry_handoff_error post_uid=%s %s: %s",
+            resolved_post_uid,
+            type(err).__name__,
+            err,
+        )
         return
     del redis_ai_push_retry_fn

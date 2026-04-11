@@ -63,7 +63,6 @@ def _collect_source_finished_jobs(
         source=source,
         source_name=source_name,
         now=float(ctx.now),
-        verbose=ctx.verbose,
         rss_interval_seconds=float(ctx.rss_interval_seconds),
     )
 
@@ -78,7 +77,6 @@ def _ensure_active_engine(
         source=source,
         source_name=source_name,
         now=float(ctx.now),
-        verbose=ctx.verbose,
     )
 
 
@@ -191,7 +189,6 @@ def _save_cycle_progress(
                 rss_enqueue_error or bool(errors.get("redis_enqueue_error", False))
             ),
         },
-        verbose=ctx.verbose,
     )
 
 

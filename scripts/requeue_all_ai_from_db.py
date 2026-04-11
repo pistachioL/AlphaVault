@@ -7,11 +7,19 @@ import time
 from pathlib import Path
 from typing import Any
 
-import requests
-
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
+
+# This script supports direct execution from `scripts/`, so it must expose the
+# project root before importing local packages.
+import requests  # noqa: E402
+
+from alphavault.logging_config import (  # noqa: E402
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 
 MANUAL_DB_REQUEUE_API_PATH = "/api/admin/requeue-from-db"
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
@@ -21,6 +29,7 @@ DEFAULT_MAX_ROUNDS = 200
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MODE_ORDER = "failed,legacy_unprocessed"
 VALID_MODES = ("failed", "legacy_unprocessed")
+logger = get_logger(__name__)
 
 
 def load_dotenv_if_present() -> None:
@@ -75,6 +84,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MODE_ORDER,
         help="mode 顺序，逗号分隔；默认 failed,legacy_unprocessed",
     )
+    add_log_level_argument(parser)
     return parser.parse_args()
 
 
@@ -220,9 +230,11 @@ def _run_mode(
     timeout_seconds: float,
 ) -> None:
     for round_no in range(1, max(1, int(max_rounds)) + 1):
-        print(
-            f"[requeue] start mode={mode} round={round_no} limit={limit}",
-            flush=True,
+        logger.info(
+            "[requeue] start mode=%s round=%s limit=%s",
+            mode,
+            round_no,
+            limit,
         )
         result = _request_requeue(
             base_url=base_url,
@@ -237,12 +249,12 @@ def _run_mode(
         apply_error = _source_error(result)
         if apply_error:
             raise RuntimeError(f"{apply_error} phase=apply mode={mode}")
-        print(
-            "[requeue] applied "
-            f"mode={mode} round={round_no} "
-            f"scanned_total={_payload_int(result, 'scanned_total')} "
-            f"enqueued_total={_payload_int(result, 'enqueued_total')}",
-            flush=True,
+        logger.info(
+            "[requeue] applied mode=%s round=%s scanned_total=%s enqueued_total=%s",
+            mode,
+            round_no,
+            _payload_int(result, "scanned_total"),
+            _payload_int(result, "enqueued_total"),
         )
 
         dry_run_result = _request_requeue(
@@ -260,14 +272,15 @@ def _run_mode(
             raise RuntimeError(f"{dry_run_error} phase=dry_run mode={mode}")
         scanned_total = _payload_int(dry_run_result, "scanned_total")
         queue_backlog = _sum_queue_backlog(dry_run_result)
-        print(
-            "[requeue] check "
-            f"mode={mode} round={round_no} "
-            f"scanned_total={scanned_total} queue_backlog={queue_backlog}",
-            flush=True,
+        logger.info(
+            "[requeue] check mode=%s round=%s scanned_total=%s queue_backlog=%s",
+            mode,
+            round_no,
+            scanned_total,
+            queue_backlog,
         )
         if scanned_total == 0:
-            print(f"[requeue] done mode={mode} rounds={round_no}", flush=True)
+            logger.info("[requeue] done mode=%s rounds=%s", mode, round_no)
             return
         if round_no >= max(1, int(max_rounds)):
             raise RuntimeError(
@@ -281,6 +294,7 @@ def _run_mode(
 def main() -> int:
     load_dotenv_if_present()
     args = parse_args()
+    configure_logging(level=getattr(args, "log_level", ""))
     base_url = _normalize_base_url(str(args.base_url or ""))
     key = _resolve_key(str(args.key or ""))
     platform_text = str(args.platform or "").strip().lower()
@@ -293,12 +307,15 @@ def main() -> int:
     )
     mode_order = _normalize_modes(str(args.mode_order or ""))
 
-    print(
-        "[requeue] config "
-        f"base_url={base_url} platform={platform or 'all'} "
-        f"limit={limit} sleep_seconds={sleep_seconds} "
-        f"max_rounds={max_rounds} mode_order={','.join(mode_order)}",
-        flush=True,
+    logger.info(
+        "[requeue] config base_url=%s platform=%s limit=%s sleep_seconds=%s "
+        "max_rounds=%s mode_order=%s",
+        base_url,
+        platform or "all",
+        limit,
+        sleep_seconds,
+        max_rounds,
+        ",".join(mode_order),
     )
 
     for mode in mode_order:
@@ -313,7 +330,7 @@ def main() -> int:
             timeout_seconds=timeout_seconds,
         )
 
-    print("[requeue] all_done", flush=True)
+    logger.info("[requeue] all_done")
     return 0
 
 

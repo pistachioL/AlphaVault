@@ -13,6 +13,7 @@ from alphavault.ai.analyze import (
     DEFAULT_MODEL,
     DEFAULT_PROMPT_VERSION,
 )
+from alphavault.logging_config import get_logger
 from alphavault.db.postgres_db import PostgresEngine
 from alphavault.constants import (
     ENV_AI_API_KEY,
@@ -20,6 +21,8 @@ from alphavault.constants import (
     ENV_AI_TRACE_OUT,
 )
 from alphavault.rss.utils import env_bool
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -66,7 +69,6 @@ class LLMConfig:
     ai_rpm: float
     ai_timeout_seconds: float
     trace_out: Optional[Path]
-    verbose: bool
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
@@ -115,11 +117,8 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         trace_out = Path(trace_out_env)
 
     base_url = str(args.base_url or "").strip()
-    if bool(args.verbose) and base_url:
-        if not base_url.rstrip("/").endswith("/v1"):
-            print(
-                f"[ai] warn base_url_maybe_missing_v1 base_url={base_url}", flush=True
-            )
+    if base_url and not base_url.rstrip("/").endswith("/v1"):
+        logger.warning("[ai] warn base_url_maybe_missing_v1 base_url=%s", base_url)
 
     api_key = ""
     if args.api_key:
@@ -145,7 +144,6 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         ai_rpm=max(0.0, float(args.ai_rpm or 0.0)),
         ai_timeout_seconds=max(1.0, float(args.ai_timeout_sec)),
         trace_out=trace_out,
-        verbose=bool(args.verbose),
     )
 
 

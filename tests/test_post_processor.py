@@ -24,7 +24,6 @@ def _build_config(*, prompt_version: str) -> LLMConfig:
         ai_rpm=0.0,
         ai_timeout_seconds=30.0,
         trace_out=None,
-        verbose=False,
     )
 
 

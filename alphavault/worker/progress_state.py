@@ -4,6 +4,7 @@ import json
 import time
 from typing import Any
 
+from alphavault.logging_config import get_logger
 from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
 from alphavault.rss.utils import now_str
 from alphavault.worker.job_state import (
@@ -19,6 +20,7 @@ from alphavault.worker.turso_runtime import (
 
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+logger = get_logger(__name__)
 
 
 def save_worker_progress_state(
@@ -26,7 +28,6 @@ def save_worker_progress_state(
     source: Any,
     stage: str,
     payload: dict[str, object],
-    verbose: bool,
 ) -> None:
     cfg = getattr(source, "config", None)
     source_name = str(getattr(cfg, "name", "") or "").strip()
@@ -59,21 +60,19 @@ def save_worker_progress_state(
             raise
         engine = engine_or_conn
         if isinstance(engine, PostgresEngine):
-            maybe_dispose_turso_engine_on_transient_error(
-                engine=engine, err=err, verbose=bool(verbose)
-            )
-        if verbose:
-            print(
-                f"[progress:{source_name}] write_error {type(err).__name__}: {err}",
-                flush=True,
-            )
+            maybe_dispose_turso_engine_on_transient_error(engine=engine, err=err)
+        logger.warning(
+            "[progress:%s] write_error %s: %s",
+            source_name,
+            type(err).__name__,
+            err,
+        )
 
 
 def has_due_ai_posts(
     *,
     engine: PostgresEngine | None,
     platform: str,
-    verbose: bool,
     redis_client=None,
     redis_queue_key: str = "",
 ) -> bool:
@@ -91,8 +90,7 @@ def has_due_ai_posts(
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
-        if verbose:
-            print(f"[ai] redis_due_check_error {type(err).__name__}: {err}", flush=True)
+        logger.warning("[ai] redis_due_check_error %s: %s", type(err).__name__, err)
         return False
 
 

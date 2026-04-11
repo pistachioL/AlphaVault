@@ -3,13 +3,16 @@ from __future__ import annotations
 from concurrent.futures import Future
 from typing import Any, Callable
 
+from alphavault.logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def collect_periodic_job_result(
     *,
     job_name: str,
     future: Future | None,
     engine: Any,
-    verbose: bool,
     maybe_dispose_turso_engine_on_transient_error_fn: Callable[..., None],
     fatal_exceptions: tuple[type[BaseException], ...],
 ) -> tuple[Future | None, dict[str, int | bool], bool, bool]:
@@ -23,10 +26,8 @@ def collect_periodic_job_result(
         maybe_dispose_turso_engine_on_transient_error_fn(
             engine=engine,
             err=err,
-            verbose=bool(verbose),
         )
-        if verbose:
-            print(f"[{job_name}] sync_error {type(err).__name__}: {err}", flush=True)
+        logger.warning("[%s] sync_error %s: %s", job_name, type(err).__name__, err)
         return None, {}, True, True
     stats = raw if isinstance(raw, dict) else {}
     return None, stats, True, False
@@ -37,7 +38,6 @@ def collect_rss_ingest_result(
     source_name: str,
     future: Future | None,
     engine: Any,
-    verbose: bool,
     maybe_dispose_turso_engine_on_transient_error_fn: Callable[..., None],
     fatal_exceptions: tuple[type[BaseException], ...],
 ) -> tuple[Future | None, int, bool, bool]:
@@ -51,13 +51,13 @@ def collect_rss_ingest_result(
         maybe_dispose_turso_engine_on_transient_error_fn(
             engine=engine,
             err=err,
-            verbose=bool(verbose),
         )
-        if verbose:
-            print(
-                f"[rss:{source_name}] ingest_error {type(err).__name__}: {err}",
-                flush=True,
-            )
+        logger.warning(
+            "[rss:%s] ingest_error %s: %s",
+            source_name,
+            type(err).__name__,
+            err,
+        )
         return None, 0, True, True
 
     accepted = 0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Any
@@ -28,11 +29,13 @@ from alphavault.worker.runtime_models import (
     LLMConfig,
     _parse_int_or_default,
 )
+from alphavault.logging_config import get_logger
 
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 AI_TRACE_LOG_PREFIX = "[ai_trace]"
 PROCESS_STUCK_LOG_INTERVAL_SECONDS = 30.0
+logger = get_logger(__name__)
 
 
 def _trace_log_value(value: object) -> str:
@@ -117,7 +120,6 @@ def process_one_redis_payload(
     source_name: str = "",
     config: LLMConfig,
     limiter: RateLimiter,
-    verbose: bool,
     trace_id: str = "",
     max_retry_count: int,
 ) -> None:
@@ -138,6 +140,7 @@ def process_one_redis_payload(
     }
     process_started_at = time.monotonic()
     process_done_event = threading.Event()
+    debug_enabled = logger.isEnabledFor(logging.DEBUG)
 
     def _log_trace(
         *,
@@ -156,9 +159,9 @@ def process_one_redis_payload(
     ) -> None:
         if update_step:
             trace_state["step"] = str(step or stage or "").strip()
-        if not verbose:
+        if not debug_enabled:
             return
-        print(
+        logger.debug(
             _build_ai_trace_log_line(
                 stage=stage,
                 trace_id=resolved_trace_id,
@@ -176,8 +179,7 @@ def process_one_redis_payload(
                 step=str(step or trace_state.get("step") or ""),
                 elapsed_seconds=elapsed_seconds,
                 reason=reason,
-            ),
-            flush=True,
+            )
         )
 
     def _watch_long_running_process() -> None:
@@ -192,7 +194,7 @@ def process_one_redis_payload(
             )
 
     _log_trace(stage="process_start")
-    if verbose:
+    if debug_enabled:
         threading.Thread(
             target=_watch_long_running_process,
             name="redis-payload-watchdog",
@@ -362,7 +364,6 @@ def process_one_redis_payload(
             source_name=str(source_name or "").strip(),
             config=config,
             limiter=limiter,
-            verbose=bool(verbose),
             payload_to_cloud_post_fn=_payload_to_cloud_post,
             process_one_post_uid_fn=_process_one_post_uid_with_trace,
             mark_post_failed_fn=_mark_post_failed,
@@ -384,12 +385,19 @@ def process_one_redis_payload(
         )
     except BaseException as err:
         if not isinstance(err, _FATAL_BASE_EXCEPTIONS):
-            _log_trace(
+            message = _build_ai_trace_log_line(
                 stage="process_crash",
-                reason=f"{type(err).__name__}: {err}",
+                trace_id=resolved_trace_id,
+                consumer=resolved_consumer_name,
+                queue=resolved_queue_key,
+                source=resolved_source_name,
+                message_id=resolved_message_id,
+                post_uid=str(trace_state.get("post_uid") or ""),
+                step=str(trace_state.get("step") or ""),
                 elapsed_seconds=int(time.monotonic() - process_started_at),
-                update_step=False,
+                reason=f"{type(err).__name__}: {err}",
             )
+            logger.warning(message)
         raise
     finally:
         process_done_event.set()

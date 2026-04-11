@@ -83,7 +83,6 @@ def test_flush_spool_to_turso_reuses_single_connection(monkeypatch, tmp_path) ->
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
-        verbose=False,
     )
 
     assert processed == 2
@@ -126,7 +125,6 @@ def test_flush_spool_to_turso_claims_file_before_upsert(monkeypatch, tmp_path) -
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
-        verbose=False,
     )
 
     assert processed == 1
@@ -173,7 +171,6 @@ def test_flush_spool_to_turso_recovers_stale_processing_file(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
-        verbose=False,
     )
 
     assert processed == 1
@@ -219,7 +216,6 @@ def test_flush_spool_to_turso_skips_fresh_processing_file(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
-        verbose=False,
     )
 
     assert processed == 0
@@ -260,7 +256,6 @@ def test_flush_spool_to_turso_restores_json_when_turso_write_fails(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
-        verbose=False,
     )
 
     assert processed == 0
@@ -305,7 +300,6 @@ def test_flush_spool_to_turso_keeps_json_when_redis_push_succeeds(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
-        verbose=False,
         redis_client=object(),
         redis_queue_key="test:q",
         delete_spool_on_redis_push=False,
@@ -412,7 +406,6 @@ def test_recover_spool_to_turso_and_redis_requeues_pending_and_deletes_done(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
-            verbose=False,
             redis_client=object(),
             redis_queue_key="test:q",
         )
@@ -468,7 +461,6 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
-            verbose=False,
             redis_client=object(),
             redis_queue_key="test:q",
         )
@@ -523,7 +515,6 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_is_duplicat
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
-            verbose=False,
             redis_client=object(),
             redis_queue_key="test:q",
         )
@@ -575,7 +566,6 @@ def test_recover_spool_to_turso_and_redis_reports_claim_file_error(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
-            verbose=False,
             redis_client=object(),
             redis_queue_key="test:q",
         )
@@ -613,7 +603,6 @@ def test_flush_spool_to_turso_reports_stale_processing_stat_error(
         spool_dir=tmp_path,
         engine=engine_marker,
         max_items=10,
-        verbose=False,
     )
 
     assert processed == 0
@@ -648,7 +637,6 @@ def test_recover_spool_to_turso_and_redis_reports_stale_processing_rename_error(
             spool_dir=tmp_path,
             engine=engine_marker,
             max_items=10,
-            verbose=False,
             redis_client=object(),
             redis_queue_key="test:q",
         )

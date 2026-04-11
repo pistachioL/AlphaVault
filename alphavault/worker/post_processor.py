@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from alphavault.logging_config import get_logger
 from alphavault.ai.analyze import (
     format_llm_error_one_line,
 )
@@ -13,6 +14,8 @@ from alphavault.worker.post_processor_topic_prompt_v4 import (
     process_one_post_uid_topic_prompt_v4,
 )
 from alphavault.worker.runtime_models import LLMConfig
+
+logger = get_logger(__name__)
 
 
 def process_one_post_uid(
@@ -50,7 +53,7 @@ def process_one_post_uid(
             f" base_url={base_url_for_log or '(empty)'}"
         )
         msg = f"ai:{format_llm_error_one_line(err, limit=700)}{ctx}"
-        print(f"[llm] error {post_uid} {msg}", flush=True)
+        logger.error("[llm] error %s %s", post_uid, msg)
         return False
 
 

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from alphavault.logging_config import get_logger
 from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_SPOOL_DIR,
@@ -28,6 +29,7 @@ SPOOL_FILE_GLOB = f"*{SPOOL_JSON_SUFFIX}"
 SPOOL_PROCESSING_GLOB = f"*{SPOOL_JSON_SUFFIX}{SPOOL_PROCESSING_SUFFIX}"
 SPOOL_PROCESSING_STALE_SECONDS = 300
 SPOOL_RETRY_LINK_ATTEMPTS = 16
+logger = get_logger(__name__)
 
 
 def sha1_short(value: str) -> str:
@@ -40,7 +42,7 @@ def ensure_spool_dir() -> Path:
     try:
         path.mkdir(parents=True, exist_ok=True)
     except Exception as e:
-        print(f"[spool] dir_error {path} {type(e).__name__}: {e}", flush=True)
+        logger.error("[spool] dir_error %s %s: %s", path, type(e).__name__, e)
     return path
 
 
@@ -148,7 +150,7 @@ def _restore_claimed_file_for_retry(*, claimed_path: Path, target_path: Path) ->
     _cleanup_spool_file(claimed_path)
 
 
-def _recover_stale_processing_files(*, spool_dir: Path, verbose: bool) -> int:
+def _recover_stale_processing_files(*, spool_dir: Path) -> int:
     now_epoch = int(time.time())
     stale_before = now_epoch - max(1, int(SPOOL_PROCESSING_STALE_SECONDS))
     recovered = 0
@@ -173,8 +175,8 @@ def _recover_stale_processing_files(*, spool_dir: Path, verbose: bool) -> int:
             continue
         except Exception:
             raise
-    if recovered > 0 and verbose:
-        print(f"[spool] recover_stale_processing recovered={recovered}", flush=True)
+    if recovered > 0:
+        logger.info("[spool] recover_stale_processing recovered=%s", recovered)
     return recovered
 
 
@@ -184,19 +186,18 @@ def _maybe_dispose_turso_engine_on_transient_error(
     del engine, err
 
 
-def _load_claimed_payload(
-    *, claimed_path: Path, verbose: bool
-) -> dict[str, Any] | None:
+def _load_claimed_payload(*, claimed_path: Path) -> dict[str, Any] | None:
     try:
         payload = json.loads(claimed_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
     except Exception as e:
-        if verbose:
-            print(
-                f"[spool] bad_file {claimed_path.name} {type(e).__name__}: {e}",
-                flush=True,
-            )
+        logger.warning(
+            "[spool] bad_file %s %s: %s",
+            claimed_path.name,
+            type(e).__name__,
+            e,
+        )
         _cleanup_spool_file(claimed_path)
         return None
     if not isinstance(payload, dict):
@@ -238,14 +239,12 @@ def _try_push_payload_to_ai_ready(
     redis_queue_key: str,
     post_uid: str,
     payload: dict[str, Any],
-    verbose: bool,
 ) -> tuple[int, bool]:
     status = _try_push_payload_to_ai_ready_status(
         redis_client=redis_client,
         redis_queue_key=redis_queue_key,
         post_uid=post_uid,
         payload=payload,
-        verbose=verbose,
     )
     if status == "error":
         return 0, True
@@ -260,7 +259,6 @@ def _try_push_payload_to_ai_ready_status(
     redis_queue_key: str,
     post_uid: str,
     payload: dict[str, Any],
-    verbose: bool,
 ) -> str:
     if not redis_client or not str(redis_queue_key or "").strip() or not post_uid:
         return "error"
@@ -281,11 +279,9 @@ def _try_push_payload_to_ai_ready_status(
             payload=payload,
             ttl_seconds=resolve_redis_dedup_ttl_seconds(),
             queue_maxlen=resolve_redis_ai_queue_maxlen(),
-            verbose=bool(verbose),
         )
     except Exception as e:
-        if verbose:
-            print(f"[redis] ai_requeue_error {type(e).__name__}: {e}", flush=True)
+        logger.warning("[redis] ai_requeue_error %s: %s", type(e).__name__, e)
         return "error"
     if status == REDIS_PUSH_STATUS_PUSHED:
         return REDIS_PUSH_STATUS_PUSHED
@@ -301,7 +297,6 @@ def flush_spool_to_turso(
     spool_dir: Path,
     engine: Optional[PostgresEngine],
     max_items: int,
-    verbose: bool,
     redis_client=None,
     redis_queue_key: str = "",
     delete_spool_on_redis_push: bool = False,
@@ -313,7 +308,7 @@ def flush_spool_to_turso(
         return 0, False
     processed = 0
     try:
-        _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
+        _recover_stale_processing_files(spool_dir=spool_dir)
         paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
         if not paths:
             return 0, False
@@ -324,7 +319,6 @@ def flush_spool_to_turso(
                     continue
                 payload = _load_claimed_payload(
                     claimed_path=claimed_path,
-                    verbose=bool(verbose),
                 )
                 if payload is None:
                     continue
@@ -359,7 +353,6 @@ def flush_spool_to_turso(
                                 payload=payload,
                                 ttl_seconds=DEFAULT_REDIS_DEDUP_TTL_SECONDS,
                                 queue_maxlen=resolve_redis_ai_queue_maxlen(),
-                                verbose=bool(verbose),
                             )
                             pushed = status == REDIS_PUSH_STATUS_PUSHED
                         except Exception:
@@ -373,17 +366,14 @@ def flush_spool_to_turso(
                                 target_path=path,
                             )
                         processed += 1
-                        if verbose:
-                            print(
-                                f"[spool] moved_to_redis {path.name}",
-                                flush=True,
-                            )
+                        logger.info("[spool] moved_to_redis %s", path.name)
                         continue
-                    if verbose:
-                        print(
-                            f"[spool] turso_write_error {path.name} {type(e).__name__}: {e}",
-                            flush=True,
-                        )
+                    logger.warning(
+                        "[spool] turso_write_error %s %s: %s",
+                        path.name,
+                        type(e).__name__,
+                        e,
+                    )
                     _restore_claimed_file_for_retry(
                         claimed_path=claimed_path,
                         target_path=path,
@@ -399,8 +389,7 @@ def flush_spool_to_turso(
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
         _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
-        if verbose:
-            print(f"[spool] turso_connect_error {type(e).__name__}: {e}", flush=True)
+        logger.warning("[spool] turso_connect_error %s: %s", type(e).__name__, e)
         return processed, True
 
     return processed, False
@@ -411,7 +400,6 @@ def recover_spool_to_turso_and_redis(
     spool_dir: Path,
     engine: Optional[PostgresEngine],
     max_items: int,
-    verbose: bool,
     redis_client=None,
     redis_queue_key: str = "",
 ) -> tuple[int, int, int, bool]:
@@ -424,7 +412,7 @@ def recover_spool_to_turso_and_redis(
     queued_redis = 0
     deleted_done = 0
     try:
-        _recover_stale_processing_files(spool_dir=spool_dir, verbose=bool(verbose))
+        _recover_stale_processing_files(spool_dir=spool_dir)
         paths = sorted(spool_dir.glob(SPOOL_FILE_GLOB))
         if not paths:
             return 0, 0, 0, False
@@ -435,7 +423,6 @@ def recover_spool_to_turso_and_redis(
                     continue
                 payload = _load_claimed_payload(
                     claimed_path=claimed_path,
-                    verbose=bool(verbose),
                 )
                 if payload is None:
                     continue
@@ -468,7 +455,6 @@ def recover_spool_to_turso_and_redis(
                     redis_queue_key=redis_queue_key,
                     post_uid=post_uid,
                     payload=payload,
-                    verbose=bool(verbose),
                 )
                 if push_status == "error":
                     _restore_claimed_file_for_retry(
@@ -491,11 +477,11 @@ def recover_spool_to_turso_and_redis(
         if isinstance(e, _FATAL_BASE_EXCEPTIONS):
             raise
         _maybe_dispose_turso_engine_on_transient_error(engine=engine, err=e)
-        if verbose:
-            print(
-                f"[spool] recover_connect_error {type(e).__name__}: {e}",
-                flush=True,
-            )
+        logger.warning(
+            "[spool] recover_connect_error %s: %s",
+            type(e).__name__,
+            e,
+        )
         return handled_posts, queued_redis, deleted_done, True
 
     return handled_posts, queued_redis, deleted_done, False

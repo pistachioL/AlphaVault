@@ -12,6 +12,11 @@ from alphavault.research_workbench.security_master_repo import (
     bulk_upsert_security_master_stocks,
 )
 from alphavault.research_workbench.schema import use_conn
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 
 
 REQUIRED_COLUMNS = ("stock_key", "market", "code", "official_name")
@@ -19,6 +24,7 @@ DEFAULT_SECURITY_MASTER_CSV_PATH = (
     Path(__file__).resolve().parent / "data" / "security_master.csv"
 )
 IMPORT_SECURITY_MASTER_BATCH_SIZE = 100
+logger = get_logger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,6 +41,7 @@ def parse_args() -> argparse.Namespace:
         default=IMPORT_SECURITY_MASTER_BATCH_SIZE,
         help="security_master import batch size",
     )
+    add_log_level_argument(parser)
     return parser.parse_args()
 
 
@@ -86,22 +93,23 @@ def import_csv_into_security_master(
     with use_conn(engine_or_conn) as conn:
         for batch_rows in _iter_row_batches(rows, resolved_batch_size):
             imported += bulk_upsert_security_master_stocks(conn, batch_rows)
-            print(f"imported security_master rows: {imported}/{row_count}", flush=True)
-        print("rebuilding security_master shadow dict...", flush=True)
+            logger.info("imported security_master rows: %s/%s", imported, row_count)
+        logger.info("rebuilding security_master shadow dict...")
         rebuild_stock_dict_shadow_best_effort(conn)
-        print("rebuilt security_master shadow dict", flush=True)
+        logger.info("rebuilt security_master shadow dict")
     return row_count
 
 
 def main() -> int:
     args = parse_args()
+    configure_logging(level=getattr(args, "log_level", ""))
     engine = get_research_workbench_engine_from_env()
     row_count = import_csv_into_security_master(
         engine,
         args.csv_path,
         batch_size=args.batch_size,
     )
-    print(f"imported security_master rows: {row_count}", flush=True)
+    logger.info("imported security_master rows: %s", row_count)
     return 0
 
 

@@ -52,7 +52,6 @@ def test_redis_try_push_ai_message_status_dedups_and_pushes() -> None:
         payload={"post_uid": "weibo:1", "platform": "weibo"},
         ttl_seconds=123,
         queue_maxlen=999,
-        verbose=False,
     )
 
     assert status == redis_stream_queue.REDIS_PUSH_STATUS_PUSHED
@@ -121,7 +120,6 @@ def test_redis_try_push_ai_message_status_returns_error_when_backlog_is_full() -
         payload={"post_uid": "weibo:1"},
         ttl_seconds=123,
         queue_maxlen=5,
-        verbose=False,
     )
 
     assert status == redis_stream_queue.REDIS_PUSH_STATUS_ERROR
@@ -312,7 +310,6 @@ def test_redis_ai_move_due_retries_to_stream_moves_messages() -> None:
         "queue",
         now_epoch=123,
         max_items=10,
-        verbose=False,
     )
 
     assert moved == 2

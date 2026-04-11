@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import threading
 import time
 
@@ -48,6 +49,7 @@ from alphavault.worker.topic_prompt_v4 import (
     build_topic_prompt_v4_with_prompt_chars_limit,
     to_one_line_tail,
 )
+from alphavault.logging_config import get_logger
 
 MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS = 300
 
@@ -72,6 +74,7 @@ def _build_manual_feedback_hint(
 
 
 _TOPIC_PROMPT_TRACE_CONTEXT = threading.local()
+logger = get_logger(__name__)
 
 
 def _trace_log_value(value: object) -> str:
@@ -424,13 +427,13 @@ def process_one_post_uid_topic_prompt_v4(
     prefetched_recent: list[dict[str, object]] | None = None,
     source_name: str = "",
 ) -> bool:
-    if config.verbose:
-        print(
+    debug_enabled = logger.isEnabledFor(logging.DEBUG)
+    if debug_enabled:
+        logger.debug(
             _build_ai_topic_diag_log_line(
                 event="load_post_start",
                 post_uid=str(post_uid or ""),
-            ),
-            flush=True,
+            )
         )
     post = (
         prefetched_post
@@ -439,15 +442,14 @@ def process_one_post_uid_topic_prompt_v4(
     )
     latest_pending_feedback = load_latest_pending_feedback(engine, post_uid=post_uid)
     manual_feedback_hint = _build_manual_feedback_hint(latest_pending_feedback)
-    if config.verbose:
-        print(
+    if debug_enabled:
+        logger.debug(
             _build_ai_topic_diag_log_line(
                 event="load_post_done",
                 post_uid=str(post.post_uid or ""),
                 author=str(post.author or "").strip(),
                 ai_retry_count=int(post.ai_retry_count or 0),
-            ),
-            flush=True,
+            )
         )
     focus = str(post.author or "").strip()
     root_key, root_segment, root_content_key = thread_root_info_for_post(
@@ -466,16 +468,15 @@ def process_one_post_uid_topic_prompt_v4(
         "ai_retry_count": int(post.ai_retry_count or 0),
     }
 
-    if config.verbose:
-        print(
+    if debug_enabled:
+        logger.debug(
             _build_ai_topic_diag_log_line(
                 event="start",
                 post_uid=str(post.post_uid or ""),
                 author=focus,
                 root_key=root_key,
                 ai_retry_count=int(post.ai_retry_count or 0),
-            ),
-            flush=True,
+            )
         )
 
     kept = [current_row]
@@ -507,7 +508,7 @@ def process_one_post_uid_topic_prompt_v4(
         or compact_json
         or (not include_comments)
     ):
-        print(
+        logger.debug(
             " ".join(
                 [
                     "[ai_topic] tree_trim",
@@ -524,13 +525,12 @@ def process_one_post_uid_topic_prompt_v4(
                     f"truncated_nodes={truncated_nodes}",
                 ]
             ),
-            flush=True,
         )
 
     trace_label = f"topic:{root_key}"
 
-    if config.verbose:
-        print(
+    if debug_enabled:
+        logger.debug(
             _build_ai_topic_diag_log_line(
                 event="prompt_ready",
                 post_uid=str(post.post_uid or ""),
@@ -540,22 +540,19 @@ def process_one_post_uid_topic_prompt_v4(
                 compact_json=bool(compact_json),
                 comments=bool(include_comments),
                 truncated_nodes=int(truncated_nodes),
-            ),
-            flush=True,
+            )
         )
 
-    if config.verbose:
-        print(
-            build_topic_prompt_v4_llm_log_line(
-                event="call_api",
-                root_key=root_key,
-                post_uid=str(post.post_uid or ""),
-                author=focus,
-                locked_count=len(locked_post_uids),
-                message=_topic_prompt_trace_suffix(),
-            ),
-            flush=True,
+    logger.info(
+        build_topic_prompt_v4_llm_log_line(
+            event="call_api",
+            root_key=root_key,
+            post_uid=str(post.post_uid or ""),
+            author=focus,
+            locked_count=len(locked_post_uids),
+            message=_topic_prompt_trace_suffix(),
         )
+    )
 
     try:
         start_ts = time.time()
@@ -578,20 +575,18 @@ def process_one_post_uid_topic_prompt_v4(
             request_gate=limiter.wait,
         )
 
-        if config.verbose:
-            cost = time.time() - start_ts
-            print(
-                build_topic_prompt_v4_llm_log_line(
-                    event="done",
-                    root_key=root_key,
-                    post_uid=str(post.post_uid or ""),
-                    author=focus,
-                    locked_count=len(locked_post_uids),
-                    cost_seconds=cost,
-                    message=_topic_prompt_trace_suffix(),
-                ),
-                flush=True,
+        cost = time.time() - start_ts
+        logger.info(
+            build_topic_prompt_v4_llm_log_line(
+                event="done",
+                root_key=root_key,
+                post_uid=str(post.post_uid or ""),
+                author=focus,
+                locked_count=len(locked_post_uids),
+                cost_seconds=cost,
+                message=_topic_prompt_trace_suffix(),
             )
+        )
 
         if not isinstance(parsed, dict):
             raise RuntimeError("ai_topic_invalid_json_root")
@@ -623,8 +618,8 @@ def process_one_post_uid_topic_prompt_v4(
             invest_score = score_from_assertions(rows)
             processed_at = now_str()
             archived_at = now_str()
-            if config.verbose:
-                print(
+            if debug_enabled:
+                logger.debug(
                     _build_ai_topic_diag_log_line(
                         event="db_write_start",
                         post_uid=uid,
@@ -633,8 +628,7 @@ def process_one_post_uid_topic_prompt_v4(
                         final_status=final_status,
                         assertion_count=len(rows),
                         invest_score=float(invest_score),
-                    ),
-                    flush=True,
+                    )
                 )
             _write_done_with_feedback_apply(
                 engine=engine,
@@ -656,19 +650,17 @@ def process_one_post_uid_topic_prompt_v4(
                 prefetched_ingested_at=int(time.time()),
                 latest_pending_feedback=latest_pending_feedback,
             )
-            if config.verbose:
-                print(
-                    _build_ai_topic_diag_log_line(
-                        event="db_write_done",
-                        post_uid=uid,
-                        author=focus,
-                        root_key=root_key,
-                        final_status=final_status,
-                        assertion_count=len(rows),
-                        invest_score=float(invest_score),
-                    ),
-                    flush=True,
+            logger.info(
+                _build_ai_topic_diag_log_line(
+                    event="db_write_done",
+                    post_uid=uid,
+                    author=focus,
+                    root_key=root_key,
+                    final_status=final_status,
+                    assertion_count=len(rows),
+                    invest_score=float(invest_score),
                 )
+            )
 
             if rows:
                 try:
@@ -678,16 +670,12 @@ def process_one_post_uid_topic_prompt_v4(
                         reason="ai_done",
                     )
                 except BaseException:
-                    if config.verbose:
-                        print(
-                            f"[stock_hot] mark_dirty_failed post_uid={uid}",
-                            flush=True,
-                        )
+                    logger.warning("[stock_hot] mark_dirty_failed post_uid=%s", uid)
         return True
     except Exception as err:
         if isinstance(err, AiInvalidJsonError):
             raw_tail = to_one_line_tail(getattr(err, "raw_ai_text", ""), max_chars=240)
-            print(
+            logger.info(
                 " ".join(
                     [
                         "[ai_topic] invalid_json",
@@ -700,7 +688,6 @@ def process_one_post_uid_topic_prompt_v4(
                         _topic_prompt_trace_suffix(),
                     ]
                 ),
-                flush=True,
             )
 
         base_url_for_log = (config.base_url or "").strip()
@@ -718,7 +705,7 @@ def process_one_post_uid_topic_prompt_v4(
         trace_suffix = _topic_prompt_trace_suffix()
         if trace_suffix:
             msg = f"{msg} {trace_suffix}"
-        print(
+        logger.info(
             build_topic_prompt_v4_llm_log_line(
                 event="error",
                 root_key=root_key,
@@ -726,8 +713,7 @@ def process_one_post_uid_topic_prompt_v4(
                 author=focus,
                 locked_count=len(locked_post_uids),
                 message=msg,
-            ),
-            flush=True,
+            )
         )
         return False
 

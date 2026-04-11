@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 import json
+import logging
 import threading
 
 from alphavault.worker import periodic_jobs
@@ -55,7 +56,6 @@ def test_schedule_ai_from_stream_acks_bad_payload_and_schedules_valid_one() -> N
         wakeup_event=threading.Event(),
         config=object(),
         limiter=object(),
-        verbose=False,
         redis_client=object(),
         redis_queue_key="queue",
         prune_inflight_futures_fn=lambda futures, owners: None,
@@ -110,7 +110,6 @@ def test_schedule_ai_from_stream_moves_due_then_claims_then_reads() -> None:
         wakeup_event=threading.Event(),
         config=object(),
         limiter=object(),
-        verbose=False,
         redis_client=object(),
         redis_queue_key="queue",
         prune_inflight_futures_fn=lambda futures, owners: None,
@@ -162,7 +161,6 @@ def test_schedule_ai_for_source_tracks_inflight_owner_by_source_name(
                 "ai_cap": 4,
                 "config": object(),
                 "limiter": object(),
-                "verbose": False,
                 "redis_client": object(),
                 "stuck_seconds": 1000,
             },
@@ -179,19 +177,19 @@ def test_schedule_ai_for_source_tracks_inflight_owner_by_source_name(
 
 
 def test_prune_inflight_futures_logs_exception_and_clears_future(
-    capsys,
+    caplog,
 ) -> None:
     future: Future = Future()
     future.set_exception(RuntimeError("boom"))
     inflight_futures: set[Future] = {future}
     inflight_owner_by_future = {future: "xueqiu"}
 
-    periodic_jobs.prune_inflight_futures(
-        inflight_futures,
-        inflight_owner_by_future,
-    )
+    with caplog.at_level(logging.WARNING):
+        periodic_jobs.prune_inflight_futures(
+            inflight_futures,
+            inflight_owner_by_future,
+        )
 
-    captured = capsys.readouterr()
-    assert "[ai] future_error owner=xueqiu RuntimeError: boom" in captured.out
+    assert "[ai] future_error owner=xueqiu RuntimeError: boom" in caplog.text
     assert inflight_futures == set()
     assert inflight_owner_by_future == {}

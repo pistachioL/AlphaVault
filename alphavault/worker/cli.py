@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from alphavault.logging_config import add_log_level_argument, get_logger
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
@@ -46,6 +47,8 @@ from alphavault.constants import (
     ENV_XUEQIU_USER_ID,
 )
 from alphavault.rss.utils import env_float, env_int, parse_active_hours
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -227,7 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relevant-threshold", type=float, default=0.35, help="相关度阈值"
     )
-    parser.add_argument("--verbose", action="store_true")
+    add_log_level_argument(parser)
     args = parser.parse_args()
     args.rss_timeout = max(1.0, float(args.rss_timeout))
     args.rss_retries = max(0, int(args.rss_retries))
@@ -261,11 +264,13 @@ def resolve_rss_source_configs(args: argparse.Namespace) -> list[RSSSourceConfig
             configs.append(cfg)
 
     if configs:
-        if args.verbose:
+        if str(getattr(args, "log_level", "") or "").strip().lower() == "debug":
             for cfg in configs:
-                print(
-                    f"[rss] source={cfg.name} platform={cfg.platform} urls={len(cfg.rss_urls)}",
-                    flush=True,
+                logger.debug(
+                    "[rss] source=%s platform=%s urls=%s",
+                    cfg.name,
+                    cfg.platform,
+                    len(cfg.rss_urls),
                 )
         return configs
 

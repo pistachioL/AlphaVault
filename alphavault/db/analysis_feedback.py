@@ -328,7 +328,6 @@ def submit_post_analysis_feedback(
             payload=_cloud_post_payload(post),
             ttl_seconds=resolve_redis_dedup_ttl_seconds(),
             queue_maxlen=resolve_redis_ai_queue_maxlen(),
-            verbose=False,
         )
     except BaseException as err:
         if is_fatal_base_exception(err):

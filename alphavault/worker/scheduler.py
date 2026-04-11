@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+import logging
 import json
 import time
 from typing import Any, Callable, Sequence
 
+from alphavault.logging_config import get_logger
+
 AI_TRACE_LOG_PREFIX = "[ai_trace]"
+logger = get_logger(__name__)
 
 
 def _trace_log_value(value: object) -> str:
@@ -157,7 +161,6 @@ def schedule_ai_from_stream(
     wakeup_event: Any,
     config: Any,
     limiter: Any,
-    verbose: bool,
     redis_client: Any,
     redis_queue_key: str,
     source_name: str = "",
@@ -195,18 +198,19 @@ def schedule_ai_from_stream(
         "retry_count": 0,
         "total_backlog": 0,
     }
+    debug_enabled = logger.isEnabledFor(logging.DEBUG)
     if pressure_snapshot_fn is not None:
         try:
             pressure_snapshot = pressure_snapshot_fn(redis_client, redis_queue_key)
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
-            if verbose:
-                print(
-                    f"[ai] redis_pressure_snapshot_error owner={inflight_owner} "
-                    f"{type(err).__name__}: {err}",
-                    flush=True,
-                )
+            logger.warning(
+                "[ai] redis_pressure_snapshot_error owner=%s %s: %s",
+                inflight_owner,
+                type(err).__name__,
+                err,
+            )
     consumer_snapshot = {
         "consumer_pending_count": 0,
         "consumer_idle_ms": 0,
@@ -221,14 +225,14 @@ def schedule_ai_from_stream(
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
-            if verbose:
-                print(
-                    f"[ai] redis_consumer_snapshot_error owner={inflight_owner} "
-                    f"{type(err).__name__}: {err}",
-                    flush=True,
-                )
-    if verbose and int(pressure_snapshot.get("total_backlog") or 0) > 0:
-        print(
+            logger.warning(
+                "[ai] redis_consumer_snapshot_error owner=%s %s: %s",
+                inflight_owner,
+                type(err).__name__,
+                err,
+            )
+    if debug_enabled and int(pressure_snapshot.get("total_backlog") or 0) > 0:
+        logger.debug(
             _build_ai_trace_log_line(
                 stage="poll_snapshot",
                 owner=resolved_owner,
@@ -246,7 +250,6 @@ def schedule_ai_from_stream(
                 ),
                 consumer_idle_ms=int(consumer_snapshot.get("consumer_idle_ms") or 0),
             ),
-            flush=True,
         )
     if available <= 0:
         return 0, False
@@ -258,18 +261,17 @@ def schedule_ai_from_stream(
             redis_queue_key,
             now_epoch=int(time.time()),
             max_items=int(available),
-            verbose=bool(verbose),
         )
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
             raise
         has_error = True
-        if verbose:
-            print(
-                f"[ai] redis_retry_to_stream_error owner={inflight_owner} "
-                f"{type(err).__name__}: {err}",
-                flush=True,
-            )
+        logger.warning(
+            "[ai] redis_retry_to_stream_error owner=%s %s: %s",
+            inflight_owner,
+            type(err).__name__,
+            err,
+        )
     try:
         claimed_messages = claim_stuck_messages_fn(
             redis_client,
@@ -278,8 +280,8 @@ def schedule_ai_from_stream(
             min_idle_ms=max(1, int(stuck_seconds)) * 1000,
             count=int(available),
         )
-        if verbose and claimed_messages:
-            print(
+        if debug_enabled and claimed_messages:
+            logger.debug(
                 _build_ai_trace_log_line(
                     stage="redis_claim_done",
                     owner=resolved_owner,
@@ -289,17 +291,17 @@ def schedule_ai_from_stream(
                     available=int(available),
                     claimed=len(claimed_messages),
                 ),
-                flush=True,
             )
         messages.extend(("claim", message) for message in claimed_messages)
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
             raise
-        if verbose:
-            print(
-                f"[ai] redis_claim_error owner={inflight_owner} {type(err).__name__}: {err}",
-                flush=True,
-            )
+        logger.warning(
+            "[ai] redis_claim_error owner=%s %s: %s",
+            inflight_owner,
+            type(err).__name__,
+            err,
+        )
         return 0, True
 
     remaining = max(0, int(available) - len(messages))
@@ -311,8 +313,8 @@ def schedule_ai_from_stream(
                 consumer_name=resolved_consumer_name,
                 count=int(remaining),
             )
-            if verbose and read_messages:
-                print(
+            if debug_enabled and read_messages:
+                logger.debug(
                     _build_ai_trace_log_line(
                         stage="redis_read_done",
                         owner=resolved_owner,
@@ -322,25 +324,25 @@ def schedule_ai_from_stream(
                         available=int(available),
                         read=len(read_messages),
                     ),
-                    flush=True,
                 )
             messages.extend(("read", message) for message in read_messages)
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
-            if verbose:
-                print(
-                    f"[ai] redis_read_error owner={inflight_owner} {type(err).__name__}: {err}",
-                    flush=True,
-                )
+            logger.warning(
+                "[ai] redis_read_error owner=%s %s: %s",
+                inflight_owner,
+                type(err).__name__,
+                err,
+            )
             return 0, True
 
     if (
-        verbose
+        debug_enabled
         and not messages
         and int(pressure_snapshot.get("total_backlog") or 0) > 0
     ):
-        print(
+        logger.debug(
             _build_ai_trace_log_line(
                 stage="poll_no_messages",
                 owner=resolved_owner,
@@ -358,7 +360,6 @@ def schedule_ai_from_stream(
                 ),
                 consumer_idle_ms=int(consumer_snapshot.get("consumer_idle_ms") or 0),
             ),
-            flush=True,
         )
 
     scheduled = 0
@@ -377,25 +378,21 @@ def schedule_ai_from_stream(
                 message_id=str(message_id),
                 post_uid="",
             )
-            if verbose:
-                print(
-                    " ".join(
-                        [
-                            _build_ai_trace_log_line(
-                                stage="bad_payload_ack",
-                                trace_id=trace_id,
-                                owner=resolved_owner,
-                                consumer=resolved_consumer_name,
-                                queue=resolved_queue_key,
-                                source=resolved_source_name,
-                                message_id=str(message_id),
-                                delivery=str(delivery),
-                            ),
-                            f"{type(err).__name__}: {err}",
-                        ]
-                    ),
-                    flush=True,
-                )
+            logger.warning(
+                "%s %s: %s",
+                _build_ai_trace_log_line(
+                    stage="bad_payload_ack",
+                    trace_id=trace_id,
+                    owner=resolved_owner,
+                    consumer=resolved_consumer_name,
+                    queue=resolved_queue_key,
+                    source=resolved_source_name,
+                    message_id=str(message_id),
+                    delivery=str(delivery),
+                ),
+                type(err).__name__,
+                err,
+            )
             try:
                 ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
@@ -407,20 +404,18 @@ def schedule_ai_from_stream(
                 message_id=str(message_id),
                 post_uid="",
             )
-            if verbose:
-                print(
-                    _build_ai_trace_log_line(
-                        stage="bad_payload_ack",
-                        trace_id=trace_id,
-                        owner=resolved_owner,
-                        consumer=resolved_consumer_name,
-                        queue=resolved_queue_key,
-                        source=resolved_source_name,
-                        message_id=str(message_id),
-                        delivery=str(delivery),
-                    ),
-                    flush=True,
+            logger.warning(
+                _build_ai_trace_log_line(
+                    stage="bad_payload_ack",
+                    trace_id=trace_id,
+                    owner=resolved_owner,
+                    consumer=resolved_consumer_name,
+                    queue=resolved_queue_key,
+                    source=resolved_source_name,
+                    message_id=str(message_id),
+                    delivery=str(delivery),
                 )
+            )
             try:
                 ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
@@ -433,20 +428,18 @@ def schedule_ai_from_stream(
                 message_id=str(message_id),
                 post_uid="",
             )
-            if verbose:
-                print(
-                    _build_ai_trace_log_line(
-                        stage="bad_payload_ack",
-                        trace_id=trace_id,
-                        owner=resolved_owner,
-                        consumer=resolved_consumer_name,
-                        queue=resolved_queue_key,
-                        source=resolved_source_name,
-                        message_id=str(message_id),
-                        delivery=str(delivery),
-                    ),
-                    flush=True,
+            logger.warning(
+                _build_ai_trace_log_line(
+                    stage="bad_payload_ack",
+                    trace_id=trace_id,
+                    owner=resolved_owner,
+                    consumer=resolved_consumer_name,
+                    queue=resolved_queue_key,
+                    source=resolved_source_name,
+                    message_id=str(message_id),
+                    delivery=str(delivery),
                 )
+            )
             try:
                 ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
@@ -457,8 +450,8 @@ def schedule_ai_from_stream(
             message_id=str(message_id),
             post_uid=resolved_post_uid,
         )
-        if verbose:
-            print(
+        if debug_enabled:
+            logger.debug(
                 _build_ai_trace_log_line(
                     stage="submit_prepare",
                     trace_id=trace_id,
@@ -470,7 +463,6 @@ def schedule_ai_from_stream(
                     post_uid=resolved_post_uid,
                     delivery=str(delivery),
                 ),
-                flush=True,
             )
 
         fut = executor.submit(
@@ -484,15 +476,14 @@ def schedule_ai_from_stream(
             source_name=str(source_name or "").strip(),
             config=config,
             limiter=limiter,
-            verbose=bool(verbose),
             trace_id=trace_id,
             max_retry_count=max(0, int(getattr(config, "ai_retries", 0) or 0)),
         )
         fut.add_done_callback(lambda _f: wakeup_event.set())
         inflight_futures.add(fut)
         inflight_owner_by_future[fut] = resolved_owner
-        if verbose:
-            print(
+        if debug_enabled:
+            logger.debug(
                 _build_ai_trace_log_line(
                     stage="submit_done",
                     trace_id=trace_id,
@@ -504,7 +495,6 @@ def schedule_ai_from_stream(
                     post_uid=resolved_post_uid,
                     delivery=str(delivery),
                 ),
-                flush=True,
             )
         scheduled += 1
     return scheduled, bool(has_error)
@@ -524,7 +514,6 @@ def schedule_ai(
     wakeup_event: Any,
     config: Any,
     limiter: Any,
-    verbose: bool,
     redis_client: Any,
     redis_queue_key: str,
     source_name: str = "",
@@ -535,11 +524,11 @@ def schedule_ai(
         return 0, False
     has_redis_queue = bool(redis_client) and bool(str(redis_queue_key or "").strip())
     if not has_redis_queue:
-        if verbose:
-            print(
-                f"[ai] redis_required owner={inflight_owner} platform={platform}",
-                flush=True,
-            )
+        logger.warning(
+            "[ai] redis_required owner=%s platform=%s",
+            inflight_owner,
+            platform,
+        )
         return 0, True
     return schedule_ai_from_stream_fn(
         executor=executor,
@@ -553,7 +542,6 @@ def schedule_ai(
         wakeup_event=wakeup_event,
         config=config,
         limiter=limiter,
-        verbose=bool(verbose),
         redis_client=redis_client,
         redis_queue_key=str(redis_queue_key),
         source_name=str(source_name or "").strip(),

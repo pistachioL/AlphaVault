@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 
+from alphavault.logging_config import configure_logging, get_logger
 from alphavault.constants import (
     DEFAULT_SPOOL_DIR,
     ENV_POSTGRES_DSN,
@@ -41,14 +42,15 @@ _STANDARD_REQUIRED_TABLES = (
     RESEARCH_RELATION_CANDIDATES_TABLE,
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
 )
+logger = get_logger(__name__)
 
 
 def _print(msg: str) -> None:
-    print(msg, flush=True)
+    logger.info(msg)
 
 
 def _eprint(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    logger.error(msg)
 
 
 def _spool_dir_value() -> str:
@@ -193,6 +195,7 @@ def run_startup_healthcheck() -> None:
 
 
 def main(argv: list[str]) -> int:
+    configure_logging()
     if len(argv) > 1:
         _eprint("[healthcheck] error: no args supported")
         return 2

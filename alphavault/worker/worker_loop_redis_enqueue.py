@@ -18,7 +18,6 @@ def submit_redis_enqueue_job(
     source,
     redis_client: Any,
     redis_queue_key: str,
-    verbose: bool,
 ) -> dict[str, int | bool]:
     attempted = 0
     pushed = 0
@@ -39,7 +38,6 @@ def submit_redis_enqueue_job(
             redis_queue_key=redis_queue_key,
             post_uid=post_uid,
             payload=payload,
-            verbose=bool(verbose),
         )
         if push_error:
             periodic_jobs.restore_redis_enqueue_payload(
@@ -88,7 +86,6 @@ def maybe_schedule_redis_enqueue(
         source=source,
         redis_client=ctx.redis_client,
         redis_queue_key=str(source.redis_queue_key or ""),
-        verbose=ctx.verbose,
     )
     source.redis_enqueue_future.add_done_callback(lambda _f: wakeup_event.set())
     source.redis_enqueue_next_at = ctx.now + float(REDIS_ENQUEUE_RETRY_INTERVAL_SECONDS)

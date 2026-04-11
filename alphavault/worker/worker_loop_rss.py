@@ -52,7 +52,6 @@ def maybe_schedule_rss_ingest(
         rss_timeout=float(getattr(ctx.args, "rss_timeout", 60.0) or 60.0),
         rss_retries=int(getattr(ctx.args, "rss_retries", 5) or 5),
         rss_feed_sleep_seconds=float(ctx.rss_feed_sleep_seconds),
-        verbose=ctx.verbose,
     )
     source.rss_ingest_future.add_done_callback(lambda _f: wakeup_event.set())
 

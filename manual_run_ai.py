@@ -7,6 +7,11 @@ from pathlib import Path
 
 from alphavault.env import load_dotenv_if_present
 
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
@@ -42,6 +47,7 @@ from alphavault.worker.runtime_models import LLMConfig
 
 
 DEFAULT_RELEVANT_THRESHOLD = 0.35
+logger = get_logger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,7 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--relevant-threshold", type=float, default=DEFAULT_RELEVANT_THRESHOLD
     )
-    parser.add_argument("--verbose", action="store_true")
+    add_log_level_argument(parser)
     return parser.parse_args()
 
 
@@ -173,7 +179,6 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
         ai_rpm=max(0.0, float(args.ai_rpm or 0.0)),
         ai_timeout_seconds=max(1.0, float(args.ai_timeout_sec)),
         trace_out=trace_out,
-        verbose=bool(args.verbose),
     )
 
 
@@ -186,6 +191,7 @@ def _source_engine_for_platform(platform: str) -> PostgresEngine:
 def main() -> None:
     load_dotenv_if_present()
     args = parse_args()
+    configure_logging(level=args.log_level)
     post_uids = _parse_post_uids(args.post_uids)
     if not post_uids:
         raise SystemExit("缺参数：请传 --post-uids")
@@ -202,9 +208,10 @@ def main() -> None:
         if engine is None:
             engine = _source_engine_for_platform(platform)
             engine_by_platform[platform] = engine
-        print(
-            f"[manual] run post_uid={post_uid} prompt_version={config.prompt_version}",
-            flush=True,
+        logger.info(
+            "[manual] run post_uid=%s prompt_version=%s",
+            post_uid,
+            config.prompt_version,
         )
         if process_one_post_uid(
             engine=engine, post_uid=post_uid, config=config, limiter=limiter
@@ -212,12 +219,12 @@ def main() -> None:
             ok += 1
             continue
         skipped += 1
-        print(
-            f"[manual] skip post_uid={post_uid} reason=process_failed",
-            flush=True,
+        logger.warning(
+            "[manual] skip post_uid=%s reason=process_failed",
+            post_uid,
         )
 
-    print(f"[manual] done ok={ok} skipped={skipped}", flush=True)
+    logger.info("[manual] done ok=%s skipped=%s", ok, skipped)
 
 
 if __name__ == "__main__":

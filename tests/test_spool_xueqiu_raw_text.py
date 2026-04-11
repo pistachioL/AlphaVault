@@ -60,7 +60,6 @@ def test_flush_spool_to_turso_keeps_xueqiu_raw_text(monkeypatch, tmp_path) -> No
         spool_dir=tmp_path,
         engine=object(),  # type: ignore[arg-type]
         max_items=10,
-        verbose=False,
     )
 
     assert processed == 1

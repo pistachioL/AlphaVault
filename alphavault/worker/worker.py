@@ -16,6 +16,7 @@ from alphavault.constants import (
     ENV_RSS_INTERVAL_SECONDS,
 )
 from alphavault.rss.utils import RateLimiter, env_float, parse_active_hours
+from alphavault.logging_config import configure_logging
 from alphavault.worker import worker_loop
 from alphavault.worker.cli import (
     _parse_worker_active_hours_from_args,
@@ -49,6 +50,7 @@ def _resolve_rss_feed_sleep_seconds() -> float:
 
 def main() -> None:
     args = parse_args()
+    configure_logging(level=getattr(args, "log_level", ""))
     source_configs = list(resolve_rss_source_configs(args))
 
     worker_active_hours = _parse_worker_active_hours_from_args(args)

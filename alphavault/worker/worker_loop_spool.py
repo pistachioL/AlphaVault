@@ -21,13 +21,11 @@ def submit_spool_flush_job(
     spool_dir: Path,
     redis_client: Any,
     redis_queue_key: str,
-    verbose: bool,
 ) -> dict[str, int | bool]:
     flushed, has_error = flush_spool_to_turso(
         spool_dir=spool_dir,
         engine=sync_engine,
         max_items=int(SPOOL_FLUSH_MAX_ITEMS_PER_RUN),
-        verbose=bool(verbose),
         redis_client=redis_client,
         redis_queue_key=redis_queue_key,
         delete_spool_on_redis_push=False,
@@ -66,7 +64,6 @@ def maybe_schedule_spool_flush(
         spool_dir=source.spool_dir,
         redis_client=ctx.redis_client,
         redis_queue_key=str(source.redis_queue_key or ""),
-        verbose=ctx.verbose,
     )
     source.spool_flush_future.add_done_callback(lambda _f: wakeup_event.set())
     source.spool_flush_next_at = ctx.now + float(SPOOL_FLUSH_RETRY_INTERVAL_SECONDS)

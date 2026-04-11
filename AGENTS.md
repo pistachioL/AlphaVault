@@ -15,7 +15,7 @@ Uses `uv` (lockfile: `uv.lock`).
 - `uv run pre-commit run -a`: run format/lint/type-check/spell-check/tests (Ruff, mypy, codespell, vulture, pytest).
 - `uv run pytest`: run tests.
 - `uv run reflex run`: start the Reflex dev server.
-- `uv run python weibo_rss_turso_worker.py --verbose`: run the RSS → AI → Turso worker locally.
+- `uv run python weibo_rss_turso_worker.py --log-level info`: run the RSS → AI → Turso worker locally.
 - `docker compose up --build`: run the container on `http://localhost:8080` using `.env`.
 
 ## Coding Style & Naming Conventions

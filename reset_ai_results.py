@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import logging
 import re
 
 from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
@@ -21,6 +22,11 @@ from alphavault.db.sql.scripts import (
     select_post_uids_in,
 )
 from alphavault.env import load_dotenv_if_present
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 
 from alphavault.db.turso_queue import (
     reset_ai_results_all,
@@ -30,6 +36,7 @@ from alphavault.rss.utils import now_str
 
 
 DEFAULT_CHUNK_SIZE = 200
+logger = get_logger(__name__)
 
 
 def _source_engine_for_platform(platform: str) -> PostgresEngine:
@@ -64,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument("--dry-run", action="store_true", help="只打印，不写 DB")
-    parser.add_argument("--verbose", action="store_true")
+    add_log_level_argument(parser)
     return parser.parse_args()
 
 
@@ -101,6 +108,7 @@ def _select_existing_post_uids(engine, post_uids: list[str]) -> set[str]:
 def main() -> None:
     load_dotenv_if_present()
     args = parse_args()
+    configure_logging(level=args.log_level)
     if args.all and str(args.post_uids or "").strip():
         raise SystemExit("参数冲突：--all 和 --post-uids 只能选一个")
     if not args.all and not str(args.post_uids or "").strip():
@@ -121,9 +129,11 @@ def main() -> None:
                     conn.execute(SELECT_TOTAL_ASSERTIONS).scalar() or 0
                 )
 
-        print(
-            f"[reset] plan all=1 posts={total_posts} assertions={total_assertions} keep_assertions=1 dry_run={int(bool(args.dry_run))}",
-            flush=True,
+        logger.info(
+            "[reset] plan all=1 posts=%s assertions=%s keep_assertions=1 dry_run=%s",
+            total_posts,
+            total_assertions,
+            int(bool(args.dry_run)),
         )
         if args.dry_run:
             return
@@ -137,9 +147,10 @@ def main() -> None:
             )
             deleted += int(source_deleted)
             updated += int(source_updated)
-        print(
-            f"[reset] done all=1 deleted_assertions={deleted} updated_posts={updated}",
-            flush=True,
+        logger.info(
+            "[reset] done all=1 deleted_assertions=%s updated_posts=%s",
+            deleted,
+            updated,
         )
         return
 
@@ -157,7 +168,7 @@ def main() -> None:
     missing = [uid for uid in post_uids if uid not in existing]
     targets = [uid for uid in post_uids if uid in existing]
 
-    print(
+    logger.info(
         " ".join(
             [
                 "[reset] plan",
@@ -166,13 +177,12 @@ def main() -> None:
                 f"missing={len(missing)}",
                 f"dry_run={int(bool(args.dry_run))}",
             ]
-        ),
-        flush=True,
+        )
     )
-    if missing and args.verbose:
+    if missing and logger.isEnabledFor(logging.DEBUG):
         head = ", ".join(missing[:10])
         tail = "" if len(missing) <= 10 else f" ... (+{len(missing) - 10})"
-        print(f"[reset] missing_post_uids={len(missing)} {head}{tail}", flush=True)
+        logger.debug("[reset] missing_post_uids=%s %s%s", len(missing), head, tail)
 
     if args.dry_run or not targets:
         return
@@ -191,9 +201,10 @@ def main() -> None:
         )
         deleted += int(source_deleted)
         updated += int(source_updated)
-    print(
-        f"[reset] done all=0 deleted_assertions={deleted} updated_posts={updated}",
-        flush=True,
+    logger.info(
+        "[reset] done all=0 deleted_assertions=%s updated_posts=%s",
+        deleted,
+        updated,
     )
 
 

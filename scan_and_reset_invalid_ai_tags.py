@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import logging
 
 from alphavault.constants import PLATFORM_WEIBO, PLATFORM_XUEQIU
 from alphavault.env import load_dotenv_if_present
 
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 from alphavault.ai.tag_validate import validate_assertion_row
 from alphavault.db.postgres_db import PostgresEngine, ensure_postgres_engine
 from alphavault.db.postgres_env import (
@@ -18,6 +24,7 @@ from alphavault.rss.utils import now_str
 
 
 DEFAULT_CHUNK_SIZE = 200
+logger = get_logger(__name__)
 
 
 def _source_engine_for_platform(platform: str) -> PostgresEngine:
@@ -50,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--yes", action="store_true", help="非 dry-run 时必须加 --yes 确认"
     )
-    parser.add_argument("--verbose", action="store_true")
+    add_log_level_argument(parser)
     return parser.parse_args()
 
 
@@ -59,7 +66,6 @@ def _scan_invalid_post_uids(
     *,
     prompt_version: str,
     limit: int,
-    verbose: bool,
 ) -> tuple[list[str], dict[str, str], int]:
     params = {"prompt_version": str(prompt_version or "").strip()}
     query = scan_invalid_assertion_rows(
@@ -89,16 +95,17 @@ def _scan_invalid_post_uids(
                 if limit > 0 and len(invalid_post_uids) >= int(limit):
                     break
 
-    if verbose and invalid_post_uids:
+    if logger.isEnabledFor(logging.DEBUG) and invalid_post_uids:
         for uid in invalid_post_uids[:10]:
-            print(
-                f"[scan_reset] bad post_uid={uid} {first_error_by_uid.get(uid, '')}",
-                flush=True,
+            logger.debug(
+                "[scan_reset] bad post_uid=%s %s",
+                uid,
+                first_error_by_uid.get(uid, ""),
             )
         if len(invalid_post_uids) > 10:
-            print(
-                f"[scan_reset] bad_post_uids_more count={len(invalid_post_uids) - 10}",
-                flush=True,
+            logger.debug(
+                "[scan_reset] bad_post_uids_more count=%s",
+                len(invalid_post_uids) - 10,
             )
 
     return invalid_post_uids, first_error_by_uid, scanned_rows
@@ -107,6 +114,7 @@ def _scan_invalid_post_uids(
 def main() -> None:
     load_dotenv_if_present()
     args = parse_args()
+    configure_logging(level=args.log_level)
     prompt_version = str(args.prompt_version or "").strip()
     if not args.dry_run and not args.yes:
         raise SystemExit("危险操作：非 dry-run 请加 --yes 确认")
@@ -121,7 +129,6 @@ def main() -> None:
             engine,
             prompt_version=prompt_version,
             limit=remaining,
-            verbose=bool(args.verbose),
         )
         invalid_uids.extend(source_invalid_uids)
         scanned_rows += int(source_scanned_rows)
@@ -129,7 +136,7 @@ def main() -> None:
             invalid_uids = invalid_uids[:limit]
             break
 
-    print(
+    logger.info(
         " ".join(
             [
                 "[scan_reset] plan",
@@ -138,8 +145,7 @@ def main() -> None:
                 f"bad_posts={len(invalid_uids)}",
                 f"dry_run={1 if args.dry_run else 0}",
             ]
-        ),
-        flush=True,
+        )
     )
 
     if args.dry_run or not invalid_uids:
@@ -161,9 +167,10 @@ def main() -> None:
             chunk_size=max(1, int(args.chunk_size)),
         )
         updated += int(source_updated)
-    print(
-        f"[scan_reset] done bad_posts={len(invalid_uids)} updated_posts={updated}",
-        flush=True,
+    logger.info(
+        "[scan_reset] done bad_posts=%s updated_posts=%s",
+        len(invalid_uids),
+        updated,
     )
 
 

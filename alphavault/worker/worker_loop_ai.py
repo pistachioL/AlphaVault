@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 import threading
 
+from alphavault.logging_config import get_logger
 from alphavault.db.postgres_db import PostgresEngine
 from alphavault.worker import periodic_jobs
 from alphavault.worker import scheduler
@@ -19,6 +20,7 @@ from alphavault.worker.redis_stream_queue import (
 from alphavault.worker.worker_loop_models import SourceTickContext
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+logger = get_logger(__name__)
 
 
 def _schedule_ai_from_stream(**kwargs):  # type: ignore[no-untyped-def]
@@ -64,7 +66,6 @@ def schedule_ai_for_source(
         wakeup_event=wakeup_event,
         config=ctx.config,
         limiter=ctx.limiter,
-        verbose=ctx.verbose,
         redis_client=ctx.redis_client,
         redis_queue_key=str(source.redis_queue_key or ""),
         source_name=source_name,
@@ -72,9 +73,9 @@ def schedule_ai_for_source(
         schedule_ai_from_stream_fn=_schedule_ai_from_stream,
     )
     _ = scheduled
-    if schedule_error and ctx.verbose:
+    if schedule_error:
         source_name = str(getattr(source.config, "name", "") or "").strip()
-        print(f"[ai:{source_name}] schedule_error=1", flush=True)
+        logger.warning("[ai:%s] schedule_error=1", source_name)
     return bool(schedule_error)
 
 

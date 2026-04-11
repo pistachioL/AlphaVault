@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import importlib
+import logging
 from pathlib import Path
 import sys
 
@@ -29,6 +30,7 @@ def test_load_security_master_rows_reads_expected_csv_columns(tmp_path: Path) ->
 def test_import_csv_into_security_master_bulk_upserts_rows_with_progress_and_rebuilds_shadow(
     tmp_path: Path,
     monkeypatch,
+    caplog,
 ) -> None:
     script = importlib.import_module("import_security_master_csv")
     csv_path = tmp_path / "security_master.csv"
@@ -42,7 +44,6 @@ def test_import_csv_into_security_master_bulk_upserts_rows_with_progress_and_reb
 
     bulk_upserted: list[tuple[object, list[dict[str, str]]]] = []
     rebuilt: list[object] = []
-    printed: list[str] = []
     fake_conn = object()
 
     @contextmanager
@@ -61,10 +62,6 @@ def test_import_csv_into_security_master_bulk_upserts_rows_with_progress_and_reb
         rebuilt.append(engine_or_conn)
         return True
 
-    def _fake_print(*args, **kwargs) -> None:
-        del kwargs
-        printed.append(" ".join(str(item) for item in args))
-
     engine = object()
 
     monkeypatch.setattr(script, "IMPORT_SECURITY_MASTER_BATCH_SIZE", 2, raising=False)
@@ -80,9 +77,10 @@ def test_import_csv_into_security_master_bulk_upserts_rows_with_progress_and_reb
         "rebuild_stock_dict_shadow_best_effort",
         _fake_rebuild_stock_dict_shadow_best_effort,
     )
-    monkeypatch.setattr("builtins.print", _fake_print)
-
-    row_count = script.import_csv_into_security_master(engine, csv_path, batch_size=2)
+    with caplog.at_level(logging.INFO):
+        row_count = script.import_csv_into_security_master(
+            engine, csv_path, batch_size=2
+        )
 
     assert row_count == 3
     assert bulk_upserted == [
@@ -115,7 +113,7 @@ def test_import_csv_into_security_master_bulk_upserts_rows_with_progress_and_reb
             ],
         ),
     ]
-    assert printed == [
+    assert caplog.messages == [
         "imported security_master rows: 2/3",
         "imported security_master rows: 3/3",
         "rebuilding security_master shadow dict...",

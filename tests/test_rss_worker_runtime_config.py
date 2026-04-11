@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from types import SimpleNamespace
 from typing import cast
@@ -135,7 +136,6 @@ def test_ingest_rss_many_once_passes_timeout_and_retries(monkeypatch, tmp_path) 
         limit=None,
         rss_timeout=60.0,
         rss_retries=5,
-        verbose=False,
     )
 
     assert fetch_calls == [("https://example.com/rss", 60.0, 5)]
@@ -155,9 +155,9 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
         )
 
     def _fake_push_to_redis_status(
-        redis_client, redis_queue_key, *, post_uid: str, payload, verbose: bool
+        redis_client, redis_queue_key, *, post_uid: str, payload
     ) -> str:
-        del redis_client, redis_queue_key, payload, verbose
+        del redis_client, redis_queue_key, payload
         if str(post_uid or "").strip() == "weibo:1":
             return ingest.REDIS_PUSH_STATUS_PUSHED
         return ingest.REDIS_PUSH_STATUS_ERROR
@@ -198,7 +198,6 @@ def test_ingest_rss_many_once_redis_primary_skips_turso_write(
         limit=None,
         rss_timeout=60.0,
         rss_retries=5,
-        verbose=False,
     )
 
     assert accepted == 1
@@ -264,7 +263,6 @@ def test_ingest_rss_many_once_ignores_enqueue_callback_and_pushes_redis_inline(
         limit=None,
         rss_timeout=60.0,
         rss_retries=5,
-        verbose=False,
         enqueue_spooled_payload=lambda _payload: (_ for _ in ()).throw(
             AssertionError("should not use local enqueue callback")
         ),
@@ -297,7 +295,7 @@ def test_build_rss_accepted_log_line_contains_id_author_and_progress() -> None:
 
 
 def test_ingest_rss_many_once_prints_accepted_log_with_progress(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, caplog
 ) -> None:
     def _fake_push_to_redis_status(*_args, **_kwargs) -> str:
         return ingest.REDIS_PUSH_STATUS_PUSHED
@@ -329,32 +327,31 @@ def test_ingest_rss_many_once_prints_accepted_log_with_progress(
         "_try_push_to_redis_status",
         _fake_push_to_redis_status,
     )
-    accepted, enqueue_error = ingest.ingest_rss_many_once(
-        rss_urls=["https://example.com/rss"],
-        engine=None,
-        spool_dir=tmp_path,
-        redis_client=object(),
-        redis_queue_key="k",
-        platform="weibo",
-        author="",
-        user_id=None,
-        limit=None,
-        rss_timeout=60.0,
-        rss_retries=5,
-        verbose=True,
-    )
+    with caplog.at_level(logging.DEBUG):
+        accepted, enqueue_error = ingest.ingest_rss_many_once(
+            rss_urls=["https://example.com/rss"],
+            engine=None,
+            spool_dir=tmp_path,
+            redis_client=object(),
+            redis_queue_key="k",
+            platform="weibo",
+            author="",
+            user_id=None,
+            limit=None,
+            rss_timeout=60.0,
+            rss_retries=5,
+        )
 
-    out = capsys.readouterr().out
     assert accepted == 1
     assert enqueue_error is False
-    assert "[rss] accepted" in out
-    assert "post_uid=weibo:1" in out
-    assert "author=测试博主" in out
-    assert "progress=1/1" in out
+    assert "[rss] accepted" in caplog.text
+    assert "post_uid=weibo:1" in caplog.text
+    assert "author=测试博主" in caplog.text
+    assert "progress=1/1" in caplog.text
 
 
 def test_ingest_rss_many_once_accepted_total_is_per_user(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, caplog
 ) -> None:
     def _fake_push_to_redis_status(*_args, **_kwargs) -> str:
         return ingest.REDIS_PUSH_STATUS_PUSHED
@@ -408,22 +405,25 @@ def test_ingest_rss_many_once_accepted_total_is_per_user(
         "_try_push_to_redis_status",
         _fake_push_to_redis_status,
     )
-    accepted, enqueue_error = ingest.ingest_rss_many_once(
-        rss_urls=["https://example.com/rss/user_a", "https://example.com/rss/user_b"],
-        engine=None,
-        spool_dir=tmp_path,
-        redis_client=object(),
-        redis_queue_key="k",
-        platform="weibo",
-        author="",
-        user_id=None,
-        limit=None,
-        rss_timeout=60.0,
-        rss_retries=5,
-        verbose=True,
-    )
+    with caplog.at_level(logging.DEBUG):
+        accepted, enqueue_error = ingest.ingest_rss_many_once(
+            rss_urls=[
+                "https://example.com/rss/user_a",
+                "https://example.com/rss/user_b",
+            ],
+            engine=None,
+            spool_dir=tmp_path,
+            redis_client=object(),
+            redis_queue_key="k",
+            platform="weibo",
+            author="",
+            user_id=None,
+            limit=None,
+            rss_timeout=60.0,
+            rss_retries=5,
+        )
 
-    out_lines = capsys.readouterr().out.splitlines()
+    out_lines = caplog.messages
     assert accepted == 4
     assert enqueue_error is False
     assert any(
@@ -469,7 +469,6 @@ def test_ingest_rss_many_once_sleeps_between_feeds(monkeypatch, tmp_path) -> Non
         rss_timeout=60.0,
         rss_retries=5,
         rss_feed_sleep_seconds=10.0,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -504,7 +503,6 @@ def test_ingest_rss_many_once_does_not_sleep_when_disabled(
         rss_timeout=60.0,
         rss_retries=5,
         rss_feed_sleep_seconds=0.0,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -564,7 +562,6 @@ def test_ingest_rss_many_once_calls_item_ingested_callback_on_accept(
         rss_retries=5,
         rss_feed_sleep_seconds=0.0,
         on_item_ingested=_on_item_ingested,
-        verbose=False,
     )
 
     assert accepted == 1
@@ -624,7 +621,6 @@ def test_ingest_rss_many_once_redis_error_sets_enqueue_error(
         rss_timeout=60.0,
         rss_retries=5,
         rss_feed_sleep_seconds=0.0,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -674,7 +670,6 @@ def test_ingest_rss_many_once_redis_error_does_not_need_second_fallback(
         rss_timeout=60.0,
         rss_retries=5,
         rss_feed_sleep_seconds=0.0,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -719,7 +714,6 @@ def test_ingest_rss_many_once_without_redis_sets_enqueue_error(
         rss_timeout=60.0,
         rss_retries=5,
         rss_feed_sleep_seconds=0.0,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -805,7 +799,6 @@ def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
         rss_timeout=60.0,
         rss_retries=5,
         rss_feed_sleep_seconds=0.0,
-        verbose=False,
     )
 
     assert accepted == 1
@@ -814,7 +807,7 @@ def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
 
 
 def test_ingest_rss_many_once_prints_feed_sleep_log(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, caplog
 ) -> None:
     def _fake_fetch_feed(
         url: str, timeout: float, *, retries: int = 0
@@ -825,29 +818,28 @@ def test_ingest_rss_many_once_prints_feed_sleep_log(
     monkeypatch.setattr(ingest, "fetch_feed", _fake_fetch_feed)
     monkeypatch.setattr(ingest.time, "sleep", lambda sec: None)
 
-    accepted, enqueue_error = ingest.ingest_rss_many_once(
-        rss_urls=["https://example.com/rss/a", "https://example.com/rss/b"],
-        engine=None,
-        spool_dir=tmp_path,
-        redis_client=None,
-        redis_queue_key="",
-        platform="weibo",
-        author="",
-        user_id=None,
-        limit=None,
-        rss_timeout=60.0,
-        rss_retries=5,
-        rss_feed_sleep_seconds=10.0,
-        verbose=True,
-    )
+    with caplog.at_level(logging.INFO):
+        accepted, enqueue_error = ingest.ingest_rss_many_once(
+            rss_urls=["https://example.com/rss/a", "https://example.com/rss/b"],
+            engine=None,
+            spool_dir=tmp_path,
+            redis_client=None,
+            redis_queue_key="",
+            platform="weibo",
+            author="",
+            user_id=None,
+            limit=None,
+            rss_timeout=60.0,
+            rss_retries=5,
+            rss_feed_sleep_seconds=10.0,
+        )
 
-    out = capsys.readouterr().out
     assert accepted == 0
     assert enqueue_error is False
-    assert "[rss] feed_start" in out
-    assert "[rss] feed_done" in out
-    assert "[rss] feed_sleep" in out
-    assert "[rss] cycle_done" in out
+    assert "[rss] feed_start" in caplog.text
+    assert "[rss] feed_done" in caplog.text
+    assert "[rss] feed_sleep" in caplog.text
+    assert "[rss] cycle_done" in caplog.text
 
 
 def test_ingest_rss_many_once_without_redis_skips_items(monkeypatch, tmp_path) -> None:
@@ -901,7 +893,6 @@ def test_ingest_rss_many_once_without_redis_skips_items(monkeypatch, tmp_path) -
         limit=None,
         rss_timeout=60.0,
         rss_retries=5,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -966,7 +957,6 @@ def test_ingest_rss_many_once_redis_error_does_not_fall_back_to_turso_inline(
         limit=None,
         rss_timeout=60.0,
         rss_retries=5,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -1030,7 +1020,6 @@ def test_ingest_rss_many_once_redis_duplicate_is_skipped_without_error(
         limit=None,
         rss_timeout=60.0,
         rss_retries=5,
-        verbose=False,
     )
 
     assert accepted == 0
@@ -1086,7 +1075,6 @@ def test_ingest_rss_many_once_redis_duplicate_keeps_enqueue_error_false(
         limit=None,
         rss_timeout=60.0,
         rss_retries=5,
-        verbose=False,
     )
 
     assert accepted == 0

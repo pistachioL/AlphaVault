@@ -26,10 +26,16 @@ from alphavault.db.postgres_db import (
     run_postgres_transaction,
 )
 from alphavault.env import load_dotenv_if_present
+from alphavault.logging_config import (
+    add_log_level_argument,
+    configure_logging,
+    get_logger,
+)
 from migrate_standard_history_tables import migrate_standard_history_tables
 
 
 DEFAULT_BATCH_SIZE = 500
+logger = get_logger(__name__)
 
 _SOURCE_TABLE_SPECS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
@@ -242,6 +248,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_BATCH_SIZE,
         help="每批写多少行（默认 500）",
     )
+    add_log_level_argument(parser)
     return parser.parse_args(argv)
 
 
@@ -395,9 +402,11 @@ def _copy_table_group(
             columns=selected_columns,
             row_batches=row_batches,
         )
-        print(
-            f"[migrate] {schema_name}.{table_name} copied={counts[table_name]}",
-            flush=True,
+        logger.info(
+            "[migrate] %s.%s copied=%s",
+            schema_name,
+            table_name,
+            counts[table_name],
         )
     return counts
 
@@ -438,9 +447,9 @@ def migrate_all(
     xueqiu_engine = ensure_postgres_engine(dsn, schema_name=SCHEMA_XUEQIU)
     standard_engine = ensure_postgres_engine(dsn, schema_name=SCHEMA_STANDARD)
 
-    print(
-        f"[start] migrate_turso_to_postgres batch_size={normalized_batch_size}",
-        flush=True,
+    logger.info(
+        "[start] migrate_turso_to_postgres batch_size=%s",
+        normalized_batch_size,
     )
 
     with ExitStack() as stack:
@@ -517,13 +526,14 @@ def migrate_all(
         )
 
     for key in sorted(summary):
-        print(f"[summary] {key}={summary[key]}", flush=True)
+        logger.info("[summary] %s=%s", key, summary[key])
     return summary
 
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv_if_present()
     args = parse_args(argv)
+    configure_logging(level=args.log_level)
     migrate_all(
         turso_weibo_url=args.turso_weibo_url,
         turso_xueqiu_url=args.turso_xueqiu_url,

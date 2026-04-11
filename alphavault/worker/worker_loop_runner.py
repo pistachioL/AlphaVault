@@ -9,6 +9,7 @@ import time
 from typing import Any, Callable, Optional
 
 from alphavault.rss.utils import RateLimiter, sleep_until_active
+from alphavault.logging_config import get_logger
 from alphavault.worker import periodic_jobs
 from alphavault.worker.progress_state import has_due_ai_posts
 from alphavault.worker.runtime_cache import memoize_bool_with_ttl
@@ -28,10 +29,11 @@ from alphavault.worker.worker_loop_source_tick import (
     run_prepared_source_maintenance,
 )
 
+logger = get_logger(__name__)
+
 
 @dataclass(frozen=True)
 class WorkerLoopSettings:
-    verbose: bool
     limit_or_none: int | None
     stuck_seconds: int
 
@@ -75,7 +77,6 @@ def _build_due_ai_cached_by_source(
     *,
     sources: list[WorkerSourceRuntime],
     redis_client,
-    verbose: bool,
 ) -> dict[str, Callable[[], bool]]:
     cached: dict[str, Callable[[], bool]] = {}
     for src in sources:
@@ -89,7 +90,6 @@ def _build_due_ai_cached_by_source(
                     else None
                 ),
                 platform=str(source.config.platform or ""),
-                verbose=verbose,
                 redis_client=redis_client,
                 redis_queue_key=str(source.redis_queue_key or ""),
             )
@@ -102,12 +102,10 @@ def _build_due_ai_cached_by_source(
 
 
 def _build_settings(args) -> WorkerLoopSettings:
-    verbose = bool(getattr(args, "verbose", False))
     limit = int(getattr(args, "limit", 0) or 0)
     limit_or_none = limit if limit > 0 else None
     stuck_seconds = int(getattr(args, "ai_stuck_seconds", 3600) or 3600)
     return WorkerLoopSettings(
-        verbose=bool(verbose),
         limit_or_none=limit_or_none,
         stuck_seconds=int(stuck_seconds),
     )
@@ -117,7 +115,6 @@ def _recover_redis_ai_pending_on_start(
     *,
     sources: list[WorkerSourceRuntime],
     redis_client: Any,
-    verbose: bool,
 ) -> None:
     if not redis_client:
         return
@@ -129,15 +126,14 @@ def _recover_redis_ai_pending_on_start(
             redis_ai_reset_consumer_group(
                 redis_client,
                 queue_key,
-                verbose=bool(verbose),
             )
         except Exception as err:
-            if verbose:
-                print(
-                    f"[redis] ai_group_reset_error queue={queue_key} "
-                    f"{type(err).__name__}: {err}",
-                    flush=True,
-                )
+            logger.warning(
+                "[redis] ai_group_reset_error queue=%s %s: %s",
+                queue_key,
+                type(err).__name__,
+                err,
+            )
 
 
 def _compute_maintenance(
@@ -172,7 +168,6 @@ def _build_tick_ctx(
         ai_cap=int(loop_ctx.ai_cap),
         limit_or_none=loop_ctx.settings.limit_or_none,
         stuck_seconds=int(loop_ctx.settings.stuck_seconds),
-        verbose=bool(loop_ctx.settings.verbose),
         rss_active_hours=loop_ctx.rss_active_hours,
         rss_interval_seconds=float(loop_ctx.rss_interval_seconds),
         rss_feed_sleep_seconds=float(loop_ctx.rss_feed_sleep_seconds),
@@ -269,9 +264,7 @@ def _run_worker_loop_tick(
     state: SourceTickState,
 ) -> tuple[bool, float, float]:
     if loop_ctx.worker_active_hours is not None:
-        sleep_until_active(
-            loop_ctx.worker_active_hours, verbose=loop_ctx.settings.verbose
-        )
+        sleep_until_active(loop_ctx.worker_active_hours)
 
     state.wakeup_event.clear()
     periodic_jobs.prune_inflight_futures(
@@ -348,11 +341,9 @@ def run_worker_forever(
     _recover_redis_ai_pending_on_start(
         sources=sources,
         redis_client=redis_client,
-        verbose=settings.verbose,
     )
     for src in sources:
         log_source_runtime(
-            verbose=settings.verbose,
             source=src,
             redis_client=redis_client,
             rss_interval_seconds=float(rss_interval_seconds),
@@ -362,7 +353,6 @@ def run_worker_forever(
     due_ai_cached_by_source = _build_due_ai_cached_by_source(
         sources=sources,
         redis_client=redis_client,
-        verbose=settings.verbose,
     )
     loop_ctx = WorkerLoopContext(
         args=args,

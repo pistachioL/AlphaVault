@@ -48,7 +48,6 @@ def _schedule_stock_hot_cache(
             submit_fn=sync_stock_hot_cache,
             submit_kwargs={
                 "should_continue": should_continue_low_priority,
-                "verbose": ctx.verbose,
             },
         )
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from alphavault.logging_config import get_logger
 from alphavault.worker import cycle_runner
 from alphavault.worker import periodic_jobs
 from alphavault.worker.turso_runtime import (
@@ -7,6 +8,7 @@ from alphavault.worker.turso_runtime import (
 )
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+logger = get_logger(__name__)
 
 
 def _collect_rss_ingest(
@@ -14,7 +16,6 @@ def _collect_rss_ingest(
     source,
     source_name: str,
     now: float,
-    verbose: bool,
     rss_interval_seconds: float,
 ) -> bool:
     source.rss_ingest_future, rss_accepted, rss_finished, rss_enqueue_error = (
@@ -22,18 +23,18 @@ def _collect_rss_ingest(
             source_name=source_name,
             future=getattr(source, "rss_ingest_future", None),
             engine=source.engine,
-            verbose=verbose,
             maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
             fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
         )
     )
     if rss_finished:
         source.rss_next_ingest_at = now + float(rss_interval_seconds)
-        if verbose and (rss_accepted > 0 or rss_enqueue_error):
-            print(
-                f"[rss:{source_name}] done accepted={int(rss_accepted)} "
-                f"enqueue_error={1 if rss_enqueue_error else 0}",
-                flush=True,
+        if rss_accepted > 0 or rss_enqueue_error:
+            logger.info(
+                "[rss:%s] done accepted=%s enqueue_error=%s",
+                source_name,
+                int(rss_accepted),
+                1 if rss_enqueue_error else 0,
             )
     return bool(rss_enqueue_error)
 
@@ -43,7 +44,6 @@ def _collect_spool_flush(
     source,
     source_name: str,
     now: float,
-    verbose: bool,
 ) -> bool:
     (
         source.spool_flush_future,
@@ -54,7 +54,6 @@ def _collect_spool_flush(
         job_name=f"spool:{source_name}",
         future=getattr(source, "spool_flush_future", None),
         engine=source.engine,
-        verbose=verbose,
         maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
     )
@@ -74,12 +73,13 @@ def _collect_spool_flush(
         attempted=flushed,
     ):
         source.spool_flush_next_at = float(now)
-    if verbose and (flushed > 0 or has_error):
-        print(
-            f"[spool:{source_name}] flush_done flushed={flushed} "
-            f"has_more={1 if has_more else 0} "
-            f"ok={0 if has_error else 1}",
-            flush=True,
+    if flushed > 0 or has_error:
+        logger.info(
+            "[spool:%s] flush_done flushed=%s has_more=%s ok=%s",
+            source_name,
+            flushed,
+            1 if has_more else 0,
+            0 if has_error else 1,
         )
     return bool(has_error)
 
@@ -89,7 +89,6 @@ def _collect_redis_enqueue(
     source,
     source_name: str,
     now: float,
-    verbose: bool,
 ) -> bool:
     (
         source.redis_enqueue_future,
@@ -100,7 +99,6 @@ def _collect_redis_enqueue(
         job_name=f"redis_enqueue:{source_name}",
         future=getattr(source, "redis_enqueue_future", None),
         engine=source.engine,
-        verbose=verbose,
         maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
     )
@@ -122,13 +120,15 @@ def _collect_redis_enqueue(
         attempted=attempted,
     ):
         source.redis_enqueue_next_at = float(now)
-    if verbose and (attempted > 0 or has_error):
-        print(
-            f"[redis:{source_name}] enqueue_done attempted={attempted} "
-            f"pushed={pushed} duplicates={duplicates} "
-            f"has_more={1 if has_more else 0} "
-            f"ok={0 if has_error else 1}",
-            flush=True,
+    if attempted > 0 or has_error:
+        logger.info(
+            "[redis:%s] enqueue_done attempted=%s pushed=%s duplicates=%s has_more=%s ok=%s",
+            source_name,
+            attempted,
+            pushed,
+            duplicates,
+            1 if has_more else 0,
+            0 if has_error else 1,
         )
     return bool(has_error)
 
@@ -140,7 +140,6 @@ def _collect_periodic_job(
     future_attr: str,
     next_at_attr: str,
     now: float,
-    verbose: bool,
     attempted_key: str,
 ) -> bool:
     future = getattr(source, future_attr, None)
@@ -148,7 +147,6 @@ def _collect_periodic_job(
         job_name=job_name,
         future=future,
         engine=source.engine,
-        verbose=verbose,
         maybe_dispose_turso_engine_on_transient_error_fn=maybe_dispose_turso_engine_on_transient_error,
         fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
     )
@@ -171,7 +169,6 @@ def collect_finished_jobs(
     source,
     source_name: str,
     now: float,
-    verbose: bool,
     rss_interval_seconds: float,
 ) -> tuple[dict[str, bool], bool]:
     errors = {
@@ -186,20 +183,17 @@ def collect_finished_jobs(
         source=source,
         source_name=source_name,
         now=float(now),
-        verbose=bool(verbose),
         rss_interval_seconds=float(rss_interval_seconds),
     )
     errors["spool_flush_error"] = _collect_spool_flush(
         source=source,
         source_name=source_name,
         now=float(now),
-        verbose=bool(verbose),
     )
     errors["redis_enqueue_error"] = _collect_redis_enqueue(
         source=source,
         source_name=source_name,
         now=float(now),
-        verbose=bool(verbose),
     )
     errors["stock_hot_error"] = _collect_periodic_job(
         job_name=f"stock_hot_cache:{source_name}",
@@ -207,7 +201,6 @@ def collect_finished_jobs(
         future_attr="stock_hot_cache_future",
         next_at_attr="stock_hot_cache_next_at",
         now=float(now),
-        verbose=bool(verbose),
         attempted_key="processed",
     )
 

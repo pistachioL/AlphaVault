@@ -24,7 +24,6 @@ def _tick_ctx() -> SourceTickContext:
             ai_cap=2,
             limit_or_none=None,
             stuck_seconds=60,
-            verbose=False,
             rss_active_hours=None,
             rss_interval_seconds=600.0,
             rss_feed_sleep_seconds=0.0,
@@ -264,12 +263,12 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
 
 
 def test_run_worker_forever_recovers_redis_pending_on_start(monkeypatch) -> None:
-    reset_calls: list[tuple[str, bool]] = []
+    reset_calls: list[str] = []
 
     monkeypatch.setattr(
         worker_loop_runner,
         "redis_ai_reset_consumer_group",
-        lambda _client, queue_key, *, verbose: reset_calls.append((queue_key, verbose)),
+        lambda _client, queue_key: reset_calls.append(queue_key),
     )
     monkeypatch.setattr(
         worker_loop_runner, "log_source_runtime", lambda **_kwargs: None
@@ -282,7 +281,7 @@ def test_run_worker_forever_recovers_redis_pending_on_start(monkeypatch) -> None
     )
 
     worker_loop_runner.run_worker_forever(
-        args=SimpleNamespace(verbose=True, limit=0, ai_stuck_seconds=3600),
+        args=SimpleNamespace(limit=0, ai_stuck_seconds=3600),
         sources=cast(
             list,
             [
@@ -302,10 +301,7 @@ def test_run_worker_forever_recovers_redis_pending_on_start(monkeypatch) -> None
         worker_interval_seconds=600.0,
     )
 
-    assert reset_calls == [
-        ("queue:a", True),
-        ("queue:b", True),
-    ]
+    assert reset_calls == ["queue:a", "queue:b"]
 
 
 def test_run_worker_forever_skips_recover_without_redis(monkeypatch) -> None:
@@ -327,7 +323,7 @@ def test_run_worker_forever_skips_recover_without_redis(monkeypatch) -> None:
     )
 
     worker_loop_runner.run_worker_forever(
-        args=SimpleNamespace(verbose=False, limit=0, ai_stuck_seconds=3600),
+        args=SimpleNamespace(limit=0, ai_stuck_seconds=3600),
         sources=cast(list, [SimpleNamespace(redis_queue_key="queue:a")]),
         config=cast(worker_loop_runner.LLMConfig, object()),
         limiter=RateLimiter(0.0),
