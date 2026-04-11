@@ -96,6 +96,44 @@ def test_save_and_load_entity_page_signal_snapshot(
     assert related[0]["entity_key"] == "cluster:gold"
 
 
+def test_load_entity_page_signal_snapshot_filters_by_author(monkeypatch) -> None:
+    @contextmanager
+    def _fake_use_conn(_engine_or_conn):
+        yield cast(PostgresConnection, object())
+
+    monkeypatch.setattr(research_stock_cache_module, "_use_conn", _fake_use_conn)
+    monkeypatch.setattr(
+        research_stock_cache_module,
+        "_select_entity_page_snapshot_row",
+        lambda *_args, **_kwargs: {
+            "entity_key": "stock:601899.SH",
+            "entity_type": "stock",
+            "header_json": '{"title":"紫金矿业 (601899.SH)"}',
+            "signal_top_json": (
+                '[{"post_uid":"weibo:2","summary":"继续拿着","action":"trade.hold",'
+                '"author":"alice","created_at":"2026-03-26 10:00:00"},'
+                '{"post_uid":"weibo:1","summary":"小仓试错","action":"trade.buy",'
+                '"author":"bob","created_at":"2026-03-25 10:00:00"}]'
+            ),
+            "related_json": "[]",
+            "counters_json": '{"signal_total":"2"}',
+            "updated_at": "2026-03-26 11:00:00",
+        },
+    )
+
+    loaded = load_entity_page_signal_snapshot(
+        cast(PostgresConnection, object()),
+        stock_key="stock:601899.SH",
+        author="alice",
+    )
+
+    signal_top = cast(list[dict[str, str]], loaded["signal_top"])
+    counters = cast(dict[str, str], loaded["counters"])
+
+    assert [row["post_uid"] for row in signal_top] == ["weibo:2"]
+    assert counters["signal_total"] == "1"
+
+
 def test_save_and_load_entity_page_signal_snapshot_for_sector(
     stock_cache_conn: PostgresConnection,
 ) -> None:

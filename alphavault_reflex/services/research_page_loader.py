@@ -45,13 +45,25 @@ def load_stock_page_cached_view(
     *,
     signal_page: int,
     signal_page_size: int,
+    author: str = "",
 ) -> dict[str, object]:
     stock_key = normalize_stock_key(stock_slug)
-    view = load_stock_cached_view_from_env(
-        stock_key,
-        signal_page=normalize_signal_page(signal_page),
-        signal_page_size=normalize_signal_page_size(signal_page_size),
-    )
+    author_filter = str(author or "").strip()
+    normalized_signal_page = normalize_signal_page(signal_page)
+    normalized_signal_page_size = normalize_signal_page_size(signal_page_size)
+    if author_filter:
+        view = load_stock_cached_view_from_env(
+            stock_key,
+            signal_page=normalized_signal_page,
+            signal_page_size=normalized_signal_page_size,
+            author=author_filter,
+        )
+    else:
+        view = load_stock_cached_view_from_env(
+            stock_key,
+            signal_page=normalized_signal_page,
+            signal_page_size=normalized_signal_page_size,
+        )
     if str(view.get("entity_key") or "").strip() == "":
         return _empty_stock_page_view(
             stock_key,

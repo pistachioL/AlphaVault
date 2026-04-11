@@ -12,17 +12,20 @@ from alphavault_reflex.services.analysis_feedback import (
     ENTRYPOINT_STOCK_RESEARCH,
     submit_post_analysis_feedback,
 )
+from alphavault_reflex.services.research_models import build_stock_route
 from alphavault_reflex.services.research_state_utils import (
     DEFAULT_SIGNAL_PAGE_SIZE,
     SIGNAL_PAGE_SIZE_OPTIONS,
     coerce_rows as _coerce_rows,
     is_stock_cache_preparing_warning as _is_stock_cache_preparing_warning,
+    normalize_author_filter as _normalize_author_filter,
     normalize_signal_page as _normalize_signal_page,
     normalize_signal_page_size as _normalize_signal_page_size,
     normalize_signal_total as _normalize_signal_total,
     normalize_stock_key as _normalize_stock_key,
     prepare_sector_links as _prepare_sector_links,
     prepare_stock_links as _prepare_stock_links,
+    resolve_query_value as _resolve_query_value,
     resolve_route_slug as _resolve_route_slug,
 )
 from alphavault_reflex.services.stock_related_feed import (
@@ -68,6 +71,7 @@ class ResearchState(rx.State):
     related_total: int = 0
     related_filter: str = RELATED_FILTER_ALL
     related_limit: int = DEFAULT_RELATED_LIMIT
+    author_filter: str = ""
     feedback_dialog_open: bool = False
     feedback_submitting: bool = False
     feedback_post_uid: str = ""
@@ -145,6 +149,16 @@ class ResearchState(rx.State):
         return bool(self.related_items)
 
     @rx.var
+    def has_author_filter(self) -> bool:
+        return bool(str(self.author_filter or "").strip())
+
+    @rx.var
+    def author_filter_clear_href(self) -> str:
+        if not str(self.entity_key or "").startswith("stock:"):
+            return ""
+        return build_stock_route(self.entity_key)
+
+    @rx.var
     def signal_page_size_options(self) -> list[str]:
         return [str(size) for size in SIGNAL_PAGE_SIZE_OPTIONS]
 
@@ -170,24 +184,30 @@ class ResearchState(rx.State):
         return f"第{page}页 / 共{pages}页（{total}条）"
 
     @rx.event
-    def load_stock_page(self, stock_slug: str | None = None):
+    def load_stock_page(self, stock_slug: str | None = None, author: str | None = None):
         self.loading = True
         slug = _resolve_route_slug(
             self, explicit_slug=stock_slug, route_key="stock_slug"
         )
+        author_filter = _normalize_author_filter(
+            _resolve_query_value(self, explicit_value=author, query_key="author")
+        )
         is_new_stock = bool(
             self.entity_type != "stock" or _normalize_stock_key(slug) != self.entity_key
         )
-        if is_new_stock:
+        author_changed = author_filter != _normalize_author_filter(self.author_filter)
+        if is_new_stock or author_changed:
             self.signal_page = 1
-            self.related_filter = RELATED_FILTER_ALL
             self.related_limit = DEFAULT_RELATED_LIMIT
-            self._reset_stock_sidebar_state(close_sidebar=True)
             self._reset_feedback_state(close_dialog=True, clear_success=True)
+        if is_new_stock:
+            self.related_filter = RELATED_FILTER_ALL
+            self._reset_stock_sidebar_state(close_sidebar=True)
         stock_key = _normalize_stock_key(slug)
         self.stock_load_request_id = max(int(self.stock_load_request_id), 0) + 1
         self.entity_type = "stock"
         self.entity_key = stock_key
+        self.author_filter = author_filter
         self.load_error = ""
         self.stock_load_warning = ""
         self.signals_ready = False
@@ -198,11 +218,21 @@ class ResearchState(rx.State):
         self.related_posts = []
         self.related_total = 0
 
-        view = load_stock_page_cached_view(
-            slug,
-            signal_page=_normalize_signal_page(self.signal_page),
-            signal_page_size=_normalize_signal_page_size(self.signal_page_size),
-        )
+        normalized_signal_page = _normalize_signal_page(self.signal_page)
+        normalized_signal_page_size = _normalize_signal_page_size(self.signal_page_size)
+        if author_filter:
+            view = load_stock_page_cached_view(
+                slug,
+                signal_page=normalized_signal_page,
+                signal_page_size=normalized_signal_page_size,
+                author=author_filter,
+            )
+        else:
+            view = load_stock_page_cached_view(
+                slug,
+                signal_page=normalized_signal_page,
+                signal_page_size=normalized_signal_page_size,
+            )
         self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
         self._refresh_related_posts()
         self.worker_status_text = str(view.get("worker_status_text") or "").strip()
@@ -230,14 +260,20 @@ class ResearchState(rx.State):
             self, explicit_slug=stock_slug, route_key="stock_slug"
         )
         stock_key = _normalize_stock_key(slug)
+        author_filter = _normalize_author_filter(
+            _resolve_query_value(self, explicit_value=None, query_key="author")
+        )
         if (
             self.loaded_once
             and self.entity_type == "stock"
             and stock_key == self.entity_key
+            and author_filter == _normalize_author_filter(self.author_filter)
         ):
             return
         self.stock_sidebar_open = False
         self.stock_sidebar_loaded = False
+        if author_filter:
+            return self.load_stock_page(slug, author=author_filter)
         return self.load_stock_page(slug)
 
     @rx.event
@@ -292,7 +328,10 @@ class ResearchState(rx.State):
         clear_reflex_source_caches()
         clear_stock_hot_read_caches()
         if self.entity_key.startswith("stock:"):
-            self.load_stock_page(self.entity_key.removeprefix("stock:"))
+            self.load_stock_page(
+                self.entity_key.removeprefix("stock:"),
+                author=self.author_filter or None,
+            )
         self.feedback_success = success_message
 
     @rx.event
@@ -328,7 +367,20 @@ class ResearchState(rx.State):
             related_filter=self.related_filter,
             limit=self.related_limit,
         )
-        self.related_posts = feed.rows
+        self.related_posts = [
+            {
+                **row,
+                "author_href": (
+                    build_stock_route(
+                        self.entity_key,
+                        author=str(row.get("author") or "").strip(),
+                    )
+                    if str(row.get("author") or "").strip()
+                    else ""
+                ),
+            }
+            for row in feed.rows
+        ]
         if self.related_filter == RELATED_FILTER_SIGNAL:
             self.related_total = max(int(self.signal_total or 0), 0)
         else:
@@ -368,7 +420,10 @@ class ResearchState(rx.State):
         if int(self.signal_page or 1) <= 1:
             return
         self.signal_page = max(int(self.signal_page) - 1, 1)
-        return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+        return self.load_stock_page(
+            self.entity_key.removeprefix("stock:"),
+            author=self.author_filter or None,
+        )
 
     @rx.event
     def next_signal_page(self):
@@ -377,20 +432,29 @@ class ResearchState(rx.State):
         if page >= total_pages:
             return
         self.signal_page = page + 1
-        return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+        return self.load_stock_page(
+            self.entity_key.removeprefix("stock:"),
+            author=self.author_filter or None,
+        )
 
     @rx.event
     def set_signal_page_size(self, value: str):
         self.signal_page_size = _normalize_signal_page_size(value)
         self.signal_page = 1
-        return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+        return self.load_stock_page(
+            self.entity_key.removeprefix("stock:"),
+            author=self.author_filter or None,
+        )
 
     @rx.event
     def set_related_filter(self, value: str) -> None:
         self.related_filter = normalize_related_filter(value)
         self.related_limit = DEFAULT_RELATED_LIMIT
         if self.entity_key.startswith("stock:"):
-            return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+            return self.load_stock_page(
+                self.entity_key.removeprefix("stock:"),
+                author=self.author_filter or None,
+            )
 
     @rx.event
     def load_more_related(self) -> None:
@@ -400,14 +464,20 @@ class ResearchState(rx.State):
             current + int(RELATED_LIMIT_STEP),
         )
         if self.entity_key.startswith("stock:"):
-            return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+            return self.load_stock_page(
+                self.entity_key.removeprefix("stock:"),
+                author=self.author_filter or None,
+            )
 
     @rx.event
     def refresh_stock_related(self) -> None:
         clear_reflex_source_caches()
         clear_stock_hot_read_caches()
         if self.entity_key.startswith("stock:"):
-            return self.load_stock_page(self.entity_key.removeprefix("stock:"))
+            return self.load_stock_page(
+                self.entity_key.removeprefix("stock:"),
+                author=self.author_filter or None,
+            )
 
     @rx.event
     def load_sector_page(self, sector_slug: str | None = None) -> None:
@@ -423,6 +493,7 @@ class ResearchState(rx.State):
         self.page_title = str(view.get("page_title") or "").strip()
         self.entity_key = f"cluster:{sector_key}" if sector_key else ""
         self.entity_type = "sector"
+        self.author_filter = ""
         self.load_error = str(view.get("load_error") or "").strip()
         self.stock_load_warning = ""
         self.extras_loading = False

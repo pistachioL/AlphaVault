@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 from alphavault.domains.stock.keys import canonical_stock_key as _canonical_stock_key
 
 STOCK_KEY_PREFIX = "stock:"
@@ -12,10 +14,14 @@ def canonical_stock_key(raw_key: str) -> str:
     return _canonical_stock_key(raw_key)
 
 
-def build_stock_route(stock_key: str) -> str:
+def build_stock_route(stock_key: str, *, author: str = "") -> str:
     canonical = canonical_stock_key(stock_key)
     stock_slug = canonical.removeprefix(STOCK_KEY_PREFIX)
-    return f"{RESEARCH_STOCK_ROUTE_PREFIX}/{stock_slug}"
+    route = f"{RESEARCH_STOCK_ROUTE_PREFIX}/{stock_slug}"
+    author_filter = str(author or "").strip()
+    if not author_filter:
+        return route
+    return f"{route}?author={quote(author_filter)}"
 
 
 def build_sector_route(sector_key: str) -> str:

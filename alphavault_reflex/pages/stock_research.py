@@ -46,7 +46,15 @@ def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
             rx.el.span(""),
         ),
         rx.text(row["action"], class_name="av-research-muted"),
-        rx.text(row["author"], class_name="av-research-muted"),
+        rx.cond(
+            row["author_href"] != "",
+            rx.link(
+                row["author"],
+                href=row["author_href"],
+                class_name="av-research-muted",
+            ),
+            rx.text(row["author"], class_name="av-research-muted"),
+        ),
         rx.cond(
             row["created_at_line"] != "",
             rx.text(
@@ -61,6 +69,26 @@ def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
             "gap": "10px",
             "alignItems": "center",
         },
+    )
+
+
+def _author_filter_notice() -> rx.Component:
+    return rx.cond(
+        ResearchState.has_author_filter,
+        rx.hstack(
+            rx.text(
+                "当前作者：" + ResearchState.author_filter,
+                class_name="av-research-muted",
+            ),
+            rx.link(
+                "清空作者",
+                href=ResearchState.author_filter_clear_href,
+                class_name="av-research-chip",
+            ),
+            spacing="3",
+            align="center",
+        ),
+        rx.el.div(),
     )
 
 
@@ -378,6 +406,7 @@ def stock_research_page() -> rx.Component:
             rx.text("数据已就绪。", class_name="av-research-muted"),
             _hint_with_help(BACKGROUND_PROCESSING_TEXT, BACKGROUND_PROCESSING_TOOLTIP),
         ),
+        _author_filter_notice(),
         rx.el.div(
             rx.el.div(
                 rx.hstack(

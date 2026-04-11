@@ -198,6 +198,10 @@ def dirty_reason_mask_for(reason: str) -> int:
     return int(_DIRTY_REASON_MASKS.get(text, DIRTY_REASON_MASK_OTHER))
 
 
+def _normalize_author_filter(value: object) -> str:
+    return str(value or "").strip()
+
+
 def _select_entity_page_snapshot_row(
     conn: PostgresConnection,
     *,
@@ -310,6 +314,7 @@ def load_entity_page_signal_snapshot(
     engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     stock_key: str,
+    author: str = "",
 ) -> dict[str, object]:
     key = str(stock_key or "").strip()
     if not key:
@@ -321,7 +326,7 @@ def load_entity_page_signal_snapshot(
         _handle_turso_error(engine_or_conn, err)
     if not row:
         return {}
-    return {
+    payload: dict[str, object] = {
         "entity_key": str(row.get("entity_key") or "").strip(),
         "entity_type": str(row.get("entity_type") or "").strip(),
         "header": _json_object(row.get("header_json")),
@@ -329,6 +334,23 @@ def load_entity_page_signal_snapshot(
         "related": _json_list(row.get("related_json")),
         "counters": _json_object(row.get("counters_json")),
         "updated_at": str(row.get("updated_at") or "").strip(),
+    }
+    author_filter = _normalize_author_filter(author)
+    if not author_filter:
+        return payload
+
+    signal_top = _json_list(payload.get("signal_top"))
+    filtered_signal_top = [
+        item
+        for item in signal_top
+        if _normalize_author_filter(item.get("author")) == author_filter
+    ]
+    counters = _json_object(payload.get("counters"))
+    counters["signal_total"] = str(len(filtered_signal_top))
+    return {
+        **payload,
+        "signal_top": filtered_signal_top,
+        "counters": counters,
     }
 
 
