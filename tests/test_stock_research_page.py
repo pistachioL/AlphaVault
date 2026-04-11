@@ -35,19 +35,36 @@ def test_signal_card_renders_action_author_and_time_in_one_row() -> None:
             "signal_badge": "",
             "action": "trade.watch",
             "author": "挖地瓜的超级鹿鼎公",
+            "author_href": "",
             "created_at_line": "2026-03-25 06:19 · 19小时前",
         }
     )
     rendered = component.render()
+    author_fragment = rendered["children"][2]
+    author_child = author_fragment["children"][0]["false_value"]["children"][0]
     time_fragment = rendered["children"][3]
     time_child = time_fragment["children"][0]["true_value"]["children"][0]
 
     assert rendered["name"] == '"div"'
-    assert [_rendered_text(child) for child in rendered["children"][1:3]] == [
-        "trade.watch",
-        "挖地瓜的超级鹿鼎公",
-    ]
+    assert _rendered_text(rendered["children"][1]) == "trade.watch"
+    assert _rendered_text(author_child) == "挖地瓜的超级鹿鼎公"
     assert _rendered_text(time_child) == "发言时间：2026-03-25 06:19 · 19小时前"
+
+
+def test_signal_card_renders_author_filter_link_when_author_href_exists() -> None:
+    rendered = str(
+        _signal_meta_row(
+            {
+                "signal_badge": "",
+                "action": "trade.watch",
+                "author": "挖地瓜的超级鹿鼎公",
+                "author_href": "/research/stocks/600519.SH?author=%E6%8C%96%E5%9C%B0%E7%93%9C",
+                "created_at_line": "",
+            }
+        ).render()
+    )
+
+    assert "?author=" in rendered
 
 
 def test_stock_research_page_uses_root_hydration_to_hide_stale_content() -> None:

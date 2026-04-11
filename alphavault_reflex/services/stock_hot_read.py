@@ -61,10 +61,15 @@ def _load_stock_hot_payload_cached(
     auth_token: str,
     source_name: str,
     stock_key: str,
+    author: str = "",
 ) -> tuple[dict[str, object], dict[str, object]]:
     del auth_token
     engine = _build_source_engine(db_url, source_name=source_name)
-    hot = load_entity_page_signal_snapshot(engine, stock_key=stock_key)
+    hot = load_entity_page_signal_snapshot(
+        engine,
+        stock_key=stock_key,
+        author=str(author or "").strip(),
+    )
     progress: dict[str, object] = {}
     cycle_state_key = worker_progress_state_key(
         source_name=source_name,
@@ -272,8 +277,10 @@ def load_stock_cached_view_from_env(
     *,
     signal_page: int,
     signal_page_size: int,
+    author: str = "",
 ) -> dict[str, object]:
     normalized = _normalize_stock_key(stock_key)
+    author_filter = str(author or "").strip()
     if not normalized:
         return {
             "entity_key": "",
@@ -341,6 +348,7 @@ def load_stock_cached_view_from_env(
                     source.token,
                     source.name,
                     candidate,
+                    author_filter,
                 ): source.name
                 for source in sources
             }

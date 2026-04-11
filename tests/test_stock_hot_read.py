@@ -57,7 +57,10 @@ def test_load_stock_cached_view_normalizes_prefixed_cn_slug_before_snapshot_look
     _setup_single_source(monkeypatch)
     seen_stock_keys: list[str] = []
 
-    def _fake_load_snapshot(_engine, *, stock_key: str) -> dict[str, object]:
+    def _fake_load_snapshot(
+        _engine, *, stock_key: str, author: str = ""
+    ) -> dict[str, object]:
+        del author
         seen_stock_keys.append(stock_key)
         return {
             "entity_key": stock_key,
@@ -99,13 +102,66 @@ def test_load_stock_cached_view_normalizes_prefixed_cn_slug_before_snapshot_look
     assert payload["page_title"] == "000725.SZ"
 
 
+def test_load_stock_cached_view_passes_author_to_snapshot_lookup(
+    monkeypatch,
+) -> None:
+    _setup_single_source(monkeypatch)
+    seen_calls: list[dict[str, str]] = []
+
+    def _fake_load_snapshot(
+        _engine, *, stock_key: str, author: str = ""
+    ) -> dict[str, object]:
+        seen_calls.append({"stock_key": stock_key, "author": author})
+        return {
+            "entity_key": stock_key,
+            "entity_type": "stock",
+            "header": {"title": stock_key.removeprefix("stock:")},
+            "signal_top": [
+                {
+                    "post_uid": "weibo:1",
+                    "summary": "只看 alice",
+                    "action": "trade.buy",
+                    "author": "alice",
+                    "created_at": "2099-01-01 00:00",
+                    "created_at_line": "2099-01-01 00:00 · 0分钟前",
+                }
+            ],
+            "related": [],
+            "counters": {"signal_total": 1},
+        }
+
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        _fake_load_snapshot,
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: "",
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "600519.SH",
+        signal_page=1,
+        signal_page_size=5,
+        author="alice",
+    )
+
+    assert seen_calls == [{"stock_key": "stock:600519.SH", "author": "alice"}]
+    assert payload["signal_total"] == 1
+
+
 def test_load_stock_cached_view_falls_back_to_legacy_prefixed_cn_snapshot(
     monkeypatch,
 ) -> None:
     _setup_single_source(monkeypatch)
     seen_stock_keys: list[str] = []
 
-    def _fake_load_snapshot(_engine, *, stock_key: str) -> dict[str, object]:
+    def _fake_load_snapshot(
+        _engine, *, stock_key: str, author: str = ""
+    ) -> dict[str, object]:
+        del author
         seen_stock_keys.append(stock_key)
         if stock_key == "stock:000725.SZ":
             return {}
@@ -200,7 +256,10 @@ def test_load_stock_cached_view_keeps_canonical_entity_key_when_alias_snapshot_h
     )
     seen_stock_keys: list[str] = []
 
-    def _fake_load_snapshot(_engine, *, stock_key: str) -> dict[str, object]:
+    def _fake_load_snapshot(
+        _engine, *, stock_key: str, author: str = ""
+    ) -> dict[str, object]:
+        del author
         seen_stock_keys.append(stock_key)
         if stock_key != "stock:京东方A":
             return {}

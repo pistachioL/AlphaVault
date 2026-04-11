@@ -34,16 +34,28 @@ def resolve_route_slug(
     return ""
 
 
-def resolve_route_slug_from_url(router: object, *, route_key: str) -> str:
-    url = getattr(router, "url", None)
-    query_parameters = getattr(url, "query_parameters", None)
-    if query_parameters is not None:
-        getter = getattr(query_parameters, "get", None)
-        if callable(getter):
-            slug = str(getter(route_key, "") or "").strip()
-            if slug:
-                return slug
+def resolve_query_value(
+    state: object,
+    *,
+    explicit_value: str | None,
+    query_key: str,
+) -> str:
+    value = str(explicit_value or "").strip()
+    if value:
+        return value
+    router = getattr(state, "router", None)
+    value = resolve_query_value_from_url(router, query_key=query_key)
+    if value:
+        return value
+    return ""
 
+
+def resolve_route_slug_from_url(router: object, *, route_key: str) -> str:
+    slug = resolve_query_value_from_url(router, query_key=route_key)
+    if slug:
+        return slug
+
+    url = getattr(router, "url", None)
     route_parts = split_route_parts(getattr(router, "route_id", ""))
     path_parts = split_route_parts(getattr(url, "path", ""))
     if len(route_parts) != len(path_parts):
@@ -56,6 +68,18 @@ def resolve_route_slug_from_url(router: object, *, route_key: str) -> str:
     return ""
 
 
+def resolve_query_value_from_url(router: object, *, query_key: str) -> str:
+    url = getattr(router, "url", None)
+    query_parameters = getattr(url, "query_parameters", None)
+    if query_parameters is not None:
+        getter = getattr(query_parameters, "get", None)
+        if callable(getter):
+            value = str(getter(query_key, "") or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def split_route_parts(value: object) -> tuple[str, ...]:
     return tuple(
         part for part in str(value or "").strip().strip("/").split("/") if part
@@ -64,6 +88,10 @@ def split_route_parts(value: object) -> tuple[str, ...]:
 
 def normalize_stock_key(stock_slug: str) -> str:
     return _normalize_stock_key(stock_slug)
+
+
+def normalize_author_filter(value: object) -> str:
+    return str(value or "").strip()
 
 
 def normalize_signal_page(value: object) -> int:
@@ -158,12 +186,15 @@ __all__ = [
     "SIGNAL_PAGE_SIZE_OPTIONS",
     "coerce_rows",
     "is_stock_cache_preparing_warning",
+    "normalize_author_filter",
     "normalize_signal_page",
     "normalize_signal_page_size",
     "normalize_signal_total",
     "normalize_stock_key",
     "prepare_sector_links",
     "prepare_stock_links",
+    "resolve_query_value",
+    "resolve_query_value_from_url",
     "resolve_route_slug",
     "resolve_route_slug_from_url",
     "split_route_parts",

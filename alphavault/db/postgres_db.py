@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 import psycopg
@@ -17,6 +18,8 @@ _QMARK_TO_FORMAT = sqlparams.SQLParams("qmark", "format", escape_char=True)
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _T = TypeVar("_T")
+_POSTGRES_ENGINE_CACHE: dict[tuple[str, str, int], "PostgresEngine"] = {}
+_POSTGRES_ENGINE_CACHE_LOCK = Lock()
 
 
 def is_fatal_base_exception(err: BaseException) -> bool:
@@ -238,6 +241,12 @@ class PostgresEngine:
     max_connections: int = _DEFAULT_POSTGRES_POOL_MAX_SIZE
     schema_name: str = ""
     _pool: ConnectionPool[psycopg.Connection[Any]] = field(init=False, repr=False)
+    _cache_key: tuple[str, str, int] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _disposed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         max_conns = int(self.max_connections or 0)
@@ -256,6 +265,8 @@ class PostgresEngine:
     def connect(self, *, autocommit: bool = True) -> PostgresConnection:
         if not autocommit:
             raise ValueError("postgres_connection_requires_autocommit")
+        if self._disposed:
+            raise RuntimeError("postgres_engine_disposed")
         return PostgresConnection(
             self._pool.getconn(),
             _pool=self._pool,
@@ -263,7 +274,24 @@ class PostgresEngine:
         )
 
     def dispose(self) -> None:
-        self._pool.close()
+        if self._disposed:
+            return
+        self._disposed = True
+        try:
+            self._pool.close()
+        finally:
+            _drop_cached_postgres_engine(self)
+
+
+def _drop_cached_postgres_engine(engine: PostgresEngine) -> None:
+    cache_key = engine._cache_key
+    if cache_key is None:
+        return
+    with _POSTGRES_ENGINE_CACHE_LOCK:
+        cached = _POSTGRES_ENGINE_CACHE.get(cache_key)
+        if cached is engine:
+            _POSTGRES_ENGINE_CACHE.pop(cache_key, None)
+    engine._cache_key = None
 
 
 def postgres_connect_autocommit(engine: PostgresEngine) -> PostgresConnection:
@@ -298,11 +326,23 @@ def ensure_postgres_engine(dsn: str, *, schema_name: str = "") -> PostgresEngine
     resolved_dsn = str(dsn or "").strip()
     if not resolved_dsn:
         raise RuntimeError("Missing Postgres dsn")
-    return PostgresEngine(
-        dsn=resolved_dsn,
-        max_connections=_max_postgres_pool_size_from_env(),
-        schema_name=str(schema_name or "").strip(),
-    )
+    resolved_schema_name = str(schema_name or "").strip()
+    max_connections = _max_postgres_pool_size_from_env()
+    cache_key = (resolved_dsn, resolved_schema_name, max_connections)
+    with _POSTGRES_ENGINE_CACHE_LOCK:
+        cached = _POSTGRES_ENGINE_CACHE.get(cache_key)
+        if cached is not None and not cached._disposed:
+            return cached
+        if cached is not None:
+            _POSTGRES_ENGINE_CACHE.pop(cache_key, None)
+        engine = PostgresEngine(
+            dsn=resolved_dsn,
+            max_connections=max_connections,
+            schema_name=resolved_schema_name,
+        )
+        engine._cache_key = cache_key
+        _POSTGRES_ENGINE_CACHE[cache_key] = engine
+        return engine
 
 
 __all__ = [

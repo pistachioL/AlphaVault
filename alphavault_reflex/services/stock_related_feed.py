@@ -47,6 +47,7 @@ class StockRelatedPostRow(TypedDict):
     signal_badge: str
     action: str
     author: str
+    author_href: str
     created_at_sort: str
     created_at_line: str
     url: str
@@ -465,6 +466,7 @@ def build_related_feed(
                 "title": str(row.get("summary") or "").strip(),
                 "action": action,
                 "author": str(row.get("author") or "").strip(),
+                "author_href": "",
                 "preview": "",
                 "tree_text": tree_text,
                 "tree_lines": tree_lines,

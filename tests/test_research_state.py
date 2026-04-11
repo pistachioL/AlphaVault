@@ -444,6 +444,70 @@ def test_load_stock_page_if_needed_loads_when_stock_changes(monkeypatch) -> None
     assert state.entity_key == "stock:600519.SH"
 
 
+def test_load_stock_page_if_needed_loads_when_author_changes(monkeypatch) -> None:
+    seen_calls: list[dict[str, str]] = []
+
+    def _fake_load_stock_page_cached_view(
+        stock_slug: str,
+        *,
+        signal_page: int,
+        signal_page_size: int,
+        author: str = "",
+    ) -> dict[str, object]:
+        seen_calls.append(
+            {
+                "stock_slug": stock_slug,
+                "signal_page": str(signal_page),
+                "signal_page_size": str(signal_page_size),
+                "author": author,
+            }
+        )
+        return {
+            "entity_key": "stock:600519.SH",
+            "page_title": "600519.SH",
+            "signals": [{"summary": "继续加仓", "author": author}],
+            "related_sectors": [],
+            "signal_total": 1,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        _fake_load_stock_page_cached_view,
+    )
+
+    state = ResearchState()
+    state.loaded_once = True
+    state.entity_type = "stock"
+    state.entity_key = "stock:600519.SH"
+    state.author_filter = "alice"
+    object.__setattr__(
+        state,
+        "router",
+        SimpleNamespace(
+            url=SimpleNamespace(
+                query_parameters={"author": "bob"},
+                path="/research/stocks/600519.SH",
+            ),
+            route_id="/research/stocks/[stock_slug]",
+        ),
+    )
+
+    state.load_stock_page_if_needed("600519.SH")
+
+    assert seen_calls == [
+        {
+            "stock_slug": "600519.SH",
+            "signal_page": "1",
+            "signal_page_size": "20",
+            "author": "bob",
+        }
+    ]
+    assert state.author_filter == "bob"
+
+
 def test_next_signal_page_requests_next_page_from_loader(monkeypatch) -> None:
     seen_calls: list[dict[str, object]] = []
 
