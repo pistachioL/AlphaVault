@@ -212,9 +212,12 @@ def test_build_related_feed_long_forward_original_keeps_single_root_and_inline_e
     assert row["tree_root_expand_line"]["id_suffix"] == ""
 
 
-def test_build_related_feed_original_post_does_not_show_reply_chain_from_cached_tree() -> (
-    None
-):
+def test_build_related_feed_original_post_keeps_tree_structure() -> None:
+    expected_tree = (
+        "游戏仓2026年2月PS图 ... [原帖 ID: 5270950817566951]\n"
+        "└── @透明水纹：舅舅，长电T了两毛钱。。\n"
+        "    └── 📌挖地瓜的超级鹿鼎公：分红 [转发 ID: 5270975543513975]"
+    )
     feed = build_related_feed(
         signals=[
             {
@@ -224,21 +227,44 @@ def test_build_related_feed_original_post_does_not_show_reply_chain_from_cached_
                 "author": "挖地瓜的超级鹿鼎公",
                 "created_at": "2026-04-01 10:00",
                 "raw_text": "游戏仓2026年2月PS图\n本游戏仓2月收盘1888.5W",
-                "tree_text": (
-                    "游戏仓2026年2月PS图 ... [原帖 ID: 5270950817566951]\n"
-                    "└── @透明水纹：舅舅，长电T了两毛钱。。\n"
-                    "    └── 📌挖地瓜的超级鹿鼎公：分红 [转发 ID: 5270975543513975]"
-                ),
+                "tree_text": expected_tree,
             }
         ],
         related_filter="all",
         limit=20,
     )
     assert len(feed.rows) == 1
-    tree_text = feed.rows[0]["tree_text"]
-    assert tree_text == "游戏仓2026年2月PS图 ... [原帖 ID: 5270950817566951]"
-    assert "透明水纹" not in tree_text
-    assert "分红" not in tree_text
+    assert feed.rows[0]["tree_text"] == expected_tree
+    assert len(feed.rows[0]["tree_lines"]) == 3
+    assert feed.rows[0]["tree_lines"][2]["content"] == "📌挖地瓜的超级鹿鼎公：分红"
+
+
+def test_build_related_feed_keeps_multi_line_tree_for_normal_original_post() -> None:
+    expected_tree = (
+        "作者A：根节点 [原帖 ID: 100]\n"
+        "└── 作者B：子节点 [转发 ID: 101]\n"
+        "    └── 作者C：叶子 [转发 ID: 102]"
+    )
+    feed = build_related_feed(
+        signals=[
+            {
+                "post_uid": "weibo:100",
+                "summary": "s",
+                "action": "trade.watch",
+                "author": "作者A",
+                "created_at": "2026-04-01 10:00",
+                "raw_text": "普通原帖正文",
+                "tree_text": expected_tree,
+            }
+        ],
+        related_filter="all",
+        limit=20,
+    )
+
+    assert len(feed.rows) == 1
+    assert feed.rows[0]["tree_text"] == expected_tree
+    assert len(feed.rows[0]["tree_lines"]) == 3
+    assert feed.rows[0]["tree_lines"][1]["prefix"] != ""
 
 
 def test_build_related_feed_original_colon_line_not_prefixed_with_at() -> None:
