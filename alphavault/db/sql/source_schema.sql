@@ -51,6 +51,19 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.assertion_entities (
     PRIMARY KEY (assertion_id, entity_key)
 );
 
+CREATE TABLE IF NOT EXISTS {{schema_name}}.post_analysis_feedback (
+    feedback_id TEXT PRIMARY KEY,
+    post_uid TEXT NOT NULL,
+    feedback_tag TEXT NOT NULL,
+    feedback_note TEXT NOT NULL DEFAULT '',
+    feedback_status TEXT NOT NULL CHECK (
+        feedback_status IN ('pending', 'applied', 'superseded', 'queue_failed')
+    ),
+    entrypoint TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS {{schema_name}}.topic_clusters (
     cluster_key TEXT PRIMARY KEY,
     cluster_name TEXT NOT NULL,
@@ -140,6 +153,12 @@ CREATE INDEX IF NOT EXISTS idx_assertion_entities_key
 
 CREATE INDEX IF NOT EXISTS idx_assertion_entities_type_key
     ON {{schema_name}}.assertion_entities(entity_type, entity_key);
+
+CREATE INDEX IF NOT EXISTS idx_post_analysis_feedback_post_uid_submitted_at
+    ON {{schema_name}}.post_analysis_feedback(post_uid, submitted_at);
+
+CREATE INDEX IF NOT EXISTS idx_post_analysis_feedback_status_submitted_at
+    ON {{schema_name}}.post_analysis_feedback(feedback_status, submitted_at);
 
 CREATE INDEX IF NOT EXISTS idx_topic_cluster_topics_cluster_key
     ON {{schema_name}}.topic_cluster_topics(cluster_key);

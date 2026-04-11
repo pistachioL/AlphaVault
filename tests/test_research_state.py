@@ -210,6 +210,141 @@ def test_open_stock_sidebar_loads_sidebar_once(monkeypatch) -> None:
     assert not hasattr(state, "pending_candidates")
 
 
+def test_open_feedback_dialog_resets_form_for_post() -> None:
+    state = ResearchState()
+    state.feedback_tag = "其他"
+    state.feedback_note = "旧留言"
+    state.feedback_error = "旧错误"
+    state.feedback_success = "旧成功"
+
+    state.open_feedback_dialog("weibo:1")
+
+    assert state.feedback_dialog_open is True
+    assert state.feedback_post_uid == "weibo:1"
+    assert state.feedback_tag == ""
+    assert state.feedback_note == ""
+    assert state.feedback_error == ""
+    assert state.feedback_success == ""
+
+
+def test_submit_feedback_success_closes_dialog_and_refreshes(monkeypatch) -> None:
+    submit_calls: list[dict[str, str]] = []
+    clear_calls: list[str] = []
+    reload_calls: list[str] = []
+
+    def _fake_submit_post_analysis_feedback(
+        *, post_uid: str, feedback_tag: str, feedback_note: str, entrypoint: str
+    ) -> dict[str, str]:
+        submit_calls.append(
+            {
+                "post_uid": post_uid,
+                "feedback_tag": feedback_tag,
+                "feedback_note": feedback_note,
+                "entrypoint": entrypoint,
+            }
+        )
+        return {
+            "ok": "1",
+            "message": "已记下，后台会在下一轮自动重跑。",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.submit_post_analysis_feedback",
+        _fake_submit_post_analysis_feedback,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.clear_reflex_source_caches",
+        lambda: clear_calls.append("source"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.clear_stock_hot_read_caches",
+        lambda: clear_calls.append("stock"),
+        raising=False,
+    )
+
+    def _fake_load_stock_page_cached_view(stock_slug, **_kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        reload_calls.append(str(stock_slug or ""))
+        return {
+            "entity_key": "stock:600519.SH",
+            "page_title": "贵州茅台",
+            "signals": [],
+            "signal_total": 0,
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_page_cached_view",
+        _fake_load_stock_page_cached_view,
+        raising=False,
+    )
+
+    state = ResearchState()
+    state.entity_key = "stock:600519.SH"
+    state.feedback_dialog_open = True
+    state.feedback_post_uid = "weibo:1"
+    state.feedback_tag = "摘要错了"
+    state.feedback_note = "原文是减仓，不是加仓"
+
+    result = state.submit_feedback()
+
+    assert result is None
+    assert submit_calls == [
+        {
+            "post_uid": "weibo:1",
+            "feedback_tag": "摘要错了",
+            "feedback_note": "原文是减仓，不是加仓",
+            "entrypoint": "stock_research",
+        }
+    ]
+    assert clear_calls == ["source", "stock"]
+    assert reload_calls == ["600519.SH"]
+    assert state.feedback_dialog_open is False
+    assert state.feedback_post_uid == ""
+    assert state.feedback_tag == ""
+    assert state.feedback_note == ""
+    assert state.feedback_error == ""
+    assert state.feedback_success == "已记下，后台会在下一轮自动重跑。"
+
+
+def test_submit_feedback_failure_keeps_dialog_open_and_sets_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.submit_post_analysis_feedback",
+        lambda **_kwargs: {
+            "ok": "0",
+            "message": "加入待重跑失败",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ResearchState,
+        "load_stock_page",
+        lambda self, stock_slug=None: (_ for _ in ()).throw(
+            AssertionError("失败时不该刷新")
+        ),
+    )
+
+    state = ResearchState()
+    state.entity_key = "stock:600519.SH"
+    state.feedback_dialog_open = True
+    state.feedback_post_uid = "weibo:1"
+    state.feedback_tag = "动作错了"
+    state.feedback_note = "原文是先看看"
+
+    result = state.submit_feedback()
+
+    assert result is None
+    assert state.feedback_dialog_open is True
+    assert state.feedback_post_uid == "weibo:1"
+    assert state.feedback_tag == "动作错了"
+    assert state.feedback_note == "原文是先看看"
+    assert state.feedback_error == "加入待重跑失败"
+    assert state.feedback_success == ""
+
+
 def test_load_sector_page_sets_primary_signal(monkeypatch) -> None:
     monkeypatch.setattr(
         "alphavault_reflex.research_state.load_sector_page_view",

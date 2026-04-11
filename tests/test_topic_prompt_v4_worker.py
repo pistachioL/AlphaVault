@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, cast
 
-from alphavault.constants import SCHEMA_STANDARD
+from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
 from alphavault.db.turso_queue import CloudPost
@@ -52,6 +52,34 @@ RESTART IDENTITY CASCADE
 """
     )
     return PostgresConnection(pg_conn, schema_name=SCHEMA_STANDARD)
+
+
+def _source_conn(pg_conn) -> PostgresConnection:
+    apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
+    return PostgresConnection(pg_conn, schema_name=SCHEMA_WEIBO)
+
+
+def _insert_source_post(
+    conn: PostgresConnection,
+    *,
+    post_uid: str = "weibo:1",
+    platform_post_id: str = "1001",
+) -> None:
+    conn.execute(
+        """
+INSERT INTO weibo.posts(
+  post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+  final_status, processed_at, model, prompt_version, archived_at, ingested_at
+)
+VALUES (
+  :post_uid, 'weibo', :platform_post_id, '老王', '2026-04-09 10:00:00',
+  'https://example.com/post/1001', '茅台我先看看',
+  'relevant', '2026-04-09 10:05:00', 'old-model', 'old-prompt',
+  '2026-04-09 10:06:00', 1
+)
+""",
+        {"post_uid": post_uid, "platform_post_id": platform_post_id},
+    )
 
 
 def test_map_topic_prompt_assertions_to_rows_keeps_mentions_and_derives_entities() -> (
@@ -198,6 +226,12 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
             True,
         ),
     )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: None,
+        raising=False,
+    )
 
     def _fake_call_ai(**kwargs):  # type: ignore[no-untyped-def]
         seen_request_gate["value"] = kwargs.get("request_gate")
@@ -288,10 +322,22 @@ def test_process_one_post_uid_topic_prompt_v4_passes_prefetched_post_to_final_wr
     monkeypatch.setattr(topic_prompt_module, "_call_ai_with_litellm", _fake_call_ai)
     monkeypatch.setattr(
         topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
         "resolve_rows_entity_matches",
         lambda _engine, _rows_by_post_uid: {"xueqiu:1": []},
     )
     monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "run_postgres_transaction",
+        lambda engine_or_conn, fn: fn(engine_or_conn),
+        raising=False,
+    )
     monkeypatch.setattr(
         topic_prompt_module,
         "write_assertions_and_mark_done",
@@ -314,6 +360,620 @@ def test_process_one_post_uid_topic_prompt_v4_passes_prefetched_post_to_final_wr
     assert len(writes) == 1
     assert writes[0]["post_uid"] == "xueqiu:1"
     assert writes[0]["prefetched_post"] == prefetched_post
+
+
+def test_process_one_post_uid_topic_prompt_v4_passes_manual_feedback_hint_to_prompt_builder(
+    monkeypatch,
+) -> None:
+    limiter = RateLimiter(rpm=0.0)
+    seen_manual_feedback_hint: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_cloud_post",
+        lambda _engine, _post_uid: CloudPost(
+            post_uid="weibo:1",
+            platform="weibo",
+            platform_post_id="1001",
+            author="老王",
+            created_at="2026-04-09 10:00:00",
+            url="https://example.com/post/1001",
+            raw_text="茅台我先看看",
+            ai_retry_count=0,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "thread_root_info_for_post",
+        lambda **_kwargs: ("root:1001", "", ""),
+    )
+
+    def _fake_build_prompt(**kwargs):  # type: ignore[no-untyped-def]
+        seen_manual_feedback_hint["value"] = kwargs.get("manual_feedback_hint")
+        return (
+            {"message_lookup": {("status", "1001"): {"text": "茅台我先看看"}}},
+            0,
+            "prompt",
+            10,
+            10,
+            False,
+            True,
+        )
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "build_topic_prompt_v4_with_prompt_chars_limit",
+        _fake_build_prompt,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: {
+            "feedback_id": "fb-1",
+            "post_uid": post_uid,
+            "feedback_tag": "动作错了",
+            "feedback_note": "原文是先看看，不是直接买入",
+            "feedback_status": "pending",
+            "entrypoint": "stock_research",
+            "submitted_at": "2026-04-09 11:00:00",
+            "applied_at": "",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "_call_ai_with_litellm",
+        lambda **_kwargs: {"assertions": [], "mentions": []},
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "resolve_rows_entity_matches",
+        lambda _engine, _rows_by_post_uid: {"weibo:1": []},
+    )
+    monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "run_postgres_transaction",
+        lambda engine_or_conn, fn: fn(engine_or_conn),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "write_assertions_and_mark_done",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_entity_page_dirty_from_assertions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_feedback_applied",
+        lambda *_args, **_kwargs: 1,
+        raising=False,
+    )
+
+    ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
+        engine=cast(Any, object()),
+        post_uid="weibo:1",
+        config=_build_config(),
+        limiter=limiter,
+    )
+
+    assert ok is True
+    assert seen_manual_feedback_hint["value"] == {
+        "feedback_tag": "动作错了",
+        "feedback_note": "原文是先看看，不是直接买入",
+        "submitted_at": "2026-04-09 11:00:00",
+    }
+
+
+def test_process_one_post_uid_topic_prompt_v4_marks_feedback_applied_after_success(
+    monkeypatch,
+) -> None:
+    limiter = RateLimiter(rpm=0.0)
+    applied_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_cloud_post",
+        lambda _engine, _post_uid: CloudPost(
+            post_uid="weibo:1",
+            platform="weibo",
+            platform_post_id="1001",
+            author="老王",
+            created_at="2026-04-09 10:00:00",
+            url="https://example.com/post/1001",
+            raw_text="茅台我先看看",
+            ai_retry_count=0,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "thread_root_info_for_post",
+        lambda **_kwargs: ("root:1001", "", ""),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "build_topic_prompt_v4_with_prompt_chars_limit",
+        lambda **_kwargs: (
+            {"message_lookup": {("status", "1001"): {"text": "茅台我先看看"}}},
+            0,
+            "prompt",
+            10,
+            10,
+            False,
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: {
+            "feedback_id": "fb-1",
+            "post_uid": post_uid,
+            "feedback_tag": "动作错了",
+            "feedback_note": "原文是先看看，不是直接买入",
+            "feedback_status": "pending",
+            "entrypoint": "stock_research",
+            "submitted_at": "2026-04-09 11:00:00",
+            "applied_at": "",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "_call_ai_with_litellm",
+        lambda **_kwargs: {"assertions": [], "mentions": []},
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "resolve_rows_entity_matches",
+        lambda _engine, _rows_by_post_uid: {"weibo:1": []},
+    )
+    monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
+    monkeypatch.setattr(topic_prompt_module, "now_str", lambda: "2026-04-09 11:05:00")
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "run_postgres_transaction",
+        lambda engine_or_conn, fn: fn(engine_or_conn),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "write_assertions_and_mark_done",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_entity_page_dirty_from_assertions",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def _fake_mark_feedback_applied(_engine, **kwargs) -> int:  # type: ignore[no-untyped-def]
+        applied_calls.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_feedback_applied",
+        _fake_mark_feedback_applied,
+        raising=False,
+    )
+
+    ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
+        engine=cast(Any, object()),
+        post_uid="weibo:1",
+        config=_build_config(),
+        limiter=limiter,
+    )
+
+    assert ok is True
+    assert applied_calls == [
+        {
+            "feedback_id": "fb-1",
+            "applied_at": "2026-04-09 11:05:00",
+        }
+    ]
+
+
+def test_process_one_post_uid_topic_prompt_v4_wraps_done_write_and_feedback_apply_in_one_transaction(
+    monkeypatch,
+) -> None:
+    limiter = RateLimiter(rpm=0.0)
+    engine = cast(Any, object())
+    transaction_conn = cast(Any, object())
+    transaction_calls: list[object] = []
+    write_engines: list[object] = []
+    apply_engines: list[object] = []
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_cloud_post",
+        lambda _engine, _post_uid: CloudPost(
+            post_uid="weibo:1",
+            platform="weibo",
+            platform_post_id="1001",
+            author="老王",
+            created_at="2026-04-09 10:00:00",
+            url="https://example.com/post/1001",
+            raw_text="茅台我先看看",
+            ai_retry_count=0,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "thread_root_info_for_post",
+        lambda **_kwargs: ("root:1001", "", ""),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "build_topic_prompt_v4_with_prompt_chars_limit",
+        lambda **_kwargs: (
+            {"message_lookup": {("status", "1001"): {"text": "茅台我先看看"}}},
+            0,
+            "prompt",
+            10,
+            10,
+            False,
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: {
+            "feedback_id": "fb-1",
+            "post_uid": post_uid,
+            "feedback_tag": "动作错了",
+            "feedback_note": "原文是先看看，不是直接买入",
+            "feedback_status": "pending",
+            "entrypoint": "stock_research",
+            "submitted_at": "2026-04-09 11:00:00",
+            "applied_at": "",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "_call_ai_with_litellm",
+        lambda **_kwargs: {"assertions": [], "mentions": []},
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "resolve_rows_entity_matches",
+        lambda _engine, _rows_by_post_uid: {"weibo:1": []},
+    )
+    monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
+    monkeypatch.setattr(topic_prompt_module, "now_str", lambda: "2026-04-09 11:05:00")
+
+    def _fake_run_postgres_transaction(engine_or_conn, fn):  # type: ignore[no-untyped-def]
+        transaction_calls.append(engine_or_conn)
+        return fn(transaction_conn)
+
+    def _fake_write_assertions_and_mark_done(engine_or_conn, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+        write_engines.append(engine_or_conn)
+
+    def _fake_mark_feedback_applied(engine_or_conn, **_kwargs) -> int:  # type: ignore[no-untyped-def]
+        apply_engines.append(engine_or_conn)
+        return 1
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "run_postgres_transaction",
+        _fake_run_postgres_transaction,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "write_assertions_and_mark_done",
+        _fake_write_assertions_and_mark_done,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_feedback_applied",
+        _fake_mark_feedback_applied,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_entity_page_dirty_from_assertions",
+        lambda *_args, **_kwargs: None,
+    )
+
+    ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
+        engine=engine,
+        post_uid="weibo:1",
+        config=_build_config(),
+        limiter=limiter,
+    )
+
+    assert ok is True
+    assert transaction_calls == [engine]
+    assert write_engines == [transaction_conn]
+    assert apply_engines == [transaction_conn]
+
+
+def test_process_one_post_uid_topic_prompt_v4_clips_manual_feedback_note_for_prompt(
+    monkeypatch,
+) -> None:
+    limiter = RateLimiter(rpm=0.0)
+    seen_manual_feedback_hint: dict[str, object] = {}
+    long_note = "错" * 320
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_cloud_post",
+        lambda _engine, _post_uid: CloudPost(
+            post_uid="weibo:1",
+            platform="weibo",
+            platform_post_id="1001",
+            author="老王",
+            created_at="2026-04-09 10:00:00",
+            url="https://example.com/post/1001",
+            raw_text="茅台我先看看",
+            ai_retry_count=0,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "thread_root_info_for_post",
+        lambda **_kwargs: ("root:1001", "", ""),
+    )
+
+    def _fake_build_prompt(**kwargs):  # type: ignore[no-untyped-def]
+        seen_manual_feedback_hint["value"] = kwargs.get("manual_feedback_hint")
+        return (
+            {"message_lookup": {("status", "1001"): {"text": "茅台我先看看"}}},
+            0,
+            "prompt",
+            10,
+            10,
+            False,
+            True,
+        )
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "build_topic_prompt_v4_with_prompt_chars_limit",
+        _fake_build_prompt,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: {
+            "feedback_id": "fb-1",
+            "post_uid": post_uid,
+            "feedback_tag": "摘要错了",
+            "feedback_note": long_note,
+            "feedback_status": "pending",
+            "entrypoint": "stock_research",
+            "submitted_at": "2026-04-09 11:00:00",
+            "applied_at": "",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "_call_ai_with_litellm",
+        lambda **_kwargs: {"assertions": [], "mentions": []},
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "resolve_rows_entity_matches",
+        lambda _engine, _rows_by_post_uid: {"weibo:1": []},
+    )
+    monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "run_postgres_transaction",
+        lambda engine_or_conn, fn: fn(engine_or_conn),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "write_assertions_and_mark_done",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_entity_page_dirty_from_assertions",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_feedback_applied",
+        lambda *_args, **_kwargs: 1,
+        raising=False,
+    )
+
+    ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
+        engine=cast(Any, object()),
+        post_uid="weibo:1",
+        config=_build_config(),
+        limiter=limiter,
+    )
+
+    assert ok is True
+    feedback_hint = seen_manual_feedback_hint["value"]
+    assert isinstance(feedback_hint, dict)
+    assert len(str(feedback_hint["feedback_note"])) == 300
+    assert str(feedback_hint["feedback_note"]) == long_note[:300]
+
+
+def test_process_one_post_uid_topic_prompt_v4_does_not_mark_feedback_applied_on_ai_error(
+    monkeypatch,
+) -> None:
+    limiter = RateLimiter(rpm=0.0)
+    applied_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_cloud_post",
+        lambda _engine, _post_uid: CloudPost(
+            post_uid="weibo:1",
+            platform="weibo",
+            platform_post_id="1001",
+            author="老王",
+            created_at="2026-04-09 10:00:00",
+            url="https://example.com/post/1001",
+            raw_text="茅台我先看看",
+            ai_retry_count=0,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "thread_root_info_for_post",
+        lambda **_kwargs: ("root:1001", "", ""),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "build_topic_prompt_v4_with_prompt_chars_limit",
+        lambda **_kwargs: (
+            {"message_lookup": {("status", "1001"): {"text": "茅台我先看看"}}},
+            0,
+            "prompt",
+            10,
+            10,
+            False,
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: {
+            "feedback_id": "fb-1",
+            "post_uid": post_uid,
+            "feedback_tag": "动作错了",
+            "feedback_note": "原文是先看看，不是直接买入",
+            "feedback_status": "pending",
+            "entrypoint": "stock_research",
+            "submitted_at": "2026-04-09 11:00:00",
+            "applied_at": "",
+        },
+        raising=False,
+    )
+
+    def _fail_ai(**_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_litellm", _fail_ai)
+
+    def _fake_mark_feedback_applied(_engine, **kwargs) -> int:  # type: ignore[no-untyped-def]
+        applied_calls.append(dict(kwargs))
+        return 1
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_feedback_applied",
+        _fake_mark_feedback_applied,
+        raising=False,
+    )
+
+    ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
+        engine=cast(Any, object()),
+        post_uid="weibo:1",
+        config=_build_config(),
+        limiter=limiter,
+    )
+
+    assert ok is False
+    assert applied_calls == []
+
+
+def test_process_one_post_uid_topic_prompt_v4_rolls_back_done_write_when_feedback_apply_misses_row(
+    monkeypatch,
+    pg_conn,
+) -> None:
+    post_uid = "weibo:feedback-rollback"
+    conn = _source_conn(pg_conn)
+    _insert_source_post(
+        conn,
+        post_uid=post_uid,
+        platform_post_id="feedback-rollback-1001",
+    )
+    limiter = RateLimiter(rpm=0.0)
+
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "thread_root_info_for_post",
+        lambda **_kwargs: ("root:1001", "", ""),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "build_topic_prompt_v4_with_prompt_chars_limit",
+        lambda **_kwargs: (
+            {"message_lookup": {("status", "1001"): {"text": "茅台我先看看"}}},
+            0,
+            "prompt",
+            10,
+            10,
+            False,
+            True,
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "load_latest_pending_feedback",
+        lambda _engine, *, post_uid: {
+            "feedback_id": "missing-feedback",
+            "post_uid": post_uid,
+            "feedback_tag": "动作错了",
+            "feedback_note": "原文是先看看，不是直接买入",
+            "feedback_status": "pending",
+            "entrypoint": "stock_research",
+            "submitted_at": "2026-04-09 11:00:00",
+            "applied_at": "",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "_call_ai_with_litellm",
+        lambda **_kwargs: {"assertions": [], "mentions": []},
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "resolve_rows_entity_matches",
+        lambda _engine, _rows_by_post_uid: {"weibo:1": []},
+    )
+    monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
+    monkeypatch.setattr(topic_prompt_module, "now_str", lambda: "2026-04-09 11:05:00")
+    monkeypatch.setattr(
+        topic_prompt_module,
+        "mark_entity_page_dirty_from_assertions",
+        lambda *_args, **_kwargs: None,
+    )
+
+    ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
+        engine=cast(Any, conn),
+        post_uid=post_uid,
+        config=_build_config(),
+        limiter=limiter,
+    )
+
+    row = (
+        conn.execute(
+            """
+SELECT final_status, processed_at, model, prompt_version
+FROM weibo.posts
+WHERE post_uid = :post_uid
+""",
+            {"post_uid": post_uid},
+        )
+        .mappings()
+        .fetchone()
+    )
+
+    assert ok is False
+    assert row == {
+        "final_status": "relevant",
+        "processed_at": "2026-04-09 10:05:00",
+        "model": "old-model",
+        "prompt_version": "old-prompt",
+    }
 
 
 def test_map_topic_prompt_assertions_to_rows_falls_back_to_current_post_uid_for_talk_reply() -> (

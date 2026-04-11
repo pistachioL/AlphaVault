@@ -113,3 +113,11 @@ def test_stock_research_page_places_relation_button_between_signal_filter_and_re
     assert relation_index != -1
     assert refresh_index != -1
     assert signal_index < relation_index < refresh_index
+
+
+def test_stock_research_page_renders_feedback_dialog_controls() -> None:
+    rendered = str(stock_research_page().render())
+
+    assert "feedback_dialog_open_rx_state_" in rendered
+    assert "open_feedback_dialog" in rendered
+    assert "submit_feedback" in rendered

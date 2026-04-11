@@ -10,18 +10,20 @@ set -euo pipefail
 
 # 1. 设置临时数据目录
 export PGDATA="$PWD/.tmp/test_db"
+export PGSOCKET_DIR="/tmp/alphavault_test_pg_${PPID}"
 export PGPORT=5433  # 使用非标端口避免冲突
 export PGLOG="$PGDATA/log"
-export PGSOCKET_DIR="/tmp"
 export POSTGRES_POOL_MAX_SIZE="${POSTGRES_POOL_MAX_SIZE:-1}"
 rm -rf "$PGDATA"
 mkdir -p "$PGDATA"
+mkdir -p "$PGSOCKET_DIR"
 
 # 2. 清理函数：无论脚本成功还是失败，都会关闭数据库
 cleanup() {
     echo "Stopping ephemeral postgres..."
     pg_ctl stop -m immediate || true
     rm -rf "$PGDATA"
+    rm -rf "$PGSOCKET_DIR"
 }
 trap cleanup EXIT
 

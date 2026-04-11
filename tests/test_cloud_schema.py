@@ -8,6 +8,7 @@ _SOURCE_TABLES = {
     "assertions",
     "assertion_mentions",
     "assertion_entities",
+    "post_analysis_feedback",
     "topic_clusters",
     "topic_cluster_topics",
     "topic_cluster_post_overrides",
@@ -147,6 +148,28 @@ def test_apply_cloud_schema_posts_table_has_no_ai_runtime_columns(pg_conn) -> No
 
     index_names = _index_names(pg_conn, SCHEMA_WEIBO, "posts")
     assert "idx_posts_ai_status_next_retry_at" not in index_names
+
+
+def test_apply_cloud_schema_feedback_table_has_expected_columns(pg_conn) -> None:
+    from alphavault.db.cloud_schema import apply_cloud_schema
+
+    apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
+
+    feedback_columns = _column_names(pg_conn, SCHEMA_WEIBO, "post_analysis_feedback")
+    assert feedback_columns == {
+        "feedback_id",
+        "post_uid",
+        "feedback_tag",
+        "feedback_note",
+        "feedback_status",
+        "entrypoint",
+        "submitted_at",
+        "applied_at",
+    }
+
+    index_names = _index_names(pg_conn, SCHEMA_WEIBO, "post_analysis_feedback")
+    assert "idx_post_analysis_feedback_post_uid_submitted_at" in index_names
+    assert "idx_post_analysis_feedback_status_submitted_at" in index_names
 
 
 def test_apply_cloud_schema_assertions_table_has_no_created_at(pg_conn) -> None:

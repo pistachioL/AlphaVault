@@ -13,7 +13,15 @@ from alphavault.ai.analyze import (
     normalize_action,
 )
 from alphavault.ai.tag_validate import validate_topic_prompt_v4_ai_result
-from alphavault.db.postgres_db import PostgresEngine
+from alphavault.db.analysis_feedback import (
+    load_latest_pending_feedback,
+    mark_feedback_applied,
+)
+from alphavault.db.postgres_db import (
+    PostgresConnection,
+    PostgresEngine,
+    run_postgres_transaction,
+)
 from alphavault.db.turso_queue import (
     CloudPost,
     load_cloud_post,
@@ -42,6 +50,28 @@ from alphavault.worker.topic_prompt_v4 import (
     to_one_line_tail,
 )
 from alphavault.logging_config import get_logger
+
+MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS = 300
+
+
+def _build_manual_feedback_hint(
+    feedback_row: dict[str, str] | None,
+) -> dict[str, object] | None:
+    if not isinstance(feedback_row, dict):
+        return None
+    feedback_tag = str(feedback_row.get("feedback_tag") or "").strip()
+    feedback_note = str(feedback_row.get("feedback_note") or "").strip()
+    if len(feedback_note) > MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS:
+        feedback_note = feedback_note[:MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS].rstrip()
+    submitted_at = str(feedback_row.get("submitted_at") or "").strip()
+    if not feedback_tag and not feedback_note:
+        return None
+    return {
+        "feedback_tag": feedback_tag,
+        "feedback_note": feedback_note,
+        "submitted_at": submitted_at,
+    }
+
 
 _TOPIC_PROMPT_TRACE_CONTEXT = threading.local()
 logger = get_logger(__name__)
@@ -165,6 +195,71 @@ def _clip_text(value: object, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, int(limit))].rstrip()
+
+
+def _write_done_with_feedback_apply(
+    *,
+    engine: PostgresEngine,
+    post_uid: str,
+    final_status: str,
+    invest_score: float,
+    processed_at: str,
+    model: str,
+    prompt_version: str,
+    archived_at: str,
+    assertions: list[dict[str, object]],
+    entity_match_results: list[EntityMatchResult],
+    prefetched_post: CloudPost | None,
+    prefetched_ingested_at: int,
+    latest_pending_feedback: dict[str, str] | None,
+) -> None:
+    if latest_pending_feedback is None:
+        write_assertions_and_mark_done(
+            engine,
+            post_uid=post_uid,
+            final_status=final_status,
+            invest_score=invest_score,
+            processed_at=processed_at,
+            model=model,
+            prompt_version=prompt_version,
+            archived_at=archived_at,
+            assertions=assertions,
+            entity_match_results=entity_match_results,
+            prefetched_post=prefetched_post,
+            prefetched_ingested_at=prefetched_ingested_at,
+        )
+        return
+
+    feedback_id = ""
+    feedback_id = str(latest_pending_feedback.get("feedback_id") or "").strip()
+    if not feedback_id:
+        raise RuntimeError(f"feedback_id_missing:{post_uid}")
+
+    def _write(conn: PostgresConnection) -> None:
+        if feedback_id:
+            updated = mark_feedback_applied(
+                conn,
+                feedback_id=feedback_id,
+                applied_at=processed_at,
+            )
+            if updated != 1:
+                raise RuntimeError(f"feedback_apply_missing:{post_uid}")
+        write_assertions_and_mark_done(
+            conn,
+            post_uid=post_uid,
+            final_status=final_status,
+            invest_score=invest_score,
+            processed_at=processed_at,
+            model=model,
+            prompt_version=prompt_version,
+            archived_at=archived_at,
+            assertions=assertions,
+            entity_match_results=entity_match_results,
+            prefetched_post=prefetched_post,
+            prefetched_ingested_at=prefetched_ingested_at,
+        )
+
+    run_postgres_transaction(engine, _write)
 
 
 def map_topic_prompt_assertions_to_rows(
@@ -345,6 +440,8 @@ def process_one_post_uid_topic_prompt_v4(
         if prefetched_post is not None
         else load_cloud_post(engine, post_uid)
     )
+    latest_pending_feedback = load_latest_pending_feedback(engine, post_uid=post_uid)
+    manual_feedback_hint = _build_manual_feedback_hint(latest_pending_feedback)
     if debug_enabled:
         logger.debug(
             _build_ai_topic_diag_log_line(
@@ -402,6 +499,7 @@ def process_one_post_uid_topic_prompt_v4(
         root_content_key=root_content_key,
         focus_username=focus,
         posts=kept,
+        manual_feedback_hint=manual_feedback_hint,
         max_prompt_chars=MAX_TOPIC_PROMPT_CHARS,
     )
     if (
@@ -532,8 +630,8 @@ def process_one_post_uid_topic_prompt_v4(
                         invest_score=float(invest_score),
                     )
                 )
-            write_assertions_and_mark_done(
-                engine,
+            _write_done_with_feedback_apply(
+                engine=engine,
                 post_uid=uid,
                 final_status=final_status,
                 invest_score=invest_score,
@@ -550,6 +648,7 @@ def process_one_post_uid_topic_prompt_v4(
                     else None
                 ),
                 prefetched_ingested_at=int(time.time()),
+                latest_pending_feedback=latest_pending_feedback,
             )
             logger.info(
                 _build_ai_topic_diag_log_line(

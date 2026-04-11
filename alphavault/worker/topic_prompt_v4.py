@@ -66,6 +66,7 @@ def build_topic_prompt_v4_with_prompt_chars_limit(
     root_content_key: str,
     focus_username: str,
     posts: list[dict[str, object]],
+    manual_feedback_hint: dict[str, object] | None = None,
     max_prompt_chars: int,
 ) -> tuple[dict[str, object], int, str, int, int, bool, bool]:
     """
@@ -84,6 +85,7 @@ def build_topic_prompt_v4_with_prompt_chars_limit(
             root_content_key=root_content_key,
             focus_username=focus_username,
             posts=posts,
+            manual_feedback_hint=manual_feedback_hint,
             include_virtual_comments=bool(include_comments),
             max_node_text_chars=int(node_chars),
         )

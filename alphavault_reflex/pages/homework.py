@@ -4,6 +4,15 @@ import reflex as rx
 
 from alphavault_reflex.homework_state import HomeworkState
 from alphavault_reflex.pages.thread_tree_components import tree_line_row
+from alphavault_reflex.services.analysis_feedback import (
+    ANALYSIS_FEEDBACK_CANCEL_TEXT,
+    ANALYSIS_FEEDBACK_NOTE_LABEL,
+    ANALYSIS_FEEDBACK_NOTE_PLACEHOLDER,
+    ANALYSIS_FEEDBACK_SUBMIT_TEXT,
+    ANALYSIS_FEEDBACK_TAG_LABEL,
+    ANALYSIS_FEEDBACK_TAG_OPTIONS,
+    ANALYSIS_FEEDBACK_TAG_PLACEHOLDER,
+)
 
 
 def index_page() -> rx.Component:
@@ -200,10 +209,89 @@ def _board_table() -> rx.Component:
 def _tree_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
-            rx.dialog.title("对话流"),
+            rx.hstack(
+                rx.dialog.title("对话流"),
+                rx.spacer(),
+                rx.cond(
+                    HomeworkState.selected_tree_post_uid != "",
+                    rx.button(
+                        "标错并重跑",
+                        on_click=lambda: HomeworkState.open_feedback_dialog(
+                            HomeworkState.selected_tree_post_uid
+                        ),
+                        variant="soft",
+                        size="1",
+                    ),
+                    rx.el.div(),
+                ),
+                width="100%",
+                align="center",
+            ),
             rx.cond(
                 HomeworkState.selected_tree_label != "",
                 rx.text(HomeworkState.selected_tree_label, class_name="av-muted"),
+                rx.el.div(),
+            ),
+            rx.cond(
+                HomeworkState.feedback_success != "",
+                rx.text(HomeworkState.feedback_success, class_name="av-muted"),
+                rx.el.div(),
+            ),
+            rx.cond(
+                HomeworkState.feedback_dialog_open,
+                rx.el.div(
+                    rx.vstack(
+                        rx.text(ANALYSIS_FEEDBACK_TAG_LABEL, class_name="av-label"),
+                        rx.select(
+                            ANALYSIS_FEEDBACK_TAG_OPTIONS,
+                            value=HomeworkState.feedback_tag,
+                            on_change=HomeworkState.set_feedback_tag,
+                            placeholder=ANALYSIS_FEEDBACK_TAG_PLACEHOLDER,
+                            width="100%",
+                        ),
+                        rx.text(ANALYSIS_FEEDBACK_NOTE_LABEL, class_name="av-label"),
+                        rx.text_area(
+                            value=HomeworkState.feedback_note,
+                            on_change=HomeworkState.set_feedback_note,
+                            placeholder=ANALYSIS_FEEDBACK_NOTE_PLACEHOLDER,
+                            min_height="120px",
+                            width="100%",
+                        ),
+                        rx.cond(
+                            HomeworkState.feedback_error != "",
+                            rx.text(
+                                HomeworkState.feedback_error,
+                                class_name="av-error-text",
+                            ),
+                            rx.el.div(),
+                        ),
+                        rx.hstack(
+                            rx.button(
+                                ANALYSIS_FEEDBACK_CANCEL_TEXT,
+                                variant="soft",
+                                size="1",
+                                on_click=HomeworkState.close_feedback_dialog,
+                            ),
+                            rx.spacer(),
+                            rx.button(
+                                ANALYSIS_FEEDBACK_SUBMIT_TEXT,
+                                size="1",
+                                on_click=HomeworkState.submit_feedback,
+                                loading=HomeworkState.feedback_submitting,
+                                disabled=(
+                                    HomeworkState.feedback_submitting
+                                    | (HomeworkState.selected_tree_post_uid == "")
+                                    | (HomeworkState.feedback_tag == "")
+                                ),
+                            ),
+                            width="100%",
+                            align="center",
+                        ),
+                        spacing="3",
+                        align="stretch",
+                    ),
+                    class_name="av-tree-feedback-box",
+                ),
                 rx.el.div(),
             ),
             rx.cond(

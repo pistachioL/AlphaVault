@@ -293,6 +293,117 @@ def test_open_tree_dialog_shows_debug_info_on_missing_tree(monkeypatch) -> None:
     assert "阶段码: posts_empty" in state.selected_tree_debug_text
 
 
+def test_open_tree_dialog_keeps_selected_tree_post_uid(monkeypatch) -> None:
+    requested_uid = "weibo:1"
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.load_single_post_for_tree_from_env",
+        lambda post_uid: (pd.DataFrame(), ""),
+    )
+
+    state = HomeworkState()
+    list(state.open_tree_dialog(requested_uid))
+
+    assert state.selected_tree_post_uid == requested_uid
+
+
+def test_submit_feedback_success_closes_feedback_box_and_refreshes(monkeypatch) -> None:
+    submit_calls: list[dict[str, str]] = []
+    refresh_calls: list[str] = []
+
+    def _fake_submit_post_analysis_feedback(
+        *, post_uid: str, feedback_tag: str, feedback_note: str, entrypoint: str
+    ) -> dict[str, str]:
+        submit_calls.append(
+            {
+                "post_uid": post_uid,
+                "feedback_tag": feedback_tag,
+                "feedback_note": feedback_note,
+                "entrypoint": entrypoint,
+            }
+        )
+        return {
+            "ok": "1",
+            "message": "已记下，后台会在下一轮自动重跑。",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.submit_post_analysis_feedback",
+        _fake_submit_post_analysis_feedback,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        HomeworkState,
+        "_refresh",
+        lambda self: refresh_calls.append("refresh"),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.clear_reflex_source_caches",
+        lambda: refresh_calls.append("clear"),
+        raising=False,
+    )
+
+    state = HomeworkState()
+    state.tree_dialog_open = True
+    state.feedback_dialog_open = True
+    state.selected_tree_post_uid = "weibo:1"
+    state.feedback_tag = "漏了重点"
+    state.feedback_note = "漏了回购计划"
+
+    result = state.submit_feedback()
+
+    assert result is None
+    assert submit_calls == [
+        {
+            "post_uid": "weibo:1",
+            "feedback_tag": "漏了重点",
+            "feedback_note": "漏了回购计划",
+            "entrypoint": "homework_tree",
+        }
+    ]
+    assert refresh_calls == ["clear", "refresh"]
+    assert state.tree_dialog_open is True
+    assert state.feedback_dialog_open is False
+    assert state.feedback_tag == ""
+    assert state.feedback_note == ""
+    assert state.feedback_error == ""
+    assert state.feedback_success == "已记下，后台会在下一轮自动重跑。"
+
+
+def test_submit_feedback_failure_keeps_feedback_box_open_and_sets_error(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "alphavault_reflex.homework_state.submit_post_analysis_feedback",
+        lambda **_kwargs: {
+            "ok": "0",
+            "message": "提交失败",
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        HomeworkState,
+        "_refresh",
+        lambda self: (_ for _ in ()).throw(AssertionError("失败时不该刷新")),
+    )
+
+    state = HomeworkState()
+    state.tree_dialog_open = True
+    state.feedback_dialog_open = True
+    state.selected_tree_post_uid = "weibo:1"
+    state.feedback_tag = "其他"
+    state.feedback_note = "说明不对"
+
+    result = state.submit_feedback()
+
+    assert result is None
+    assert state.feedback_dialog_open is True
+    assert state.feedback_tag == "其他"
+    assert state.feedback_note == "说明不对"
+    assert state.feedback_error == "提交失败"
+    assert state.feedback_success == ""
+
+
 def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
     calls: list[str] = []
     assertions = pd.DataFrame(

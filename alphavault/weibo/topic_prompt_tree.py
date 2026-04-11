@@ -24,6 +24,7 @@ from alphavault.domains.thread_tree.parse import (
 
 # Hard limits to prevent huge prompts.
 MAX_THREAD_POSTS = 60
+MANUAL_FEEDBACK_HINT_KEY = "manual_feedback_hint"
 
 # NOTE:
 # - MAX_NODE_TEXT_CHARS is kept for backward-compat, but default truncation is disabled.
@@ -46,6 +47,23 @@ def _truncate_text(text: str, *, max_chars: int) -> tuple[str, bool]:
 def _ensure_thread_text(*, raw_text: str, author: str) -> str:
     del author
     return str(raw_text or "")
+
+
+def _clean_manual_feedback_hint(
+    manual_feedback_hint: dict[str, object] | None,
+) -> dict[str, str] | None:
+    if not isinstance(manual_feedback_hint, dict):
+        return None
+    feedback_tag = str(manual_feedback_hint.get("feedback_tag") or "").strip()
+    feedback_note = str(manual_feedback_hint.get("feedback_note") or "").strip()
+    submitted_at = str(manual_feedback_hint.get("submitted_at") or "").strip()
+    if not feedback_tag and not feedback_note:
+        return None
+    return {
+        "feedback_tag": feedback_tag,
+        "feedback_note": feedback_note,
+        "submitted_at": submitted_at,
+    }
 
 
 def thread_root_info_for_post(
@@ -143,6 +161,7 @@ def build_topic_runtime_context(
     root_content_key: str,
     focus_username: str,
     posts: list[dict[str, object]],
+    manual_feedback_hint: dict[str, object] | None = None,
     include_virtual_comments: bool = True,
     max_node_text_chars: int = MAX_NODE_TEXT_CHARS,
 ) -> tuple[dict[str, Any], int]:
@@ -288,17 +307,21 @@ def build_topic_runtime_context(
         _insert_path(root_node, path_payloads)
 
     message_tree = _serialize_tree(root_node)
+    ai_topic_package: dict[str, Any] = {
+        "topic_status_id": root_source_id,
+        "focus_username": focus,
+        "message_tree": message_tree,
+    }
+    cleaned_feedback_hint = _clean_manual_feedback_hint(manual_feedback_hint)
+    if cleaned_feedback_hint is not None:
+        ai_topic_package[MANUAL_FEEDBACK_HINT_KEY] = cleaned_feedback_hint
     runtime_context = {
         "root_key": root_key,
         "root_source_id": root_source_id,
         "focus_username": focus,
         "message_tree": message_tree,
         "message_lookup": build_message_lookup_from_tree(message_tree),
-        "ai_topic_package": {
-            "topic_status_id": root_source_id,
-            "focus_username": focus,
-            "message_tree": message_tree,
-        },
+        "ai_topic_package": ai_topic_package,
     }
     return runtime_context, truncated_nodes
 
@@ -334,6 +357,7 @@ def build_message_lookup_from_tree(
 
 
 __all__ = [
+    "MANUAL_FEEDBACK_HINT_KEY",
     "MAX_THREAD_POSTS",
     "MAX_NODE_TEXT_CHARS",
     "MAX_TOPIC_PROMPT_CHARS",
