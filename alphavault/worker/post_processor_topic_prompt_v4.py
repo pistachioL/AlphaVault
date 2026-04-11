@@ -88,6 +88,52 @@ def _topic_prompt_trace_suffix() -> str:
     return " ".join(parts)
 
 
+def _append_diag_field(parts: list[str], key: str, value: object) -> None:
+    text = _trace_log_value(value)
+    if text:
+        parts.append(f"{key}={text}")
+
+
+def _build_ai_topic_diag_log_line(
+    *,
+    event: str,
+    post_uid: str,
+    author: str = "",
+    root_key: str = "",
+    ai_retry_count: int | None = None,
+    prompt_chars: int | None = None,
+    compact_json: bool | None = None,
+    comments: bool | None = None,
+    truncated_nodes: int | None = None,
+    final_status: str = "",
+    assertion_count: int | None = None,
+    invest_score: float | None = None,
+) -> str:
+    parts = ["[ai_topic]", f"event={_trace_log_value(event)}"]
+    _append_diag_field(parts, "post_uid", post_uid)
+    _append_diag_field(parts, "author", author)
+    _append_diag_field(parts, "root_key", root_key)
+    if ai_retry_count is not None:
+        _append_diag_field(parts, "ai_retry_count", int(ai_retry_count))
+    if prompt_chars is not None:
+        _append_diag_field(parts, "prompt_chars", int(prompt_chars))
+    if compact_json is not None:
+        _append_diag_field(parts, "compact_json", bool(compact_json))
+    if comments is not None:
+        _append_diag_field(parts, "comments", bool(comments))
+    if truncated_nodes is not None:
+        _append_diag_field(parts, "truncated_nodes", int(truncated_nodes))
+    _append_diag_field(parts, "final_status", final_status)
+    if assertion_count is not None:
+        _append_diag_field(parts, "assertion_count", int(assertion_count))
+    if invest_score is not None:
+        _append_diag_field(parts, "invest_score", invest_score)
+    trace_suffix = _topic_prompt_trace_suffix()
+    if trace_suffix:
+        parts.append(trace_suffix)
+    return " ".join(parts)
+
+
 def _build_top_level_mentions_lookup(
     ai_result: dict[str, object],
 ) -> dict[str, dict[str, object]]:
@@ -305,6 +351,18 @@ def process_one_post_uid_topic_prompt_v4(
         "ai_retry_count": int(post.ai_retry_count or 0),
     }
 
+    if config.verbose:
+        print(
+            _build_ai_topic_diag_log_line(
+                event="start",
+                post_uid=str(post.post_uid or ""),
+                author=focus,
+                root_key=root_key,
+                ai_retry_count=int(post.ai_retry_count or 0),
+            ),
+            flush=True,
+        )
+
     kept = [current_row]
     post_count = 1
     trimmed_count = 0
@@ -354,6 +412,21 @@ def process_one_post_uid_topic_prompt_v4(
         )
 
     trace_label = f"topic:{root_key}"
+
+    if config.verbose:
+        print(
+            _build_ai_topic_diag_log_line(
+                event="prompt_ready",
+                post_uid=str(post.post_uid or ""),
+                author=focus,
+                root_key=root_key,
+                prompt_chars=int(prompt_chars),
+                compact_json=bool(compact_json),
+                comments=bool(include_comments),
+                truncated_nodes=int(truncated_nodes),
+            ),
+            flush=True,
+        )
 
     if config.verbose:
         print(
@@ -453,6 +526,19 @@ def process_one_post_uid_topic_prompt_v4(
                 ),
                 prefetched_ingested_at=int(time.time()),
             )
+            if config.verbose:
+                print(
+                    _build_ai_topic_diag_log_line(
+                        event="db_write_done",
+                        post_uid=uid,
+                        author=focus,
+                        root_key=root_key,
+                        final_status=final_status,
+                        assertion_count=len(rows),
+                        invest_score=float(invest_score),
+                    ),
+                    flush=True,
+                )
 
             if rows:
                 try:

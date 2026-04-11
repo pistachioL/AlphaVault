@@ -71,6 +71,9 @@ def _build_ai_trace_log_line(
     retry_count: int | None = None,
     next_retry_at: int | None = None,
     success: bool | None = None,
+    acked: int | None = None,
+    deleted: int | None = None,
+    retry_added: int | None = None,
     reason: str = "",
 ) -> str:
     parts = [AI_TRACE_LOG_PREFIX, f"stage={_trace_log_value(stage)}"]
@@ -87,6 +90,12 @@ def _build_ai_trace_log_line(
         _append_trace_field(parts, "next_retry_at", int(next_retry_at))
     if success is not None:
         _append_trace_field(parts, "success", bool(success))
+    if acked is not None:
+        _append_trace_field(parts, "acked", int(acked))
+    if deleted is not None:
+        _append_trace_field(parts, "deleted", int(deleted))
+    if retry_added is not None:
+        _append_trace_field(parts, "retry_added", int(retry_added))
     return " ".join(parts)
 
 
@@ -124,6 +133,9 @@ def process_one_redis_payload(
         retry_count: int | None = None,
         next_retry_at: int | None = None,
         success: bool | None = None,
+        acked: int | None = None,
+        deleted: int | None = None,
+        retry_added: int | None = None,
         reason: str = "",
     ) -> None:
         if not verbose:
@@ -140,6 +152,9 @@ def process_one_redis_payload(
                 retry_count=retry_count,
                 next_retry_at=next_retry_at,
                 success=success,
+                acked=acked,
+                deleted=deleted,
+                retry_added=retry_added,
                 reason=reason,
             ),
             flush=True,
@@ -202,7 +217,12 @@ def process_one_redis_payload(
         reason = str(trace_state.get("ack_reason") or "").strip() or "ack"
         _log_trace(stage="ack_start", reason=reason)
         acked = redis_ai_ack(client, queue_key, ack_message_id)
-        _log_trace(stage="ack_done", reason=reason)
+        _log_trace(
+            stage="ack_result",
+            reason=reason,
+            success=bool(acked),
+            acked=int(acked),
+        )
         return int(acked)
 
     def _redis_ai_ack_and_clear_dedup_with_trace(
@@ -221,7 +241,14 @@ def process_one_redis_payload(
             message_id=message_id,
             post_uid=resolved_post_uid,
         )
-        _log_trace(stage="final_failed_ack_done", post_uid=resolved_post_uid)
+        acked, deleted = result
+        _log_trace(
+            stage="final_failed_ack_result",
+            post_uid=resolved_post_uid,
+            success=bool(acked),
+            acked=int(acked),
+            deleted=int(deleted),
+        )
         return result
 
     def _redis_ai_ack_and_push_retry_with_trace(
@@ -250,11 +277,15 @@ def process_one_redis_payload(
             payload=payload,
             next_retry_at=int(next_retry_at),
         )
+        retry_added, acked = result
         _log_trace(
-            stage="retry_handoff_done",
+            stage="retry_handoff_result",
             post_uid=resolved_post_uid,
             retry_count=retry_count,
             next_retry_at=int(next_retry_at),
+            success=bool(acked),
+            retry_added=int(retry_added),
+            acked=int(acked),
         )
         return result
 
