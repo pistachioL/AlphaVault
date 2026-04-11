@@ -222,13 +222,13 @@ def _extract_stream_messages(entries: object) -> list[dict[str, str]]:
     if not isinstance(entries, list):
         return resolved
     for item in entries:
-        if not isinstance(item, tuple) or len(item) != 2:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
             continue
         _stream_name, messages = item
         if not isinstance(messages, list):
             continue
         for message in messages:
-            if not isinstance(message, tuple) or len(message) != 2:
+            if not isinstance(message, (tuple, list)) or len(message) != 2:
                 continue
             message_id, fields = message
             if not isinstance(fields, dict):
