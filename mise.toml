@@ -12,7 +12,9 @@ set -euo pipefail
 export PGDATA="$PWD/.tmp/test_db"
 export PGPORT=5433  # 使用非标端口避免冲突
 export PGLOG="$PGDATA/log"
+export PGSOCKET_DIR="/tmp"
 export POSTGRES_POOL_MAX_SIZE="${POSTGRES_POOL_MAX_SIZE:-1}"
+rm -rf "$PGDATA"
 mkdir -p "$PGDATA"
 
 # 2. 清理函数：无论脚本成功还是失败，都会关闭数据库
@@ -26,15 +28,15 @@ trap cleanup EXIT
 # 3. 初始化并启动
 echo "Initializing ephemeral postgres..."
 initdb --auth=trust --auth-host=trust --auth-local=trust --locale=en_US.UTF-8 > /dev/null
-pg_ctl start -o "-k $PGDATA -p $PGPORT -c shared_buffers=16MB -c max_connections=20" -l "$PGLOG" -w
+pg_ctl start -o "-k $PGSOCKET_DIR -p $PGPORT -c shared_buffers=16MB -c max_connections=20" -l "$PGLOG" -w
 
 # 4. 执行你的测试或检查 (例如运行迁移脚本或测试)
 echo "Running database checks..."
-export TEST_POSTGRES_DSN="${TEST_POSTGRES_DSN:-dbname=postgres host=$PGDATA port=$PGPORT user=$(id -un)}"
+export TEST_POSTGRES_DSN="${TEST_POSTGRES_DSN:-dbname=postgres host=127.0.0.1 port=$PGPORT user=$(id -un)}"
 if [[ -n "${DB_TEST_CMD:-}" ]]; then
     eval "$DB_TEST_CMD"
 else
-    psql -p $PGPORT -d postgres -c "SELECT 1;"
+    psql -h 127.0.0.1 -p $PGPORT -d postgres -c "SELECT 1;"
 fi
 
 echo "Check passed!"

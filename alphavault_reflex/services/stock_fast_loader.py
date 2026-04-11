@@ -179,13 +179,15 @@ def load_stock_trade_sources_fast_cached(
             f"{build_assertion_rollup_ctes(assertion_entities_table=assertion_entities_table, assertion_mentions_table=assertion_mentions_table, topic_cluster_topics_table=topic_cluster_topics_table)}\n"
             f"SELECT {select_expr}\n"
             f"FROM {assertions_table} a\n"
+            f"JOIN {posts_table} p\n"
+            "  ON p.post_uid = a.post_uid\n"
             f"JOIN {assertion_entities_table} ae_filter\n"
             "  ON ae_filter.assertion_id = a.assertion_id\n"
             f"{build_assertion_rollup_joins('a')}\n"
             "WHERE a.action LIKE 'trade.%'\n"
             "  AND ae_filter.entity_type = 'stock'\n"
             f"  AND {key_clause}\n"
-            "ORDER BY a.created_at DESC\n"
+            "ORDER BY p.created_at DESC\n"
             "LIMIT :limit"
         )
         assertions = turso_read_sql_df(conn, assertions_query, params=params)
