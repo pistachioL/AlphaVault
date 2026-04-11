@@ -748,6 +748,42 @@ def test_build_source_runtimes_requires_redis_for_worker(monkeypatch, tmp_path) 
         )
 
 
+def test_build_source_runtimes_always_uses_source_redis_key(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(worker_loop_runtime, "ensure_spool_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        worker_loop_runtime, "try_get_redis", lambda: (object(), "queue")
+    )
+    monkeypatch.setattr(
+        worker_loop_runtime,
+        "require_postgres_source_from_env",
+        lambda name: SimpleNamespace(dsn="postgres://db", schema=str(name)),
+    )
+    monkeypatch.setattr(
+        worker_loop_runtime, "ensure_postgres_engine", lambda *args, **kwargs: object()
+    )
+
+    sources, redis_client, base_key = worker_loop_runtime.build_source_runtimes(
+        source_configs=[
+            RSSSourceConfig(
+                name="weibo",
+                platform="weibo",
+                rss_urls=["https://example.com/rss"],
+                database_url="postgres://db",
+                auth_token="",
+                author="",
+                user_id=None,
+            )
+        ]
+    )
+
+    assert redis_client is not None
+    assert base_key == "queue"
+    assert len(sources) == 1
+    assert str(sources[0].redis_queue_key) == "queue:weibo"
+
+
 def test_ingest_rss_many_once_retry_same_item_after_enqueue_failure(
     monkeypatch, tmp_path
 ) -> None:

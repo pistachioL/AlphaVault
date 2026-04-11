@@ -39,12 +39,14 @@ def build_source_redis_queue_key(
     source_name: str,
     multi_source: bool,
 ) -> str:
+    del multi_source
     resolved = str(base_queue_key or "").strip()
+    resolved_source_name = str(source_name or "").strip()
     if not resolved:
         return ""
-    if not multi_source:
+    if not resolved_source_name:
         return resolved
-    return f"{resolved}:{str(source_name or '').strip()}"
+    return f"{resolved}:{resolved_source_name}"
 
 
 def log_source_runtime(

@@ -45,7 +45,7 @@ def test_run_manual_ingest_for_source_uses_stream_only(monkeypatch, tmp_path) ->
 
     assert result["accepted"] == 2
     assert result["enqueue_error"] is False
-    assert seen["redis_queue_key"] == "q"
+    assert seen["redis_queue_key"] == "q:weibo"
     assert Path(str(seen["spool_dir"])) == Path(tmp_path)
 
 
