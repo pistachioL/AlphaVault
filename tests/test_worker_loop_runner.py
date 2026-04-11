@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import cast
 
+from alphavault.rss.utils import RateLimiter
 from alphavault.worker import worker_loop_runner
 from alphavault.worker import worker_loop_source_tick
 from alphavault.worker.worker_loop_models import (
@@ -260,3 +261,83 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
         "low:xueqiu",
         "progress:xueqiu",
     ]
+
+
+def test_run_worker_forever_recovers_redis_pending_on_start(monkeypatch) -> None:
+    reset_calls: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(
+        worker_loop_runner,
+        "redis_ai_reset_consumer_group",
+        lambda _client, queue_key, *, verbose: reset_calls.append((queue_key, verbose)),
+    )
+    monkeypatch.setattr(
+        worker_loop_runner, "log_source_runtime", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        worker_loop_runner, "_build_due_ai_cached_by_source", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        worker_loop_runner, "_run_worker_loop_forever", lambda **_kw: None
+    )
+
+    worker_loop_runner.run_worker_forever(
+        args=SimpleNamespace(verbose=True, limit=0, ai_stuck_seconds=3600),
+        sources=cast(
+            list,
+            [
+                SimpleNamespace(redis_queue_key="queue:a"),
+                SimpleNamespace(redis_queue_key="queue:b"),
+                SimpleNamespace(redis_queue_key="queue:a"),
+            ],
+        ),
+        config=cast(worker_loop_runner.LLMConfig, object()),
+        limiter=RateLimiter(0.0),
+        ai_cap=1,
+        redis_client=object(),
+        rss_active_hours=None,
+        rss_interval_seconds=600.0,
+        rss_feed_sleep_seconds=0.0,
+        worker_active_hours=None,
+        worker_interval_seconds=600.0,
+    )
+
+    assert reset_calls == [
+        ("queue:a", True),
+        ("queue:b", True),
+    ]
+
+
+def test_run_worker_forever_skips_recover_without_redis(monkeypatch) -> None:
+    reset_calls: list[str] = []
+
+    monkeypatch.setattr(
+        worker_loop_runner,
+        "redis_ai_reset_consumer_group",
+        lambda *_args, **_kwargs: reset_calls.append("called"),
+    )
+    monkeypatch.setattr(
+        worker_loop_runner, "log_source_runtime", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        worker_loop_runner, "_build_due_ai_cached_by_source", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(
+        worker_loop_runner, "_run_worker_loop_forever", lambda **_kw: None
+    )
+
+    worker_loop_runner.run_worker_forever(
+        args=SimpleNamespace(verbose=False, limit=0, ai_stuck_seconds=3600),
+        sources=cast(list, [SimpleNamespace(redis_queue_key="queue:a")]),
+        config=cast(worker_loop_runner.LLMConfig, object()),
+        limiter=RateLimiter(0.0),
+        ai_cap=1,
+        redis_client=None,
+        rss_active_hours=None,
+        rss_interval_seconds=600.0,
+        rss_feed_sleep_seconds=0.0,
+        worker_active_hours=None,
+        worker_interval_seconds=600.0,
+    )
+
+    assert reset_calls == []

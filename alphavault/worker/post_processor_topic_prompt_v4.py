@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 import time
 
 from alphavault.ai._client import AiInvalidJsonError
@@ -68,6 +69,99 @@ def _build_manual_feedback_hint(
         "feedback_note": feedback_note,
         "submitted_at": submitted_at,
     }
+
+
+_TOPIC_PROMPT_TRACE_CONTEXT = threading.local()
+
+
+def _trace_log_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return " ".join(str(value or "").split()).strip()
+
+
+def set_topic_prompt_trace_context(
+    *,
+    trace_id: str,
+    consumer_name: str,
+    message_id: str,
+    redis_queue_key: str,
+    source_name: str,
+) -> None:
+    _TOPIC_PROMPT_TRACE_CONTEXT.value = {
+        "trace_id": str(trace_id or "").strip(),
+        "consumer": str(consumer_name or "").strip(),
+        "message_id": str(message_id or "").strip(),
+        "queue": str(redis_queue_key or "").strip(),
+        "source": str(source_name or "").strip(),
+    }
+
+
+def clear_topic_prompt_trace_context() -> None:
+    if hasattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value"):
+        delattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value")
+
+
+def _topic_prompt_trace_suffix() -> str:
+    raw_context = getattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value", None)
+    if not isinstance(raw_context, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("trace_id", "consumer", "message_id", "queue", "source"):
+        text = _trace_log_value(raw_context.get(key))
+        if text:
+            parts.append(f"{key}={text}")
+    return " ".join(parts)
+
+
+def _append_diag_field(parts: list[str], key: str, value: object) -> None:
+    text = _trace_log_value(value)
+    if text:
+        parts.append(f"{key}={text}")
+
+
+def _build_ai_topic_diag_log_line(
+    *,
+    event: str,
+    post_uid: str,
+    author: str = "",
+    root_key: str = "",
+    ai_retry_count: int | None = None,
+    prompt_chars: int | None = None,
+    compact_json: bool | None = None,
+    comments: bool | None = None,
+    truncated_nodes: int | None = None,
+    final_status: str = "",
+    assertion_count: int | None = None,
+    invest_score: float | None = None,
+) -> str:
+    parts = ["[ai_topic]", f"event={_trace_log_value(event)}"]
+    _append_diag_field(parts, "post_uid", post_uid)
+    _append_diag_field(parts, "author", author)
+    _append_diag_field(parts, "root_key", root_key)
+    if ai_retry_count is not None:
+        _append_diag_field(parts, "ai_retry_count", int(ai_retry_count))
+    if prompt_chars is not None:
+        _append_diag_field(parts, "prompt_chars", int(prompt_chars))
+    if compact_json is not None:
+        _append_diag_field(parts, "compact_json", bool(compact_json))
+    if comments is not None:
+        _append_diag_field(parts, "comments", bool(comments))
+    if truncated_nodes is not None:
+        _append_diag_field(parts, "truncated_nodes", int(truncated_nodes))
+    _append_diag_field(parts, "final_status", final_status)
+    if assertion_count is not None:
+        _append_diag_field(parts, "assertion_count", int(assertion_count))
+    if invest_score is not None:
+        _append_diag_field(parts, "invest_score", invest_score)
+    trace_suffix = _topic_prompt_trace_suffix()
+    if trace_suffix:
+        parts.append(trace_suffix)
+    return " ".join(parts)
 
 
 def _build_top_level_mentions_lookup(
@@ -330,6 +424,14 @@ def process_one_post_uid_topic_prompt_v4(
     prefetched_recent: list[dict[str, object]] | None = None,
     source_name: str = "",
 ) -> bool:
+    if config.verbose:
+        print(
+            _build_ai_topic_diag_log_line(
+                event="load_post_start",
+                post_uid=str(post_uid or ""),
+            ),
+            flush=True,
+        )
     post = (
         prefetched_post
         if prefetched_post is not None
@@ -337,6 +439,16 @@ def process_one_post_uid_topic_prompt_v4(
     )
     latest_pending_feedback = load_latest_pending_feedback(engine, post_uid=post_uid)
     manual_feedback_hint = _build_manual_feedback_hint(latest_pending_feedback)
+    if config.verbose:
+        print(
+            _build_ai_topic_diag_log_line(
+                event="load_post_done",
+                post_uid=str(post.post_uid or ""),
+                author=str(post.author or "").strip(),
+                ai_retry_count=int(post.ai_retry_count or 0),
+            ),
+            flush=True,
+        )
     focus = str(post.author or "").strip()
     root_key, root_segment, root_content_key = thread_root_info_for_post(
         raw_text=post.raw_text or "",
@@ -353,6 +465,18 @@ def process_one_post_uid_topic_prompt_v4(
         "ai_status": "running",
         "ai_retry_count": int(post.ai_retry_count or 0),
     }
+
+    if config.verbose:
+        print(
+            _build_ai_topic_diag_log_line(
+                event="start",
+                post_uid=str(post.post_uid or ""),
+                author=focus,
+                root_key=root_key,
+                ai_retry_count=int(post.ai_retry_count or 0),
+            ),
+            flush=True,
+        )
 
     kept = [current_row]
     post_count = 1
@@ -407,12 +531,28 @@ def process_one_post_uid_topic_prompt_v4(
 
     if config.verbose:
         print(
+            _build_ai_topic_diag_log_line(
+                event="prompt_ready",
+                post_uid=str(post.post_uid or ""),
+                author=focus,
+                root_key=root_key,
+                prompt_chars=int(prompt_chars),
+                compact_json=bool(compact_json),
+                comments=bool(include_comments),
+                truncated_nodes=int(truncated_nodes),
+            ),
+            flush=True,
+        )
+
+    if config.verbose:
+        print(
             build_topic_prompt_v4_llm_log_line(
                 event="call_api",
                 root_key=root_key,
                 post_uid=str(post.post_uid or ""),
                 author=focus,
                 locked_count=len(locked_post_uids),
+                message=_topic_prompt_trace_suffix(),
             ),
             flush=True,
         )
@@ -448,6 +588,7 @@ def process_one_post_uid_topic_prompt_v4(
                     author=focus,
                     locked_count=len(locked_post_uids),
                     cost_seconds=cost,
+                    message=_topic_prompt_trace_suffix(),
                 ),
                 flush=True,
             )
@@ -482,6 +623,19 @@ def process_one_post_uid_topic_prompt_v4(
             invest_score = score_from_assertions(rows)
             processed_at = now_str()
             archived_at = now_str()
+            if config.verbose:
+                print(
+                    _build_ai_topic_diag_log_line(
+                        event="db_write_start",
+                        post_uid=uid,
+                        author=focus,
+                        root_key=root_key,
+                        final_status=final_status,
+                        assertion_count=len(rows),
+                        invest_score=float(invest_score),
+                    ),
+                    flush=True,
+                )
             _write_done_with_feedback_apply(
                 engine=engine,
                 post_uid=uid,
@@ -502,6 +656,19 @@ def process_one_post_uid_topic_prompt_v4(
                 prefetched_ingested_at=int(time.time()),
                 latest_pending_feedback=latest_pending_feedback,
             )
+            if config.verbose:
+                print(
+                    _build_ai_topic_diag_log_line(
+                        event="db_write_done",
+                        post_uid=uid,
+                        author=focus,
+                        root_key=root_key,
+                        final_status=final_status,
+                        assertion_count=len(rows),
+                        invest_score=float(invest_score),
+                    ),
+                    flush=True,
+                )
 
             if rows:
                 try:
@@ -530,6 +697,7 @@ def process_one_post_uid_topic_prompt_v4(
                         f"prompt_version={config.prompt_version}",
                         f"raw_ai_len={len(getattr(err, 'raw_ai_text', '') or '')}",
                         f"raw_ai_tail={raw_tail}",
+                        _topic_prompt_trace_suffix(),
                     ]
                 ),
                 flush=True,
@@ -547,6 +715,9 @@ def process_one_post_uid_topic_prompt_v4(
             f" prompt_version={config.prompt_version}"
         )
         msg = f"ai:{format_llm_error_one_line(err, limit=700)}{ctx}"
+        trace_suffix = _topic_prompt_trace_suffix()
+        if trace_suffix:
+            msg = f"{msg} {trace_suffix}"
         print(
             build_topic_prompt_v4_llm_log_line(
                 event="error",
@@ -562,7 +733,9 @@ def process_one_post_uid_topic_prompt_v4(
 
 
 __all__ = [
+    "clear_topic_prompt_trace_context",
     "map_topic_prompt_assertions_to_rows",
     "process_one_post_uid_topic_prompt_v4",
     "resolve_rows_entity_matches",
+    "set_topic_prompt_trace_context",
 ]

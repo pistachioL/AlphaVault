@@ -25,6 +25,7 @@ from alphavault.constants import (
     ENV_AI_MAX_INFLIGHT,
     ENV_AI_MODEL,
     ENV_AI_PROMPT_VERSION,
+    ENV_AI_QUEUE_ACK_TIMEOUT_SEC,
     ENV_AI_REASONING_EFFORT,
     ENV_AI_RETRIES,
     ENV_AI_RPM,
@@ -120,6 +121,7 @@ def parse_args() -> argparse.Namespace:
     ai_rpm_env = env_float(ENV_AI_RPM)
     ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
     ai_max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
+    ai_queue_ack_timeout_env = env_int(ENV_AI_QUEUE_ACK_TIMEOUT_SEC)
     rss_timeout_env = env_float(ENV_RSS_TIMEOUT_SECONDS)
     rss_retries_env = env_int(ENV_RSS_RETRIES)
 
@@ -161,8 +163,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ai-stuck-seconds",
         type=int,
-        default=3600,
-        help="running 超过多久算卡死（秒）",
+        default=(
+            int(ai_queue_ack_timeout_env)
+            if ai_queue_ack_timeout_env is not None
+            else 3600
+        ),
+        help="队列任务拿走后，多久没完成就算卡住（秒，可用 AI_QUEUE_ACK_TIMEOUT_SEC）",
     )
 
     # AI config (litellm only; mostly via env)

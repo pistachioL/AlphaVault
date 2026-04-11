@@ -4,6 +4,7 @@ from concurrent.futures import Future
 import json
 import threading
 
+from alphavault.worker import periodic_jobs
 from alphavault.worker import scheduler as scheduler_module
 from alphavault.worker import worker_loop_ai
 
@@ -175,3 +176,22 @@ def test_schedule_ai_for_source_tracks_inflight_owner_by_source_name(
     assert has_error is False
     assert captured["inflight_owner"] == "weibo-main"
     assert "weibo-main" in str(captured["consumer_name"])
+
+
+def test_prune_inflight_futures_logs_exception_and_clears_future(
+    capsys,
+) -> None:
+    future: Future = Future()
+    future.set_exception(RuntimeError("boom"))
+    inflight_futures: set[Future] = {future}
+    inflight_owner_by_future = {future: "xueqiu"}
+
+    periodic_jobs.prune_inflight_futures(
+        inflight_futures,
+        inflight_owner_by_future,
+    )
+
+    captured = capsys.readouterr()
+    assert "[ai] future_error owner=xueqiu RuntimeError: boom" in captured.out
+    assert inflight_futures == set()
+    assert inflight_owner_by_future == {}

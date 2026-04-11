@@ -22,7 +22,7 @@ from alphavault.db.postgres_env import (
 from alphavault.db.turso_queue import CloudPost, load_cloud_post
 from alphavault.env import load_dotenv_if_present
 from alphavault.rss.utils import now_str
-from alphavault.worker.redis_queue import try_get_redis
+from alphavault.worker.redis_client import try_get_redis
 from alphavault.worker.redis_stream_queue import (
     REDIS_PUSH_STATUS_DUPLICATE,
     REDIS_PUSH_STATUS_ERROR,

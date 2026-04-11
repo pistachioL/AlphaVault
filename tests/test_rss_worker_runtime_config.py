@@ -58,6 +58,41 @@ def test_parse_args_cli_overrides_rss_env(monkeypatch) -> None:
     assert int(args.rss_retries) == 1
 
 
+def test_parse_args_reads_ai_queue_ack_timeout_env(monkeypatch) -> None:
+    monkeypatch.setenv("AI_QUEUE_ACK_TIMEOUT_SEC", "123")
+    monkeypatch.setattr(sys, "argv", ["weibo_rss_turso_worker.py"])
+
+    args = parse_args()
+
+    assert int(args.ai_stuck_seconds) == 123
+
+
+def test_parse_args_invalid_ai_queue_ack_timeout_env_uses_default(monkeypatch) -> None:
+    monkeypatch.setenv("AI_QUEUE_ACK_TIMEOUT_SEC", "bad")
+    monkeypatch.setattr(sys, "argv", ["weibo_rss_turso_worker.py"])
+
+    args = parse_args()
+
+    assert int(args.ai_stuck_seconds) == 3600
+
+
+def test_parse_args_cli_overrides_ai_queue_ack_timeout_env(monkeypatch) -> None:
+    monkeypatch.setenv("AI_QUEUE_ACK_TIMEOUT_SEC", "123")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "weibo_rss_turso_worker.py",
+            "--ai-stuck-seconds",
+            "456",
+        ],
+    )
+
+    args = parse_args()
+
+    assert int(args.ai_stuck_seconds) == 456
+
+
 def test_fetch_feed_retry_sleep_is_incremental(monkeypatch) -> None:
     request_calls: list[tuple[str, float]] = []
     sleep_calls: list[float] = []

@@ -77,12 +77,13 @@ def process_one_redis_payload(
         and not bool(payload.get("skip_db_processed_guard"))
         and is_post_already_processed_success_fn(engine, post_uid=resolved_post_uid)
     ):
-        redis_ai_ack_and_clear_dedup_fn(
-            redis_client,
-            redis_queue_key,
-            message_id=message_id,
-            post_uid=resolved_post_uid,
-        )
+        if verbose:
+            print(
+                f"[ai] skip_db_already_processed_success post_uid={resolved_post_uid} "
+                f"message_id={message_id}",
+                flush=True,
+            )
+        redis_ai_ack_fn(redis_client, redis_queue_key, message_id)
         return
 
     prefetched_recent: list[dict[str, object]] = []
@@ -97,12 +98,7 @@ def process_one_redis_payload(
         source_name=str(source_name or "").strip(),
     )
     if success:
-        redis_ai_ack_and_clear_dedup_fn(
-            redis_client,
-            redis_queue_key,
-            message_id=message_id,
-            post_uid=resolved_post_uid,
-        )
+        redis_ai_ack_fn(redis_client, redis_queue_key, message_id)
         return
 
     retry_count = max(1, int(payload_retry_count_fn(payload)) + 1)

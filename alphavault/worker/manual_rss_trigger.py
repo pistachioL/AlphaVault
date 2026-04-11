@@ -22,7 +22,7 @@ from alphavault.db.turso_queue import (
 from alphavault.rss.utils import env_float, env_int
 from alphavault.worker.cli import RSSSourceConfig, resolve_rss_source_configs
 from alphavault.worker.ingest import ingest_rss_many_once
-from alphavault.worker.redis_queue import try_get_redis
+from alphavault.worker.redis_client import try_get_redis
 from alphavault.worker.redis_stream_queue import (
     REDIS_PUSH_STATUS_DUPLICATE,
     REDIS_PUSH_STATUS_ERROR,

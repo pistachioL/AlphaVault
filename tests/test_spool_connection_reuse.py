@@ -8,7 +8,7 @@ from typing import cast
 
 from alphavault.db.postgres_db import PostgresEngine as TursoEngine
 from alphavault.worker import spool
-from alphavault.worker import redis_queue as redis_queue_module
+from alphavault.worker import redis_stream_queue as redis_stream_queue_module
 
 
 def _build_payload(
@@ -296,9 +296,9 @@ def test_flush_spool_to_turso_keeps_json_when_redis_push_succeeds(
     )
     monkeypatch.setattr(spool, "upsert_pending_post", _fake_upsert)
     monkeypatch.setattr(
-        redis_queue_module,
-        "redis_try_push_dedup",
-        lambda *_args, **_kwargs: True,
+        redis_stream_queue_module,
+        "redis_try_push_ai_message_status",
+        lambda *_args, **_kwargs: redis_stream_queue_module.REDIS_PUSH_STATUS_PUSHED,
     )
 
     processed, turso_error = spool.flush_spool_to_turso(
@@ -399,11 +399,11 @@ def test_recover_spool_to_turso_and_redis_requeues_pending_and_deletes_done(
 
     def _fake_requeue_status(_client, _queue_key, *, post_uid, **_kwargs):  # type: ignore[no-untyped-def]
         requeued.append(str(post_uid))
-        return redis_queue_module.REDIS_PUSH_STATUS_PUSHED
+        return redis_stream_queue_module.REDIS_PUSH_STATUS_PUSHED
 
     monkeypatch.setattr(
-        redis_queue_module,
-        "redis_try_push_ai_dedup_status",
+        redis_stream_queue_module,
+        "redis_try_push_ai_message_status",
         _fake_requeue_status,
     )
 
@@ -458,9 +458,9 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_fails(
         lambda conn, *, post_uid: "" if conn is conn_marker else post_uid,
     )
     monkeypatch.setattr(
-        redis_queue_module,
-        "redis_try_push_ai_dedup_status",
-        lambda *_args, **_kwargs: redis_queue_module.REDIS_PUSH_STATUS_ERROR,
+        redis_stream_queue_module,
+        "redis_try_push_ai_message_status",
+        lambda *_args, **_kwargs: redis_stream_queue_module.REDIS_PUSH_STATUS_ERROR,
     )
 
     handled_posts, queued_redis, deleted_done, has_error = (
@@ -513,9 +513,9 @@ def test_recover_spool_to_turso_and_redis_keeps_json_when_ai_requeue_is_duplicat
         lambda conn, *, post_uid: "" if conn is conn_marker else post_uid,
     )
     monkeypatch.setattr(
-        redis_queue_module,
-        "redis_try_push_ai_dedup_status",
-        lambda *_args, **_kwargs: redis_queue_module.REDIS_PUSH_STATUS_DUPLICATE,
+        redis_stream_queue_module,
+        "redis_try_push_ai_message_status",
+        lambda *_args, **_kwargs: redis_stream_queue_module.REDIS_PUSH_STATUS_DUPLICATE,
     )
 
     handled_posts, queued_redis, deleted_done, has_error = (

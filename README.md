@@ -60,6 +60,7 @@ export AI_REASONING_EFFORT="xhigh"
 export AI_RPM="12"
 export AI_RETRIES="11"
 export AI_MAX_INFLIGHT="30"
+export AI_QUEUE_ACK_TIMEOUT_SEC="3600"
 export AI_TRACE_OUT="trace.txt"
 
 uv run python weibo_rss_turso_worker.py --verbose
@@ -432,6 +433,7 @@ docker run -d --name alphavault \
 	  -e AI_RPM="12" \
 	  -e AI_RETRIES="11" \
 	  -e AI_MAX_INFLIGHT="30" \
+	  -e AI_QUEUE_ACK_TIMEOUT_SEC="3600" \
 	  -e AI_TRACE_OUT="/data/trace.txt" \
 	  -e AI_BASE_URL="http://xxx/v1" \
 	  -e AI_API_KEY="YOUR_KEY" \

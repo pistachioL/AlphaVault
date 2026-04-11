@@ -11,7 +11,7 @@ from alphavault.constants import (
 from alphavault.db.postgres_db import ensure_postgres_engine
 from alphavault.db.postgres_env import require_postgres_source_from_env
 from alphavault.worker.cli import RSSSourceConfig
-from alphavault.worker.redis_queue import try_get_redis
+from alphavault.worker.redis_client import try_get_redis
 from alphavault.worker.runtime_models import WorkerSourceConfig, WorkerSourceRuntime
 from alphavault.worker.source_runtime import (
     build_source_redis_queue_key,
