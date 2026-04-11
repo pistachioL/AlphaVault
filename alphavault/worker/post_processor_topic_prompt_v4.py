@@ -1,4 +1,5 @@
 from __future__ import annotations
+import threading
 import time
 
 from alphavault.ai._client import AiInvalidJsonError
@@ -39,6 +40,52 @@ from alphavault.worker.topic_prompt_v4 import (
     build_topic_prompt_v4_with_prompt_chars_limit,
     to_one_line_tail,
 )
+
+_TOPIC_PROMPT_TRACE_CONTEXT = threading.local()
+
+
+def _trace_log_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return " ".join(str(value or "").split()).strip()
+
+
+def set_topic_prompt_trace_context(
+    *,
+    trace_id: str,
+    consumer_name: str,
+    message_id: str,
+    redis_queue_key: str,
+    source_name: str,
+) -> None:
+    _TOPIC_PROMPT_TRACE_CONTEXT.value = {
+        "trace_id": str(trace_id or "").strip(),
+        "consumer": str(consumer_name or "").strip(),
+        "message_id": str(message_id or "").strip(),
+        "queue": str(redis_queue_key or "").strip(),
+        "source": str(source_name or "").strip(),
+    }
+
+
+def clear_topic_prompt_trace_context() -> None:
+    if hasattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value"):
+        delattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value")
+
+
+def _topic_prompt_trace_suffix() -> str:
+    raw_context = getattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value", None)
+    if not isinstance(raw_context, dict):
+        return ""
+    parts: list[str] = []
+    for key in ("trace_id", "consumer", "message_id", "queue", "source"):
+        text = _trace_log_value(raw_context.get(key))
+        if text:
+            parts.append(f"{key}={text}")
+    return " ".join(parts)
 
 
 def _build_top_level_mentions_lookup(
@@ -316,6 +363,7 @@ def process_one_post_uid_topic_prompt_v4(
                 post_uid=str(post.post_uid or ""),
                 author=focus,
                 locked_count=len(locked_post_uids),
+                message=_topic_prompt_trace_suffix(),
             ),
             flush=True,
         )
@@ -351,6 +399,7 @@ def process_one_post_uid_topic_prompt_v4(
                     author=focus,
                     locked_count=len(locked_post_uids),
                     cost_seconds=cost,
+                    message=_topic_prompt_trace_suffix(),
                 ),
                 flush=True,
             )
@@ -432,6 +481,7 @@ def process_one_post_uid_topic_prompt_v4(
                         f"prompt_version={config.prompt_version}",
                         f"raw_ai_len={len(getattr(err, 'raw_ai_text', '') or '')}",
                         f"raw_ai_tail={raw_tail}",
+                        _topic_prompt_trace_suffix(),
                     ]
                 ),
                 flush=True,
@@ -449,6 +499,9 @@ def process_one_post_uid_topic_prompt_v4(
             f" prompt_version={config.prompt_version}"
         )
         msg = f"ai:{format_llm_error_one_line(err, limit=700)}{ctx}"
+        trace_suffix = _topic_prompt_trace_suffix()
+        if trace_suffix:
+            msg = f"{msg} {trace_suffix}"
         print(
             build_topic_prompt_v4_llm_log_line(
                 event="error",
@@ -464,7 +517,9 @@ def process_one_post_uid_topic_prompt_v4(
 
 
 __all__ = [
+    "clear_topic_prompt_trace_context",
     "map_topic_prompt_assertions_to_rows",
     "process_one_post_uid_topic_prompt_v4",
     "resolve_rows_entity_matches",
+    "set_topic_prompt_trace_context",
 ]

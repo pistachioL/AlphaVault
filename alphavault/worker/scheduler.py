@@ -5,6 +5,67 @@ import json
 import time
 from typing import Any, Callable, Sequence
 
+AI_TRACE_LOG_PREFIX = "[ai_trace]"
+
+
+def _trace_log_value(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return " ".join(str(value or "").split()).strip()
+
+
+def _append_trace_field(parts: list[str], key: str, value: object) -> None:
+    text = _trace_log_value(value)
+    if not text:
+        return
+    parts.append(f"{key}={text}")
+
+
+def _build_ai_trace_id(*, consumer_name: str, message_id: str, post_uid: str) -> str:
+    parts = [
+        _trace_log_value(consumer_name),
+        _trace_log_value(message_id),
+        _trace_log_value(post_uid),
+    ]
+    return "|".join(part for part in parts if part)
+
+
+def _build_ai_trace_log_line(
+    *,
+    stage: str,
+    trace_id: str = "",
+    owner: str = "",
+    consumer: str = "",
+    queue: str = "",
+    source: str = "",
+    message_id: str = "",
+    post_uid: str = "",
+    delivery: str = "",
+    available: int | None = None,
+    claimed: int | None = None,
+    read: int | None = None,
+) -> str:
+    parts = [AI_TRACE_LOG_PREFIX, f"stage={_trace_log_value(stage)}"]
+    _append_trace_field(parts, "trace_id", trace_id)
+    _append_trace_field(parts, "owner", owner)
+    _append_trace_field(parts, "consumer", consumer)
+    _append_trace_field(parts, "queue", queue)
+    _append_trace_field(parts, "source", source)
+    _append_trace_field(parts, "message_id", message_id)
+    _append_trace_field(parts, "post_uid", post_uid)
+    _append_trace_field(parts, "delivery", delivery)
+    if available is not None:
+        _append_trace_field(parts, "available", int(available))
+    if claimed is not None:
+        _append_trace_field(parts, "claimed", int(claimed))
+    if read is not None:
+        _append_trace_field(parts, "read", int(read))
+    return " ".join(parts)
+
 
 def compute_low_priority_budget(*, ai_cap: int, rss_inflight_now: int) -> int:
     return max(0, int(ai_cap) - max(0, int(rss_inflight_now)))
@@ -89,6 +150,10 @@ def schedule_ai_from_stream(
     fatal_exceptions: tuple[type[BaseException], ...],
     stuck_seconds: int,
 ) -> tuple[int, bool]:
+    resolved_owner = str(inflight_owner or "").strip()
+    resolved_consumer_name = str(consumer_name or "").strip()
+    resolved_queue_key = str(redis_queue_key or "").strip()
+    resolved_source_name = str(source_name or "").strip()
     prune_inflight_futures_fn(inflight_futures, inflight_owner_by_future)
     rss_inflight_now = int(len(inflight_futures))
     has_error = False
@@ -104,7 +169,7 @@ def schedule_ai_from_stream(
     if available <= 0:
         return 0, False
 
-    messages: list[dict[str, str]] = []
+    messages: list[tuple[str, dict[str, str]]] = []
     try:
         move_due_retry_to_stream_fn(
             redis_client,
@@ -124,15 +189,27 @@ def schedule_ai_from_stream(
                 flush=True,
             )
     try:
-        messages.extend(
-            claim_stuck_messages_fn(
-                redis_client,
-                redis_queue_key,
-                consumer_name=str(consumer_name or "").strip(),
-                min_idle_ms=max(1, int(stuck_seconds)) * 1000,
-                count=int(available),
-            )
+        claimed_messages = claim_stuck_messages_fn(
+            redis_client,
+            redis_queue_key,
+            consumer_name=resolved_consumer_name,
+            min_idle_ms=max(1, int(stuck_seconds)) * 1000,
+            count=int(available),
         )
+        if verbose and claimed_messages:
+            print(
+                _build_ai_trace_log_line(
+                    stage="redis_claim_done",
+                    owner=resolved_owner,
+                    consumer=resolved_consumer_name,
+                    queue=resolved_queue_key,
+                    source=resolved_source_name,
+                    available=int(available),
+                    claimed=len(claimed_messages),
+                ),
+                flush=True,
+            )
+        messages.extend(("claim", message) for message in claimed_messages)
     except BaseException as err:
         if isinstance(err, fatal_exceptions):
             raise
@@ -146,14 +223,26 @@ def schedule_ai_from_stream(
     remaining = max(0, int(available) - len(messages))
     if remaining > 0:
         try:
-            messages.extend(
-                read_group_messages_fn(
-                    redis_client,
-                    redis_queue_key,
-                    consumer_name=str(consumer_name or "").strip(),
-                    count=int(remaining),
-                )
+            read_messages = read_group_messages_fn(
+                redis_client,
+                redis_queue_key,
+                consumer_name=resolved_consumer_name,
+                count=int(remaining),
             )
+            if verbose and read_messages:
+                print(
+                    _build_ai_trace_log_line(
+                        stage="redis_read_done",
+                        owner=resolved_owner,
+                        consumer=resolved_consumer_name,
+                        queue=resolved_queue_key,
+                        source=resolved_source_name,
+                        available=int(available),
+                        read=len(read_messages),
+                    ),
+                    flush=True,
+                )
+            messages.extend(("read", message) for message in read_messages)
         except BaseException as err:
             if isinstance(err, fatal_exceptions):
                 raise
@@ -165,7 +254,7 @@ def schedule_ai_from_stream(
             return 0, True
 
     scheduled = 0
-    for message in messages:
+    for delivery, message in messages:
         if scheduled >= available:
             break
         message_id = str(message.get("message_id") or "").strip()
@@ -175,10 +264,28 @@ def schedule_ai_from_stream(
         try:
             payload = json.loads(payload_text)
         except Exception as err:
+            trace_id = _build_ai_trace_id(
+                consumer_name=resolved_consumer_name,
+                message_id=str(message_id),
+                post_uid="",
+            )
             if verbose:
                 print(
-                    f"[ai] redis_bad_payload message_id={message_id} "
-                    f"{type(err).__name__}: {err}",
+                    " ".join(
+                        [
+                            _build_ai_trace_log_line(
+                                stage="bad_payload_ack",
+                                trace_id=trace_id,
+                                owner=resolved_owner,
+                                consumer=resolved_consumer_name,
+                                queue=resolved_queue_key,
+                                source=resolved_source_name,
+                                message_id=str(message_id),
+                                delivery=str(delivery),
+                            ),
+                            f"{type(err).__name__}: {err}",
+                        ]
+                    ),
                     flush=True,
                 )
             try:
@@ -187,17 +294,76 @@ def schedule_ai_from_stream(
                 pass
             continue
         if not isinstance(payload, dict):
+            trace_id = _build_ai_trace_id(
+                consumer_name=resolved_consumer_name,
+                message_id=str(message_id),
+                post_uid="",
+            )
+            if verbose:
+                print(
+                    _build_ai_trace_log_line(
+                        stage="bad_payload_ack",
+                        trace_id=trace_id,
+                        owner=resolved_owner,
+                        consumer=resolved_consumer_name,
+                        queue=resolved_queue_key,
+                        source=resolved_source_name,
+                        message_id=str(message_id),
+                        delivery=str(delivery),
+                    ),
+                    flush=True,
+                )
             try:
                 ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
                 pass
             continue
-        if not str(payload.get("post_uid") or "").strip():
+        resolved_post_uid = str(payload.get("post_uid") or "").strip()
+        if not resolved_post_uid:
+            trace_id = _build_ai_trace_id(
+                consumer_name=resolved_consumer_name,
+                message_id=str(message_id),
+                post_uid="",
+            )
+            if verbose:
+                print(
+                    _build_ai_trace_log_line(
+                        stage="bad_payload_ack",
+                        trace_id=trace_id,
+                        owner=resolved_owner,
+                        consumer=resolved_consumer_name,
+                        queue=resolved_queue_key,
+                        source=resolved_source_name,
+                        message_id=str(message_id),
+                        delivery=str(delivery),
+                    ),
+                    flush=True,
+                )
             try:
                 ack_message_fn(redis_client, redis_queue_key, str(message_id))
             except Exception:
                 pass
             continue
+        trace_id = _build_ai_trace_id(
+            consumer_name=resolved_consumer_name,
+            message_id=str(message_id),
+            post_uid=resolved_post_uid,
+        )
+        if verbose:
+            print(
+                _build_ai_trace_log_line(
+                    stage="submit_prepare",
+                    trace_id=trace_id,
+                    owner=resolved_owner,
+                    consumer=resolved_consumer_name,
+                    queue=resolved_queue_key,
+                    source=resolved_source_name,
+                    message_id=str(message_id),
+                    post_uid=resolved_post_uid,
+                    delivery=str(delivery),
+                ),
+                flush=True,
+            )
 
         fut = executor.submit(
             process_one_redis_payload_fn,
@@ -206,15 +372,32 @@ def schedule_ai_from_stream(
             message_id=str(message_id),
             redis_client=redis_client,
             redis_queue_key=redis_queue_key,
+            consumer_name=resolved_consumer_name,
             source_name=str(source_name or "").strip(),
             config=config,
             limiter=limiter,
             verbose=bool(verbose),
+            trace_id=trace_id,
             max_retry_count=max(0, int(getattr(config, "ai_retries", 0) or 0)),
         )
         fut.add_done_callback(lambda _f: wakeup_event.set())
         inflight_futures.add(fut)
-        inflight_owner_by_future[fut] = str(inflight_owner or "").strip()
+        inflight_owner_by_future[fut] = resolved_owner
+        if verbose:
+            print(
+                _build_ai_trace_log_line(
+                    stage="submit_done",
+                    trace_id=trace_id,
+                    owner=resolved_owner,
+                    consumer=resolved_consumer_name,
+                    queue=resolved_queue_key,
+                    source=resolved_source_name,
+                    message_id=str(message_id),
+                    post_uid=resolved_post_uid,
+                    delivery=str(delivery),
+                ),
+                flush=True,
+            )
         scheduled += 1
     return scheduled, bool(has_error)
 
