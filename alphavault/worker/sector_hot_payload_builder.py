@@ -68,6 +68,7 @@ def _load_sector_assertions(
     window_days: int,
     max_rows: int,
 ) -> pd.DataFrame:
+    posts_table = _source_table(conn, "posts")
     assertions_table = _source_table(conn, "assertions")
     assertion_entities_table = _source_table(conn, "assertion_entities")
     topic_cluster_topics_table = _source_table(conn, "topic_cluster_topics")
@@ -85,8 +86,10 @@ SELECT
   a.action,
   a.action_strength,
   a.summary,
-  a.created_at
+  p.created_at AS created_at
 FROM {assertions_table} a
+JOIN {posts_table} p
+  ON p.post_uid = a.post_uid
 JOIN {assertion_entities_table} sector_entities
   ON sector_entities.assertion_id = a.assertion_id
 JOIN {topic_cluster_topics_table} tct
@@ -96,8 +99,8 @@ LEFT JOIN {assertion_entities_table} stock_entities
  AND stock_entities.entity_type = 'stock'
 WHERE sector_entities.entity_type = 'industry'
   AND tct.cluster_key = :cluster_key
-  AND a.created_at >= :cutoff
-ORDER BY a.created_at DESC
+  AND p.created_at >= :cutoff
+ORDER BY p.created_at DESC
 LIMIT :limit
 """
 

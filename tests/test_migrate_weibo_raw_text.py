@@ -74,8 +74,7 @@ CREATE TABLE IF NOT EXISTS assertions(
     action TEXT NOT NULL,
     action_strength INTEGER NOT NULL,
     summary TEXT NOT NULL,
-    evidence TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT ''
+    evidence TEXT NOT NULL
 )
 """
     )
@@ -184,8 +183,7 @@ INSERT INTO assertions(
     action,
     action_strength,
     summary,
-    evidence,
-    created_at
+    evidence
 )
 VALUES(
     :assertion_id,
@@ -194,8 +192,7 @@ VALUES(
     'buy',
     2,
     :summary,
-    'evidence',
-    '2026-04-05 00:00:00'
+    'evidence'
 )
 """,
         {

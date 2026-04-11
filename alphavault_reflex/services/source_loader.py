@@ -195,6 +195,7 @@ WHERE processed_at IS NOT NULL
 """
         base_query = build_assertions_query(
             WANTED_TRADE_ASSERTION_COLUMNS,
+            posts_table=posts_table,
             assertions_table=assertions_table,
             assertion_entities_table=assertion_entities_table,
             assertion_mentions_table=assertion_mentions_table,

@@ -224,10 +224,9 @@ WHERE assertion_id IN (
 def insert_assertion_sql(assertions_table: str) -> str:
     return f"""
 INSERT INTO {assertions_table} (
-    assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+    assertion_id, post_uid, idx, action, action_strength, summary, evidence
 ) VALUES (
-    :assertion_id, :post_uid, :idx, :action, :action_strength, :summary, :evidence,
-    :created_at
+    :assertion_id, :post_uid, :idx, :action, :action_strength, :summary, :evidence
 )
 """
 

@@ -34,7 +34,6 @@ CREATE TABLE assertions(
   action_strength INTEGER NOT NULL,
   summary TEXT NOT NULL,
   evidence TEXT NOT NULL,
-  created_at TEXT NOT NULL,
   UNIQUE(post_uid, idx)
 )
 """
@@ -57,10 +56,10 @@ VALUES (
 """
 INSERT_ASSERTION_SQL = """
 INSERT INTO assertions(
-  assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+  assertion_id, post_uid, idx, action, action_strength, summary, evidence
 )
 VALUES (
-  :assertion_id, :post_uid, :idx, :action, :action_strength, :summary, :evidence, :created_at
+  :assertion_id, :post_uid, :idx, :action, :action_strength, :summary, :evidence
 )
 """
 INSERT_ASSERTION_ENTITY_SQL = """
@@ -114,7 +113,6 @@ def test_build_stock_hot_payload_includes_url_from_posts() -> None:
                 "action_strength": 3,
                 "summary": "看多",
                 "evidence": "看多",
-                "created_at": "2099-01-01 00:00:00",
             },
         )
         conn.execute(
@@ -147,7 +145,7 @@ def test_build_stock_hot_payload_includes_url_from_posts() -> None:
         conn.close()
 
 
-def test_build_stock_hot_payload_fills_missing_created_at_from_posts() -> None:
+def test_build_stock_hot_payload_reads_created_at_from_posts() -> None:
     conn = _memory_conn()
     try:
         _setup_tables(conn)
@@ -173,7 +171,6 @@ def test_build_stock_hot_payload_fills_missing_created_at_from_posts() -> None:
                 "action_strength": 3,
                 "summary": "看多",
                 "evidence": "看多",
-                "created_at": "2099-01-01 00:00:00 INVALID",
             },
         )
         conn.execute(
@@ -231,7 +228,6 @@ def test_build_stock_hot_payload_reads_stock_entity_key_instead_of_topic_key() -
                 "action_strength": 2,
                 "summary": "别名行也要进正式个股页",
                 "evidence": "别名行也要进正式个股页",
-                "created_at": "2099-01-02 00:00:00",
             },
         )
         conn.execute(
@@ -295,7 +291,6 @@ def test_build_stock_hot_payload_reads_legacy_prefixed_cn_entity_key_for_canonic
                 "action_strength": 2,
                 "summary": "旧坏 key 也要进规范个股页",
                 "evidence": "旧坏 key 也要进规范个股页",
-                "created_at": "2099-01-03 00:00:00",
             },
         )
         conn.execute(
@@ -427,11 +422,11 @@ def test_build_stock_hot_payload_reads_xueqiu_source_schema_tables(pg_conn) -> N
     conn.execute(
         """
         INSERT INTO xueqiu.assertions(
-          assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at
+          assertion_id, post_uid, idx, action, action_strength, summary, evidence
         )
         VALUES (
           'xueqiu:stock_hot:1#1', 'xueqiu:stock_hot:1', 1, 'trade.buy', 2,
-          '雪球 source schema 也要能读到', '雪球 source schema 也要能读到', '2099-01-04 00:00:00'
+          '雪球 source schema 也要能读到', '雪球 source schema 也要能读到'
         )
         """
     )

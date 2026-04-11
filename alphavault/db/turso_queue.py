@@ -538,7 +538,6 @@ def write_assertions_and_mark_done(
                     "action_strength": int(raw_assertion["action_strength"]),
                     "summary": raw_assertion["summary"],
                     "evidence": raw_assertion["evidence"],
-                    "created_at": str(raw_assertion.get("created_at") or "").strip(),
                 }
             )
             raw_mentions = raw_assertion.get("assertion_mentions")

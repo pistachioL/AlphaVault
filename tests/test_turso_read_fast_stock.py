@@ -235,7 +235,7 @@ def test_load_stock_trade_sources_fast_cached_reads_stock_entity_key(
         "INSERT INTO weibo.posts(post_uid, platform, platform_post_id, author, created_at, url, raw_text, final_status, processed_at, model, prompt_version, archived_at, ingested_at) VALUES ('weibo:2', 'weibo', '2', 'alice', '2099-01-02 00:00:00', 'https://example.com/weibo/2', '原文', 'relevant', '2099-01-02 00:00:01', 'gpt', 'v1', '2099-01-02 00:00:02', 1)"
     )
     pg_conn.execute(
-        "INSERT INTO weibo.assertions(assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at) VALUES ('weibo:2#1', 'weibo:2', 1, 'trade.buy', 2, '别名行也要进正式个股页', '别名行也要进正式个股页', '2099-01-02 00:00:00')"
+        "INSERT INTO weibo.assertions(assertion_id, post_uid, idx, action, action_strength, summary, evidence) VALUES ('weibo:2#1', 'weibo:2', 1, 'trade.buy', 2, '别名行也要进正式个股页', '别名行也要进正式个股页')"
     )
     pg_conn.execute(
         "INSERT INTO weibo.assertion_entities(assertion_id, entity_key, entity_type, match_source, is_primary) VALUES ('weibo:2#1', 'stock:601899.SH', 'stock', 'stock_alias', 1)"
@@ -288,6 +288,76 @@ def test_load_stock_trade_sources_fast_cached_reads_stock_entity_key(
     stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
 
 
+def test_load_stock_trade_sources_fast_cached_orders_by_post_created_at(
+    monkeypatch,
+) -> None:
+    stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
+    stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
+    seen_sql: list[str] = []
+
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "ensure_postgres_engine",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    def _fake_load_stock_alias_keys_cached(
+        _stock_key: str,
+    ) -> tuple[str, ...]:
+        return ()
+
+    _fake_load_stock_alias_keys_cached.cache_clear = lambda: None  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "load_stock_alias_keys_cached",
+        _fake_load_stock_alias_keys_cached,
+    )
+
+    class _FakeConn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "postgres_connect_autocommit",
+        lambda _engine: _FakeConn(),
+    )
+
+    def _fake_read_sql_df(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
+        del conn, params
+        seen_sql.append(str(sql))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(
+        stock_fast_loader,
+        "turso_read_sql_df",
+        _fake_read_sql_df,
+    )
+
+    posts, assertions = stock_fast_loader.load_stock_trade_sources_fast_cached(
+        "postgresql://unused",
+        "",
+        SCHEMA_WEIBO,
+        "stock:601899.SH",
+        "601899.SH",
+        16,
+    )
+
+    assert posts.empty
+    assert assertions.empty
+    assert seen_sql
+    assert "JOIN weibo.posts p" in seen_sql[0]
+    assert "ORDER BY p.created_at DESC" in seen_sql[0]
+    assert "a.created_at" not in seen_sql[0]
+
+    stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
+    stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
+
+
 def test_load_stock_trade_sources_fast_cached_reads_legacy_prefixed_cn_entity_key(
     monkeypatch,
     pg_conn,
@@ -299,7 +369,7 @@ def test_load_stock_trade_sources_fast_cached_reads_legacy_prefixed_cn_entity_ke
         "INSERT INTO xueqiu.posts(post_uid, platform, platform_post_id, author, created_at, url, raw_text, final_status, processed_at, model, prompt_version, archived_at, ingested_at) VALUES ('xueqiu:1', 'xueqiu', '1', 'alice', '2099-01-03 00:00:00', 'https://example.com/xueqiu/1', '原文', 'relevant', '2099-01-03 00:00:01', 'gpt', 'v1', '2099-01-03 00:00:02', 1)"
     )
     pg_conn.execute(
-        "INSERT INTO xueqiu.assertions(assertion_id, post_uid, idx, action, action_strength, summary, evidence, created_at) VALUES ('xueqiu:1#1', 'xueqiu:1', 1, 'trade.buy', 2, '旧坏 key 也要被快读链路命中', '旧坏 key 也要被快读链路命中', '2099-01-03 00:00:00')"
+        "INSERT INTO xueqiu.assertions(assertion_id, post_uid, idx, action, action_strength, summary, evidence) VALUES ('xueqiu:1#1', 'xueqiu:1', 1, 'trade.buy', 2, '旧坏 key 也要被快读链路命中', '旧坏 key 也要被快读链路命中')"
     )
     pg_conn.execute(
         "INSERT INTO xueqiu.assertion_entities(assertion_id, entity_key, entity_type, match_source, is_primary) VALUES ('xueqiu:1#1', 'stock:SZ000725.US', 'stock', 'stock_code', 1)"

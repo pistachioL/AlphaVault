@@ -147,7 +147,7 @@ _ASSERTION_PROJECTION_BY_COLUMN = {
     "keywords_json": "COALESCE(mr.keywords_json, '[]') AS keywords_json",
     "cluster_keys_json": "COALESCE(cr.cluster_keys_json, '[]') AS cluster_keys_json",
     "author": "'' AS author",
-    "created_at": "a.created_at AS created_at",
+    "created_at": "p.created_at AS created_at",
 }
 
 
@@ -179,6 +179,7 @@ def build_assertion_projection_expr(
     selected_columns: list[str],
     *,
     assertion_alias: str = "a",
+    post_alias: str = "p",
 ) -> str:
     columns = selected_columns or list(_ASSERTION_PROJECTION_BY_COLUMN.keys())
     out: list[str] = []
@@ -187,13 +188,18 @@ def build_assertion_projection_expr(
         if projection is None:
             out.append(f"{assertion_alias}.{col} AS {col}")
             continue
-        out.append(projection.replace("a.", f"{assertion_alias}."))
+        out.append(
+            projection.replace("a.", f"{assertion_alias}.").replace(
+                "p.", f"{post_alias}."
+            )
+        )
     return ", ".join(out)
 
 
 def build_assertions_query(
     selected_columns: list[str],
     *,
+    posts_table: str = "posts",
     assertions_table: str = "assertions",
     assertion_entities_table: str = "assertion_entities",
     assertion_mentions_table: str = "assertion_mentions",
@@ -203,6 +209,7 @@ def build_assertions_query(
         f"{build_assertion_rollup_ctes(assertion_entities_table=assertion_entities_table, assertion_mentions_table=assertion_mentions_table, topic_cluster_topics_table=topic_cluster_topics_table)}\n"
         f"SELECT {build_assertion_projection_expr(selected_columns)}\n"
         f"FROM {assertions_table} a\n"
+        f"JOIN {posts_table} p ON p.post_uid = a.post_uid\n"
         f"{build_assertion_rollup_joins('a')}"
     )
 

@@ -102,6 +102,7 @@ def _load_stock_assertions(
     window_days: int,
     max_rows: int,
 ) -> pd.DataFrame:
+    posts_table = _source_table(conn, "posts")
     assertions_table = _source_table(conn, "assertions")
     assertion_entities_table = _source_table(conn, "assertion_entities")
     params: dict[str, Any] = {
@@ -131,20 +132,22 @@ def _load_stock_assertions(
             "a.action",
             "a.action_strength",
             "a.summary",
-            "a.created_at",
+            "p.created_at AS created_at",
             "ae.entity_key AS resolved_entity_key",
         ]
     )
     query = f"""
 SELECT {select_expr}
 FROM {assertions_table} a
+JOIN {posts_table} p
+  ON p.post_uid = a.post_uid
 JOIN {assertion_entities_table} ae
   ON ae.assertion_id = a.assertion_id
 WHERE a.action LIKE 'trade.%'
   AND ae.entity_type = 'stock'
   AND {key_clause}
-  AND a.created_at >= :cutoff
-ORDER BY a.created_at DESC
+  AND p.created_at >= :cutoff
+ORDER BY p.created_at DESC
 LIMIT :limit
 """
 

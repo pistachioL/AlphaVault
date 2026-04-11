@@ -147,3 +147,22 @@ def test_apply_cloud_schema_posts_table_has_no_ai_runtime_columns(pg_conn) -> No
 
     index_names = _index_names(pg_conn, SCHEMA_WEIBO, "posts")
     assert "idx_posts_ai_status_next_retry_at" not in index_names
+
+
+def test_apply_cloud_schema_assertions_table_has_no_created_at(pg_conn) -> None:
+    from alphavault.db.cloud_schema import apply_cloud_schema
+
+    apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
+    assertion_columns = _column_names(pg_conn, SCHEMA_WEIBO, "assertions")
+    assert {
+        "assertion_id",
+        "post_uid",
+        "idx",
+        "action",
+        "action_strength",
+        "summary",
+        "evidence",
+    } == assertion_columns
+
+    index_names = _index_names(pg_conn, SCHEMA_WEIBO, "assertions")
+    assert "idx_assertions_created_at" not in index_names
