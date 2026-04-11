@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any
+from typing import Any, NoReturn
 
 from alphavault.constants import (
     DEFAULT_REDIS_AI_QUEUE_MAXLEN,
@@ -217,28 +217,42 @@ def redis_force_push_ai_message(
     )
 
 
+def _raise_stream_shape_error(stage: str, value: object) -> NoReturn:
+    value_type = type(value).__name__
+    if isinstance(value, dict):
+        detail = f"keys={sorted(str(key) for key in value.keys())}"
+    else:
+        detail = f"value={str(value)[:200]}"
+    raise RuntimeError(
+        f"unexpected_redis_stream_shape stage={stage} type={value_type} {detail}"
+    )
+
+
 def _extract_stream_messages(entries: object) -> list[dict[str, str]]:
     resolved: list[dict[str, str]] = []
     if not isinstance(entries, list):
-        return resolved
+        _raise_stream_shape_error("entries", entries)
     for item in entries:
         if not isinstance(item, (tuple, list)) or len(item) != 2:
-            continue
+            _raise_stream_shape_error("stream_item", item)
         _stream_name, messages = item
         if not isinstance(messages, list):
-            continue
+            _raise_stream_shape_error("stream_messages", messages)
         for message in messages:
             if not isinstance(message, (tuple, list)) or len(message) != 2:
-                continue
+                _raise_stream_shape_error("stream_message", message)
             message_id, fields = message
             if not isinstance(fields, dict):
-                continue
+                _raise_stream_shape_error("stream_fields", fields)
+            resolved_message_id = str(message_id or "").strip()
+            if not resolved_message_id:
+                _raise_stream_shape_error("message_id", message_id)
             payload = str(fields.get("payload") or "").strip()
             if not payload:
-                continue
+                _raise_stream_shape_error("payload", fields)
             resolved.append(
                 {
-                    "message_id": str(message_id or "").strip(),
+                    "message_id": resolved_message_id,
                     "payload": payload,
                 }
             )

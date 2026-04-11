@@ -149,14 +149,14 @@ def test_redis_ai_read_group_messages_creates_group_and_reads_payloads() -> None
             streams: dict[str, str],
             count: int,
             block: int | None = None,
-        ) -> list[tuple[str, list[tuple[str, dict[str, str]]]]]:
+        ) -> list[list[object]]:
             del block
             assert groupname == redis_stream_queue.REDIS_AI_CONSUMER_GROUP
             assert consumername == "weibo:worker"
             assert streams == {"queue:ai:stream": ">"}
             assert count == 2
             return [
-                (
+                [
                     "queue:ai:stream",
                     [
                         (
@@ -167,7 +167,7 @@ def test_redis_ai_read_group_messages_creates_group_and_reads_payloads() -> None
                             },
                         )
                     ],
-                )
+                ]
             ]
 
     client = _FakeClient()
@@ -187,6 +187,39 @@ def test_redis_ai_read_group_messages_creates_group_and_reads_payloads() -> None
         )
     ]
     assert messages == [{"message_id": "1-0", "payload": '{"post_uid":"weibo:1"}'}]
+
+
+def test_redis_ai_read_group_messages_fails_fast_on_bad_fields_shape() -> None:
+    class _FakeClient:
+        def xgroup_create(
+            self, stream: str, group: str, id: str = "0", mkstream: bool = False
+        ) -> bool:
+            del stream, group, id, mkstream
+            return True
+
+        def xreadgroup(
+            self,
+            groupname: str,
+            consumername: str,
+            streams: dict[str, str],
+            count: int,
+            block: int | None = None,
+        ) -> list[list[object]]:
+            del groupname, consumername, streams, count, block
+            return [["queue:ai:stream", [["1-0", ["bad-fields"]]]]]
+
+    try:
+        redis_stream_queue.redis_ai_read_group_messages(
+            _FakeClient(),
+            "queue",
+            consumer_name="weibo:worker",
+            count=1,
+        )
+    except RuntimeError as err:
+        assert "unexpected_redis_stream_shape" in str(err)
+        assert "stage=stream_fields" in str(err)
+    else:
+        raise AssertionError("expected RuntimeError")
 
 
 def test_redis_ai_claim_stuck_messages_reads_xautoclaim_result() -> None:
