@@ -34,11 +34,11 @@ pg_ctl start -o "-k $PGSOCKET_DIR -p $PGPORT -c shared_buffers=16MB -c max_conne
 
 # 4. 执行你的测试或检查 (例如运行迁移脚本或测试)
 echo "Running database checks..."
-export TEST_POSTGRES_DSN="${TEST_POSTGRES_DSN:-dbname=postgres host=127.0.0.1 port=$PGPORT user=$(id -un)}"
+export TEST_POSTGRES_DSN="${TEST_POSTGRES_DSN:-dbname=postgres host=$PGSOCKET_DIR port=$PGPORT user=$(id -un)}"
 if [[ -n "${DB_TEST_CMD:-}" ]]; then
     eval "$DB_TEST_CMD"
 else
-    psql -h 127.0.0.1 -p $PGPORT -d postgres -c "SELECT 1;"
+    psql -h "$PGSOCKET_DIR" -p $PGPORT -d postgres -c "SELECT 1;"
 fi
 
 echo "Check passed!"

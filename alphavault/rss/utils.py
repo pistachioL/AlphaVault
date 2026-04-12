@@ -72,15 +72,65 @@ class RateLimiter:
         self._lock = threading.Lock()
         self._next_ts = 0.0
 
-    def wait(self) -> None:
+    def has_limit(self) -> bool:
+        return self.min_interval > 0
+
+    def _reserve_until(self, *, block: bool) -> float | None:
         if self.min_interval <= 0:
-            return
+            return None
         with self._lock:
             now = time.time()
             if now < self._next_ts:
+                if not block:
+                    return None
                 time.sleep(self._next_ts - now)
                 now = time.time()
-            self._next_ts = max(self._next_ts, now) + self.min_interval
+            reserved_until = max(self._next_ts, now) + self.min_interval
+            self._next_ts = reserved_until
+            return reserved_until
+
+    def _release_reserved_until(self, reserved_until: float) -> None:
+        if self.min_interval <= 0:
+            return
+        with self._lock:
+            if self._next_ts != reserved_until:
+                return
+            self._next_ts = max(0.0, float(reserved_until) - self.min_interval)
+
+    def _acquire(self, *, block: bool) -> bool:
+        if self.min_interval <= 0:
+            return True
+        return self._reserve_until(block=block) is not None
+
+    def try_reserve(self) -> _ReservedRateLimitSlot | None:
+        reserved_until = self._reserve_until(block=False)
+        if reserved_until is None:
+            return None
+        return _ReservedRateLimitSlot(self, reserved_until)
+
+    def wait(self) -> None:
+        self._acquire(block=True)
+
+
+class _ReservedRateLimitSlot:
+    def __init__(self, limiter: RateLimiter, reserved_until: float) -> None:
+        self._limiter = limiter
+        self._reserved_until = float(reserved_until)
+        self._closed = False
+        self._used_reserved_slot = False
+
+    def wait(self) -> None:
+        if not self._used_reserved_slot:
+            self._used_reserved_slot = True
+            self._closed = True
+            return
+        self._limiter.wait()
+
+    def cancel(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._limiter._release_reserved_until(self._reserved_until)
 
 
 def now_str() -> str:
