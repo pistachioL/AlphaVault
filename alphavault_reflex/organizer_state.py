@@ -99,6 +99,8 @@ class OrganizerState(rx.State):
     search_results: list[dict[str, str]] = []
     active_section: str = SECTION_STOCK_ALIAS
     pending_rows: list[dict[str, str]] = []
+    loading: bool = False
+    loaded_once: bool = False
     load_error: str = ""
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT
 
@@ -115,6 +117,19 @@ class OrganizerState(rx.State):
     def has_pending_rows(self) -> bool:
         return bool(self.pending_rows)
 
+    @rx.var
+    def show_loading(self) -> bool:
+        return bool(self.loading or not self.loaded_once)
+
+    @rx.var
+    def show_pending_empty(self) -> bool:
+        return bool(
+            self.loaded_once
+            and (not self.loading)
+            and (str(self.load_error or "").strip() == "")
+            and (not self.pending_rows)
+        )
+
     @rx.event
     def set_search_query(self, value: str) -> None:
         self.search_query = str(value or "")
@@ -124,27 +139,27 @@ class OrganizerState(rx.State):
         self.search_results, self.load_error = load_search_results(self.search_query)
 
     @rx.event
-    def load_pending(self) -> None:
-        self._reload_pending_rows()
+    def load_pending(self):
+        yield from self._reload_pending_rows_with_loading()
 
     @rx.event
-    def set_active_section(self, value: str) -> None:
+    def set_active_section(self, value: str):
         self.active_section = str(value or SECTION_STOCK_ALIAS)
         if self.active_section == SECTION_ALIAS_MANUAL:
             self.alias_task_limit = ALIAS_TASK_PAGE_LIMIT
-        self._reload_pending_rows()
+        yield from self._reload_pending_rows_with_loading()
 
     @rx.event
-    def accept_candidate(self, candidate_id: str) -> None:
-        self._mutate_candidate(candidate_id, action="accept")
+    def accept_candidate(self, candidate_id: str):
+        yield from self._mutate_candidate_with_loading(candidate_id, action="accept")
 
     @rx.event
-    def ignore_candidate(self, candidate_id: str) -> None:
-        self._mutate_candidate(candidate_id, action="ignore")
+    def ignore_candidate(self, candidate_id: str):
+        yield from self._mutate_candidate_with_loading(candidate_id, action="ignore")
 
     @rx.event
-    def block_candidate(self, candidate_id: str) -> None:
-        self._mutate_candidate(candidate_id, action="block")
+    def block_candidate(self, candidate_id: str):
+        yield from self._mutate_candidate_with_loading(candidate_id, action="block")
 
     @rx.event
     def set_alias_manual_dialog_open(self, value: bool) -> None:
@@ -177,7 +192,7 @@ class OrganizerState(rx.State):
         self.alias_manual_target_input = str(value or "")
 
     @rx.event
-    def confirm_alias_manual_merge(self) -> None:
+    def confirm_alias_manual_merge(self):
         alias_key = str(self.alias_manual_alias_key or "").strip()
         target_key = _parse_manual_alias_target_stock_key(
             str(self.alias_manual_target_input or "")
@@ -187,6 +202,8 @@ class OrganizerState(rx.State):
         if not target_key:
             self.alias_manual_error = "请输入股票代码，比如 601899.SH"
             return
+        self._start_loading()
+        yield
         try:
             engine = get_research_workbench_engine_from_env()
             record_stock_alias_relation(
@@ -205,15 +222,19 @@ class OrganizerState(rx.State):
                 raise
             self.alias_manual_error = f"失败：{err}"
             return
+        finally:
+            self._finish_loading()
         clear_reflex_source_caches()
         self.close_alias_manual_dialog()
         self._reload_pending_rows()
 
     @rx.event
-    def block_alias_manual(self) -> None:
+    def block_alias_manual(self):
         alias_key = str(self.alias_manual_alias_key or "").strip()
         if not alias_key:
             return
+        self._start_loading()
+        yield
         try:
             engine = get_research_workbench_engine_from_env()
             set_alias_resolve_task_status(
@@ -226,12 +247,14 @@ class OrganizerState(rx.State):
                 raise
             self.alias_manual_error = f"失败：{err}"
             return
+        finally:
+            self._finish_loading()
         clear_reflex_source_caches()
         self.close_alias_manual_dialog()
         self._reload_pending_rows()
 
     @rx.event
-    def preview_alias_ai_batch(self) -> None:
+    def preview_alias_ai_batch(self):
         if self.active_section != SECTION_ALIAS_MANUAL:
             return
         target_indexes = [
@@ -242,6 +265,8 @@ class OrganizerState(rx.State):
         if not target_indexes:
             return
         target_rows = [dict(self.pending_rows[index]) for index in target_indexes]
+        self._start_loading()
+        yield
         try:
             enriched_rows = enrich_alias_tasks_with_ai(
                 target_rows,
@@ -257,15 +282,17 @@ class OrganizerState(rx.State):
             if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
             self.load_error = str(err)
+        finally:
+            self._finish_loading()
 
     @rx.event
-    def load_more_alias_tasks(self) -> None:
+    def load_more_alias_tasks(self):
         if self.active_section != SECTION_ALIAS_MANUAL:
             return
         self.alias_task_limit = (
             max(0, int(self.alias_task_limit)) + ALIAS_TASK_PAGE_STEP
         )
-        self._reload_pending_rows()
+        yield from self._reload_pending_rows_with_loading()
 
     def _reload_pending_rows(self) -> None:
         pending_rows, load_error = load_pending_rows(
@@ -277,16 +304,37 @@ class OrganizerState(rx.State):
         self.pending_rows = pending_rows
         self.load_error = load_error
 
-    def _mutate_candidate(self, candidate_id: str, *, action: str) -> None:
-        applied = apply_candidate_action_by_id(
-            rows=self.pending_rows,
-            candidate_id=candidate_id,
-            action=action,
-        )
-        if not applied:
-            return
-        clear_reflex_source_caches()
-        self.pending_rows, self.load_error = load_pending_rows(self.active_section)
+    def _start_loading(self) -> None:
+        self.loading = True
+        self.load_error = ""
+
+    def _finish_loading(self) -> None:
+        self.loaded_once = True
+        self.loading = False
+
+    def _reload_pending_rows_with_loading(self):
+        self._start_loading()
+        yield
+        try:
+            self._reload_pending_rows()
+        finally:
+            self._finish_loading()
+
+    def _mutate_candidate_with_loading(self, candidate_id: str, *, action: str):
+        self._start_loading()
+        yield
+        try:
+            applied = apply_candidate_action_by_id(
+                rows=self.pending_rows,
+                candidate_id=candidate_id,
+                action=action,
+            )
+            if not applied:
+                return
+            clear_reflex_source_caches()
+            self.pending_rows, self.load_error = load_pending_rows(self.active_section)
+        finally:
+            self._finish_loading()
 
 
 def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:

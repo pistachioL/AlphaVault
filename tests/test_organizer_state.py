@@ -7,6 +7,32 @@ from alphavault_reflex.organizer_state import load_search_results
 from alphavault_reflex.organizer_state import load_pending_rows
 
 
+def test_organizer_state_starts_in_loading_state() -> None:
+    state = OrganizerState()
+
+    assert hasattr(state, "loading")
+    assert hasattr(state, "loaded_once")
+    assert hasattr(state, "show_loading")
+    assert hasattr(state, "show_pending_empty")
+    assert state.show_loading is True
+    assert state.show_pending_empty is False
+
+
+def test_load_pending_marks_loaded_before_showing_empty(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.load_pending_rows",
+        lambda section, alias_task_limit=0: ([], ""),
+    )
+
+    state = OrganizerState()
+    assert list(state.load_pending()) == [None]
+
+    assert getattr(state, "loaded_once", False) is True
+    assert getattr(state, "loading", True) is False
+    assert hasattr(state, "show_pending_empty")
+    assert state.show_pending_empty is True
+
+
 def test_load_pending_rows_alias_manual_returns_pending_alias_tasks(
     monkeypatch,
 ) -> None:
@@ -94,7 +120,7 @@ def test_preview_alias_ai_batch_updates_pending_rows(monkeypatch) -> None:
         ],
     )
 
-    state.preview_alias_ai_batch()
+    assert list(state.preview_alias_ai_batch()) == [None]
 
     assert state.load_error == ""
     assert state.pending_rows[0]["ai_status"] == "ranked"
@@ -161,7 +187,7 @@ def test_preview_alias_ai_batch_skips_rows_with_existing_ai_status(
         _fake_enrich,
     )
 
-    state.preview_alias_ai_batch()
+    assert list(state.preview_alias_ai_batch()) == [None]
 
     assert seen_alias_keys == ["stock:长电"]
     assert state.pending_rows[0]["ai_stock_code"] == "600519.SH"
@@ -184,7 +210,7 @@ def test_load_more_alias_tasks_increases_limit_and_reloads(monkeypatch) -> None:
         _fake_load_pending_rows,
     )
 
-    state.load_more_alias_tasks()
+    assert list(state.load_more_alias_tasks()) == [None]
 
     assert state.alias_task_limit == ALIAS_TASK_PAGE_LIMIT * 2
     assert seen_limits == [ALIAS_TASK_PAGE_LIMIT * 2]
@@ -252,7 +278,7 @@ def test_load_more_alias_tasks_keeps_existing_ai_preview(monkeypatch) -> None:
         ),
     )
 
-    state.load_more_alias_tasks()
+    assert list(state.load_more_alias_tasks()) == [None]
 
     assert state.pending_rows[0]["ai_stock_code"] == "600519.SH"
     assert state.pending_rows[0]["ai_reason"] == "之前已经预判过"
@@ -328,7 +354,7 @@ def test_confirm_alias_manual_merge_keeps_limit_and_ai_preview(monkeypatch) -> N
         _fake_load_pending_rows,
     )
 
-    state.confirm_alias_manual_merge()
+    assert list(state.confirm_alias_manual_merge()) == [None]
 
     assert seen_limits == [ALIAS_TASK_PAGE_LIMIT * 2]
     assert state.pending_rows[0]["ai_stock_code"] == "600519.SH"

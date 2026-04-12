@@ -20,7 +20,10 @@ from alphavault.research_workbench import (
     list_pending_candidates,
     list_pending_candidates_for_left_key,
     record_stock_alias_relation,
+    record_stock_sibling_relation,
     record_stock_sector_relation,
+    list_stock_sibling_keys,
+    sync_stock_sibling_relations_from_security_master,
     upsert_security_master_stock,
     upsert_relation_candidate,
 )
@@ -196,6 +199,88 @@ def test_record_stock_alias_relation_refreshes_redis_shadow_dict(
     )
 
     assert synced == [("stock:601899.SH", "stock:紫金")]
+
+
+def test_record_stock_sibling_relation_writes_bidirectional_rows(
+    workbench_conn,
+) -> None:
+    conn = workbench_conn
+
+    record_stock_sibling_relation(
+        conn,
+        left_stock_key="stock:600941.SH",
+        right_stock_key="stock:00941.HK",
+        source="security_master",
+    )
+
+    rows = (
+        conn.execute(
+            f"""
+SELECT relation_type, left_key, right_key, relation_label, source
+FROM {RESEARCH_RELATIONS_TABLE}
+ORDER BY left_key ASC, right_key ASC
+"""
+        )
+        .mappings()
+        .all()
+    )
+
+    assert rows == [
+        {
+            "relation_type": "stock_sibling",
+            "left_key": "stock:00941.HK",
+            "right_key": "stock:600941.SH",
+            "relation_label": "same_company",
+            "source": "security_master",
+        },
+        {
+            "relation_type": "stock_sibling",
+            "left_key": "stock:600941.SH",
+            "right_key": "stock:00941.HK",
+            "relation_label": "same_company",
+            "source": "security_master",
+        },
+    ]
+
+
+def test_sync_stock_sibling_relations_from_security_master_creates_ah_pairs(
+    workbench_conn,
+) -> None:
+    conn = workbench_conn
+    upsert_security_master_stock(
+        conn,
+        stock_key="stock:600941.SH",
+        market="SH",
+        code="600941",
+        official_name="中国移动",
+    )
+    upsert_security_master_stock(
+        conn,
+        stock_key="stock:00941.HK",
+        market="HK",
+        code="00941",
+        official_name="中国移动",
+    )
+    upsert_security_master_stock(
+        conn,
+        stock_key="stock:601899.SH",
+        market="SH",
+        code="601899",
+        official_name="紫金矿业",
+    )
+
+    written = sync_stock_sibling_relations_from_security_master(
+        conn,
+        source="security_master",
+    )
+
+    assert written == 2
+    assert list_stock_sibling_keys(conn, stock_key="stock:600941.SH") == [
+        "stock:00941.HK"
+    ]
+    assert list_stock_sibling_keys(conn, stock_key="stock:00941.HK") == [
+        "stock:600941.SH"
+    ]
 
 
 def test_security_master_roundtrip_and_lookup_by_official_name(workbench_conn) -> None:

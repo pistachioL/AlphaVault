@@ -10,6 +10,21 @@ from alphavault_reflex.organizer_state import (
     SECTION_STOCK_SECTOR,
 )
 
+LOADING_TEXT = "加载中…"
+
+
+def _section_loading() -> rx.Component:
+    return rx.el.div(
+        rx.spinner(size="3"),
+        rx.text(LOADING_TEXT, class_name="av-research-muted"),
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "gap": "10px",
+            "marginTop": "12px",
+        },
+    )
+
 
 def _candidate_card(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.div(
@@ -21,17 +36,20 @@ def _candidate_card(row: rx.Var[dict[str, str]]) -> rx.Component:
                 "确认",
                 on_click=lambda: OrganizerState.accept_candidate(row["candidate_id"]),
                 class_name="av-btn av-btn-small",
+                disabled=OrganizerState.show_loading,
             ),
             rx.button(
                 "忽略",
                 on_click=lambda: OrganizerState.ignore_candidate(row["candidate_id"]),
                 variant="soft",
+                disabled=OrganizerState.show_loading,
             ),
             rx.button(
                 "不再推荐",
                 on_click=lambda: OrganizerState.block_candidate(row["candidate_id"]),
                 variant="soft",
                 color_scheme="gray",
+                disabled=OrganizerState.show_loading,
             ),
             spacing="2",
             margin_top="10px",
@@ -118,6 +136,7 @@ def _manual_alias_card(row: rx.Var[dict[str, str]]) -> rx.Component:
                     row["ai_stock_code"],
                 ),
                 class_name="av-btn av-btn-small",
+                disabled=OrganizerState.show_loading,
             ),
             spacing="2",
             margin_top="10px",
@@ -143,6 +162,7 @@ def _alias_manual_dialog() -> rx.Component:
                 on_change=OrganizerState.set_alias_manual_target_input,
                 placeholder="输入股票代码，比如 601899.SH",
                 width="320px",
+                disabled=OrganizerState.show_loading,
             ),
             rx.cond(
                 OrganizerState.alias_manual_error != "",
@@ -157,18 +177,21 @@ def _alias_manual_dialog() -> rx.Component:
                     "确认归并",
                     on_click=OrganizerState.confirm_alias_manual_merge,
                     class_name="av-btn av-btn-small",
+                    disabled=OrganizerState.show_loading,
                 ),
                 rx.button(
                     "拉黑",
                     on_click=OrganizerState.block_alias_manual,
                     variant="soft",
                     color_scheme="gray",
+                    disabled=OrganizerState.show_loading,
                 ),
                 rx.dialog.close(
                     rx.button(
                         "关",
                         variant="soft",
                         on_click=OrganizerState.close_alias_manual_dialog,
+                        disabled=OrganizerState.show_loading,
                     )
                 ),
                 spacing="2",
@@ -197,6 +220,7 @@ def organizer_page() -> rx.Component:
                 "个股归并",
                 on_click=lambda: OrganizerState.set_active_section(SECTION_STOCK_ALIAS),
                 variant="soft",
+                disabled=OrganizerState.show_loading,
             ),
             rx.button(
                 "未确认简称",
@@ -204,6 +228,7 @@ def organizer_page() -> rx.Component:
                     SECTION_ALIAS_MANUAL
                 ),
                 variant="soft",
+                disabled=OrganizerState.show_loading,
             ),
             rx.button(
                 "个股→板块",
@@ -211,6 +236,7 @@ def organizer_page() -> rx.Component:
                     SECTION_STOCK_SECTOR
                 ),
                 variant="soft",
+                disabled=OrganizerState.show_loading,
             ),
             rx.button(
                 "板块→板块",
@@ -218,6 +244,7 @@ def organizer_page() -> rx.Component:
                     SECTION_SECTOR_SECTOR
                 ),
                 variant="soft",
+                disabled=OrganizerState.show_loading,
             ),
             spacing="3",
         ),
@@ -228,11 +255,13 @@ def organizer_page() -> rx.Component:
                     "AI预判前10条",
                     on_click=OrganizerState.preview_alias_ai_batch,
                     class_name="av-btn av-btn-small",
+                    disabled=OrganizerState.show_loading,
                 ),
                 rx.button(
                     "再看30条",
                     on_click=OrganizerState.load_more_alias_tasks,
                     variant="soft",
+                    disabled=OrganizerState.show_loading,
                 ),
                 spacing="3",
             ),
@@ -248,19 +277,27 @@ def organizer_page() -> rx.Component:
             rx.el.div(),
         ),
         rx.cond(
-            OrganizerState.has_pending_rows,
+            OrganizerState.show_loading,
+            _section_loading(),
             rx.cond(
-                OrganizerState.active_section == SECTION_ALIAS_MANUAL,
-                rx.el.div(
-                    rx.foreach(OrganizerState.pending_rows, _manual_alias_card),
-                    class_name="av-research-side-list",
+                OrganizerState.has_pending_rows,
+                rx.cond(
+                    OrganizerState.active_section == SECTION_ALIAS_MANUAL,
+                    rx.el.div(
+                        rx.foreach(OrganizerState.pending_rows, _manual_alias_card),
+                        class_name="av-research-side-list",
+                    ),
+                    rx.el.div(
+                        rx.foreach(OrganizerState.pending_rows, _candidate_card),
+                        class_name="av-research-side-list",
+                    ),
                 ),
-                rx.el.div(
-                    rx.foreach(OrganizerState.pending_rows, _candidate_card),
-                    class_name="av-research-side-list",
+                rx.cond(
+                    OrganizerState.show_pending_empty,
+                    rx.text("当前分区没有待确认项。", class_name="av-research-muted"),
+                    rx.el.div(),
                 ),
             ),
-            rx.text("当前分区没有待确认项。", class_name="av-research-muted"),
         ),
         _alias_manual_dialog(),
         class_name="av-research-page",
