@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
+from types import SimpleNamespace
+
 from starlette.testclient import TestClient
 
 from alphavault_reflex import alphavault_reflex as reflex_app
@@ -134,3 +138,118 @@ def test_manual_db_requeue_returns_500_when_runner_raises(monkeypatch) -> None:
 
     assert response.status_code == 500
     assert response.json().get("error") == "manual_db_requeue_failed"
+
+
+def test_manual_process_metrics_returns_500_when_key_env_missing(monkeypatch) -> None:
+    monkeypatch.delenv("WORKER_ADMIN_TRIGGER_KEY", raising=False)
+
+    response = _client().get("/api/admin/processes", params={"key": "anything"})
+
+    assert response.status_code == 500
+    assert response.json().get("error") == "missing_manual_trigger_key"
+
+
+def test_manual_process_metrics_returns_401_when_key_invalid(monkeypatch) -> None:
+    monkeypatch.setenv("WORKER_ADMIN_TRIGGER_KEY", "expected-key")
+
+    response = _client().get("/api/admin/processes", params={"key": "wrong-key"})
+
+    assert response.status_code == 401
+    assert response.json().get("error") == "unauthorized"
+
+
+def test_manual_process_metrics_returns_result_when_key_valid(monkeypatch) -> None:
+    monkeypatch.setenv("WORKER_ADMIN_TRIGGER_KEY", "expected-key")
+
+    def _fake_load_process_metrics() -> list[dict[str, object]]:
+        return [
+            {
+                "pid": 22,
+                "rss_mb": 85.3,
+                "memory_text": "85.3 MB",
+                "cpu_percent": 1.2,
+                "cmdline": "python3 -u weibo_rss_worker.py --log-level info",
+            },
+            {
+                "pid": 11,
+                "rss_mb": 64.1,
+                "memory_text": "64.1 MB",
+                "cpu_percent": 0.0,
+                "cmdline": "python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()",
+            },
+        ]
+
+    monkeypatch.setattr(
+        reflex_app,
+        "load_process_metrics",
+        _fake_load_process_metrics,
+        raising=False,
+    )
+
+    response = _client().get("/api/admin/processes", params={"key": "expected-key"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("ok") is True
+    assert payload.get("processes") == _fake_load_process_metrics()
+
+
+def test_manual_process_metrics_returns_500_when_reader_raises(monkeypatch) -> None:
+    monkeypatch.setenv("WORKER_ADMIN_TRIGGER_KEY", "expected-key")
+
+    def _fake_raise() -> list[dict[str, object]]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        reflex_app,
+        "load_process_metrics",
+        _fake_raise,
+        raising=False,
+    )
+
+    response = _client().get("/api/admin/processes", params={"key": "expected-key"})
+
+    assert response.status_code == 500
+    assert response.json().get("error") == "manual_process_metrics_failed"
+
+
+def test_load_process_metrics_parses_ps_output(monkeypatch) -> None:
+    assert (
+        importlib.util.find_spec("alphavault_reflex.services.process_metrics")
+        is not None
+    )
+
+    process_metrics = importlib.import_module(
+        "alphavault_reflex.services.process_metrics"
+    )
+
+    def _fake_run(*_args, **_kwargs) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "  11 65536 0.0 python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()\n"
+                "  22 98304 1.2 python3 -u weibo_rss_worker.py --log-level info\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(process_metrics.subprocess, "run", _fake_run)
+
+    result = process_metrics.load_process_metrics()
+
+    assert result == [
+        {
+            "pid": 22,
+            "rss_mb": 96.0,
+            "memory_text": "96.0 MB",
+            "cpu_percent": 1.2,
+            "cmdline": "python3 -u weibo_rss_worker.py --log-level info",
+        },
+        {
+            "pid": 11,
+            "rss_mb": 64.0,
+            "memory_text": "64.0 MB",
+            "cpu_percent": 0.0,
+            "cmdline": "python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()",
+        },
+    ]

@@ -22,10 +22,12 @@ from alphavault_reflex.pages.stock_research import stock_research_page
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import sector_browser_title_var
 from alphavault_reflex.research_state import stock_browser_title_var
+from alphavault_reflex.services.process_metrics import load_process_metrics
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 MANUAL_RSS_TRIGGER_API_PATH = "/api/rss/trigger"
 MANUAL_DB_REQUEUE_API_PATH = "/api/admin/requeue-from-db"
+MANUAL_PROCESS_METRICS_API_PATH = "/api/admin/processes"
 
 load_dotenv_if_present()
 
@@ -157,7 +159,41 @@ async def _manual_db_requeue_get(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=200)
 
 
+async def _manual_process_metrics_get(request: Request) -> JSONResponse:
+    expected_key = load_worker_admin_trigger_key()
+    if not expected_key:
+        return JSONResponse(
+            {"ok": False, "error": "missing_manual_trigger_key"},
+            status_code=500,
+        )
+
+    passed_key = str(request.query_params.get("key") or "").strip()
+    if passed_key != expected_key:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+
+    started_at = time.perf_counter()
+    try:
+        result = {"processes": load_process_metrics()}
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        return JSONResponse(
+            {"ok": False, "error": "manual_process_metrics_failed"},
+            status_code=500,
+        )
+
+    payload: dict[str, object] = {
+        "ok": True,
+        "duration_ms": int((time.perf_counter() - started_at) * 1000),
+    }
+    payload.update(result)
+    return JSONResponse(payload, status_code=200)
+
+
 app._api.add_route(
     MANUAL_RSS_TRIGGER_API_PATH, _manual_rss_trigger_get, methods=["GET"]
 )
 app._api.add_route(MANUAL_DB_REQUEUE_API_PATH, _manual_db_requeue_get, methods=["GET"])
+app._api.add_route(
+    MANUAL_PROCESS_METRICS_API_PATH, _manual_process_metrics_get, methods=["GET"]
+)
