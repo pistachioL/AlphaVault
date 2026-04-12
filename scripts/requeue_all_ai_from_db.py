@@ -27,8 +27,14 @@ DEFAULT_LIMIT = 200
 DEFAULT_SLEEP_SECONDS = 5.0
 DEFAULT_MAX_ROUNDS = 200
 DEFAULT_TIMEOUT_SECONDS = 30.0
+DEFAULT_REQUEST_RETRY_COUNT = 3
+DEFAULT_REQUEST_RETRY_SLEEP_SECONDS = 1.0
 DEFAULT_MODE_ORDER = "failed,legacy_unprocessed"
 VALID_MODES = ("failed", "legacy_unprocessed")
+RETRYABLE_REQUEST_EXCEPTIONS = (
+    requests.exceptions.Timeout,
+    requests.exceptions.ConnectionError,
+)
 logger = get_logger(__name__)
 
 
@@ -83,6 +89,18 @@ def parse_args() -> argparse.Namespace:
         "--mode-order",
         default=DEFAULT_MODE_ORDER,
         help="mode 顺序，逗号分隔；默认 failed,legacy_unprocessed",
+    )
+    parser.add_argument(
+        "--request-retry-count",
+        type=int,
+        default=DEFAULT_REQUEST_RETRY_COUNT,
+        help="网络超时或连不上时，最多重试几次",
+    )
+    parser.add_argument(
+        "--request-retry-sleep-seconds",
+        type=float,
+        default=DEFAULT_REQUEST_RETRY_SLEEP_SECONDS,
+        help="每次网络重试前固定等几秒",
     )
     add_log_level_argument(parser)
     return parser.parse_args()
@@ -175,6 +193,7 @@ def _ensure_non_empty_sources(payload: dict[str, Any], *, mode: str) -> None:
 
 def _request_requeue(
     *,
+    session: requests.Session,
     base_url: str,
     key: str,
     platform: str | None,
@@ -182,6 +201,8 @@ def _request_requeue(
     dry_run: bool,
     mode: str,
     timeout_seconds: float,
+    request_retry_count: int,
+    request_retry_sleep_seconds: float,
 ) -> dict[str, Any]:
     params: dict[str, Any] = {
         "key": str(key),
@@ -192,12 +213,32 @@ def _request_requeue(
         params["platform"] = str(platform)
     if dry_run:
         params["dry_run"] = "1"
+    max_retries = max(0, int(request_retry_count))
+    retry_sleep_seconds = max(0.0, float(request_retry_sleep_seconds))
+    response = None
+    for retry_no in range(0, max_retries + 1):
+        try:
+            response = session.get(
+                f"{_normalize_base_url(base_url)}{MANUAL_DB_REQUEUE_API_PATH}",
+                params=params,
+                timeout=max(1.0, float(timeout_seconds)),
+            )
+            break
+        except RETRYABLE_REQUEST_EXCEPTIONS as err:
+            if retry_no >= max_retries:
+                raise
+            logger.warning(
+                "[requeue] request_retry mode=%s retry=%s wait_seconds=%s error=%s",
+                mode,
+                retry_no + 1,
+                retry_sleep_seconds,
+                type(err).__name__,
+            )
+            if retry_sleep_seconds > 0:
+                time.sleep(retry_sleep_seconds)
 
-    response = requests.get(
-        f"{_normalize_base_url(base_url)}{MANUAL_DB_REQUEUE_API_PATH}",
-        params=params,
-        timeout=max(1.0, float(timeout_seconds)),
-    )
+    if response is None:
+        raise RuntimeError(f"missing_response mode={mode}")
     if response.status_code != 200:
         body = str(getattr(response, "text", "") or "").strip()
         body = body[:300]
@@ -220,6 +261,7 @@ def _request_requeue(
 
 def _run_mode(
     *,
+    session: requests.Session,
     base_url: str,
     key: str,
     platform: str | None,
@@ -228,6 +270,8 @@ def _run_mode(
     max_rounds: int,
     mode: str,
     timeout_seconds: float,
+    request_retry_count: int,
+    request_retry_sleep_seconds: float,
 ) -> None:
     for round_no in range(1, max(1, int(max_rounds)) + 1):
         logger.info(
@@ -237,6 +281,7 @@ def _run_mode(
             limit,
         )
         result = _request_requeue(
+            session=session,
             base_url=base_url,
             key=key,
             platform=platform,
@@ -244,6 +289,8 @@ def _run_mode(
             dry_run=False,
             mode=mode,
             timeout_seconds=timeout_seconds,
+            request_retry_count=request_retry_count,
+            request_retry_sleep_seconds=request_retry_sleep_seconds,
         )
         _ensure_non_empty_sources(result, mode=mode)
         apply_error = _source_error(result)
@@ -258,6 +305,7 @@ def _run_mode(
         )
 
         dry_run_result = _request_requeue(
+            session=session,
             base_url=base_url,
             key=key,
             platform=platform,
@@ -265,6 +313,8 @@ def _run_mode(
             dry_run=True,
             mode=mode,
             timeout_seconds=timeout_seconds,
+            request_retry_count=request_retry_count,
+            request_retry_sleep_seconds=request_retry_sleep_seconds,
         )
         _ensure_non_empty_sources(dry_run_result, mode=mode)
         dry_run_error = _source_error(dry_run_result)
@@ -305,30 +355,52 @@ def main() -> int:
     timeout_seconds = max(
         1.0, float(getattr(args, "timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
     )
+    request_retry_count = max(
+        0, int(getattr(args, "request_retry_count", DEFAULT_REQUEST_RETRY_COUNT))
+    )
+    request_retry_sleep_seconds = max(
+        0.0,
+        float(
+            getattr(
+                args,
+                "request_retry_sleep_seconds",
+                DEFAULT_REQUEST_RETRY_SLEEP_SECONDS,
+            )
+        ),
+    )
     mode_order = _normalize_modes(str(args.mode_order or ""))
 
     logger.info(
         "[requeue] config base_url=%s platform=%s limit=%s sleep_seconds=%s "
-        "max_rounds=%s mode_order=%s",
+        "max_rounds=%s mode_order=%s request_retry_count=%s "
+        "request_retry_sleep_seconds=%s",
         base_url,
         platform or "all",
         limit,
         sleep_seconds,
         max_rounds,
         ",".join(mode_order),
+        request_retry_count,
+        request_retry_sleep_seconds,
     )
-
-    for mode in mode_order:
-        _run_mode(
-            base_url=base_url,
-            key=key,
-            platform=platform,
-            limit=limit,
-            sleep_seconds=sleep_seconds,
-            max_rounds=max_rounds,
-            mode=mode,
-            timeout_seconds=timeout_seconds,
-        )
+    session = requests.Session()
+    try:
+        for mode in mode_order:
+            _run_mode(
+                session=session,
+                base_url=base_url,
+                key=key,
+                platform=platform,
+                limit=limit,
+                sleep_seconds=sleep_seconds,
+                max_rounds=max_rounds,
+                mode=mode,
+                timeout_seconds=timeout_seconds,
+                request_retry_count=request_retry_count,
+                request_retry_sleep_seconds=request_retry_sleep_seconds,
+            )
+    finally:
+        session.close()
 
     logger.info("[requeue] all_done")
     return 0
