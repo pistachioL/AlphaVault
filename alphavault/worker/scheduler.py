@@ -12,6 +12,12 @@ AI_TRACE_LOG_PREFIX = "[ai_trace]"
 logger = get_logger(__name__)
 
 
+def _cancel_reserved_request_slot(limiter: Any) -> None:
+    cancel_fn = getattr(limiter, "cancel", None)
+    if callable(cancel_fn):
+        cancel_fn()
+
+
 def _trace_log_value(value: object) -> str:
     if value is None:
         return ""
@@ -254,6 +260,19 @@ def schedule_ai_from_stream(
     if available <= 0:
         return 0, False
 
+    task_limiter = limiter
+    try_reserve_fn = getattr(limiter, "try_reserve", None)
+    has_limit_fn = getattr(limiter, "has_limit", None)
+    limiter_has_limit = True
+    if callable(has_limit_fn):
+        limiter_has_limit = bool(has_limit_fn())
+    if limiter_has_limit and callable(try_reserve_fn):
+        reserved_slot = try_reserve_fn()
+        if reserved_slot is None:
+            return 0, False
+        available = min(int(available), 1)
+        task_limiter = reserved_slot
+
     messages: list[tuple[str, dict[str, str]]] = []
     try:
         move_due_retry_to_stream_fn(
@@ -302,6 +321,7 @@ def schedule_ai_from_stream(
             type(err).__name__,
             err,
         )
+        _cancel_reserved_request_slot(task_limiter)
         return 0, True
 
     remaining = max(0, int(available) - len(messages))
@@ -335,6 +355,7 @@ def schedule_ai_from_stream(
                 type(err).__name__,
                 err,
             )
+            _cancel_reserved_request_slot(task_limiter)
             return 0, True
 
     if (
@@ -361,6 +382,9 @@ def schedule_ai_from_stream(
                 consumer_idle_ms=int(consumer_snapshot.get("consumer_idle_ms") or 0),
             ),
         )
+    if not messages:
+        _cancel_reserved_request_slot(task_limiter)
+        return 0, bool(has_error)
 
     scheduled = 0
     for delivery, message in messages:
@@ -465,20 +489,25 @@ def schedule_ai_from_stream(
                 ),
             )
 
-        fut = executor.submit(
-            process_one_redis_payload_fn,
-            engine=engine,
-            payload=payload,
-            message_id=str(message_id),
-            redis_client=redis_client,
-            redis_queue_key=redis_queue_key,
-            consumer_name=resolved_consumer_name,
-            source_name=str(source_name or "").strip(),
-            config=config,
-            limiter=limiter,
-            trace_id=trace_id,
-            max_retry_count=max(0, int(getattr(config, "ai_retries", 0) or 0)),
-        )
+        try:
+            fut = executor.submit(
+                process_one_redis_payload_fn,
+                engine=engine,
+                payload=payload,
+                message_id=str(message_id),
+                redis_client=redis_client,
+                redis_queue_key=redis_queue_key,
+                consumer_name=resolved_consumer_name,
+                source_name=str(source_name or "").strip(),
+                config=config,
+                limiter=task_limiter,
+                trace_id=trace_id,
+                max_retry_count=max(0, int(getattr(config, "ai_retries", 0) or 0)),
+            )
+        except BaseException:
+            if scheduled <= 0:
+                _cancel_reserved_request_slot(task_limiter)
+            raise
         fut.add_done_callback(lambda _f: wakeup_event.set())
         inflight_futures.add(fut)
         inflight_owner_by_future[fut] = resolved_owner
@@ -497,6 +526,8 @@ def schedule_ai_from_stream(
                 ),
             )
         scheduled += 1
+    if scheduled <= 0:
+        _cancel_reserved_request_slot(task_limiter)
     return scheduled, bool(has_error)
 
 
