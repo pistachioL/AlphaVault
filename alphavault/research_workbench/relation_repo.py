@@ -19,7 +19,7 @@ from alphavault.domains.stock.keys import normalize_stock_key
 from .schema import (
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
-    handle_turso_error,
+    handle_db_error,
     use_conn,
 )
 
@@ -165,7 +165,7 @@ ORDER BY right_key ASC
                 },
             ).fetchall()
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
     out: list[str] = []
     seen: set[str] = set()
     for row in rows:
@@ -190,7 +190,7 @@ def sync_stock_sibling_relations_from_security_master(
                 select_all_security_master(RESEARCH_SECURITY_MASTER_TABLE)
             ).fetchall()
     except BaseException as err:
-        handle_turso_error(engine_or_conn, err)
+        handle_db_error(engine_or_conn, err)
 
     by_name: dict[str, dict[str, set[str]]] = {}
     for row in rows:
