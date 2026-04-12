@@ -35,6 +35,8 @@ def test_script_can_run_directly_with_help() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "--base-url" in result.stdout
+    assert "--request-retry-count" in result.stdout
+    assert "--request-retry-sleep-seconds" in result.stdout
 
 
 def _args(**overrides):
@@ -47,6 +49,8 @@ def _args(**overrides):
         "max_rounds": 5,
         "mode_order": "failed,legacy_unprocessed",
         "timeout_seconds": 10.0,
+        "request_retry_count": 3,
+        "request_retry_sleep_seconds": 1.0,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -165,6 +169,129 @@ def test_main_uses_env_key_when_arg_missing(monkeypatch) -> None:
     assert seen_keys == ["env-key", "env-key"]
 
 
+def test_main_reuses_one_session_and_closes_it(monkeypatch) -> None:
+    script = _load_script_module()
+    seen_sessions: list[object] = []
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.closed = False
+            created_sessions.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    created_sessions: list[_FakeSession] = []
+
+    monkeypatch.setattr(script, "load_dotenv_if_present", lambda: None)
+    monkeypatch.setattr(
+        script,
+        "parse_args",
+        lambda: _args(mode_order="failed", max_rounds=1, sleep_seconds=0.0),
+    )
+    monkeypatch.setattr(script.requests, "Session", _FakeSession)
+
+    def _fake_request_requeue(**kwargs):
+        seen_sessions.append(kwargs["session"])
+        return _payload(
+            mode=str(kwargs["mode"]),
+            dry_run=bool(kwargs["dry_run"]),
+            scanned_total=0,
+            queue_backlog=0,
+        )
+
+    monkeypatch.setattr(script, "_request_requeue", _fake_request_requeue)
+
+    assert script.main() == 0
+    assert len(created_sessions) == 1
+    assert seen_sessions == [created_sessions[0], created_sessions[0]]
+    assert created_sessions[0].closed is True
+
+
+def test_request_requeue_retries_on_timeout_then_succeeds_with_config(
+    monkeypatch,
+) -> None:
+    script = _load_script_module()
+    call_count = 0
+    sleep_calls: list[float] = []
+    expected_payload = _payload(
+        mode="failed",
+        dry_run=False,
+        scanned_total=2,
+        enqueued_total=2,
+    )
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):  # type: ignore[no-untyped-def]
+            return expected_payload
+
+    class _FakeSession:
+        def get(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise script.requests.exceptions.ReadTimeout("slow")
+            return _FakeResponse()
+
+    monkeypatch.setattr(
+        script.time, "sleep", lambda seconds: sleep_calls.append(seconds)
+    )
+
+    result = script._request_requeue(
+        session=_FakeSession(),
+        base_url="http://127.0.0.1:8080/",
+        key="expected-key",
+        platform="weibo",
+        limit=2,
+        dry_run=False,
+        mode="failed",
+        timeout_seconds=10.0,
+        request_retry_count=2,
+        request_retry_sleep_seconds=4.5,
+    )
+
+    assert result == expected_payload
+    assert call_count == 3
+    assert sleep_calls == [4.5, 4.5]
+
+
+def test_request_requeue_raises_after_configured_retry_limit_on_connection_error(
+    monkeypatch,
+) -> None:
+    script = _load_script_module()
+    call_count = 0
+    sleep_calls: list[float] = []
+
+    class _FakeSession:
+        def get(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            nonlocal call_count
+            call_count += 1
+            raise script.requests.exceptions.ConnectionError("down")
+
+    monkeypatch.setattr(
+        script.time, "sleep", lambda seconds: sleep_calls.append(seconds)
+    )
+
+    with pytest.raises(script.requests.exceptions.ConnectionError, match="down"):
+        script._request_requeue(
+            session=_FakeSession(),
+            base_url="http://127.0.0.1:8080/",
+            key="expected-key",
+            platform="weibo",
+            limit=2,
+            dry_run=False,
+            mode="failed",
+            timeout_seconds=10.0,
+            request_retry_count=2,
+            request_retry_sleep_seconds=4.5,
+        )
+
+    assert call_count == 3
+    assert sleep_calls == [4.5, 4.5]
+
+
 def test_main_raises_when_max_rounds_reached(monkeypatch) -> None:
     script = _load_script_module()
 
@@ -264,14 +391,13 @@ def test_request_requeue_raises_on_http_error(monkeypatch) -> None:
         def json(self):  # type: ignore[no-untyped-def]
             return {"ok": False, "error": "boom"}
 
-    monkeypatch.setattr(
-        script.requests,
-        "get",
-        lambda *args, **kwargs: _FakeResponse(),
-    )
+    class _FakeSession:
+        def get(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return _FakeResponse()
 
     with pytest.raises(RuntimeError, match="http_error status=500"):
         script._request_requeue(
+            session=_FakeSession(),
             base_url="http://127.0.0.1:8080/",
             key="expected-key",
             platform="weibo",
@@ -279,4 +405,6 @@ def test_request_requeue_raises_on_http_error(monkeypatch) -> None:
             dry_run=False,
             mode="failed",
             timeout_seconds=10.0,
+            request_retry_count=3,
+            request_retry_sleep_seconds=1.0,
         )
