@@ -23,6 +23,7 @@ from alphavault_reflex.pages.stock_research import stock_research_page
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import sector_browser_title_var
 from alphavault_reflex.research_state import stock_browser_title_var
+from alphavault_reflex.services.process_metrics import load_container_memory_metrics
 from alphavault_reflex.services.process_metrics import load_process_metrics
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -175,7 +176,8 @@ async def _manual_process_metrics_get(request: Request) -> JSONResponse:
 
     started_at = time.perf_counter()
     try:
-        result = {"processes": load_process_metrics()}
+        result: dict[str, object] = {"processes": load_process_metrics()}
+        result.update(load_container_memory_metrics())
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise

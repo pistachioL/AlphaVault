@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 from starlette.testclient import TestClient
@@ -166,14 +167,12 @@ def test_manual_process_metrics_returns_result_when_key_valid(monkeypatch) -> No
             {
                 "pid": 22,
                 "rss_mb": 85.3,
-                "memory_text": "85.3 MB",
                 "cpu_percent": 1.2,
                 "cmdline": "python3 -u weibo_rss_worker.py --log-level info",
             },
             {
                 "pid": 11,
                 "rss_mb": 64.1,
-                "memory_text": "64.1 MB",
                 "cpu_percent": 0.0,
                 "cmdline": "python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()",
             },
@@ -185,6 +184,16 @@ def test_manual_process_metrics_returns_result_when_key_valid(monkeypatch) -> No
         _fake_load_process_metrics,
         raising=False,
     )
+    monkeypatch.setattr(
+        reflex_app,
+        "load_container_memory_metrics",
+        lambda: {
+            "memory_limit_mb": 512.0,
+            "memory_used_mb": 128.0,
+            "memory_remaining_mb": 384.0,
+        },
+        raising=False,
+    )
 
     response = _client().get("/api/admin/processes", params={"key": "expected-key"})
 
@@ -192,6 +201,9 @@ def test_manual_process_metrics_returns_result_when_key_valid(monkeypatch) -> No
     payload = response.json()
     assert payload.get("ok") is True
     assert payload.get("processes") == _fake_load_process_metrics()
+    assert payload.get("memory_limit_mb") == 512.0
+    assert payload.get("memory_used_mb") == 128.0
+    assert payload.get("memory_remaining_mb") == 384.0
 
 
 def test_manual_process_metrics_returns_500_when_reader_raises(monkeypatch) -> None:
@@ -270,15 +282,50 @@ def test_load_process_metrics_parses_ps_output(monkeypatch) -> None:
         {
             "pid": 22,
             "rss_mb": 96.0,
-            "memory_text": "96.0 MB",
             "cpu_percent": 1.2,
             "cmdline": "python3 -u weibo_rss_worker.py --log-level info",
         },
         {
             "pid": 11,
             "rss_mb": 64.0,
-            "memory_text": "64.0 MB",
             "cpu_percent": 0.0,
             "cmdline": "python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()",
         },
     ]
+
+
+def test_load_container_memory_metrics_reads_cgroup_v2(tmp_path: Path) -> None:
+    process_metrics = importlib.import_module(
+        "alphavault_reflex.services.process_metrics"
+    )
+    cgroup_root = tmp_path / "cgroup"
+    cgroup_root.mkdir()
+    (cgroup_root / "memory.max").write_text("536870912\n", encoding="utf-8")
+    (cgroup_root / "memory.current").write_text("134217728\n", encoding="utf-8")
+
+    result = process_metrics.load_container_memory_metrics(cgroup_root=cgroup_root)
+
+    assert result == {
+        "memory_limit_mb": 512.0,
+        "memory_used_mb": 128.0,
+        "memory_remaining_mb": 384.0,
+    }
+
+
+def test_load_container_memory_metrics_falls_back_to_cgroup_v1(tmp_path: Path) -> None:
+    process_metrics = importlib.import_module(
+        "alphavault_reflex.services.process_metrics"
+    )
+    cgroup_root = tmp_path / "cgroup"
+    memory_dir = cgroup_root / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "memory.limit_in_bytes").write_text("268435456\n", encoding="utf-8")
+    (memory_dir / "memory.usage_in_bytes").write_text("67108864\n", encoding="utf-8")
+
+    result = process_metrics.load_container_memory_metrics(cgroup_root=cgroup_root)
+
+    assert result == {
+        "memory_limit_mb": 256.0,
+        "memory_used_mb": 64.0,
+        "memory_remaining_mb": 192.0,
+    }
