@@ -57,9 +57,9 @@ repos:
   - repo: local
     hooks:
       - id: pytest
-        name: pytest
-        entry: >-
-          /bin/bash -lc 'DB_TEST_CMD="uv run pytest -p no:cacheprovider" mise run test:db-hook'
+        name: pytest-core
+        # Keep commit-time checks fast; run `uv run pytest` for the full suite.
+        entry: /bin/bash scripts/run_precommit_core_tests.sh
         language: system
         pass_filenames: false
         always_run: true
