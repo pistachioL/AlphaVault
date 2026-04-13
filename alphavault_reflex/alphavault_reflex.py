@@ -7,6 +7,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from alphavault.env import load_dotenv_if_present
+from alphavault.logging_config import get_logger
 from alphavault.worker.manual_rss_trigger import (
     load_worker_admin_trigger_key,
     run_manual_db_requeue_once,
@@ -28,6 +29,7 @@ _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 MANUAL_RSS_TRIGGER_API_PATH = "/api/rss/trigger"
 MANUAL_DB_REQUEUE_API_PATH = "/api/admin/requeue-from-db"
 MANUAL_PROCESS_METRICS_API_PATH = "/api/admin/processes"
+logger = get_logger(__name__)
 
 load_dotenv_if_present()
 
@@ -177,6 +179,7 @@ async def _manual_process_metrics_get(request: Request) -> JSONResponse:
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
+        logger.exception("manual_process_metrics_failed")
         return JSONResponse(
             {"ok": False, "error": "manual_process_metrics_failed"},
             status_code=500,

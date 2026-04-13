@@ -213,6 +213,35 @@ def test_manual_process_metrics_returns_500_when_reader_raises(monkeypatch) -> N
     assert response.json().get("error") == "manual_process_metrics_failed"
 
 
+def test_manual_process_metrics_logs_exception_when_reader_raises(monkeypatch) -> None:
+    monkeypatch.setenv("WORKER_ADMIN_TRIGGER_KEY", "expected-key")
+    seen_messages: list[str] = []
+
+    def _fake_raise() -> list[dict[str, object]]:
+        raise RuntimeError("boom")
+
+    def _fake_exception(message: str) -> None:
+        seen_messages.append(message)
+
+    monkeypatch.setattr(
+        reflex_app,
+        "load_process_metrics",
+        _fake_raise,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        reflex_app,
+        "logger",
+        SimpleNamespace(exception=_fake_exception),
+        raising=False,
+    )
+
+    response = _client().get("/api/admin/processes", params={"key": "expected-key"})
+
+    assert response.status_code == 500
+    assert seen_messages == ["manual_process_metrics_failed"]
+
+
 def test_load_process_metrics_parses_ps_output(monkeypatch) -> None:
     assert (
         importlib.util.find_spec("alphavault_reflex.services.process_metrics")
