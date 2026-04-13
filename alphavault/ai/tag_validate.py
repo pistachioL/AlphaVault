@@ -25,11 +25,7 @@ ALLOWED_MENTION_TYPES = {
     "keyword",
 }
 
-_CN_LIST_SEPARATOR = "、"
-# Keep Chinese separators rejected to prevent packing multiple objects into one mention_text.
-# Do NOT reject the ASCII comma (",") because it is common inside English titles.
 _BAD_SEPARATORS = {"，", "、"}
-_MENTION_TYPES_ALLOWING_CN_LIST_SEPARATOR = {"industry_name"}
 
 
 class AiTagValidationError(RuntimeError):
@@ -52,15 +48,6 @@ def _short(value: object, *, max_len: int = 80) -> str:
 def _has_bad_separator(value: str, *, separators: set[str] | None = None) -> bool:
     active_separators = separators or _BAD_SEPARATORS
     return any(sep in value for sep in active_separators)
-
-
-def _mention_text_has_bad_separator(mention_text: str, *, mention_type: str) -> bool:
-    if mention_type in _MENTION_TYPES_ALLOWING_CN_LIST_SEPARATOR:
-        return _has_bad_separator(
-            mention_text,
-            separators=_BAD_SEPARATORS - {_CN_LIST_SEPARATOR},
-        )
-    return _has_bad_separator(mention_text)
 
 
 def _must(condition: bool, msg: str) -> None:
@@ -196,10 +183,6 @@ def _validate_top_level_mention(
     _must(
         mention_type in ALLOWED_MENTION_TYPES,
         f"mentions[{mention_index}].mention_type_invalid value={_short(mention_type)}",
-    )
-    _must(
-        not _mention_text_has_bad_separator(mention_text, mention_type=mention_type),
-        f"mentions[{mention_index}].mention_text_has_separator",
     )
     evidence = _validate_required_text(
         mention.get("evidence"),
