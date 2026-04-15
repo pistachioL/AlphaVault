@@ -4,8 +4,6 @@ import sqlite3
 from types import SimpleNamespace
 from typing import Any, cast
 
-import pandas as pd
-
 from alphavault.constants import SCHEMA_XUEQIU
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
@@ -188,40 +186,36 @@ def test_build_sector_hot_payload_groups_signals_and_related_stocks() -> None:
 def test_build_sector_hot_payload_uses_xueqiu_schema_tables(monkeypatch) -> None:
     seen_sql: list[str] = []
 
-    def _fake_read_sql_df(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
+    def _fake_read_sql_rows(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
         del conn, params
         seen_sql.append(str(sql))
         if "topic_cluster_topics" in str(sql):
-            return pd.DataFrame(
-                [
-                    {
-                        "assertion_id": "xueqiu:sector_hot:1#1",
-                        "post_uid": "xueqiu:sector_hot:1",
-                        "stock_key": "stock:600519.SH",
-                        "action": "trade.buy",
-                        "action_strength": 2,
-                        "summary": "雪球板块页也要能读到",
-                        "created_at": "2099-01-04 00:00:00",
-                    }
-                ]
-            )
-        return pd.DataFrame(
-            [
+            return [
                 {
+                    "assertion_id": "xueqiu:sector_hot:1#1",
                     "post_uid": "xueqiu:sector_hot:1",
-                    "platform_post_id": "1",
-                    "author": "alice",
+                    "stock_key": "stock:600519.SH",
+                    "action": "trade.buy",
+                    "action_strength": 2,
+                    "summary": "雪球板块页也要能读到",
                     "created_at": "2099-01-04 00:00:00",
-                    "url": "https://example.com/xueqiu/sector-hot-1",
-                    "raw_text": "白酒继续走强",
                 }
             ]
-        )
+        return [
+            {
+                "post_uid": "xueqiu:sector_hot:1",
+                "platform_post_id": "1",
+                "author": "alice",
+                "created_at": "2099-01-04 00:00:00",
+                "url": "https://example.com/xueqiu/sector-hot-1",
+                "raw_text": "白酒继续走强",
+            }
+        ]
 
     monkeypatch.setattr(
         sector_hot_payload_builder,
-        "read_sql_df",
-        _fake_read_sql_df,
+        "read_sql_rows",
+        _fake_read_sql_rows,
     )
 
     conn = PostgresConnection(

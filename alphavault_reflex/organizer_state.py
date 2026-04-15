@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import reflex as rx
-import pandas as pd
 
 from alphavault.infra.ai.alias_resolve_predictor import enrich_alias_tasks_with_ai
 from alphavault.research_workbench import (
@@ -23,6 +22,7 @@ from alphavault_reflex.services.research_data import (
 )
 from alphavault_reflex.services.source_read import (
     clear_reflex_source_caches,
+    load_stock_alias_candidates_from_env,
     load_stock_alias_relations_from_env,
     load_sources_from_env,
 )
@@ -30,12 +30,14 @@ from alphavault.domains.stock.key_match import (
     is_stock_code_value,
     normalize_stock_code,
 )
+from alphavault.domains.stock.object_index import build_stock_object_index
 
 
 SECTION_STOCK_ALIAS = "stock_alias"
 SECTION_STOCK_SECTOR = "stock_sector"
 SECTION_SECTOR_SECTOR = "sector_sector"
 SECTION_ALIAS_MANUAL = "alias_manual"
+SECTION_CANDIDATE_LIMIT = 30
 ALIAS_TASK_PAGE_LIMIT = 30
 ALIAS_TASK_PAGE_STEP = 30
 ALIAS_AI_PREVIEW_KEYS = (
@@ -94,11 +96,74 @@ def _merge_alias_ai_preview_rows(
     return merged_rows
 
 
+def _remove_candidate_row_by_id(
+    rows: list[dict[str, str]],
+    *,
+    candidate_id: str,
+) -> list[dict[str, str]]:
+    target = str(candidate_id or "").strip()
+    if not target:
+        return [dict(row) for row in rows]
+    return [
+        dict(row)
+        for row in rows
+        if str(row.get("candidate_id") or "").strip() != target
+    ]
+
+
+def _visible_stock_alias_candidate_ids(rows: list[dict[str, str]]) -> list[str]:
+    out: list[str] = []
+    for row in rows:
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        if not candidate_id:
+            continue
+        out.append(candidate_id)
+    return out
+
+
+def _sync_selected_candidate_ids(
+    rows: list[dict[str, str]],
+    selected_candidate_ids: list[str],
+) -> list[str]:
+    selected_set = {
+        str(candidate_id or "").strip()
+        for candidate_id in selected_candidate_ids
+        if str(candidate_id or "").strip()
+    }
+    if not selected_set:
+        return []
+    visible_ids = _visible_stock_alias_candidate_ids(rows)
+    return [
+        candidate_id for candidate_id in visible_ids if candidate_id in selected_set
+    ]
+
+
+def _apply_selected_candidate_flags(
+    rows: list[dict[str, str]],
+    selected_candidate_ids: list[str],
+) -> list[dict[str, str]]:
+    selected_set = {
+        str(candidate_id or "").strip()
+        for candidate_id in selected_candidate_ids
+        if str(candidate_id or "").strip()
+    }
+    out: list[dict[str, str]] = []
+    for row in rows:
+        next_row = dict(row)
+        next_row["selected"] = (
+            str(next_row.get("candidate_id") or "").strip() in selected_set
+        )
+        out.append(next_row)
+    return out
+
+
 class OrganizerState(rx.State):
     search_query: str = ""
     search_results: list[dict[str, str]] = []
     active_section: str = SECTION_STOCK_ALIAS
     pending_rows: list[dict[str, str]] = []
+    candidate_action_pending_id: str = ""
+    selected_candidate_ids: list[str] = []
     loading: bool = False
     loaded_once: bool = False
     load_error: str = ""
@@ -116,6 +181,18 @@ class OrganizerState(rx.State):
     @rx.var
     def has_pending_rows(self) -> bool:
         return bool(self.pending_rows)
+
+    @rx.var
+    def has_candidate_action_pending(self) -> bool:
+        return bool(str(self.candidate_action_pending_id or "").strip())
+
+    @rx.var
+    def selected_stock_alias_candidate_count(self) -> int:
+        return len(self.selected_candidate_ids)
+
+    @rx.var
+    def has_selected_stock_alias_candidates(self) -> bool:
+        return bool(self.selected_candidate_ids)
 
     @rx.var
     def show_loading(self) -> bool:
@@ -145,6 +222,8 @@ class OrganizerState(rx.State):
     @rx.event
     def set_active_section(self, value: str):
         self.active_section = str(value or SECTION_STOCK_ALIAS)
+        self.candidate_action_pending_id = ""
+        self.selected_candidate_ids = []
         if self.active_section == SECTION_ALIAS_MANUAL:
             self.alias_task_limit = ALIAS_TASK_PAGE_LIMIT
         yield from self._reload_pending_rows_with_loading()
@@ -160,6 +239,57 @@ class OrganizerState(rx.State):
     @rx.event
     def block_candidate(self, candidate_id: str):
         yield from self._mutate_candidate_with_loading(candidate_id, action="block")
+
+    @rx.event
+    def toggle_stock_alias_candidate(self, candidate_id: str, checked: bool) -> None:
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return
+        target = str(candidate_id or "").strip()
+        if not target:
+            return
+        selected = list(self.selected_candidate_ids)
+        if checked:
+            if target not in selected:
+                selected.append(target)
+        else:
+            selected = [item for item in selected if item != target]
+        self.selected_candidate_ids = _sync_selected_candidate_ids(
+            self.pending_rows,
+            selected,
+        )
+        self.pending_rows = _apply_selected_candidate_flags(
+            self.pending_rows,
+            self.selected_candidate_ids,
+        )
+
+    @rx.event
+    def select_all_stock_alias_candidates(self) -> None:
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return
+        self.selected_candidate_ids = _visible_stock_alias_candidate_ids(
+            self.pending_rows
+        )
+        self.pending_rows = _apply_selected_candidate_flags(
+            self.pending_rows,
+            self.selected_candidate_ids,
+        )
+
+    @rx.event
+    def clear_selected_stock_alias_candidates(self) -> None:
+        self.selected_candidate_ids = []
+        self.pending_rows = _apply_selected_candidate_flags(self.pending_rows, [])
+
+    @rx.event
+    def batch_accept_selected_candidates(self):
+        yield from self._mutate_selected_candidates_with_loading(action="accept")
+
+    @rx.event
+    def batch_ignore_selected_candidates(self):
+        yield from self._mutate_selected_candidates_with_loading(action="ignore")
+
+    @rx.event
+    def batch_block_selected_candidates(self):
+        yield from self._mutate_selected_candidates_with_loading(action="block")
 
     @rx.event
     def set_alias_manual_dialog_open(self, value: bool) -> None:
@@ -301,6 +431,18 @@ class OrganizerState(rx.State):
         )
         if self.active_section == SECTION_ALIAS_MANUAL:
             pending_rows = _merge_alias_ai_preview_rows(self.pending_rows, pending_rows)
+            self.selected_candidate_ids = []
+        elif self.active_section == SECTION_STOCK_ALIAS:
+            self.selected_candidate_ids = _sync_selected_candidate_ids(
+                pending_rows,
+                self.selected_candidate_ids,
+            )
+            pending_rows = _apply_selected_candidate_flags(
+                pending_rows,
+                self.selected_candidate_ids,
+            )
+        else:
+            self.selected_candidate_ids = []
         self.pending_rows = pending_rows
         self.load_error = load_error
 
@@ -321,6 +463,34 @@ class OrganizerState(rx.State):
             self._finish_loading()
 
     def _mutate_candidate_with_loading(self, candidate_id: str, *, action: str):
+        if self.active_section == SECTION_STOCK_ALIAS:
+            self.candidate_action_pending_id = str(candidate_id or "").strip()
+            yield
+            try:
+                applied = apply_candidate_action_by_id(
+                    rows=self.pending_rows,
+                    candidate_id=candidate_id,
+                    action=action,
+                )
+                if not applied:
+                    return
+                clear_reflex_source_caches()
+                self.pending_rows = _remove_candidate_row_by_id(
+                    self.pending_rows,
+                    candidate_id=candidate_id,
+                )
+                self.selected_candidate_ids = _sync_selected_candidate_ids(
+                    self.pending_rows,
+                    self.selected_candidate_ids,
+                )
+                self.pending_rows = _apply_selected_candidate_flags(
+                    self.pending_rows,
+                    self.selected_candidate_ids,
+                )
+                self.load_error = ""
+            finally:
+                self.candidate_action_pending_id = ""
+            return
         self._start_loading()
         yield
         try:
@@ -335,6 +505,49 @@ class OrganizerState(rx.State):
             self.pending_rows, self.load_error = load_pending_rows(self.active_section)
         finally:
             self._finish_loading()
+
+    def _mutate_selected_candidates_with_loading(self, *, action: str):
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return
+        selected_candidate_ids = list(self.selected_candidate_ids)
+        if not selected_candidate_ids:
+            return
+        succeeded_candidate_ids: list[str] = []
+        first_error = ""
+        for candidate_id in selected_candidate_ids:
+            self.candidate_action_pending_id = str(candidate_id or "").strip()
+            yield
+            try:
+                applied = apply_candidate_action_by_id(
+                    rows=self.pending_rows,
+                    candidate_id=candidate_id,
+                    action=action,
+                )
+            except BaseException as err:
+                if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                    raise
+                if not first_error:
+                    first_error = str(err)
+                continue
+            if not applied:
+                continue
+            succeeded_candidate_ids.append(str(candidate_id or "").strip())
+            self.pending_rows = _remove_candidate_row_by_id(
+                self.pending_rows,
+                candidate_id=candidate_id,
+            )
+        if succeeded_candidate_ids:
+            clear_reflex_source_caches()
+        self.selected_candidate_ids = _sync_selected_candidate_ids(
+            self.pending_rows,
+            self.selected_candidate_ids,
+        )
+        self.pending_rows = _apply_selected_candidate_flags(
+            self.pending_rows,
+            self.selected_candidate_ids,
+        )
+        self.load_error = first_error
+        self.candidate_action_pending_id = ""
 
 
 def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
@@ -368,7 +581,7 @@ def load_pending_rows(
     *,
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT,
 ) -> tuple[list[dict[str, str]], str]:
-    section_key = str(section or SECTION_STOCK_ALIAS).strip()
+    section_key = str(section or SECTION_ALIAS_MANUAL).strip()
     if section_key == SECTION_ALIAS_MANUAL:
         try:
             engine = get_research_workbench_engine_from_env()
@@ -406,6 +619,12 @@ def load_pending_rows(
             )
         return out, ""
 
+    if section_key == SECTION_STOCK_ALIAS:
+        candidate_rows, candidate_err = load_stock_alias_candidates_from_env()
+        if candidate_err:
+            return [], candidate_err
+        return _filter_known_candidate_statuses(candidate_rows), ""
+
     posts, assertions, err = load_sources_from_env()
     del posts
     if err:
@@ -426,25 +645,39 @@ def _build_section_candidates(
 
 
 def _stock_alias_candidates(assertions) -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
-    for stock_key in _unique_stock_keys(assertions):
-        out.extend(
-            build_stock_pending_candidates(
-                assertions, stock_key=stock_key, ai_enabled=True
-            )
-        )
-    return [row for row in out if row.get("relation_type") == SECTION_STOCK_ALIAS][:30]
+    return _stock_candidates_for_relation_type(
+        assertions,
+        relation_type=SECTION_STOCK_ALIAS,
+    )
 
 
 def _stock_sector_candidates(assertions) -> list[dict[str, str]]:
+    return _stock_candidates_for_relation_type(
+        assertions,
+        relation_type=SECTION_STOCK_SECTOR,
+    )
+
+
+def _stock_candidates_for_relation_type(
+    assertions,
+    *,
+    relation_type: str,
+) -> list[dict[str, str]]:
+    stock_index = build_stock_object_index(assertions)
     out: list[dict[str, str]] = []
     for stock_key in _unique_stock_keys(assertions):
         out.extend(
             build_stock_pending_candidates(
-                assertions, stock_key=stock_key, ai_enabled=True
+                assertions,
+                stock_key=stock_key,
+                ai_enabled=False,
+                relation_type=relation_type,
+                stock_index=stock_index,
             )
         )
-    return [row for row in out if row.get("relation_type") == SECTION_STOCK_SECTOR][:30]
+        if len(out) >= SECTION_CANDIDATE_LIMIT:
+            break
+    return out[:SECTION_CANDIDATE_LIMIT]
 
 
 def _sector_relation_candidates(assertions) -> list[dict[str, str]]:
@@ -452,16 +685,17 @@ def _sector_relation_candidates(assertions) -> list[dict[str, str]]:
     for sector_key in _unique_sector_keys(assertions):
         out.extend(
             build_sector_pending_candidates(
-                assertions, sector_key=sector_key, ai_enabled=True
+                assertions, sector_key=sector_key, ai_enabled=False
             )
         )
-    return out[:30]
+    return out[:SECTION_CANDIDATE_LIMIT]
 
 
 def _unique_stock_keys(assertions) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for raw_key in assertions.get("entity_key", pd.Series(dtype=str)).tolist():
+    for row in assertions:
+        raw_key = row.get("entity_key")
         stock_key = str(raw_key or "").strip()
         if not stock_key.startswith("stock:") or stock_key in seen:
             continue
@@ -473,7 +707,8 @@ def _unique_stock_keys(assertions) -> list[str]:
 def _unique_sector_keys(assertions) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for item in assertions.get("cluster_keys", pd.Series(dtype=object)).tolist():
+    for row in assertions:
+        item = row.get("cluster_keys")
         if not isinstance(item, list):
             continue
         for raw_key in item:

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import pandas as pd
-
 from alphavault.domains.thread_tree.service import build_post_tree
+
+
+def _rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return rows
 
 
 def test_build_post_tree_uses_raw_text_for_xueqiu() -> None:
     post_uid = "xueqiu:400776255"
     raw_text = "A：根\n\n---\n\nB：中\n\n---\n\nA：叶"
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": post_uid,
@@ -30,7 +32,7 @@ def test_build_post_tree_uses_raw_text_for_xueqiu() -> None:
 
 def test_build_post_tree_uses_xueqiu_raw_text_only() -> None:
     post_uid = "xueqiu:400776256"
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": post_uid,
@@ -51,7 +53,7 @@ def test_build_post_tree_uses_xueqiu_raw_text_only() -> None:
 def test_build_post_tree_uses_weibo_raw_text_only() -> None:
     post_uid = "weibo:5281025354637435"
     raw_text = "老：根\n\n---\n\n新：叶"
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": post_uid,
@@ -71,7 +73,7 @@ def test_build_post_tree_uses_weibo_raw_text_only() -> None:
 
 def test_build_post_tree_supports_xueqiu_guid_as_post_uid() -> None:
     post_uid = "xueqiu:381213336"
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": post_uid,
@@ -91,7 +93,7 @@ def test_build_post_tree_supports_xueqiu_guid_as_post_uid() -> None:
 
 def test_build_post_tree_supports_xueqiu_comment_uid_with_numeric_platform_id() -> None:
     post_uid = "xueqiu:comment:400768409"
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": post_uid,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 import pytest
 
 from alphavault.homework_trade_feed import HOMEWORK_DEFAULT_VIEW_KEY
@@ -28,36 +27,34 @@ def _stub_homework_trade_feed(monkeypatch) -> None:
 def test_homework_state_keeps_unlinked_stock_alias_as_separate_rows(
     monkeypatch,
 ) -> None:
-    assertions = pd.DataFrame(
-        [
-            {
-                "post_uid": "p1",
-                "entity_key": "stock:601899.SH",
-                "action": "trade.buy",
-                "action_strength": 3,
-                "summary": "先建一点仓",
-                "author": "alice",
-                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes": ["601899.SH"],
-                "stock_names": ["紫金矿业"],
-            },
-            {
-                "post_uid": "p2",
-                "entity_key": "stock:紫金",
-                "action": "trade.hold",
-                "action_strength": 1,
-                "summary": "继续拿着",
-                "author": "bob",
-                "created_at": pd.Timestamp("2026-03-26 10:00:00"),
-                "stock_codes": [],
-                "stock_names": ["紫金"],
-            },
-        ]
-    )
+    assertions = [
+        {
+            "post_uid": "p1",
+            "entity_key": "stock:601899.SH",
+            "action": "trade.buy",
+            "action_strength": 3,
+            "summary": "先建一点仓",
+            "author": "alice",
+            "created_at": "2026-03-25 10:00:00",
+            "stock_codes": ["601899.SH"],
+            "stock_names": ["紫金矿业"],
+        },
+        {
+            "post_uid": "p2",
+            "entity_key": "stock:紫金",
+            "action": "trade.hold",
+            "action_strength": 1,
+            "summary": "继续拿着",
+            "author": "bob",
+            "created_at": "2026-03-26 10:00:00",
+            "stock_codes": [],
+            "stock_names": ["紫金"],
+        },
+    ]
 
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
-        lambda lookback_days: (assertions, pd.DataFrame(), ""),
+        lambda lookback_days: (assertions, [], ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
@@ -75,42 +72,38 @@ def test_homework_state_keeps_unlinked_stock_alias_as_separate_rows(
 def test_homework_state_uses_accepted_stock_alias_relation_for_board_grouping(
     monkeypatch,
 ) -> None:
-    assertions = pd.DataFrame(
-        [
-            {
-                "post_uid": "p1",
-                "entity_key": "stock:601899.SH",
-                "action": "trade.buy",
-                "action_strength": 2,
-                "summary": "先上车",
-                "author": "alice",
-                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes": ["601899.SH"],
-                "stock_names": ["紫金矿业"],
-            },
-            {
-                "post_uid": "p2",
-                "entity_key": "stock:阿紫",
-                "action": "trade.watch",
-                "action_strength": 1,
-                "summary": "继续看",
-                "author": "bob",
-                "created_at": pd.Timestamp("2026-03-26 10:00:00"),
-                "stock_codes": [],
-                "stock_names": ["阿紫"],
-            },
-        ]
-    )
-    relations = pd.DataFrame(
-        [
-            {
-                "relation_type": "stock_alias",
-                "left_key": "stock:601899.SH",
-                "right_key": "stock:阿紫",
-                "relation_label": "alias_of",
-            }
-        ]
-    )
+    assertions = [
+        {
+            "post_uid": "p1",
+            "entity_key": "stock:601899.SH",
+            "action": "trade.buy",
+            "action_strength": 2,
+            "summary": "先上车",
+            "author": "alice",
+            "created_at": "2026-03-25 10:00:00",
+            "stock_codes": ["601899.SH"],
+            "stock_names": ["紫金矿业"],
+        },
+        {
+            "post_uid": "p2",
+            "entity_key": "stock:阿紫",
+            "action": "trade.watch",
+            "action_strength": 1,
+            "summary": "继续看",
+            "author": "bob",
+            "created_at": "2026-03-26 10:00:00",
+            "stock_codes": [],
+            "stock_names": ["阿紫"],
+        },
+    ]
+    relations = [
+        {
+            "relation_type": "stock_alias",
+            "left_key": "stock:601899.SH",
+            "right_key": "stock:阿紫",
+            "relation_label": "alias_of",
+        }
+    ]
 
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
@@ -184,21 +177,19 @@ def test_homework_state_refresh_uses_default_feed_when_hit(monkeypatch) -> None:
 def test_homework_state_refresh_bootstraps_default_feed_on_miss(monkeypatch) -> None:
     feed_calls: list[str] = []
     save_calls: list[dict[str, object]] = []
-    assertions = pd.DataFrame(
-        [
-            {
-                "post_uid": "weibo:1",
-                "entity_key": "stock:600519.SH",
-                "action": "trade.buy",
-                "action_strength": 2,
-                "summary": "小仓试错",
-                "author": "alice",
-                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes": ["600519.SH"],
-                "stock_names": ["贵州茅台"],
-            }
-        ]
-    )
+    assertions = [
+        {
+            "post_uid": "weibo:1",
+            "entity_key": "stock:600519.SH",
+            "action": "trade.buy",
+            "action_strength": 2,
+            "summary": "小仓试错",
+            "author": "alice",
+            "created_at": "2026-03-25 10:00:00",
+            "stock_codes": ["600519.SH"],
+            "stock_names": ["贵州茅台"],
+        }
+    ]
 
     def _fake_load_trade_feed(*, view_key=HOMEWORK_DEFAULT_VIEW_KEY):  # type: ignore[no-untyped-def]
         feed_calls.append(f"feed:{view_key}")
@@ -206,7 +197,7 @@ def test_homework_state_refresh_bootstraps_default_feed_on_miss(monkeypatch) -> 
 
     def _fake_load_board_payload(lookback_days):  # type: ignore[no-untyped-def]
         feed_calls.append(f"live:{lookback_days}")
-        return assertions, pd.DataFrame(), ""
+        return assertions, [], ""
 
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_homework_trade_feed_from_env",
@@ -249,17 +240,15 @@ def test_open_tree_dialog_keeps_xueqiu_post_uid_for_loader(monkeypatch) -> None:
     def _fake_load_single_post_for_tree_from_env(post_uid: str):
         seen_uids.append(post_uid)
         return (
-            pd.DataFrame(
-                [
-                    {
-                        "post_uid": requested_uid,
-                        "platform_post_id": "status:381213336",
-                        "author": "雪球作者",
-                        "raw_text": "A：叶子",
-                        "created_at": "2026-03-25 10:23:48",
-                    }
-                ]
-            ),
+            [
+                {
+                    "post_uid": requested_uid,
+                    "platform_post_id": "status:381213336",
+                    "author": "雪球作者",
+                    "raw_text": "A：叶子",
+                    "created_at": "2026-03-25 10:23:48",
+                }
+            ],
             "",
         )
 
@@ -281,7 +270,7 @@ def test_open_tree_dialog_shows_debug_info_on_missing_tree(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_single_post_for_tree_from_env",
-        lambda post_uid: (pd.DataFrame(), ""),
+        lambda post_uid: ([], ""),
     )
 
     state = HomeworkState()
@@ -298,7 +287,7 @@ def test_open_tree_dialog_keeps_selected_tree_post_uid(monkeypatch) -> None:
 
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_single_post_for_tree_from_env",
-        lambda post_uid: (pd.DataFrame(), ""),
+        lambda post_uid: ([], ""),
     )
 
     state = HomeworkState()
@@ -406,21 +395,19 @@ def test_submit_feedback_failure_keeps_feedback_box_open_and_sets_error(
 
 def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
     calls: list[str] = []
-    assertions = pd.DataFrame(
-        [
-            {
-                "post_uid": "weibo:1",
-                "entity_key": "stock:600519.SH",
-                "action": "trade.buy",
-                "action_strength": 1,
-                "summary": "小仓",
-                "author": "alice",
-                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes": ["600519.SH"],
-                "stock_names": ["贵州茅台"],
-            }
-        ]
-    )
+    assertions = [
+        {
+            "post_uid": "weibo:1",
+            "entity_key": "stock:600519.SH",
+            "action": "trade.buy",
+            "action_strength": 1,
+            "summary": "小仓",
+            "author": "alice",
+            "created_at": "2026-03-25 10:00:00",
+            "stock_codes": ["600519.SH"],
+            "stock_names": ["贵州茅台"],
+        }
+    ]
 
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.clear_reflex_source_caches",
@@ -429,7 +416,7 @@ def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
-        lambda lookback_days: (assertions, pd.DataFrame(), ""),
+        lambda lookback_days: (assertions, [], ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",
@@ -444,21 +431,19 @@ def test_load_data_clears_reflex_source_caches(monkeypatch) -> None:
 
 def test_load_data_if_needed_runs_on_first_load(monkeypatch) -> None:
     calls: list[str] = []
-    assertions = pd.DataFrame(
-        [
-            {
-                "post_uid": "weibo:1",
-                "entity_key": "stock:600519.SH",
-                "action": "trade.buy",
-                "action_strength": 1,
-                "summary": "小仓",
-                "author": "alice",
-                "created_at": pd.Timestamp("2026-03-25 10:00:00"),
-                "stock_codes": ["600519.SH"],
-                "stock_names": ["贵州茅台"],
-            }
-        ]
-    )
+    assertions = [
+        {
+            "post_uid": "weibo:1",
+            "entity_key": "stock:600519.SH",
+            "action": "trade.buy",
+            "action_strength": 1,
+            "summary": "小仓",
+            "author": "alice",
+            "created_at": "2026-03-25 10:00:00",
+            "stock_codes": ["600519.SH"],
+            "stock_names": ["贵州茅台"],
+        }
+    ]
 
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.clear_reflex_source_caches",
@@ -467,7 +452,7 @@ def test_load_data_if_needed_runs_on_first_load(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_homework_board_payload_from_env",
-        lambda lookback_days: (assertions, pd.DataFrame(), ""),
+        lambda lookback_days: (assertions, [], ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.homework_state.load_post_urls_from_env",

@@ -8,6 +8,7 @@ from alphavault.research_workbench import (
     ignore_relation_candidate,
     upsert_relation_candidate,
 )
+from alphavault_reflex.services.source_read import load_source_engines_from_env
 
 
 def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
@@ -34,7 +35,12 @@ def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
     elif action_name == "block":
         block_relation_candidate(engine, candidate_id=candidate_id)
     if left_key.startswith("stock:"):
-        mark_entity_page_dirty(engine, stock_key=left_key, reason="candidate_action")
+        for source_engine in load_source_engines_from_env():
+            mark_entity_page_dirty(
+                source_engine,
+                stock_key=left_key,
+                reason="candidate_action",
+            )
 
 
 def apply_candidate_action_by_id(

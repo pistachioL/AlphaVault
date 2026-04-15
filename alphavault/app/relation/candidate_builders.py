@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-import pandas as pd
-
 from alphavault.domains.relation.ids import make_candidate_id
 from alphavault.domains.relation.relation_candidates import (
     RELATION_LABEL_RELATED,
@@ -11,18 +9,43 @@ from alphavault.domains.relation.relation_candidates import (
     build_stock_alias_candidates,
     build_stock_sector_candidates,
 )
+from alphavault.domains.stock.object_index import StockObjectIndex
 from alphavault.infra.ai.relation_candidate_ranker import enrich_candidates_with_ai
+
+RELATION_TYPE_STOCK_ALIAS = "stock_alias"
+RELATION_TYPE_STOCK_SECTOR = "stock_sector"
 
 
 def build_stock_pending_candidates(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     stock_key: str,
     ai_enabled: bool,
+    relation_type: str = "",
+    stock_index: StockObjectIndex | None = None,
     should_continue: Callable[[], bool] | None = None,
 ) -> list[dict[str, str]]:
-    alias_rows = build_stock_alias_candidates(assertions, stock_key=stock_key)
-    sector_rows = build_stock_sector_candidates(assertions, stock_key=stock_key)
+    wanted_relation_type = str(relation_type or "").strip()
+    include_alias = wanted_relation_type in {"", RELATION_TYPE_STOCK_ALIAS}
+    include_sector = wanted_relation_type in {"", RELATION_TYPE_STOCK_SECTOR}
+    alias_rows = (
+        build_stock_alias_candidates(
+            assertions,
+            stock_key=stock_key,
+            stock_index=stock_index,
+        )
+        if include_alias
+        else []
+    )
+    sector_rows = (
+        build_stock_sector_candidates(
+            assertions,
+            stock_key=stock_key,
+            stock_index=stock_index,
+        )
+        if include_sector
+        else []
+    )
 
     candidates: list[dict[str, str]] = []
     for row in alias_rows:
@@ -32,12 +55,12 @@ def build_stock_pending_candidates(
         candidates.append(
             {
                 **row,
-                "relation_type": "stock_alias",
+                "relation_type": RELATION_TYPE_STOCK_ALIAS,
                 "left_key": stock_key,
                 "right_key": alias_key,
                 "relation_label": "alias_of",
                 "candidate_id": make_candidate_id(
-                    relation_type="stock_alias",
+                    relation_type=RELATION_TYPE_STOCK_ALIAS,
                     left_key=stock_key,
                     right_key=alias_key,
                     relation_label="alias_of",
@@ -53,12 +76,12 @@ def build_stock_pending_candidates(
         candidates.append(
             {
                 **row,
-                "relation_type": "stock_sector",
+                "relation_type": RELATION_TYPE_STOCK_SECTOR,
                 "left_key": stock_key,
                 "right_key": f"cluster:{sector_key}",
                 "relation_label": "member_of",
                 "candidate_id": make_candidate_id(
-                    relation_type="stock_sector",
+                    relation_type=RELATION_TYPE_STOCK_SECTOR,
                     left_key=stock_key,
                     right_key=f"cluster:{sector_key}",
                     relation_label="member_of",
@@ -67,10 +90,12 @@ def build_stock_pending_candidates(
                 "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
             }
         )
+    if not ai_enabled:
+        return _finalize_candidate_rows(candidates)
     return _finalize_candidate_rows(
         enrich_candidates_with_ai(
             candidates,
-            relation_type="stock_sector",
+            relation_type=wanted_relation_type or RELATION_TYPE_STOCK_SECTOR,
             ai_enabled=ai_enabled,
             should_continue=should_continue,
         )
@@ -78,7 +103,7 @@ def build_stock_pending_candidates(
 
 
 def build_sector_pending_candidates(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     sector_key: str,
     ai_enabled: bool,
@@ -107,6 +132,8 @@ def build_sector_pending_candidates(
                 "suggestion_reason": str(row.get("evidence_summary") or "").strip(),
             }
         )
+    if not ai_enabled:
+        return _finalize_candidate_rows(rows)
     return _finalize_candidate_rows(
         enrich_candidates_with_ai(
             rows,

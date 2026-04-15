@@ -4,8 +4,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from functools import lru_cache
 from typing import Any
 
-import pandas as pd
-
 from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql.ui import (
@@ -17,11 +15,11 @@ from alphavault.db.postgres_db import (
     ensure_postgres_engine,
     postgres_connect_autocommit,
 )
+from alphavault.db.sql_rows import read_sql_rows
 from alphavault.db.postgres_env import (
     load_configured_postgres_sources_from_env,
     PostgresSource,
 )
-from alphavault.db.sql_df import read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault.domains.stock.keys import stock_key_lookup_candidates
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
@@ -35,13 +33,13 @@ from alphavault_reflex.services.source_loader import (
     WANTED_POST_COLUMNS_FOR_TREE,
     WANTED_TRADE_ASSERTION_COLUMNS,
     source_table,
-    standardize_assertions,
-    standardize_posts,
+    standardize_assertions_rows,
+    standardize_posts_rows,
 )
 from alphavault_reflex.services.source_read_utils import (
-    ensure_platform_post_id,
-    normalize_assertions_datetime,
-    normalize_posts_datetime,
+    ensure_platform_post_id_rows,
+    normalize_assertions_datetime_rows,
+    normalize_posts_datetime_rows,
     normalize_stock_key_for_fast_query,
     stock_code_from_stock_key,
 )
@@ -139,18 +137,18 @@ def load_stock_trade_sources_fast_cached(
     stock_key: str,
     stock_code: str,
     per_source_limit: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
     del stock_code
     normalized_key = normalize_stock_key_for_fast_query(stock_key)
     if not normalized_key:
-        return pd.DataFrame(), pd.DataFrame()
+        return (), ()
     limit = max(1, int(per_source_limit or FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE))
     stock_keys = _dedupe_stock_keys(
         stock_key_lookup_candidates(normalized_key)
         + list(load_stock_alias_keys_cached(normalized_key))
     )
     if not stock_keys:
-        return pd.DataFrame(), pd.DataFrame()
+        return (), ()
 
     del auth_token
     engine = ensure_postgres_engine(db_url, schema_name=source_name)
@@ -191,18 +189,15 @@ def load_stock_trade_sources_fast_cached(
             "ORDER BY p.created_at DESC\n"
             "LIMIT :limit"
         )
-        assertions = read_sql_df(conn, assertions_query, params=params)
+        assertion_rows = read_sql_rows(conn, assertions_query, params=params)
 
-        posts = pd.DataFrame()
-        if not assertions.empty:
+        post_rows: list[dict[str, object]] = []
+        if assertion_rows:
             post_uids = tuple(
                 sorted(
                     {
                         str(uid or "").strip()
-                        for uid in assertions.get(
-                            "post_uid",
-                            pd.Series(dtype=str),
-                        ).tolist()
+                        for uid in [row.get("post_uid") for row in assertion_rows]
                         if str(uid or "").strip()
                     }
                 )
@@ -215,14 +210,18 @@ FROM {posts_table}
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})
 """
-                posts = read_sql_df(conn, posts_query, params=list(post_uids))
+                post_rows = read_sql_rows(conn, posts_query, params=list(post_uids))
 
-    posts = standardize_posts(posts, source_name=source_name)
-    posts = normalize_posts_datetime(posts)
-    posts = ensure_platform_post_id(posts)
-    assertions = standardize_assertions(assertions, posts, source_name=source_name)
-    assertions = normalize_assertions_datetime(assertions)
-    return posts, assertions
+    posts = standardize_posts_rows(post_rows, source_name=source_name)
+    posts = normalize_posts_datetime_rows(posts)
+    posts = ensure_platform_post_id_rows(posts)
+    assertions = standardize_assertions_rows(
+        assertion_rows,
+        posts,
+        source_name=source_name,
+    )
+    assertions = normalize_assertions_datetime_rows(assertions)
+    return tuple(dict(row) for row in posts), tuple(dict(row) for row in assertions)
 
 
 def load_stock_sources_fast_from_env(
@@ -230,21 +229,21 @@ def load_stock_sources_fast_from_env(
     *,
     per_source_limit: int = FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE,
     load_cached_fn=load_stock_trade_sources_fast_cached,
-) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
     normalized_key = normalize_stock_key_for_fast_query(stock_key)
     if not normalized_key:
-        return pd.DataFrame(), pd.DataFrame(), ""
+        return [], [], ""
 
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
+        return [], [], MISSING_POSTGRES_DSN_ERROR
 
     stock_code = stock_code_from_stock_key(normalized_key)
     limit = max(1, int(per_source_limit or FAST_STOCK_ASSERTION_LIMIT_PER_SOURCE))
 
-    posts_frames: list[pd.DataFrame] = []
-    assertions_frames: list[pd.DataFrame] = []
+    posts_rows: list[dict[str, object]] = []
+    assertions_rows: list[dict[str, object]] = []
     errors: list[str] = []
     max_workers = max(1, min(4, int(len(sources))))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -277,34 +276,21 @@ def load_stock_sources_fast_from_env(
                     raise
                 error_text = str(err or "").strip()
                 if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
-                    return pd.DataFrame(), pd.DataFrame(), error_text
+                    return [], [], error_text
                 errors.append(
                     f"postgres_connect_error:{source_name}:{type(err).__name__}"
                 )
                 continue
-            posts_frames.append(posts)
-            assertions_frames.append(assertions)
+            posts_rows.extend(dict(row) for row in posts)
+            assertions_rows.extend(dict(row) for row in assertions)
 
-    if not posts_frames and not assertions_frames:
+    if not posts_rows and not assertions_rows:
         if errors:
-            return pd.DataFrame(), pd.DataFrame(), errors[0]
-        return pd.DataFrame(), pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
-
-    non_empty_posts = [frame for frame in posts_frames if not frame.empty]
-    non_empty_assertions = [frame for frame in assertions_frames if not frame.empty]
-    posts = (
-        pd.concat(non_empty_posts, ignore_index=True)
-        if non_empty_posts
-        else pd.DataFrame()
-    )
-    assertions = (
-        pd.concat(non_empty_assertions, ignore_index=True)
-        if non_empty_assertions
-        else pd.DataFrame()
-    )
+            return [], [], errors[0]
+        return [], [], SOURCE_SCHEMAS_EMPTY_ERROR
     if errors:
-        return posts, assertions, f"partial_source_error:{errors[0]}"
-    return posts, assertions, ""
+        return posts_rows, assertions_rows, f"partial_source_error:{errors[0]}"
+    return posts_rows, assertions_rows, ""
 
 
 __all__ = [

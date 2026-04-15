@@ -4,8 +4,6 @@ import sqlite3
 from types import SimpleNamespace
 from typing import Any, cast
 
-import pandas as pd
-
 from alphavault.constants import SCHEMA_STANDARD, SCHEMA_XUEQIU
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
@@ -323,39 +321,35 @@ def test_build_stock_hot_payload_reads_legacy_prefixed_cn_entity_key_for_canonic
 def test_build_stock_hot_payload_uses_xueqiu_schema_tables(monkeypatch) -> None:
     seen_sql: list[str] = []
 
-    def _fake_read_sql_df(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
+    def _fake_read_sql_rows(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
         del conn, params
         seen_sql.append(str(sql))
         if "standard.relations" in str(sql):
-            return pd.DataFrame()
+            return []
         if "assertions" in str(sql):
-            return pd.DataFrame(
-                [
-                    {
-                        "assertion_id": "xueqiu:stock_hot:1#1",
-                        "post_uid": "xueqiu:stock_hot:1",
-                        "action": "trade.buy",
-                        "action_strength": 2,
-                        "summary": "雪球 source schema 也要能读到",
-                        "created_at": "2099-01-04 00:00:00",
-                        "resolved_entity_key": "stock:000725.SZ",
-                    }
-                ]
-            )
-        return pd.DataFrame(
-            [
+            return [
                 {
+                    "assertion_id": "xueqiu:stock_hot:1#1",
                     "post_uid": "xueqiu:stock_hot:1",
-                    "platform_post_id": "1",
-                    "author": "alice",
+                    "action": "trade.buy",
+                    "action_strength": 2,
+                    "summary": "雪球 source schema 也要能读到",
                     "created_at": "2099-01-04 00:00:00",
-                    "url": "https://example.com/xueqiu/stock-hot-1",
-                    "raw_text": "原文",
+                    "resolved_entity_key": "stock:000725.SZ",
                 }
             ]
-        )
+        return [
+            {
+                "post_uid": "xueqiu:stock_hot:1",
+                "platform_post_id": "1",
+                "author": "alice",
+                "created_at": "2099-01-04 00:00:00",
+                "url": "https://example.com/xueqiu/stock-hot-1",
+                "raw_text": "原文",
+            }
+        ]
 
-    monkeypatch.setattr(stock_hot_payload_builder, "read_sql_df", _fake_read_sql_df)
+    monkeypatch.setattr(stock_hot_payload_builder, "read_sql_rows", _fake_read_sql_rows)
     monkeypatch.setattr(
         stock_hot_payload_builder,
         "_load_sector_keys_by_assertion_id",

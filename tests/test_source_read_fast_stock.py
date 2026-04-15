@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pandas as pd
-
 from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
 from alphavault_reflex.services import stock_fast_loader
+
+
+def _rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return rows
 
 
 def _source_pg_conn(pg_conn, *, schema_name: str) -> PostgresConnection:
@@ -113,14 +115,12 @@ def test_load_stock_sources_fast_from_env_returns_partial_error(monkeypatch) -> 
         stock_key: str,
         stock_code: str,
         per_source_limit: int,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         del db_url, auth_token, stock_key, stock_code, per_source_limit
         if source_name == "xueqiu":
             raise RuntimeError("boom")
-        posts = pd.DataFrame([{"post_uid": "weibo:1"}])
-        assertions = pd.DataFrame(
-            [{"post_uid": "weibo:1", "entity_key": "stock:03316.HK"}]
-        )
+        posts = _rows([{"post_uid": "weibo:1"}])
+        assertions = _rows([{"post_uid": "weibo:1", "entity_key": "stock:03316.HK"}])
         return posts, assertions
 
     posts, assertions, err = stock_fast_loader.load_stock_sources_fast_from_env(
@@ -129,8 +129,8 @@ def test_load_stock_sources_fast_from_env_returns_partial_error(monkeypatch) -> 
         load_cached_fn=_fake_fast_cached,
     )
 
-    assert not posts.empty
-    assert not assertions.empty
+    assert posts
+    assert assertions
     assert err.startswith("partial_source_error:")
 
 
@@ -150,10 +150,10 @@ def test_load_stock_sources_fast_from_env_normalizes_stock_key(monkeypatch) -> N
         stock_key: str,
         stock_code: str,
         per_source_limit: int,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         del db_url, auth_token, source_name, stock_code, per_source_limit
         seen_stock_keys.append(stock_key)
-        return pd.DataFrame(), pd.DataFrame()
+        return [], []
 
     _posts, _assertions, _err = stock_fast_loader.load_stock_sources_fast_from_env(
         "03316.HK",
@@ -180,10 +180,10 @@ def test_load_stock_sources_fast_from_env_normalizes_prefixed_cn_stock_key(
         stock_key: str,
         stock_code: str,
         per_source_limit: int,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         del db_url, auth_token, source_name, per_source_limit
         seen_calls.append((stock_key, stock_code))
-        return pd.DataFrame(), pd.DataFrame()
+        return [], []
 
     _posts, _assertions, _err = stock_fast_loader.load_stock_sources_fast_from_env(
         "SZ000725.US",
@@ -210,7 +210,7 @@ def test_load_stock_sources_fast_from_env_returns_standard_error(
         stock_key: str,
         stock_code: str,
         per_source_limit: int,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         del db_url, auth_token, source_name, stock_key, stock_code, per_source_limit
         raise RuntimeError("postgres_connect_error:standard:RuntimeError")
 
@@ -219,8 +219,8 @@ def test_load_stock_sources_fast_from_env_returns_standard_error(
         load_cached_fn=_raise_standard_error,
     )
 
-    assert posts.empty
-    assert assertions.empty
+    assert posts == []
+    assert assertions == []
     assert err == "postgres_connect_error:standard:RuntimeError"
 
 
@@ -279,10 +279,10 @@ def test_load_stock_trade_sources_fast_cached_reads_stock_entity_key(
         16,
     )
 
-    assert list(posts["post_uid"]) == ["weibo:2"]
-    assert list(assertions["post_uid"]) == ["weibo:2"]
-    assert assertions.iloc[0]["entity_key"] == "stock:601899.SH"
-    assert assertions.iloc[0]["summary"] == "别名行也要进正式个股页"
+    assert [row["post_uid"] for row in posts] == ["weibo:2"]
+    assert [row["post_uid"] for row in assertions] == ["weibo:2"]
+    assert assertions[0]["entity_key"] == "stock:601899.SH"
+    assert assertions[0]["summary"] == "别名行也要进正式个股页"
 
     stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
     stock_fast_loader.load_stock_alias_keys_cached.cache_clear()
@@ -327,15 +327,15 @@ def test_load_stock_trade_sources_fast_cached_orders_by_post_created_at(
         lambda _engine: _FakeConn(),
     )
 
-    def _fake_read_sql_df(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
+    def _fake_read_sql_rows(conn, sql: str, params=None):  # type: ignore[no-untyped-def]
         del conn, params
         seen_sql.append(str(sql))
-        return pd.DataFrame()
+        return []
 
     monkeypatch.setattr(
         stock_fast_loader,
-        "read_sql_df",
-        _fake_read_sql_df,
+        "read_sql_rows",
+        _fake_read_sql_rows,
     )
 
     posts, assertions = stock_fast_loader.load_stock_trade_sources_fast_cached(
@@ -347,8 +347,8 @@ def test_load_stock_trade_sources_fast_cached_orders_by_post_created_at(
         16,
     )
 
-    assert posts.empty
-    assert assertions.empty
+    assert posts == ()
+    assert assertions == ()
     assert seen_sql
     assert "JOIN weibo.posts p" in seen_sql[0]
     assert "ORDER BY p.created_at DESC" in seen_sql[0]
@@ -413,8 +413,8 @@ def test_load_stock_trade_sources_fast_cached_reads_legacy_prefixed_cn_entity_ke
         16,
     )
 
-    assert list(posts["post_uid"]) == ["xueqiu:1"]
-    assert list(assertions["post_uid"]) == ["xueqiu:1"]
+    assert [row["post_uid"] for row in posts] == ["xueqiu:1"]
+    assert [row["post_uid"] for row in assertions] == ["xueqiu:1"]
 
     stock_fast_loader.load_stock_trade_sources_fast_cached.cache_clear()
     stock_fast_loader.load_stock_alias_keys_cached.cache_clear()

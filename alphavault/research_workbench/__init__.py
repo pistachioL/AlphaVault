@@ -34,6 +34,7 @@ from .relation_repo import (
     sync_stock_sibling_relations_from_security_master,
 )
 from .security_master_repo import (
+    get_official_names_by_stock_keys,
     get_stock_keys_by_official_names,
     upsert_security_master_stock,
 )
@@ -64,6 +65,7 @@ __all__ = [
     "RELATION_TYPE_STOCK_SECTOR",
     "accept_relation_candidate",
     "block_relation_candidate",
+    "get_official_names_by_stock_keys",
     "get_stock_keys_by_official_names",
     "get_alias_resolve_tasks_map",
     "get_research_workbench_engine_from_env",

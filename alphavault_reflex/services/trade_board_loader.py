@@ -3,11 +3,10 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from functools import lru_cache
+import json
 import logging
 import os
 import time
-
-import pandas as pd
 
 from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
 from alphavault.db.sql.ui import (
@@ -23,7 +22,7 @@ from alphavault.db.postgres_env import (
     load_configured_postgres_sources_from_env,
     PostgresSource,
 )
-from alphavault.db.sql_df import read_sql_df
+from alphavault.db.sql_rows import read_sql_rows
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
 from alphavault.research_workbench.service import (
@@ -36,7 +35,6 @@ from alphavault_reflex.services.source_loader import (
     SOURCE_SCHEMAS_EMPTY_ERROR,
     source_table,
 )
-from alphavault_reflex.services.source_read_utils import normalize_assertions_datetime
 
 _logger = logging.getLogger(__name__)
 ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS = "REFLEX_HOMEWORK_SOURCE_MAX_WORKERS"
@@ -90,9 +88,57 @@ def trade_board_select_expr() -> str:
     )
 
 
-def query_trade_board_assertions(
+def _clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_trade_board_assertion_rows(
+    rows: list[dict[str, object]],
+    *,
+    source_name: str,
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    resolved_source_name = _clean_text(source_name)
+    for raw_row in rows:
+        row = dict(raw_row)
+        row["source"] = resolved_source_name
+        for col in ["post_uid", "entity_key", "action", "summary", "author", "url"]:
+            if col in row:
+                row[col] = _clean_text(row.get(col))
+        normalized.append(row)
+    return normalized
+
+
+def _normalize_stock_alias_relation_rows(
+    rows: list[dict[str, object]],
+    *,
+    source_name: str,
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    resolved_source_name = _clean_text(source_name)
+    for raw_row in rows:
+        row = dict(raw_row)
+        row["db_source"] = resolved_source_name
+        normalized.append(row)
+    return normalized
+
+
+def _dedupe_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    deduped: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw_row in rows:
+        row = dict(raw_row)
+        marker = json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(row)
+    return deduped
+
+
+def query_trade_board_assertion_rows(
     *, conn: object, cutoff: str, source_name: str
-) -> pd.DataFrame:
+) -> list[dict[str, object]]:
     posts_table = source_table(source_name, "posts")
     assertions_table = source_table(source_name, "assertions")
     assertion_entities_table = source_table(source_name, "assertion_entities")
@@ -108,25 +154,19 @@ WHERE p.processed_at IS NOT NULL
   AND p.created_at >= :cutoff
   AND a.action LIKE 'trade.%'
 """
-    df = read_sql_df(conn, sql, params={"cutoff": cutoff})
-    if df.empty:
-        return df
-    df = df.copy()
-    df["source"] = str(source_name or "").strip()
-    for col in ["post_uid", "entity_key", "action", "summary", "author", "url"]:
-        if col in df.columns:
-            df[col] = df[col].fillna("").astype(str)
-    df = normalize_assertions_datetime(df)
-    return df
+    return _normalize_trade_board_assertion_rows(
+        read_sql_rows(conn, sql, params={"cutoff": cutoff}),
+        source_name=source_name,
+    )
 
 
-def query_stock_alias_relations(*, conn: object, source_name: str) -> pd.DataFrame:
-    df = read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
-    if df.empty:
-        return df
-    df = df.copy()
-    df["db_source"] = source_name
-    return df
+def query_stock_alias_relation_rows(
+    *, conn: object, source_name: str
+) -> list[dict[str, object]]:
+    return _normalize_stock_alias_relation_rows(
+        read_sql_rows(conn, STOCK_ALIAS_RELATIONS_SQL),
+        source_name=source_name,
+    )
 
 
 def _standard_postgres_error_text(err: BaseException) -> str:
@@ -137,32 +177,54 @@ def _standard_postgres_error_text(err: BaseException) -> str:
 
 
 @lru_cache(maxsize=8)
-def load_trade_board_assertions_cached(
+def load_trade_board_assertion_rows_cached(
     db_url: str,
     auth_token: str,
     source_name: str,
     lookback_days: int,
-) -> pd.DataFrame:
+) -> tuple[dict[str, object], ...]:
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     cutoff = trade_board_cutoff_from_utc_now(lookback_days=lookback)
     del auth_token
     engine = ensure_postgres_engine(db_url, schema_name=source_name)
     with postgres_connect_autocommit(engine) as conn:
-        return query_trade_board_assertions(
+        rows = query_trade_board_assertion_rows(
             conn=conn,
             cutoff=cutoff,
             source_name=source_name,
         )
+    return tuple(dict(row) for row in rows)
+
+
+@lru_cache(maxsize=8)
+def load_trade_board_assertions_cached(
+    db_url: str,
+    auth_token: str,
+    source_name: str,
+    lookback_days: int,
+) -> tuple[dict[str, object], ...]:
+    return load_trade_board_assertion_rows_cached(
+        db_url,
+        auth_token,
+        source_name,
+        lookback_days,
+    )
 
 
 @lru_cache(maxsize=2)
-def load_stock_alias_relations_cached() -> pd.DataFrame:
+def load_stock_alias_relation_rows_cached() -> tuple[dict[str, object], ...]:
     engine = get_research_workbench_engine_from_env()
     with postgres_connect_autocommit(engine) as conn:
-        return query_stock_alias_relations(
+        rows = query_stock_alias_relation_rows(
             conn=conn,
             source_name="standard",
         )
+    return tuple(dict(row) for row in rows)
+
+
+@lru_cache(maxsize=2)
+def load_stock_alias_relations_cached() -> tuple[dict[str, object], ...]:
+    return load_stock_alias_relation_rows_cached()
 
 
 def resolve_homework_source_workers(*, source_count: int) -> int:
@@ -179,12 +241,12 @@ def resolve_homework_source_workers(*, source_count: int) -> int:
 
 
 @lru_cache(maxsize=8)
-def load_homework_board_payload_cached(
+def load_homework_board_payload_rows_cached(
     db_url: str,
     auth_token: str,
     source_name: str,
     lookback_days: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
     start = time.perf_counter()
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     cutoff = trade_board_cutoff_from_utc_now(lookback_days=lookback)
@@ -193,14 +255,14 @@ def load_homework_board_payload_cached(
     assertion_count = 0
     relation_count = 0
     with postgres_connect_autocommit(engine) as conn:
-        assertions = query_trade_board_assertions(
+        assertions = query_trade_board_assertion_rows(
             conn=conn,
             cutoff=cutoff,
             source_name=source_name,
         )
         assertion_count = int(len(assertions))
         try:
-            relations = load_stock_alias_relations_cached()
+            relations = list(load_stock_alias_relation_rows_cached())
             relation_count = int(len(relations))
         except BaseException as err:
             if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
@@ -220,21 +282,36 @@ def load_homework_board_payload_cached(
         relation_count,
         time.perf_counter() - start,
     )
-    return assertions, relations
+    return tuple(dict(row) for row in assertions), tuple(dict(row) for row in relations)
+
+
+@lru_cache(maxsize=8)
+def load_homework_board_payload_cached(
+    db_url: str,
+    auth_token: str,
+    source_name: str,
+    lookback_days: int,
+) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
+    return load_homework_board_payload_rows_cached(
+        db_url,
+        auth_token,
+        source_name,
+        lookback_days,
+    )
 
 
 def load_trade_board_assertions_from_env(
     lookback_days: int,
     *,
     load_cached_fn=load_trade_board_assertions_cached,
-) -> tuple[pd.DataFrame, str]:
+) -> tuple[list[dict[str, object]], str]:
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
+        return [], MISSING_POSTGRES_DSN_ERROR
 
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
-    frames: list[pd.DataFrame] = []
+    rows: list[dict[str, object]] = []
     max_workers = max(1, min(4, int(len(sources))))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
@@ -250,35 +327,70 @@ def load_trade_board_assertions_from_env(
         for fut in as_completed(futures):
             name = futures.get(fut, "")
             try:
-                frames.append(fut.result())
+                rows.extend(dict(row) for row in fut.result())
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
                     raise
-                return (
-                    pd.DataFrame(),
-                    f"postgres_connect_error:{name}:{type(err).__name__}",
-                )
+                return [], f"postgres_connect_error:{name}:{type(err).__name__}"
 
-    if not frames:
-        return pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
-    return pd.concat(frames, ignore_index=True), ""
+    if not rows:
+        return [], SOURCE_SCHEMAS_EMPTY_ERROR
+    return rows, ""
 
 
-def load_homework_board_payload_from_env(
+def load_trade_board_assertion_rows_from_env(
     lookback_days: int,
     *,
-    load_cached_fn=load_homework_board_payload_cached,
+    load_cached_fn=load_trade_board_assertion_rows_cached,
+) -> tuple[list[dict[str, object]], str]:
+    load_dotenv_if_present()
+    sources = _load_source_schemas_from_env()
+    if not sources:
+        return [], MISSING_POSTGRES_DSN_ERROR
+
+    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+    rows: list[dict[str, object]] = []
+    max_workers = max(1, min(4, int(len(sources))))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                load_cached_fn,
+                source.url,
+                source.token,
+                source.name,
+                lookback,
+            ): source.name
+            for source in sources
+        }
+        for fut in as_completed(futures):
+            name = futures.get(fut, "")
+            try:
+                rows.extend(dict(row) for row in fut.result())
+            except BaseException as err:
+                if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
+                    raise
+                return [], f"postgres_connect_error:{name}:{type(err).__name__}"
+
+    if not rows:
+        return [], SOURCE_SCHEMAS_EMPTY_ERROR
+    return rows, ""
+
+
+def load_homework_board_payload_rows_from_env(
+    lookback_days: int,
+    *,
+    load_cached_fn=load_homework_board_payload_rows_cached,
     resolve_workers_fn=resolve_homework_source_workers,
-) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
     start = time.perf_counter()
     load_dotenv_if_present()
     sources = _load_source_schemas_from_env()
     if not sources:
-        return pd.DataFrame(), pd.DataFrame(), MISSING_POSTGRES_DSN_ERROR
+        return [], [], MISSING_POSTGRES_DSN_ERROR
 
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
-    assertions_frames: list[pd.DataFrame] = []
-    relation_frames: list[pd.DataFrame] = []
+    assertions_rows: list[dict[str, object]] = []
+    relation_rows: list[dict[str, object]] = []
     source_errors: list[str] = []
 
     max_workers = resolve_workers_fn(source_count=len(sources))
@@ -297,7 +409,7 @@ def load_homework_board_payload_from_env(
                     raise
                 error_text = str(err or "").strip()
                 if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
-                    return pd.DataFrame(), pd.DataFrame(), error_text
+                    return [], [], error_text
                 source_errors.append(
                     f"postgres_connect_error:{source.name}:{type(err).__name__}"
                 )
@@ -307,8 +419,8 @@ def load_homework_board_payload_from_env(
                     type(err).__name__,
                 )
                 continue
-            assertions_frames.append(assertions)
-            relation_frames.append(relations)
+            assertions_rows.extend(dict(row) for row in assertions)
+            relation_rows.extend(dict(row) for row in relations)
             _logger.debug(
                 "homework_payload source_done source=%s mode=serial assertions=%d relations=%d elapsed=%.3fs",
                 source.name,
@@ -338,7 +450,7 @@ def load_homework_board_payload_from_env(
                         raise
                     error_text = str(err or "").strip()
                     if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
-                        return pd.DataFrame(), pd.DataFrame(), error_text
+                        return [], [], error_text
                     source_errors.append(
                         f"postgres_connect_error:{name}:{type(err).__name__}"
                     )
@@ -348,8 +460,8 @@ def load_homework_board_payload_from_env(
                         type(err).__name__,
                     )
                     continue
-                assertions_frames.append(assertions)
-                relation_frames.append(relations)
+                assertions_rows.extend(dict(row) for row in assertions)
+                relation_rows.extend(dict(row) for row in relations)
                 _logger.debug(
                     "homework_payload source_done source=%s mode=parallel assertions=%d relations=%d elapsed=%.3fs",
                     name,
@@ -358,50 +470,176 @@ def load_homework_board_payload_from_env(
                     time.perf_counter() - source_start,
                 )
 
-    if not assertions_frames:
+    if not assertions_rows:
         if source_errors:
-            return pd.DataFrame(), pd.DataFrame(), source_errors[0]
-        return pd.DataFrame(), pd.DataFrame(), SOURCE_SCHEMAS_EMPTY_ERROR
-    assertions_all = pd.concat(assertions_frames, ignore_index=True)
-    relations_all = pd.concat(relation_frames, ignore_index=True)
-    if not relations_all.empty:
-        relations_all = relations_all.drop_duplicates().reset_index(drop=True)
+            return [], [], source_errors[0]
+        return [], [], SOURCE_SCHEMAS_EMPTY_ERROR
+
+    deduped_relations = _dedupe_rows(relation_rows)
     _logger.debug(
         "homework_payload done sources=%d workers=%d assertions=%d relations=%d elapsed=%.3fs",
         int(len(sources)),
         int(max_workers),
-        int(len(assertions_all)),
-        int(len(relations_all)),
+        int(len(assertions_rows)),
+        int(len(deduped_relations)),
         time.perf_counter() - start,
     )
-    return assertions_all, relations_all, ""
+    return assertions_rows, deduped_relations, ""
+
+
+def load_homework_board_payload_from_env(
+    lookback_days: int,
+    *,
+    load_cached_fn=load_homework_board_payload_cached,
+    resolve_workers_fn=resolve_homework_source_workers,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
+    start = time.perf_counter()
+    load_dotenv_if_present()
+    sources = _load_source_schemas_from_env()
+    if not sources:
+        return [], [], MISSING_POSTGRES_DSN_ERROR
+
+    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
+    assertions_rows: list[dict[str, object]] = []
+    relation_rows: list[dict[str, object]] = []
+    source_errors: list[str] = []
+
+    max_workers = resolve_workers_fn(source_count=len(sources))
+    if max_workers == 1:
+        for source in sources:
+            source_start = time.perf_counter()
+            try:
+                assertions, relations = load_cached_fn(
+                    source.url,
+                    source.token,
+                    source.name,
+                    lookback,
+                )
+            except BaseException as err:
+                if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
+                    raise
+                error_text = str(err or "").strip()
+                if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
+                    return [], [], error_text
+                source_errors.append(
+                    f"postgres_connect_error:{source.name}:{type(err).__name__}"
+                )
+                _logger.warning(
+                    "homework_payload source_failed source=%s mode=serial err=%s",
+                    source.name,
+                    type(err).__name__,
+                )
+                continue
+            assertions_rows.extend(dict(row) for row in assertions)
+            relation_rows.extend(dict(row) for row in relations)
+            _logger.debug(
+                "homework_payload source_done source=%s mode=serial assertions=%d relations=%d elapsed=%.3fs",
+                source.name,
+                int(len(assertions)),
+                int(len(relations)),
+                time.perf_counter() - source_start,
+            )
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {}
+            for source in sources:
+                futures[
+                    pool.submit(
+                        load_cached_fn,
+                        source.url,
+                        source.token,
+                        source.name,
+                        lookback,
+                    )
+                ] = (source.name, time.perf_counter())
+            for fut in as_completed(futures):
+                name, source_start = futures.get(fut, ("", time.perf_counter()))
+                try:
+                    assertions, relations = fut.result()
+                except BaseException as err:
+                    if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
+                        raise
+                    error_text = str(err or "").strip()
+                    if error_text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
+                        return [], [], error_text
+                    source_errors.append(
+                        f"postgres_connect_error:{name}:{type(err).__name__}"
+                    )
+                    _logger.warning(
+                        "homework_payload source_failed source=%s mode=parallel err=%s",
+                        name,
+                        type(err).__name__,
+                    )
+                    continue
+                assertions_rows.extend(dict(row) for row in assertions)
+                relation_rows.extend(dict(row) for row in relations)
+                _logger.debug(
+                    "homework_payload source_done source=%s mode=parallel assertions=%d relations=%d elapsed=%.3fs",
+                    name,
+                    int(len(assertions)),
+                    int(len(relations)),
+                    time.perf_counter() - source_start,
+                )
+
+    if not assertions_rows:
+        if source_errors:
+            return [], [], source_errors[0]
+        return [], [], SOURCE_SCHEMAS_EMPTY_ERROR
+    deduped_relations = _dedupe_rows(relation_rows)
+    _logger.debug(
+        "homework_payload done sources=%d workers=%d assertions=%d relations=%d elapsed=%.3fs",
+        int(len(sources)),
+        int(max_workers),
+        int(len(assertions_rows)),
+        int(len(deduped_relations)),
+        time.perf_counter() - start,
+    )
+    return assertions_rows, deduped_relations, ""
 
 
 def load_stock_alias_relations_from_env(
     *,
     load_cached_fn=load_stock_alias_relations_cached,
-) -> tuple[pd.DataFrame, str]:
+) -> tuple[list[dict[str, object]], str]:
     load_dotenv_if_present()
     try:
-        return load_cached_fn(), ""
+        return [dict(row) for row in load_cached_fn()], ""
     except BaseException as err:
         if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
             raise
-        return (
-            pd.DataFrame(),
-            _standard_postgres_error_text(err),
-        )
+        return [], _standard_postgres_error_text(err)
+
+
+def load_stock_alias_relation_rows_from_env(
+    *,
+    load_cached_fn=load_stock_alias_relation_rows_cached,
+) -> tuple[list[dict[str, object]], str]:
+    load_dotenv_if_present()
+    try:
+        return [dict(row) for row in load_cached_fn()], ""
+    except BaseException as err:
+        if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
+            raise
+        return [], _standard_postgres_error_text(err)
 
 
 __all__ = [
     "DEFAULT_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS",
     "ENV_REFLEX_HOMEWORK_SOURCE_MAX_WORKERS",
     "TRADE_BOARD_ASSERTION_COLUMNS",
+    "load_homework_board_payload_rows_cached",
+    "load_homework_board_payload_rows_from_env",
     "load_homework_board_payload_cached",
     "load_homework_board_payload_from_env",
+    "load_stock_alias_relation_rows_cached",
+    "load_stock_alias_relation_rows_from_env",
     "load_stock_alias_relations_cached",
     "load_stock_alias_relations_from_env",
+    "load_trade_board_assertion_rows_cached",
+    "load_trade_board_assertion_rows_from_env",
     "load_trade_board_assertions_cached",
     "load_trade_board_assertions_from_env",
+    "query_stock_alias_relation_rows",
+    "query_trade_board_assertion_rows",
     "resolve_homework_source_workers",
 ]

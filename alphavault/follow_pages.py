@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 
-import pandas as pd
-
 from alphavault.constants import SCHEMA_STANDARD
 from alphavault.timeutil import now_cst_str
 from alphavault.db.sql.follow_pages import (
@@ -23,7 +21,7 @@ from alphavault.db.sql.follow_pages import (
     upsert_follow_page as upsert_follow_page_sql,
 )
 from alphavault.db.postgres_db import PostgresEngine, postgres_connect_autocommit
-from alphavault.db.sql_df import read_sql_df
+from alphavault.db.sql_rows import read_sql_rows
 
 
 FOLLOW_PAGES_TABLE = f"{SCHEMA_STANDARD}.follow_pages"
@@ -50,7 +48,9 @@ def make_page_key(*, follow_type: str, follow_key: str) -> str:
     return f"{t}:{k}"
 
 
-def try_load_follow_pages(engine: PostgresEngine) -> tuple[pd.DataFrame, str]:
+def try_load_follow_pages(
+    engine: PostgresEngine,
+) -> tuple[list[dict[str, object]], str]:
     """
     Best-effort load follow_pages.
 
@@ -58,10 +58,10 @@ def try_load_follow_pages(engine: PostgresEngine) -> tuple[pd.DataFrame, str]:
     """
     try:
         with postgres_connect_autocommit(engine) as conn:
-            pages = read_sql_df(conn, select_follow_pages(FOLLOW_PAGES_TABLE))
+            pages = read_sql_rows(conn, select_follow_pages(FOLLOW_PAGES_TABLE))
         return pages, ""
     except Exception as exc:
-        return pd.DataFrame(), f"{type(exc).__name__}: {exc}"
+        return [], f"{type(exc).__name__}: {exc}"
 
 
 def upsert_follow_page(

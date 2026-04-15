@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pandas as pd
+from datetime import UTC, datetime
 
 from alphavault.domains.thread_tree.service import build_post_tree_map
 
@@ -10,65 +10,68 @@ MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR
 MAX_SIGNAL_ROWS = 60
 
 
-def merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.DataFrame:
-    if assertions.empty or posts.empty or "post_uid" not in assertions.columns:
-        return assertions
-    if "post_uid" not in posts.columns:
-        return assertions
+def merge_post_fields(
+    assertions: list[dict[str, object]],
+    posts: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not assertions or not posts:
+        return [dict(row) for row in assertions]
 
-    merged = assertions.copy()
-    wanted_post_cols = ["post_uid", "raw_text", "author"]
-    post_cols = posts[[col for col in wanted_post_cols if col in posts.columns]].copy()
-    post_cols = post_cols.rename(
-        columns={
-            "raw_text": "_post_raw_text",
-            "author": "_post_author",
-        }
-    )
-    merged = merged.merge(post_cols, on="post_uid", how="left")
-    if "raw_text" not in merged.columns:
-        merged["raw_text"] = ""
-    if "author" not in merged.columns:
-        merged["author"] = ""
-    merged["raw_text"] = merged["raw_text"].fillna("").astype(str)
-    merged["author"] = merged["author"].fillna("").astype(str)
-    merged.loc[merged["raw_text"].eq(""), "raw_text"] = (
-        merged.loc[merged["raw_text"].eq(""), "_post_raw_text"].fillna("").astype(str)
-    )
-    merged.loc[merged["author"].eq(""), "author"] = (
-        merged.loc[merged["author"].eq(""), "_post_author"].fillna("").astype(str)
-    )
-    return merged.drop(columns=["_post_raw_text", "_post_author"], errors="ignore")
+    posts_by_uid = {
+        _clean_text(row.get("post_uid")): row
+        for row in posts
+        if _clean_text(row.get("post_uid"))
+    }
+    if not posts_by_uid:
+        return [dict(row) for row in assertions]
+
+    merged: list[dict[str, object]] = []
+    for row in assertions:
+        payload = dict(row)
+        post_uid = _clean_text(payload.get("post_uid"))
+        post_row = posts_by_uid.get(post_uid) or {}
+        if not _clean_text(payload.get("raw_text")):
+            payload["raw_text"] = _clean_text(post_row.get("raw_text"))
+        else:
+            payload["raw_text"] = _clean_text(payload.get("raw_text"))
+        if not _clean_text(payload.get("author")):
+            payload["author"] = _clean_text(post_row.get("author"))
+        else:
+            payload["author"] = _clean_text(payload.get("author"))
+        if not _clean_text(payload.get("url")):
+            payload["url"] = _clean_text(post_row.get("url"))
+        else:
+            payload["url"] = _clean_text(payload.get("url"))
+        if not payload.get("created_at"):
+            payload["created_at"] = post_row.get("created_at", "")
+        merged.append(payload)
+    return merged
 
 
 def build_signal_rows(
-    view: pd.DataFrame,
+    view: list[dict[str, object]],
     *,
-    posts: pd.DataFrame,
-    now: pd.Timestamp | None = None,
+    posts: list[dict[str, object]],
+    now: datetime | None = None,
 ) -> list[dict[str, str]]:
-    if view.empty:
+    if not view:
         return []
-    rows = view.copy()
-    if "created_at" in rows.columns:
-        rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
-        rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
-    rows = rows.head(MAX_SIGNAL_ROWS)
+    rows = _sort_rows_by_created_at(view)[:MAX_SIGNAL_ROWS]
     out: list[dict[str, str]] = []
     tree_map = build_post_tree_map(
         post_uids=[
-            str(uid or "").strip()
-            for uid in rows.get("post_uid", pd.Series(dtype=str)).tolist()
-            if str(uid or "").strip()
+            _clean_text(row.get("post_uid"))
+            for row in rows
+            if _clean_text(row.get("post_uid"))
         ],
         posts=posts,
     )
     reference_now = coerce_signal_timestamp(now) or default_signal_reference_time()
-    for _, row in rows.iterrows():
+    for row in rows:
         created = row.get("created_at")
         created_text = _format_signal_timestamp(created)
         created_at_line = format_signal_created_at_line(created, now=reference_now)
-        post_uid = str(row.get("post_uid") or "").strip()
+        post_uid = _clean_text(row.get("post_uid"))
         tree_label = ""
         tree_text = ""
         if post_uid:
@@ -76,13 +79,13 @@ def build_signal_rows(
         out.append(
             {
                 "post_uid": post_uid,
-                "summary": str(row.get("summary") or "").strip(),
-                "action": str(row.get("action") or "").strip(),
-                "action_strength": str(row.get("action_strength") or "").strip(),
-                "author": str(row.get("author") or "").strip(),
+                "summary": _clean_text(row.get("summary")),
+                "action": _clean_text(row.get("action")),
+                "action_strength": _clean_text(row.get("action_strength")),
+                "author": _clean_text(row.get("author")),
                 "created_at": created_text,
                 "created_at_line": created_at_line,
-                "raw_text": str(row.get("raw_text") or "").strip(),
+                "raw_text": _clean_text(row.get("raw_text")),
                 "tree_label": tree_label,
                 "tree_text": tree_text,
             }
@@ -90,17 +93,19 @@ def build_signal_rows(
     return out
 
 
-def build_related_stock_rows(view: pd.DataFrame) -> list[dict[str, str]]:
+def build_related_stock_rows(view: list[dict[str, object]]) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
-    raw_values: list[object]
-    if "stock_key" in view.columns:
-        raw_values = view.get("stock_key", pd.Series(dtype=str)).tolist()
-    elif "resolved_entity_key" in view.columns:
-        raw_values = view.get("resolved_entity_key", pd.Series(dtype=str)).tolist()
-    else:
-        raw_values = view.get("entity_key", pd.Series(dtype=str)).tolist()
+    raw_values: list[object] = []
+    for row in view:
+        if "stock_key" in row:
+            raw_values.append(row.get("stock_key"))
+            continue
+        if "resolved_entity_key" in row:
+            raw_values.append(row.get("resolved_entity_key"))
+            continue
+        raw_values.append(row.get("entity_key"))
     for raw_key in raw_values:
-        stock_key = str(raw_key or "").strip()
+        stock_key = _clean_text(raw_key)
         if not stock_key.startswith("stock:"):
             continue
         counts[stock_key] = int(counts.get(stock_key, 0)) + 1
@@ -111,27 +116,40 @@ def build_related_stock_rows(view: pd.DataFrame) -> list[dict[str, str]]:
     ]
 
 
-def sector_mask(assertions: pd.DataFrame, sector_key: str) -> pd.Series:
-    if "cluster_keys" in assertions.columns:
-        return assertions["cluster_keys"].apply(
-            lambda item: sector_key in _coerce_list(item)
-        )
-    if "cluster_key" in assertions.columns:
-        return assertions["cluster_key"].astype(str).str.strip().eq(sector_key)
-    return pd.Series([False] * len(assertions), index=assertions.index)
+def sector_filter_rows(
+    assertions: list[dict[str, object]], sector_key: str
+) -> list[dict[str, object]]:
+    return [
+        dict(row)
+        for row in assertions
+        if _row_matches_sector(row, sector_key=sector_key)
+    ]
 
 
-def coerce_signal_timestamp(value: object) -> pd.Timestamp | None:
-    ts = pd.to_datetime(value, errors="coerce")
-    if pd.isna(ts):
-        return None
-    if getattr(ts, "tzinfo", None) is not None:
-        return ts.tz_convert(None)
-    return pd.Timestamp(ts)
+def coerce_signal_timestamp(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        ts = value
+    else:
+        text = _clean_text(value)
+        if not text:
+            return None
+        try:
+            ts = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                ts = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                try:
+                    ts = datetime.strptime(text, "%Y-%m-%d %H:%M")
+                except ValueError:
+                    return None
+    if ts.tzinfo is not None:
+        return ts.astimezone(UTC).replace(tzinfo=None)
+    return ts
 
 
-def default_signal_reference_time() -> pd.Timestamp:
-    return pd.Timestamp.now(tz="UTC").tz_convert(None)
+def default_signal_reference_time() -> datetime:
+    return datetime.now(tz=UTC).replace(tzinfo=None)
 
 
 def _format_signal_timestamp(value: object) -> str:
@@ -141,7 +159,7 @@ def _format_signal_timestamp(value: object) -> str:
     return ts.strftime("%Y-%m-%d %H:%M")
 
 
-def _format_signal_age(value: object, *, now: pd.Timestamp) -> str:
+def _format_signal_age(value: object, *, now: datetime) -> str:
     ts = coerce_signal_timestamp(value)
     if ts is None:
         return ""
@@ -154,7 +172,7 @@ def _format_signal_age(value: object, *, now: pd.Timestamp) -> str:
     return f"{minutes // MINUTES_PER_DAY}天前"
 
 
-def format_signal_created_at_line(value: object, *, now: pd.Timestamp) -> str:
+def format_signal_created_at_line(value: object, *, now: datetime) -> str:
     created_at_text = _format_signal_timestamp(value)
     if not created_at_text:
         return ""
@@ -172,6 +190,29 @@ def _coerce_list(value: object) -> list[str]:
     return []
 
 
+def _clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _row_matches_sector(row: dict[str, object], *, sector_key: str) -> bool:
+    cluster_keys = row.get("cluster_keys")
+    if sector_key in _coerce_list(cluster_keys):
+        return True
+    return _clean_text(row.get("cluster_key")) == sector_key
+
+
+def _sort_rows_by_created_at(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    def _sort_key(row: dict[str, object]) -> tuple[int, float]:
+        ts = coerce_signal_timestamp(row.get("created_at"))
+        if ts is None:
+            return (1, 0.0)
+        return (0, -ts.timestamp())
+
+    return [dict(row) for row in sorted(rows, key=_sort_key)]
+
+
 __all__ = [
     "MAX_SIGNAL_ROWS",
     "build_related_stock_rows",
@@ -180,5 +221,5 @@ __all__ = [
     "default_signal_reference_time",
     "format_signal_created_at_line",
     "merge_post_fields",
-    "sector_mask",
+    "sector_filter_rows",
 ]

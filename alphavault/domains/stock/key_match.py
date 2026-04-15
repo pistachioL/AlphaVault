@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import re
 
-import pandas as pd
-
 from alphavault.domains.common.json_list import parse_json_list
 
 
@@ -60,17 +58,20 @@ def split_stock_value_tokens(value: str) -> list[str]:
     return out
 
 
-def build_stock_key_to_code(assertions_filtered: pd.DataFrame) -> dict[str, str]:
+def build_stock_key_to_code(
+    assertions_filtered: list[dict[str, object]],
+) -> dict[str, str]:
     """
     Map 'stock:<name/bad>' key -> stock code, using *same-row* co-occurrence.
 
     This is conservative: only map when the row has exactly 1 stock code key.
     """
-    if assertions_filtered.empty or "match_keys" not in assertions_filtered.columns:
+    if not assertions_filtered:
         return {}
 
     code_counts: dict[str, dict[str, int]] = {}
-    for mk in assertions_filtered["match_keys"].tolist():
+    for row in assertions_filtered:
+        mk = row.get("match_keys")
         if not isinstance(mk, list):
             continue
         codes: list[str] = []
@@ -105,20 +106,15 @@ def build_stock_key_to_code(assertions_filtered: pd.DataFrame) -> dict[str, str]
     return out
 
 
-def build_stock_name_by_code(assertions_filtered: pd.DataFrame) -> dict[str, str]:
-    if assertions_filtered.empty:
-        return {}
-    if (
-        "stock_codes" not in assertions_filtered.columns
-        or "stock_names" not in assertions_filtered.columns
-    ):
+def build_stock_name_by_code(
+    assertions_filtered: list[dict[str, object]],
+) -> dict[str, str]:
+    if not assertions_filtered:
         return {}
     counts: dict[str, dict[str, int]] = {}
-    for codes, names in zip(
-        assertions_filtered["stock_codes"].tolist(),
-        assertions_filtered["stock_names"].tolist(),
-        strict=False,
-    ):
+    for row in assertions_filtered:
+        codes = row.get("stock_codes")
+        names = row.get("stock_names")
         if not isinstance(codes, list) or not isinstance(names, list):
             continue
         codes = [str(x).strip() for x in codes if str(x).strip()]
@@ -142,7 +138,7 @@ def build_stock_name_by_code(assertions_filtered: pd.DataFrame) -> dict[str, str
 
 
 def build_stock_name_to_code(
-    assertions_filtered: pd.DataFrame,
+    assertions_filtered: list[dict[str, object]],
     *,
     stock_name_by_code: dict[str, str],
 ) -> dict[str, str]:
@@ -157,26 +153,19 @@ def build_stock_name_to_code(
     counts: dict[str, dict[str, int]] = {}
 
     # 1) AI parsed (stock_codes, stock_names) pairs (only when both are 1:1)
-    if (
-        not assertions_filtered.empty
-        and "stock_codes" in assertions_filtered.columns
-        and "stock_names" in assertions_filtered.columns
-    ):
-        for codes, names in zip(
-            assertions_filtered["stock_codes"].tolist(),
-            assertions_filtered["stock_names"].tolist(),
-            strict=False,
-        ):
-            if not isinstance(codes, list) or not isinstance(names, list):
-                continue
-            if len(codes) != 1 or len(names) != 1:
-                continue
-            code = normalize_stock_code(codes[0])
-            name = str(names[0] or "").strip()
-            if not code or not name:
-                continue
-            counts.setdefault(name, {})
-            counts[name][code] = int(counts[name].get(code, 0)) + 1
+    for row in assertions_filtered:
+        codes = row.get("stock_codes")
+        names = row.get("stock_names")
+        if not isinstance(codes, list) or not isinstance(names, list):
+            continue
+        if len(codes) != 1 or len(names) != 1:
+            continue
+        code = normalize_stock_code(codes[0])
+        name = str(names[0] or "").strip()
+        if not code or not name:
+            continue
+        counts.setdefault(name, {})
+        counts[name][code] = int(counts[name].get(code, 0)) + 1
 
     # 2) inverse(stock_name_by_code)
     for code, name in (stock_name_by_code or {}).items():
@@ -196,38 +185,31 @@ def build_stock_name_to_code(
         base_best_code_by_name[str(name or "").strip()] = normalize_stock_code(best)
 
     # 3) entity_key stock:<alias> + stock_names[0] -> code (v3 often has empty stock_codes)
-    if (
-        not assertions_filtered.empty
-        and "entity_key" in assertions_filtered.columns
-        and "stock_names" in assertions_filtered.columns
-    ):
-        for entity_key, stock_names in zip(
-            assertions_filtered["entity_key"].tolist(),
-            assertions_filtered["stock_names"].tolist(),
-            strict=False,
+    for row in assertions_filtered:
+        entity_key = row.get("entity_key")
+        stock_names = row.get("stock_names")
+        tk = str(entity_key or "").strip()
+        if not tk.startswith("stock:"):
+            continue
+        alias = tk[len("stock:") :].strip()
+        if (
+            not alias
+            or is_stock_code_value(alias)
+            or has_bad_stock_separator(alias)
+            or ":" in alias
         ):
-            tk = str(entity_key or "").strip()
-            if not tk.startswith("stock:"):
-                continue
-            alias = tk[len("stock:") :].strip()
-            if (
-                not alias
-                or is_stock_code_value(alias)
-                or has_bad_stock_separator(alias)
-                or ":" in alias
-            ):
-                continue
-            if not isinstance(stock_names, list):
-                continue
-            names = [str(x).strip() for x in stock_names if str(x).strip()]
-            if len(names) != 1:
-                continue
-            full_name = str(names[0] or "").strip()
-            code = str(base_best_code_by_name.get(full_name, "") or "").strip()
-            if not code:
-                continue
-            counts.setdefault(alias, {})
-            counts[alias][code] = int(counts[alias].get(code, 0)) + 1
+            continue
+        if not isinstance(stock_names, list):
+            continue
+        names = [str(x).strip() for x in stock_names if str(x).strip()]
+        if len(names) != 1:
+            continue
+        full_name = str(names[0] or "").strip()
+        code = str(base_best_code_by_name.get(full_name, "") or "").strip()
+        if not code:
+            continue
+        counts.setdefault(alias, {})
+        counts[alias][code] = int(counts[alias].get(code, 0)) + 1
 
     out: dict[str, str] = {}
     for name, code_counts in counts.items():
@@ -302,35 +284,38 @@ def format_key_label(key: str, *, stock_name_by_code: dict[str, str]) -> str:
     return k
 
 
-def key_candidates(assertions_filtered: pd.DataFrame) -> pd.Series:
-    if assertions_filtered.empty:
-        return pd.Series(dtype=int)
-    if "match_keys" in assertions_filtered.columns:
+def key_candidates(assertions_filtered: list[dict[str, object]]) -> dict[str, int]:
+    if not assertions_filtered:
+        return {}
+    has_match_keys = any("match_keys" in row for row in assertions_filtered)
+    if has_match_keys:
         flat: list[str] = []
-        for item in assertions_filtered["match_keys"].tolist():
+        for row in assertions_filtered:
+            item = row.get("match_keys")
             if not isinstance(item, list):
                 continue
             for k in item:
                 s = str(k).strip()
                 if s:
                     flat.append(s)
-        if not flat:
-            return pd.Series(dtype=int)
-        return pd.Series(flat, dtype=str).value_counts()
+        match_key_counts: dict[str, int] = {}
+        for key in flat:
+            match_key_counts[key] = int(match_key_counts.get(key, 0)) + 1
+        return match_key_counts
 
-    if "entity_key" not in assertions_filtered.columns:
-        return pd.Series(dtype=int)
-    s = assertions_filtered["entity_key"].dropna().astype(str).str.strip()
-    s = s[s.ne("")]
-    if s.empty:
-        return pd.Series(dtype=int)
-    return s.value_counts()
+    entity_key_counts: dict[str, int] = {}
+    for row in assertions_filtered:
+        key = str(row.get("entity_key") or "").strip()
+        if not key:
+            continue
+        entity_key_counts[key] = int(entity_key_counts.get(key, 0)) + 1
+    return entity_key_counts
 
 
 def build_grouped_key_candidates(
-    assertions_filtered: pd.DataFrame,
+    assertions_filtered: list[dict[str, object]],
 ) -> tuple[
-    pd.Series, dict[str, set[str]], dict[str, str], dict[str, str], dict[str, str]
+    dict[str, int], dict[str, set[str]], dict[str, str], dict[str, str], dict[str, str]
 ]:
     """
     Group keys to avoid stock key fragmentation:
@@ -344,7 +329,7 @@ def build_grouped_key_candidates(
     - stock_name_to_code: name -> code
     """
     raw_counts = key_candidates(assertions_filtered)
-    if raw_counts.empty:
+    if not raw_counts:
         return raw_counts, {}, {}, {}, {}
 
     stock_name_by_code = build_stock_name_by_code(assertions_filtered)
@@ -373,16 +358,15 @@ def build_grouped_key_candidates(
 
     if not grouped:
         return (
-            pd.Series(dtype=int),
+            {},
             {},
             stock_name_by_code,
             stock_key_to_code,
             stock_name_to_code,
         )
 
-    grouped_counts = pd.Series(grouped, dtype=int).sort_values(ascending=False)
     return (
-        grouped_counts,
+        grouped,
         members,
         stock_name_by_code,
         stock_key_to_code,
@@ -391,18 +375,19 @@ def build_grouped_key_candidates(
 
 
 def filter_assertions_by_follow_key(
-    assertions_filtered: pd.DataFrame, *, follow_key: str
-) -> pd.DataFrame:
+    assertions_filtered: list[dict[str, object]], *, follow_key: str
+) -> list[dict[str, object]]:
     want = str(follow_key or "").strip()
-    if assertions_filtered.empty or not want:
-        return assertions_filtered.head(0).copy()
+    if not assertions_filtered or not want:
+        return []
 
-    if "match_keys" not in assertions_filtered.columns:
-        if "entity_key" in assertions_filtered.columns:
-            return assertions_filtered[
-                assertions_filtered["entity_key"].astype(str).str.strip() == want
-            ]
-        return assertions_filtered.head(0).copy()
+    has_match_keys = any("match_keys" in row for row in assertions_filtered)
+    if not has_match_keys:
+        return [
+            dict(row)
+            for row in assertions_filtered
+            if str(row.get("entity_key") or "").strip() == want
+        ]
 
     (
         _grouped_counts,
@@ -459,26 +444,28 @@ def filter_assertions_by_follow_key(
                     return True
         return False
 
-    mask = assertions_filtered["match_keys"].apply(_match_row)
-    return assertions_filtered[mask]
+    return [
+        dict(row) for row in assertions_filtered if _match_row(row.get("match_keys"))
+    ]
 
 
 def filter_assertions_by_follow_keys(
-    assertions_filtered: pd.DataFrame, *, follow_keys: list[str]
-) -> pd.DataFrame:
-    if assertions_filtered.empty:
-        return assertions_filtered.head(0).copy()
+    assertions_filtered: list[dict[str, object]], *, follow_keys: list[str]
+) -> list[dict[str, object]]:
+    if not assertions_filtered:
+        return []
     keys = [str(k).strip() for k in (follow_keys or []) if str(k).strip()]
     if not keys:
-        return assertions_filtered.head(0).copy()
+        return []
     want: set[str] = set(keys)
 
-    if "match_keys" not in assertions_filtered.columns:
-        if "entity_key" in assertions_filtered.columns:
-            return assertions_filtered[
-                assertions_filtered["entity_key"].astype(str).str.strip().isin(want)
-            ]
-        return assertions_filtered.head(0).copy()
+    has_match_keys = any("match_keys" in row for row in assertions_filtered)
+    if not has_match_keys:
+        return [
+            dict(row)
+            for row in assertions_filtered
+            if str(row.get("entity_key") or "").strip() in want
+        ]
 
     def _match_row(mk: object) -> bool:
         if not isinstance(mk, list):
@@ -489,8 +476,9 @@ def filter_assertions_by_follow_keys(
                 return True
         return False
 
-    mask = assertions_filtered["match_keys"].apply(_match_row)
-    return assertions_filtered[mask]
+    return [
+        dict(row) for row in assertions_filtered if _match_row(row.get("match_keys"))
+    ]
 
 
 __all__ = [

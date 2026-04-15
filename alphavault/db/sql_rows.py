@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
-
 
 def _columns_from_description(description: Any) -> list[str]:
     # DB-API cursor.description: sequence of sequences, first item is column name.
@@ -25,17 +23,13 @@ def _columns_from_description(description: Any) -> list[str]:
     return cols
 
 
-def read_sql_df(conn: Any, sql: str, params: Any = None) -> pd.DataFrame:
-    """
-    Read a SELECT query from a DB-API connection and return a pandas DataFrame.
-
-    We intentionally avoid pandas SQL helpers here because our project-level
-    connection helpers are not SQLAlchemy connectables and pandas will emit a
-    UserWarning.
-    """
+def read_sql_rows(conn: Any, sql: str, params: Any = None) -> list[dict[str, Any]]:
     res = conn.execute(sql, params) if params is not None else conn.execute(sql)
     cols = _columns_from_description(getattr(res, "description", None))
     rows = res.fetchall()
-    if cols:
-        return pd.DataFrame(rows, columns=cols)
-    return pd.DataFrame(rows)
+    if not cols:
+        return []
+    return [dict(zip(cols, row, strict=False)) for row in rows]
+
+
+__all__ = ["read_sql_rows"]

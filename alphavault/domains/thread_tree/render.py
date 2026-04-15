@@ -6,9 +6,9 @@ Output: an ASCII tree text (├── / └── / │), like 1.txt.
 
 from __future__ import annotations
 
+from datetime import datetime
 import re
-
-import pandas as pd
+from zoneinfo import ZoneInfo
 
 from alphavault.domains.thread_tree.parse import (
     content_key_for_compare,
@@ -55,12 +55,25 @@ def _maybe_prefix_focus_symbol(text: str, *, blogger_authors: set[str] | None) -
     return leading_ws + FOCUS_PREFIX_SYMBOL + rest
 
 
-def _to_ts(value: object) -> pd.Timestamp | None:
-    ts = pd.to_datetime(value, errors="coerce")
-    if pd.isna(ts):
-        return None
-    if getattr(ts, "tzinfo", None) is None:
-        return ts.tz_localize(NAIVE_DATETIME_TIMEZONE)
+def _to_ts(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        ts = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            ts = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                ts = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                try:
+                    ts = datetime.strptime(text, "%Y-%m-%d %H:%M")
+                except ValueError:
+                    return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=ZoneInfo(NAIVE_DATETIME_TIMEZONE))
     return ts
 
 

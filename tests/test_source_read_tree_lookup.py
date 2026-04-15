@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pandas as pd
-
 from alphavault_reflex.services import tree_loader
 
 
@@ -23,9 +21,9 @@ def test_load_single_post_for_tree_from_env_keeps_xueqiu_uid(monkeypatch) -> Non
 
     def _fake_cached(
         db_url: str, auth_token: str, source_name: str, post_uid: str
-    ) -> pd.DataFrame:
+    ) -> list[dict[str, object]]:
         calls.append((source_name, post_uid))
-        return pd.DataFrame([{"post_uid": requested_uid}])
+        return [{"post_uid": requested_uid}]
 
     posts, err = tree_loader.load_single_post_for_tree_from_env(
         requested_uid,
@@ -33,5 +31,5 @@ def test_load_single_post_for_tree_from_env_keeps_xueqiu_uid(monkeypatch) -> Non
     )
 
     assert err == ""
-    assert not posts.empty
+    assert posts
     assert calls == [("xueqiu", requested_uid)]

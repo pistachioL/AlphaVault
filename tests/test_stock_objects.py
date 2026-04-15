@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
-
 from alphavault.domains.stock.object_index import (
     build_stock_object_index,
     filter_assertions_for_stock_object,
@@ -9,10 +7,14 @@ from alphavault.domains.stock.object_index import (
 )
 
 
+def _rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return rows
+
+
 def test_build_stock_object_index_merges_code_and_full_name_but_not_short_alias() -> (
     None
 ):
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -48,7 +50,7 @@ def test_build_stock_object_index_merges_code_and_full_name_but_not_short_alias(
 def test_build_stock_object_index_normalizes_prefixed_cn_code_with_wrong_us_suffix() -> (
     None
 ):
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -66,7 +68,7 @@ def test_build_stock_object_index_normalizes_prefixed_cn_code_with_wrong_us_suff
 
 
 def test_filter_assertions_for_stock_object_uses_accepted_alias_relations() -> None:
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -82,7 +84,7 @@ def test_filter_assertions_for_stock_object_uses_accepted_alias_relations() -> N
             },
         ]
     )
-    relations = pd.DataFrame(
+    relations = _rows(
         [
             {
                 "relation_type": "stock_alias",
@@ -99,4 +101,4 @@ def test_filter_assertions_for_stock_object_uses_accepted_alias_relations() -> N
         stock_relations=relations,
     )
 
-    assert filtered["post_uid"].tolist() == ["p1", "p2"]
+    assert [row["post_uid"] for row in filtered] == ["p1", "p2"]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from alphavault.constants import SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
@@ -104,9 +106,9 @@ VALUES (
         SCHEMA_WEIBO,
     )
 
-    assert list(posts["post_uid"]) == [_POST_UID]
-    assert list(assertions["post_uid"]) == [_POST_UID]
-    row = assertions.iloc[0]
+    assert [row["post_uid"] for row in posts] == [_POST_UID]
+    assert [row["post_uid"] for row in assertions] == [_POST_UID]
+    row = assertions[0]
     assert row["entity_key"] == "stock:601899.SH"
     assert row["stock_codes"] == ["601899.SH"]
     assert row["stock_names"] == ["紫金矿业"]
@@ -117,3 +119,119 @@ VALUES (
     assert row["raw_text"] == "原文"
 
     source_loader.load_trade_sources_cached.cache_clear()
+
+
+def test_load_trade_sources_rows_cached_normalizes_row_lists(monkeypatch) -> None:
+    source_loader.load_trade_sources_rows_cached.cache_clear()
+    monkeypatch.setattr(
+        source_loader,
+        "ensure_postgres_engine",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    class _FakeConn:
+        pass
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _fake_connect(_engine):  # type: ignore[no-untyped-def]
+        yield _FakeConn()
+
+    monkeypatch.setattr(
+        source_loader,
+        "postgres_connect_autocommit",
+        _fake_connect,
+    )
+
+    seen_sql: list[str] = []
+
+    def _fake_read_sql_rows(conn, sql, params=None):  # type: ignore[no-untyped-def]
+        del conn, params
+        seen_sql.append(str(sql))
+        if "FROM weibo.posts" in str(sql):
+            return [
+                {
+                    "post_uid": _POST_UID,
+                    "platform_post_id": "",
+                    "author": "alice",
+                    "created_at": "2099-01-01T00:00:00Z",
+                    "url": "https://example.com/weibo/1",
+                    "raw_text": "原文",
+                }
+            ]
+        return [
+            {
+                "post_uid": _POST_UID,
+                "idx": 1,
+                "entity_key": "stock:601899.SH",
+                "action": "trade.buy",
+                "action_strength": 3,
+                "summary": "继续看多",
+                "evidence": "证据",
+                "confidence": 0.91,
+                "stock_codes": '["601899.SH"]',
+                "stock_names": '["紫金矿业"]',
+                "industries_json": '["黄金"]',
+                "commodities_json": "[]",
+                "indices_json": "[]",
+                "author": "",
+                "created_at": "",
+            }
+        ]
+
+    monkeypatch.setattr(
+        source_loader,
+        "read_sql_rows",
+        _fake_read_sql_rows,
+    )
+
+    posts, assertions = source_loader.load_trade_sources_rows_cached(
+        "postgresql://unused",
+        "",
+        SCHEMA_WEIBO,
+    )
+
+    assert list(posts) == [
+        {
+            "post_uid": _POST_UID,
+            "platform_post_id": "1",
+            "author": "alice",
+            "created_at": datetime(2099, 1, 1, 0, 0),
+            "url": "https://example.com/weibo/1",
+            "raw_text": "原文",
+            "platform": "weibo",
+            "status": "",
+            "invest_score": 0.0,
+            "processed_at": "",
+            "source": "weibo",
+        }
+    ]
+    assert list(assertions) == [
+        {
+            "post_uid": _POST_UID,
+            "idx": 1,
+            "entity_key": "stock:601899.SH",
+            "action": "trade.buy",
+            "action_strength": 3,
+            "summary": "继续看多",
+            "evidence": "证据",
+            "confidence": 0.91,
+            "stock_codes": ["601899.SH"],
+            "stock_names": ["紫金矿业"],
+            "industries_json": '["黄金"]',
+            "commodities_json": "[]",
+            "indices_json": "[]",
+            "author": "alice",
+            "created_at": datetime(2099, 1, 1, 0, 0),
+            "source": "weibo",
+            "url": "https://example.com/weibo/1",
+            "raw_text": "原文",
+            "industries": ["黄金"],
+            "commodities": [],
+            "indices": [],
+        }
+    ]
+    assert len(seen_sql) == 2
+
+    source_loader.load_trade_sources_rows_cached.cache_clear()
