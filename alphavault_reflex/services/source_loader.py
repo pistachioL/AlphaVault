@@ -364,7 +364,7 @@ def _normalize_stock_alias_candidate_rows(
             {
                 "left_key": left_key,
                 "right_key": right_key,
-                "score": int(row.get("score") or 0),
+                "score": int(str(row.get("score") or "0").strip() or 0),
             }
         )
     return tuple(out)

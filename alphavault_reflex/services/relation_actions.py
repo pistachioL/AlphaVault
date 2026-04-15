@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault.research_workbench import (
     accept_relation_candidate,
@@ -11,7 +13,7 @@ from alphavault.research_workbench import (
 from alphavault_reflex.services.source_read import load_source_engines_from_env
 
 
-def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
+def apply_candidate_action(candidate_row: Mapping[str, object], action: str) -> None:
     engine = get_research_workbench_engine_from_env()
     left_key = str(candidate_row.get("left_key") or "").strip()
     upsert_relation_candidate(
@@ -45,7 +47,7 @@ def apply_candidate_action(candidate_row: dict[str, str], action: str) -> None:
 
 def apply_candidate_action_by_id(
     *,
-    rows: list[dict[str, str]],
+    rows: Sequence[Mapping[str, object]],
     candidate_id: str,
     action: str,
 ) -> bool:

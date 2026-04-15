@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import reflex as rx
+from typing import cast
 
 from alphavault.infra.ai.alias_resolve_predictor import enrich_alias_tasks_with_ai
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_BLOCKED,
     ALIAS_TASK_STATUS_RESOLVED,
     get_research_workbench_engine_from_env,
+    list_pending_candidates,
     list_candidate_status_map,
     list_pending_alias_resolve_tasks,
     record_stock_alias_relation,
@@ -22,7 +24,6 @@ from alphavault_reflex.services.research_data import (
 )
 from alphavault_reflex.services.source_read import (
     clear_reflex_source_caches,
-    load_stock_alias_candidates_from_env,
     load_stock_alias_relations_from_env,
     load_sources_from_env,
 )
@@ -50,6 +51,13 @@ ALIAS_AI_PREVIEW_KEYS = (
 )
 
 
+PendingRow = dict[str, object]
+
+
+def _coerce_pending_rows(rows: list[dict[str, str]]) -> list[PendingRow]:
+    return [cast(PendingRow, dict(row)) for row in rows]
+
+
 def _parse_manual_alias_target_stock_key(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -63,9 +71,9 @@ def _parse_manual_alias_target_stock_key(value: str) -> str:
 
 
 def _merge_alias_ai_preview_rows(
-    old_rows: list[dict[str, str]],
-    new_rows: list[dict[str, str]],
-) -> list[dict[str, str]]:
+    old_rows: list[PendingRow],
+    new_rows: list[PendingRow],
+) -> list[PendingRow]:
     if not old_rows or not new_rows:
         return new_rows
     preview_by_alias_key: dict[str, dict[str, str]] = {}
@@ -83,9 +91,9 @@ def _merge_alias_ai_preview_rows(
     if not preview_by_alias_key:
         return new_rows
 
-    merged_rows: list[dict[str, str]] = []
+    merged_rows: list[PendingRow] = []
     for row in new_rows:
-        merged_row = dict(row)
+        merged_row = cast(PendingRow, dict(row))
         alias_key = str(merged_row.get("alias_key") or "").strip()
         matched_preview_fields = preview_by_alias_key.get(alias_key)
         if matched_preview_fields:
@@ -97,21 +105,21 @@ def _merge_alias_ai_preview_rows(
 
 
 def _remove_candidate_row_by_id(
-    rows: list[dict[str, str]],
+    rows: list[PendingRow],
     *,
     candidate_id: str,
-) -> list[dict[str, str]]:
+) -> list[PendingRow]:
     target = str(candidate_id or "").strip()
     if not target:
-        return [dict(row) for row in rows]
+        return [cast(PendingRow, dict(row)) for row in rows]
     return [
-        dict(row)
+        cast(PendingRow, dict(row))
         for row in rows
         if str(row.get("candidate_id") or "").strip() != target
     ]
 
 
-def _visible_stock_alias_candidate_ids(rows: list[dict[str, str]]) -> list[str]:
+def _visible_stock_alias_candidate_ids(rows: list[PendingRow]) -> list[str]:
     out: list[str] = []
     for row in rows:
         candidate_id = str(row.get("candidate_id") or "").strip()
@@ -122,7 +130,7 @@ def _visible_stock_alias_candidate_ids(rows: list[dict[str, str]]) -> list[str]:
 
 
 def _sync_selected_candidate_ids(
-    rows: list[dict[str, str]],
+    rows: list[PendingRow],
     selected_candidate_ids: list[str],
 ) -> list[str]:
     selected_set = {
@@ -139,17 +147,17 @@ def _sync_selected_candidate_ids(
 
 
 def _apply_selected_candidate_flags(
-    rows: list[dict[str, str]],
+    rows: list[PendingRow],
     selected_candidate_ids: list[str],
-) -> list[dict[str, str]]:
+) -> list[PendingRow]:
     selected_set = {
         str(candidate_id or "").strip()
         for candidate_id in selected_candidate_ids
         if str(candidate_id or "").strip()
     }
-    out: list[dict[str, str]] = []
+    out: list[PendingRow] = []
     for row in rows:
-        next_row = dict(row)
+        next_row = cast(PendingRow, dict(row))
         next_row["selected"] = (
             str(next_row.get("candidate_id") or "").strip() in selected_set
         )
@@ -161,7 +169,7 @@ class OrganizerState(rx.State):
     search_query: str = ""
     search_results: list[dict[str, str]] = []
     active_section: str = SECTION_STOCK_ALIAS
-    pending_rows: list[dict[str, str]] = []
+    pending_rows: list[PendingRow] = []
     candidate_action_pending_id: str = ""
     selected_candidate_ids: list[str] = []
     loading: bool = False
@@ -580,7 +588,7 @@ def load_pending_rows(
     section: str,
     *,
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT,
-) -> tuple[list[dict[str, str]], str]:
+) -> tuple[list[PendingRow], str]:
     section_key = str(section or SECTION_ALIAS_MANUAL).strip()
     if section_key == SECTION_ALIAS_MANUAL:
         try:
@@ -593,7 +601,7 @@ def load_pending_rows(
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
             return [], str(exc)
-        out: list[dict[str, str]] = []
+        out: list[PendingRow] = []
         for row in task_rows:
             alias_key = str(row.get("alias_key") or "").strip()
             if not alias_key:
@@ -620,28 +628,52 @@ def load_pending_rows(
         return out, ""
 
     if section_key == SECTION_STOCK_ALIAS:
-        candidate_rows, candidate_err = load_stock_alias_candidates_from_env()
-        if candidate_err:
-            return [], candidate_err
-        return _filter_known_candidate_statuses(candidate_rows), ""
+        try:
+            engine = get_research_workbench_engine_from_env()
+            pending_candidate_rows = list_pending_candidates(engine)
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            return [], str(exc)
+        stock_alias_rows: list[PendingRow] = []
+        for row in pending_candidate_rows:
+            if str(row.get("relation_type") or "").strip() != SECTION_STOCK_ALIAS:
+                continue
+            stock_alias_rows.append(
+                {
+                    key: str(row.get(key) or "").strip()
+                    for key in [
+                        "candidate_id",
+                        "relation_type",
+                        "left_key",
+                        "right_key",
+                        "candidate_key",
+                        "relation_label",
+                        "suggestion_reason",
+                        "evidence_summary",
+                        "score",
+                    ]
+                }
+            )
+        return stock_alias_rows, ""
 
     posts, assertions, err = load_sources_from_env()
     del posts
     if err:
         return [], err
-    candidate_rows = _build_section_candidates(assertions, section_key)
-    return _filter_known_candidate_statuses(candidate_rows), ""
+    section_candidate_rows = _build_section_candidates(assertions, section_key)
+    return _filter_known_candidate_statuses(section_candidate_rows), ""
 
 
 def _build_section_candidates(
     assertions,
     section: str,
-) -> list[dict[str, str]]:
+) -> list[PendingRow]:
     if section == SECTION_STOCK_ALIAS:
-        return _stock_alias_candidates(assertions)
+        return _coerce_pending_rows(_stock_alias_candidates(assertions))
     if section == SECTION_STOCK_SECTOR:
-        return _stock_sector_candidates(assertions)
-    return _sector_relation_candidates(assertions)
+        return _coerce_pending_rows(_stock_sector_candidates(assertions))
+    return _coerce_pending_rows(_sector_relation_candidates(assertions))
 
 
 def _stock_alias_candidates(assertions) -> list[dict[str, str]]:
@@ -721,8 +753,8 @@ def _unique_sector_keys(assertions) -> list[str]:
 
 
 def _filter_known_candidate_statuses(
-    rows: list[dict[str, str]],
-) -> list[dict[str, str]]:
+    rows: list[PendingRow],
+) -> list[PendingRow]:
     if not rows:
         return []
     try:

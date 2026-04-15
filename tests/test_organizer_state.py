@@ -727,26 +727,19 @@ def test_load_search_results_returns_relation_error_when_standard_alias_fails(
     assert err == "postgres_connect_error:standard:RuntimeError"
 
 
-def test_load_pending_rows_stock_alias_uses_fast_sql_path(monkeypatch) -> None:
-    seen_rows: list[list[dict[str, str]]] = []
+def test_load_pending_rows_stock_alias_reads_pending_relation_candidates(
+    monkeypatch,
+) -> None:
+    fake_engine = object()
 
     monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.get_research_workbench_engine_from_env",
+        lambda: fake_engine,
+    )
+    monkeypatch.setattr(
         "alphavault_reflex.organizer_state.load_stock_alias_candidates_from_env",
-        lambda: (
-            [
-                {
-                    "relation_type": "stock_alias",
-                    "left_key": "stock:600519.SH",
-                    "right_key": "stock:茅台",
-                    "relation_label": "alias_of",
-                    "candidate_id": "candidate-1",
-                    "candidate_key": "stock:茅台",
-                    "score": "8",
-                    "suggestion_reason": "近30天同票提及 8 次",
-                    "evidence_summary": "近30天同票提及 8 次",
-                }
-            ],
-            "",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("should_not_use_source_fast_path")
         ),
         raising=False,
     )
@@ -754,21 +747,16 @@ def test_load_pending_rows_stock_alias_uses_fast_sql_path(monkeypatch) -> None:
         "alphavault_reflex.organizer_state.load_sources_from_env",
         lambda: (_ for _ in ()).throw(AssertionError("should_not_load_sources")),
     )
-
-    def _fake_filter(rows):  # type: ignore[no-untyped-def]
-        seen_rows.append(list(rows))
-        return [{"candidate_id": "filtered-row"}]
-
     monkeypatch.setattr(
         "alphavault_reflex.organizer_state._filter_known_candidate_statuses",
-        _fake_filter,
+        lambda _rows: (_ for _ in ()).throw(
+            AssertionError("should_not_refilter_pending_candidates")
+        ),
     )
 
-    rows, err = load_pending_rows(SECTION_STOCK_ALIAS)
-
-    assert err == ""
-    assert seen_rows == [
-        [
+    def _fake_list_pending_candidates(engine):  # type: ignore[no-untyped-def]
+        assert engine is fake_engine
+        return [
             {
                 "relation_type": "stock_alias",
                 "left_key": "stock:600519.SH",
@@ -777,12 +765,45 @@ def test_load_pending_rows_stock_alias_uses_fast_sql_path(monkeypatch) -> None:
                 "candidate_id": "candidate-1",
                 "candidate_key": "stock:茅台",
                 "score": "8",
-                "suggestion_reason": "近30天同票提及 8 次",
-                "evidence_summary": "近30天同票提及 8 次",
-            }
+                "suggestion_reason": "同条观点里代码和简称一起出现",
+                "evidence_summary": "同条观点里代码和简称一起出现",
+                "status": "pending",
+            },
+            {
+                "relation_type": "stock_sector",
+                "left_key": "stock:600519.SH",
+                "right_key": "cluster:白酒",
+                "relation_label": "member_of",
+                "candidate_id": "candidate-2",
+                "candidate_key": "白酒",
+                "score": "5",
+                "suggestion_reason": "近期高频共现",
+                "evidence_summary": "近30天共现 5 次",
+                "status": "pending",
+            },
         ]
+
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.list_pending_candidates",
+        _fake_list_pending_candidates,
+    )
+
+    rows, err = load_pending_rows(SECTION_STOCK_ALIAS)
+
+    assert err == ""
+    assert rows == [
+        {
+            "relation_type": "stock_alias",
+            "left_key": "stock:600519.SH",
+            "right_key": "stock:茅台",
+            "relation_label": "alias_of",
+            "candidate_id": "candidate-1",
+            "candidate_key": "stock:茅台",
+            "score": "8",
+            "suggestion_reason": "同条观点里代码和简称一起出现",
+            "evidence_summary": "同条观点里代码和简称一起出现",
+        }
     ]
-    assert rows == [{"candidate_id": "filtered-row"}]
 
 
 def test_stock_alias_candidates_builds_stock_index_once_and_only_requests_alias(

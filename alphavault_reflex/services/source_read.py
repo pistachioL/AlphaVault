@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from alphavault.db.postgres_db import ensure_postgres_engine
+from alphavault.db.postgres_db import PostgresEngine, ensure_postgres_engine
 from alphavault.env import load_dotenv_if_present
 from alphavault.homework_trade_feed import (
     HOMEWORK_DEFAULT_VIEW_KEY,
@@ -68,19 +68,19 @@ def load_stock_alias_candidates_from_env() -> tuple[list[dict[str, str]], str]:
     return _load_stock_alias_candidates_from_env()
 
 
-def _build_source_engine(db_url: str, *, source_name: str):
+def _build_source_engine(db_url: str, *, source_name: str) -> PostgresEngine:
     try:
         return ensure_postgres_engine(db_url, schema_name=source_name)
     except TypeError:
         return ensure_postgres_engine(db_url)
 
 
-def load_source_engines_from_env() -> list[object]:
+def load_source_engines_from_env() -> list[PostgresEngine]:
     load_dotenv_if_present()
     sources = load_configured_source_schemas_from_env()
     if not sources:
         raise RuntimeError(MISSING_POSTGRES_DSN_ERROR)
-    out: list[object] = []
+    out: list[PostgresEngine] = []
     seen: set[tuple[str, str]] = set()
     for source in sources:
         db_url = str(getattr(source, "url", getattr(source, "dsn", "")) or "").strip()
