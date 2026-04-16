@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pandas as pd
-
 from alphavault.research_signal_view import (
     build_related_stock_rows,
     build_signal_rows,
     merge_post_fields,
-    sector_mask,
+    sector_filter_rows,
 )
 
 
@@ -20,20 +18,20 @@ class SectorResearchView:
 
 
 def build_sector_research_view(
-    posts: pd.DataFrame,
-    assertions: pd.DataFrame,
+    posts: list[dict[str, object]],
+    assertions: list[dict[str, object]],
     *,
     sector_key: str,
 ) -> SectorResearchView:
     sector_key = str(sector_key or "").strip()
-    if assertions.empty or not sector_key:
+    if not assertions or not sector_key:
         return SectorResearchView(
             page_title=sector_key,
             signals=[],
             related_stocks=[],
         )
 
-    sector_view = assertions[sector_mask(assertions, sector_key)].copy()
+    sector_view = sector_filter_rows(assertions, sector_key)
     sector_view = merge_post_fields(sector_view, posts)
     return SectorResearchView(
         page_title=sector_key,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pandas as pd
+from datetime import datetime
 
 from alphavault_reflex.services.research_data import (
     build_search_index,
@@ -9,8 +9,12 @@ from alphavault_reflex.services.research_data import (
 )
 
 
+def _rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return rows
+
+
 def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -> None:
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": "p1",
@@ -19,7 +23,7 @@ def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -
             }
         ]
     )
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -43,7 +47,7 @@ def test_build_stock_research_view_groups_recent_signals_and_related_sectors() -
 
 
 def test_build_stock_research_view_aggregates_one_stock_object() -> None:
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": "p1",
@@ -62,7 +66,7 @@ def test_build_stock_research_view_aggregates_one_stock_object() -> None:
             },
         ]
     )
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -105,7 +109,7 @@ def test_build_stock_research_view_aggregates_one_stock_object() -> None:
         assertions,
         stock_key="stock:紫金",
         ai_alias_map={"stock:紫金": "stock:601899.SH"},
-        now=pd.Timestamp("2026-03-26 10:23:00"),
+        now=datetime(2026, 3, 26, 10, 23, 0),
     )
 
     assert view.entity_key == "stock:601899.SH"
@@ -119,7 +123,7 @@ def test_build_stock_research_view_aggregates_one_stock_object() -> None:
 
 
 def test_build_stock_research_view_formats_created_at_line() -> None:
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": "p1",
@@ -129,7 +133,7 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
             }
         ]
     )
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -147,7 +151,7 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
         posts,
         assertions,
         stock_key="stock:600519.SH",
-        now=pd.Timestamp("2026-03-26 10:23:00"),
+        now=datetime(2026, 3, 26, 10, 23, 0),
     )
 
     assert view.signals[0]["created_at_line"] == "2026-03-25 10:23 · 1天前"
@@ -156,7 +160,7 @@ def test_build_stock_research_view_formats_created_at_line() -> None:
 
 
 def test_build_stock_research_view_has_no_backfill_field() -> None:
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": "p1",
@@ -174,7 +178,7 @@ def test_build_stock_research_view_has_no_backfill_field() -> None:
             },
         ]
     )
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -196,7 +200,7 @@ def test_build_stock_research_view_has_no_backfill_field() -> None:
 
 
 def test_build_stock_research_view_paginates_signals_and_returns_total() -> None:
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": f"p{i}",
@@ -206,7 +210,7 @@ def test_build_stock_research_view_paginates_signals_and_returns_total() -> None
             for i in range(12)
         ]
     )
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": f"p{i}",
@@ -242,7 +246,7 @@ def test_build_stock_research_view_paginates_signals_and_returns_total() -> None
 
 
 def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -> None:
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": "p1",
@@ -251,7 +255,7 @@ def test_build_sector_research_view_groups_recent_signals_and_related_stocks() -
             }
         ]
     )
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -278,7 +282,7 @@ def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() ->
         "回复@落晚平沙:看走势，可以看出大家想法//@落晚平沙:请教公公碰到好几次"
         "这个问题但是没有想明白//@挖地瓜的超级鹿鼎公:并没有，还是老样子"
     )
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": post_uid,
@@ -289,7 +293,7 @@ def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() ->
             }
         ]
     )
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": post_uid,
@@ -311,7 +315,7 @@ def test_build_stock_research_view_keeps_tree_for_xueqiu_weibo_url_post_uid() ->
 
 
 def test_build_stock_research_view_without_assertions_has_no_backfill_field() -> None:
-    posts = pd.DataFrame(
+    posts = _rows(
         [
             {
                 "post_uid": "p1",
@@ -322,7 +326,7 @@ def test_build_stock_research_view_without_assertions_has_no_backfill_field() ->
             }
         ]
     )
-    assertions = pd.DataFrame([])
+    assertions: list[dict[str, object]] = []
 
     view = build_stock_research_view(posts, assertions, stock_key="stock:601899.SH")
 
@@ -330,8 +334,8 @@ def test_build_stock_research_view_without_assertions_has_no_backfill_field() ->
 
 
 def test_build_search_index_returns_stock_and_sector_hits() -> None:
-    posts = pd.DataFrame([])
-    assertions = pd.DataFrame(
+    posts: list[dict[str, object]] = []
+    assertions = _rows(
         [
             {
                 "entity_key": "stock:600519.SH",
@@ -348,8 +352,8 @@ def test_build_search_index_returns_stock_and_sector_hits() -> None:
 def test_build_search_index_deduplicates_stock_objects_and_keeps_alias_search_text() -> (
     None
 ):
-    posts = pd.DataFrame([])
-    assertions = pd.DataFrame(
+    posts: list[dict[str, object]] = []
+    assertions = _rows(
         [
             {
                 "entity_key": "stock:601899.SH",

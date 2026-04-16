@@ -4,8 +4,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 import json
 
-import pandas as pd
-
 from alphavault.constants import SCHEMA_WEIBO, SCHEMA_XUEQIU
 from alphavault.db.postgres_db import ensure_postgres_engine
 from alphavault.db.postgres_env import (
@@ -18,6 +16,7 @@ from alphavault.domains.stock.keys import (
 )
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_stock_cache import load_entity_page_signal_snapshot
+from alphavault.research_signal_view import coerce_signal_timestamp
 from alphavault_reflex.services.source_read import (
     MISSING_POSTGRES_DSN_ERROR,
     load_stock_alias_relations_from_env,
@@ -98,12 +97,12 @@ def _resolve_stock_key_candidates(stock_key: str) -> tuple[list[str], str]:
         return [], ""
     out = stock_key_lookup_candidates(normalized)
     relations, relation_err = load_stock_alias_relations_from_env()
-    if relation_err or relations.empty:
+    if relation_err or not relations:
         if relation_err:
             return [], relation_err
         return out, ""
     seen = set(out)
-    for _, row in relations.iterrows():
+    for row in relations:
         relation_type = str(row.get("relation_type") or "").strip()
         relation_label = str(row.get("relation_label") or "").strip()
         if relation_type != "stock_alias" and relation_label != "alias_of":
@@ -122,27 +121,11 @@ def _resolve_stock_key_candidates(stock_key: str) -> tuple[list[str], str]:
 def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     if not rows:
         return []
-
-    def _as_clean_text(value: object) -> str:
-        if value is None:
-            return ""
-        try:
-            if pd.isna(value):
-                return ""
-        except TypeError:
-            pass
-        return str(value).strip()
-
-    frame = pd.DataFrame(rows)
-    if "created_at" in frame.columns:
-        frame["created_at"] = pd.to_datetime(frame["created_at"], errors="coerce")
-        frame = frame.sort_values(by="created_at", ascending=False, na_position="last")
+    ordered = sorted(rows, key=_signal_sort_key)
     cleaned: list[dict[str, str]] = []
     seen: set[str] = set()
-    for _, row in frame.iterrows():
-        payload = {
-            str(key): _as_clean_text(value) for key, value in row.to_dict().items()
-        }
+    for row in ordered:
+        payload = {str(key): _as_clean_text(value) for key, value in row.items()}
         post_uid = str(payload.get("post_uid") or "").strip()
         if post_uid and post_uid in seen:
             continue
@@ -152,6 +135,19 @@ def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
         if len(cleaned) >= _STOCK_SIGNAL_CAP:
             break
     return cleaned
+
+
+def _as_clean_text(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _signal_sort_key(row: dict[str, str]) -> tuple[int, float]:
+    ts = coerce_signal_timestamp(row.get("created_at"))
+    if ts is None:
+        return (1, 0.0)
+    return (0, -ts.timestamp())
 
 
 def _dict_rows(value: object) -> list[dict[str, str]]:

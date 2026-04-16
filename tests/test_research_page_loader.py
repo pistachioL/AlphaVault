@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 from typing import cast
 
 from alphavault_reflex.services.research_data import SectorResearchView
@@ -51,7 +50,7 @@ def test_load_sector_page_view_falls_back_to_live_when_snapshot_misses(
     )
     monkeypatch.setattr(
         "alphavault_reflex.services.research_page_loader.load_sources_from_env",
-        lambda: (pd.DataFrame(), pd.DataFrame(), ""),
+        lambda: ([], [], ""),
     )
     monkeypatch.setattr(
         "alphavault_reflex.services.research_page_loader.build_sector_research_view",

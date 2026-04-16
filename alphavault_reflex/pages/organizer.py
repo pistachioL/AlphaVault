@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import reflex as rx
+from reflex.vars.base import Var
 
 from alphavault_reflex.organizer_state import (
     OrganizerState,
@@ -11,6 +12,12 @@ from alphavault_reflex.organizer_state import (
 )
 
 LOADING_TEXT = "加载中…"
+
+
+def _checkbox_checked(value: object) -> bool | rx.Var[bool]:
+    if isinstance(value, Var):
+        return value.bool()
+    return bool(value)
 
 
 def _section_loading() -> rx.Component:
@@ -27,34 +34,143 @@ def _section_loading() -> rx.Component:
 
 
 def _candidate_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+    row_action_pending = (
+        OrganizerState.candidate_action_pending_id == row["candidate_id"]
+    )
     return rx.el.div(
-        rx.text(row["candidate_key"], class_name="av-research-side-title"),
-        rx.text(row["suggestion_reason"], class_name="av-research-muted"),
-        rx.text(row["evidence_summary"], class_name="av-research-muted"),
+        rx.hstack(
+            rx.cond(
+                row["relation_type"] == SECTION_STOCK_ALIAS,
+                rx.checkbox(
+                    checked=_checkbox_checked(row["selected"]),
+                    on_change=lambda checked: OrganizerState.toggle_stock_alias_candidate(
+                        row["candidate_id"],
+                        checked,
+                    ),
+                    disabled=OrganizerState.show_loading
+                    | OrganizerState.has_candidate_action_pending,
+                ),
+                rx.el.div(),
+            ),
+            rx.text(row["candidate_key"], class_name="av-research-side-title"),
+            align="center",
+            spacing="2",
+        ),
+        rx.cond(
+            row["relation_type"] == SECTION_STOCK_ALIAS,
+            rx.cond(
+                row["left_key"] != "",
+                rx.text(
+                    f"归并到：{row['left_key']}",
+                    class_name="av-research-muted",
+                ),
+                rx.el.div(),
+            ),
+            rx.el.div(),
+        ),
+        rx.cond(
+            row["suggestion_reason"] != "",
+            rx.text(row["suggestion_reason"], class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
+            (row["evidence_summary"] != "")
+            & (row["evidence_summary"] != row["suggestion_reason"]),
+            rx.text(row["evidence_summary"], class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
+            (row["relation_type"] == SECTION_STOCK_ALIAS) & row_action_pending,
+            rx.el.div(
+                rx.spinner(size="1"),
+                rx.text("处理中…", class_name="av-research-muted"),
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "8px",
+                    "marginTop": "8px",
+                },
+            ),
+            rx.el.div(),
+        ),
         rx.hstack(
             rx.button(
                 "确认",
                 on_click=lambda: OrganizerState.accept_candidate(row["candidate_id"]),
                 class_name="av-btn av-btn-small",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending,
             ),
             rx.button(
                 "忽略",
                 on_click=lambda: OrganizerState.ignore_candidate(row["candidate_id"]),
                 variant="soft",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending,
             ),
             rx.button(
                 "不再推荐",
                 on_click=lambda: OrganizerState.block_candidate(row["candidate_id"]),
                 variant="soft",
                 color_scheme="gray",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending,
             ),
             spacing="2",
             margin_top="10px",
         ),
         class_name="av-research-side-item",
+    )
+
+
+def _stock_alias_batch_toolbar() -> rx.Component:
+    return rx.hstack(
+        rx.text(
+            f"已选 {OrganizerState.selected_stock_alias_candidate_count} 条",
+            class_name="av-research-muted",
+        ),
+        rx.button(
+            "全选本页",
+            on_click=OrganizerState.select_all_stock_alias_candidates,
+            variant="soft",
+            disabled=OrganizerState.show_loading
+            | OrganizerState.has_candidate_action_pending,
+        ),
+        rx.button(
+            "清空选择",
+            on_click=OrganizerState.clear_selected_stock_alias_candidates,
+            variant="soft",
+            disabled=OrganizerState.show_loading
+            | OrganizerState.has_candidate_action_pending,
+        ),
+        rx.button(
+            "批量确认",
+            on_click=OrganizerState.batch_accept_selected_candidates,
+            class_name="av-btn av-btn-small",
+            disabled=OrganizerState.show_loading
+            | OrganizerState.has_candidate_action_pending
+            | (~OrganizerState.has_selected_stock_alias_candidates),
+        ),
+        rx.button(
+            "批量忽略",
+            on_click=OrganizerState.batch_ignore_selected_candidates,
+            variant="soft",
+            disabled=OrganizerState.show_loading
+            | OrganizerState.has_candidate_action_pending
+            | (~OrganizerState.has_selected_stock_alias_candidates),
+        ),
+        rx.button(
+            "批量不再推荐",
+            on_click=OrganizerState.batch_block_selected_candidates,
+            variant="soft",
+            color_scheme="gray",
+            disabled=OrganizerState.show_loading
+            | OrganizerState.has_candidate_action_pending
+            | (~OrganizerState.has_selected_stock_alias_candidates),
+        ),
+        spacing="3",
+        wrap="wrap",
+        margin_top="12px",
     )
 
 
@@ -247,6 +363,11 @@ def organizer_page() -> rx.Component:
                 disabled=OrganizerState.show_loading,
             ),
             spacing="3",
+        ),
+        rx.cond(
+            OrganizerState.active_section == SECTION_STOCK_ALIAS,
+            _stock_alias_batch_toolbar(),
+            rx.el.div(),
         ),
         rx.cond(
             OrganizerState.active_section == SECTION_ALIAS_MANUAL,

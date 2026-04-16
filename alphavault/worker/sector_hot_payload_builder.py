@@ -3,15 +3,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pandas as pd
-
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.postgres_db import (
     PostgresConnection,
     qualify_postgres_table,
     require_postgres_schema_name,
 )
-from alphavault.db.sql_df import read_sql_df
+from alphavault.db.sql_rows import read_sql_rows
 from alphavault.research_signal_view import (
     build_related_stock_rows,
     build_signal_rows,
@@ -67,7 +65,7 @@ def _load_sector_assertions(
     sector_slug: str,
     window_days: int,
     max_rows: int,
-) -> pd.DataFrame:
+) -> list[dict[str, object]]:
     posts_table = _source_table(conn, "posts")
     assertions_table = _source_table(conn, "assertions")
     assertion_entities_table = _source_table(conn, "assertion_entities")
@@ -104,14 +102,16 @@ ORDER BY p.created_at DESC
 LIMIT :limit
 """
 
-    assertions = read_sql_df(conn, query, params=params)
-    if assertions.empty:
+    assertions = read_sql_rows(conn, query, params=params)
+    if not assertions:
         return assertions
-    out = assertions.copy()
-    for col in ["assertion_id", "post_uid", "stock_key", "summary", "action"]:
-        if col in out.columns:
-            out[col] = out[col].fillna("").astype(str)
-    out["sector_key"] = normalize_sector_key(sector_slug)
+    out: list[dict[str, object]] = []
+    for raw_row in assertions:
+        row = dict(raw_row)
+        for col in ["assertion_id", "post_uid", "stock_key", "summary", "action"]:
+            row[col] = str(row.get(col) or "").strip()
+        row["sector_key"] = normalize_sector_key(sector_slug)
+        out.append(row)
     return out
 
 
@@ -119,11 +119,11 @@ def _load_posts_for_assertions(
     conn: PostgresConnection,
     *,
     post_uids: list[str],
-) -> pd.DataFrame:
+) -> list[dict[str, object]]:
     posts_table = _source_table(conn, "posts")
     cleaned = [str(uid or "").strip() for uid in post_uids if str(uid or "").strip()]
     if not cleaned:
-        return pd.DataFrame()
+        return []
     placeholders = make_in_placeholders(prefix="p", count=len(cleaned))
     params = make_in_params(prefix="p", values=cleaned)
     query = f"""
@@ -131,12 +131,13 @@ SELECT {", ".join(WANTED_POST_COLUMNS)}
 FROM {posts_table}
 WHERE post_uid IN ({placeholders})
 """
-    posts = read_sql_df(conn, query, params=params)
-    if posts.empty:
-        return posts
-    out = posts.copy()
-    for col in WANTED_POST_COLUMNS:
-        out[col] = out[col].fillna("").astype(str)
+    posts = read_sql_rows(conn, query, params=params)
+    out: list[dict[str, object]] = []
+    for raw_row in posts:
+        row = dict(raw_row)
+        for col in WANTED_POST_COLUMNS:
+            row[col] = str(row.get(col) or "").strip()
+        out.append(row)
     return out
 
 
@@ -164,7 +165,7 @@ def build_sector_hot_payload(
         window_days=int(signal_window_days),
         max_rows=max(1, int(signal_cap) * 4),
     )
-    if assertions.empty:
+    if not assertions:
         return {
             "entity_key": normalized_key,
             "entity_type": "sector",
@@ -176,7 +177,7 @@ def build_sector_hot_payload(
 
     post_uids = [
         str(uid or "").strip()
-        for uid in assertions.get("post_uid", pd.Series(dtype=str)).tolist()
+        for uid in [row.get("post_uid") for row in assertions]
         if str(uid or "").strip()
     ]
     posts = _load_posts_for_assertions(conn, post_uids=post_uids)

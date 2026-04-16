@@ -16,6 +16,7 @@ from alphavault.research_workbench import (
     accept_relation_candidate,
     block_relation_candidate,
     ignore_relation_candidate,
+    get_official_names_by_stock_keys,
     get_stock_keys_by_official_names,
     list_pending_candidates,
     list_pending_candidates_for_left_key,
@@ -315,6 +316,93 @@ ORDER BY stock_key
     assert get_stock_keys_by_official_names(conn, ["紫金矿业", "不存在"]) == {
         "紫金矿业": "stock:601899.SH"
     }
+
+
+def test_get_stock_keys_by_official_names_normalizes_hyphen_width(
+    monkeypatch,
+) -> None:
+    from alphavault.research_workbench import security_master_repo
+
+    executed: list[tuple[str, object]] = []
+
+    class _FakeResult:
+        def fetchall(self):  # type: ignore[no-untyped-def]
+            return [
+                ("stock:09988.HK", "阿里巴巴－W", "阿里巴巴－W"),
+            ]
+
+    class _FakeConn:
+        def execute(self, sql, params):  # type: ignore[no-untyped-def]
+            executed.append((str(sql), params))
+            return _FakeResult()
+
+    @contextmanager
+    def _fake_use_conn(_engine_or_conn):  # type: ignore[no-untyped-def]
+        yield _FakeConn()
+
+    monkeypatch.setattr(
+        security_master_repo,
+        "use_conn",
+        _fake_use_conn,
+        raising=False,
+    )
+
+    rows = get_stock_keys_by_official_names(object(), ["阿里巴巴-W"])
+
+    assert rows == {
+        "阿里巴巴-W": "stock:09988.HK",
+    }
+    assert len(executed) == 1
+    assert "official_name_norm" in executed[0][0]
+    assert executed[0][1] == ["阿里巴巴-w"]
+
+
+def test_get_official_names_by_stock_keys_uses_single_batch_query(
+    monkeypatch,
+) -> None:
+    from alphavault.research_workbench import security_master_repo
+
+    executed: list[tuple[str, object]] = []
+
+    class _FakeResult:
+        def fetchall(self):  # type: ignore[no-untyped-def]
+            return [
+                ("stock:601899.SH", "紫金矿业"),
+                ("stock:02899.HK", "紫金矿业"),
+            ]
+
+    class _FakeConn:
+        def execute(self, sql, params):  # type: ignore[no-untyped-def]
+            executed.append((str(sql), params))
+            return _FakeResult()
+
+    @contextmanager
+    def _fake_use_conn(_engine_or_conn):  # type: ignore[no-untyped-def]
+        yield _FakeConn()
+
+    monkeypatch.setattr(
+        security_master_repo,
+        "use_conn",
+        _fake_use_conn,
+        raising=False,
+    )
+
+    rows = get_official_names_by_stock_keys(
+        object(),
+        [
+            "stock:601899.SH",
+            "stock:02899.HK",
+            "stock:601899.SH",
+        ],
+    )
+
+    assert rows == {
+        "stock:601899.SH": "紫金矿业",
+        "stock:02899.HK": "紫金矿业",
+    }
+    assert len(executed) == 1
+    assert "WHERE stock_key IN" in executed[0][0]
+    assert executed[0][1] == ["stock:601899.SH", "stock:02899.HK"]
 
 
 def test_upsert_security_master_stock_keeps_code_column_as_pure_code(

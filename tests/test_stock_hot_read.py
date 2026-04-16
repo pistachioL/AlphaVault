@@ -3,8 +3,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-import pandas as pd
-
 from alphavault_reflex.services import stock_hot_read
 
 
@@ -21,7 +19,7 @@ def _setup_single_source(monkeypatch) -> None:
     monkeypatch.setattr(
         stock_hot_read,
         "load_stock_alias_relations_from_env",
-        lambda: (pd.DataFrame(), ""),
+        lambda: ([], ""),
     )
     stock_hot_read.clear_stock_hot_read_caches()
 
@@ -213,16 +211,14 @@ def test_resolve_stock_key_candidates_appends_alias_keys_for_canonical_stock(
         stock_hot_read,
         "load_stock_alias_relations_from_env",
         lambda: (
-            pd.DataFrame(
-                [
-                    {
-                        "relation_type": "stock_alias",
-                        "left_key": "stock:000725.SZ",
-                        "right_key": "stock:京东方A",
-                        "relation_label": "alias_of",
-                    }
-                ]
-            ),
+            [
+                {
+                    "relation_type": "stock_alias",
+                    "left_key": "stock:000725.SZ",
+                    "right_key": "stock:京东方A",
+                    "relation_label": "alias_of",
+                }
+            ],
             "",
         ),
     )
@@ -241,16 +237,14 @@ def test_load_stock_cached_view_keeps_canonical_entity_key_when_alias_snapshot_h
         stock_hot_read,
         "load_stock_alias_relations_from_env",
         lambda: (
-            pd.DataFrame(
-                [
-                    {
-                        "relation_type": "stock_alias",
-                        "left_key": "stock:000725.SZ",
-                        "right_key": "stock:京东方A",
-                        "relation_label": "alias_of",
-                    }
-                ]
-            ),
+            [
+                {
+                    "relation_type": "stock_alias",
+                    "left_key": "stock:000725.SZ",
+                    "right_key": "stock:京东方A",
+                    "relation_label": "alias_of",
+                }
+            ],
             "",
         ),
     )
@@ -439,7 +433,7 @@ def test_load_stock_cached_view_returns_relation_error_when_standard_alias_fails
     monkeypatch.setattr(
         stock_hot_read,
         "load_stock_alias_relations_from_env",
-        lambda: (pd.DataFrame(), "postgres_connect_error:standard:RuntimeError"),
+        lambda: ([], "postgres_connect_error:standard:RuntimeError"),
     )
     monkeypatch.setattr(
         stock_hot_read,

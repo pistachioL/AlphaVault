@@ -2,8 +2,7 @@ from __future__ import annotations
 
 # Shared helpers for source-schema reads in Reflex services.
 
-import pandas as pd
-from pandas.api.types import is_datetime64_any_dtype
+from datetime import datetime, timezone
 
 from alphavault.domains.common.json_list import parse_json_list
 from alphavault.domains.stock.key_match import is_stock_code_value, normalize_stock_code
@@ -11,53 +10,68 @@ from alphavault.domains.stock.keys import normalize_stock_key as _normalize_stoc
 from alphavault.domains.thread_tree.api import extract_platform_post_id
 
 
-def normalize_posts_datetime(posts: pd.DataFrame) -> pd.DataFrame:
-    posts = posts.copy()
-    for col in [
+def normalize_datetime_value(value: object) -> datetime | str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    candidate = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        return text
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def normalize_posts_datetime_rows(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    target_columns = {
         "created_at",
         "ingested_at",
         "processed_at",
         "next_retry_at",
         "synced_at",
-    ]:
-        if col not in posts.columns:
-            continue
-        if is_datetime64_any_dtype(posts[col]):
-            continue
-        posts[col] = pd.to_datetime(posts[col], errors="coerce", utc=True)
-        posts[col] = posts[col].dt.tz_convert(None)
-    return posts
+    }
+    for raw_row in rows:
+        row = dict(raw_row)
+        for col in target_columns:
+            if col in row:
+                row[col] = normalize_datetime_value(row.get(col))
+        normalized.append(row)
+    return normalized
 
 
-def normalize_assertions_datetime(assertions: pd.DataFrame) -> pd.DataFrame:
-    assertions = assertions.copy()
-    if "created_at" not in assertions.columns:
-        return assertions
-    if is_datetime64_any_dtype(assertions["created_at"]):
-        return assertions
-    assertions["created_at"] = pd.to_datetime(
-        assertions["created_at"], errors="coerce", utc=True
-    )
-    assertions["created_at"] = assertions["created_at"].dt.tz_convert(None)
-    return assertions
+def normalize_assertions_datetime_rows(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        if "created_at" in row:
+            row["created_at"] = normalize_datetime_value(row.get("created_at"))
+        normalized.append(row)
+    return normalized
 
 
-def ensure_platform_post_id(posts: pd.DataFrame) -> pd.DataFrame:
-    if posts.empty:
-        return posts
-    if "post_uid" not in posts.columns:
-        return posts
-    posts = posts.copy()
-    if "platform_post_id" not in posts.columns:
-        posts["platform_post_id"] = posts["post_uid"].apply(extract_platform_post_id)
-        return posts
-    mask = posts["platform_post_id"].astype(str).str.strip().eq("")
-    if not mask.any():
-        return posts
-    posts.loc[mask, "platform_post_id"] = posts.loc[mask, "post_uid"].apply(
-        extract_platform_post_id
-    )
-    return posts
+def ensure_platform_post_id_rows(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    normalized: list[dict[str, object]] = []
+    for raw_row in rows:
+        row = dict(raw_row)
+        post_uid = str(row.get("post_uid") or "").strip()
+        platform_post_id = str(row.get("platform_post_id") or "").strip()
+        if post_uid and not platform_post_id:
+            row["platform_post_id"] = extract_platform_post_id(post_uid)
+        normalized.append(row)
+    return normalized
 
 
 def normalize_stock_key_for_fast_query(stock_key: str) -> str:
@@ -76,9 +90,10 @@ def stock_code_from_stock_key(stock_key: str) -> str:
 
 
 __all__ = [
-    "ensure_platform_post_id",
-    "normalize_assertions_datetime",
-    "normalize_posts_datetime",
+    "ensure_platform_post_id_rows",
+    "normalize_assertions_datetime_rows",
+    "normalize_datetime_value",
+    "normalize_posts_datetime_rows",
     "normalize_stock_key_for_fast_query",
     "parse_json_list",
     "stock_code_from_stock_key",

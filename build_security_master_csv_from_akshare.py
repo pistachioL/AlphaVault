@@ -3,13 +3,15 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib
+from io import BytesIO
 from pathlib import Path
 from typing import Protocol
 
-import pandas as pd
+import requests
 
 from alphavault.domains.stock.key_match import normalize_stock_code
 from alphavault.domains.stock.keys import normalize_stock_key
+from alphavault.domains.stock.names import normalize_stock_official_name
 from alphavault.logging_config import (
     add_log_level_argument,
     configure_logging,
@@ -43,6 +45,12 @@ logger = get_logger(__name__)
 
 class TextConverter(Protocol):
     def convert(self, text: str) -> str: ...
+
+
+class TabularRecords(Protocol):
+    columns: object
+
+    def to_dict(self, orient: str) -> list[dict[str, object]]: ...
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +88,13 @@ def build_hk_opencc_converter() -> TextConverter:
     return opencc_module.OpenCC(HK_OPENCC_CONFIG)
 
 
+def _load_openpyxl_module():
+    try:
+        return importlib.import_module("openpyxl")
+    except ModuleNotFoundError as err:
+        raise RuntimeError("missing_dependency:openpyxl") from err
+
+
 def parse_markets(value: str) -> tuple[str, ...]:
     items = [str(item or "").strip().lower() for item in str(value or "").split(",")]
     markets = tuple(item for item in items if item)
@@ -97,9 +112,11 @@ def parse_markets(value: str) -> tuple[str, ...]:
 
 
 def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
     try:
-        return bool(pd.isna(value))
-    except TypeError:
+        return bool(value != value)
+    except Exception:
         return False
 
 
@@ -123,46 +140,55 @@ def _clean_hkex_code(value: object) -> str:
     return normalized_code
 
 
-def _normalize_fullwidth_alnum_and_space(text: str) -> str:
-    normalized_chars: list[str] = []
-    for char in text:
-        codepoint = ord(char)
-        if codepoint == 0x3000:
-            normalized_chars.append(" ")
-            continue
-        if 0xFF10 <= codepoint <= 0xFF19:
-            normalized_chars.append(chr(codepoint - 0xFEE0))
-            continue
-        if 0xFF21 <= codepoint <= 0xFF3A:
-            normalized_chars.append(chr(codepoint - 0xFEE0))
-            continue
-        if 0xFF41 <= codepoint <= 0xFF5A:
-            normalized_chars.append(chr(codepoint - 0xFEE0))
-            continue
-        normalized_chars.append(char)
-    return "".join(normalized_chars)
+def _frame_columns(
+    frame: TabularRecords | list[dict[str, object]],
+) -> tuple[str, ...]:
+    raw_columns = getattr(frame, "columns", None)
+    if raw_columns is not None:
+        return tuple(
+            str(column or "").strip()
+            for column in raw_columns
+            if str(column or "").strip()
+        )
+    records = _frame_records(frame)
+    if not records:
+        return ()
+    return tuple(str(key or "").strip() for key in records[0] if str(key or "").strip())
 
 
-def _normalize_official_name(value: object) -> str:
-    return "".join(_normalize_fullwidth_alnum_and_space(_clean_text(value)).split())
+def _frame_records(
+    frame: TabularRecords | list[dict[str, object]],
+    *,
+    wanted_columns: tuple[str, ...] | None = None,
+) -> list[dict[str, object]]:
+    if isinstance(frame, list):
+        raw_records = [dict(row) for row in frame if isinstance(row, dict)]
+    else:
+        raw_records = frame.to_dict("records")
+    if not wanted_columns:
+        return raw_records
+    return [
+        {column: row.get(column) for column in wanted_columns} for row in raw_records
+    ]
 
 
 def _require_frame_columns(
-    frame: pd.DataFrame,
+    frame: TabularRecords | list[dict[str, object]],
     *,
     source_name: str,
     required_columns: tuple[str, ...],
     error_prefix: str = "unexpected_akshare_columns",
 ) -> None:
+    frame_columns = set(_frame_columns(frame))
     for name in required_columns:
-        if name in frame.columns:
+        if name in frame_columns:
             continue
         raise RuntimeError(f"{error_prefix}:{source_name}:{name}")
 
 
 def _fetch_frame(
     akshare_module, *, fetch_name: str, source_name: str, **kwargs
-) -> pd.DataFrame:
+) -> TabularRecords | list[dict[str, object]]:
     fetch_fn = getattr(akshare_module, fetch_name)
     try:
         return fetch_fn(**kwargs)
@@ -172,12 +198,44 @@ def _fetch_frame(
         ) from err
 
 
-def load_hkex_securities_frame() -> pd.DataFrame:
+def _load_hkex_records_from_sheet(
+    sheet, *, header_row_index: int
+) -> list[dict[str, object]]:
+    header: list[str] = []
+    records: list[dict[str, object]] = []
+    for row_index, values in enumerate(sheet.iter_rows(values_only=True)):
+        cells = list(values)
+        if row_index < header_row_index:
+            continue
+        if row_index == header_row_index:
+            header = [str(cell or "").strip() for cell in cells]
+            continue
+        if not header:
+            continue
+        record: dict[str, object] = {}
+        for index, name in enumerate(header):
+            if not name:
+                continue
+            record[name] = cells[index] if index < len(cells) else None
+        if record:
+            records.append(record)
+    return records
+
+
+def load_hkex_securities_frame() -> list[dict[str, object]]:
+    openpyxl_module = _load_openpyxl_module()
     try:
-        return pd.read_excel(
-            HKEX_SECURITIES_URL,
-            header=HKEX_SECURITIES_HEADER_ROW,
-            dtype=str,
+        response = requests.get(HKEX_SECURITIES_URL, timeout=30)
+        response.raise_for_status()
+        workbook = openpyxl_module.load_workbook(
+            BytesIO(response.content),
+            read_only=True,
+            data_only=True,
+        )
+        sheet = workbook.active
+        return _load_hkex_records_from_sheet(
+            sheet,
+            header_row_index=HKEX_SECURITIES_HEADER_ROW,
         )
     except Exception as err:
         raise RuntimeError(
@@ -193,7 +251,7 @@ def _build_row(
     code_cleaner=_clean_code,
 ) -> dict[str, str] | None:
     resolved_code = code_cleaner(code)
-    resolved_name = _normalize_official_name(official_name)
+    resolved_name = normalize_stock_official_name(official_name)
     if not resolved_code or not resolved_name:
         return None
     stock_key = normalize_stock_key(f"stock:{resolved_code}.{market}")
@@ -208,7 +266,7 @@ def _build_row(
 def _append_source_rows(
     rows_by_stock_key: dict[str, dict[str, str]],
     *,
-    frame: pd.DataFrame,
+    frame: TabularRecords | list[dict[str, object]],
     source_name: str,
     market: str,
     code_column: str,
@@ -219,7 +277,7 @@ def _append_source_rows(
         source_name=source_name,
         required_columns=(code_column, name_column),
     )
-    for record in frame[[code_column, name_column]].to_dict("records"):
+    for record in _frame_records(frame, wanted_columns=(code_column, name_column)):
         row = _build_row(
             market=market,
             code=record.get(code_column),
@@ -240,7 +298,7 @@ def _is_hk_equity_record(record: dict[str, object]) -> bool:
 
 def append_hkex_equity_rows(
     rows_by_stock_key: dict[str, dict[str, str]],
-    frame: pd.DataFrame,
+    frame: TabularRecords | list[dict[str, object]],
     hk_converter: TextConverter,
 ) -> None:
     _require_frame_columns(
@@ -254,14 +312,15 @@ def append_hkex_equity_rows(
         ),
         error_prefix="unexpected_hkex_columns",
     )
-    for record in frame[
-        [
+    for record in _frame_records(
+        frame,
+        wanted_columns=(
             HKEX_CODE_COLUMN,
             HKEX_NAME_COLUMN,
             HKEX_CATEGORY_COLUMN,
             HKEX_SUBCATEGORY_COLUMN,
-        ]
-    ].to_dict("records"):
+        ),
+    ):
         if not _is_hk_equity_record(record):
             continue
         official_name = hk_converter.convert(_clean_text(record.get(HKEX_NAME_COLUMN)))
@@ -280,7 +339,7 @@ def build_security_master_rows(
     akshare_module=None,
     *,
     markets: tuple[str, ...] = DEFAULT_MARKETS,
-    hkex_securities_frame: pd.DataFrame | None = None,
+    hkex_securities_frame: TabularRecords | list[dict[str, object]] | None = None,
     hk_converter: TextConverter | None = None,
 ) -> list[dict[str, str]]:
     rows_by_stock_key: dict[str, dict[str, str]] = {}
@@ -354,7 +413,7 @@ def build_security_master_csv(
     akshare_module=None,
     *,
     markets: tuple[str, ...] = DEFAULT_MARKETS,
-    hkex_securities_frame: pd.DataFrame | None = None,
+    hkex_securities_frame: TabularRecords | list[dict[str, object]] | None = None,
     hk_converter: TextConverter | None = None,
 ) -> int:
     akshare_client = akshare_module

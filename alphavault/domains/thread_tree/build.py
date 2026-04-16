@@ -8,9 +8,8 @@ Input:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, cast
-
-import pandas as pd
 
 from alphavault.domains.thread_tree.parse import (
     clean_id,
@@ -31,17 +30,21 @@ from alphavault.domains.thread_tree.render import (
     to_ts,
 )
 
-_TIMESTAMP_SORT_FALLBACK = pd.Timestamp("1970-01-01 00:00:00", tz="UTC")
+
+def _timestamp_sort_fallback():
+    return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
-def _collect_selected_ids(view_df: pd.DataFrame) -> set[str]:
+def _collect_selected_ids(view_rows: list[dict[str, object]]) -> set[str]:
     selected_ids: set[str] = set()
-    if "platform_post_id" in view_df.columns:
-        for item in view_df["platform_post_id"].dropna().unique().tolist():
+    for row in view_rows:
+        if "platform_post_id" in row:
+            item = row.get("platform_post_id")
             pid = clean_id(item)
             if pid:
                 selected_ids.add(pid)
-    for item in view_df["post_uid"].dropna().unique().tolist():
+    for row in view_rows:
+        item = row.get("post_uid")
         pid = clean_id(extract_platform_post_id(item))
         if pid:
             selected_ids.add(pid)
@@ -60,7 +63,22 @@ def _collect_blogger_authors(
     return authors
 
 
-def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
+def _post_sort_key(row: dict[str, object]) -> tuple[datetime, str]:
+    ts = to_ts(row.get("created_at")) or _timestamp_sort_fallback()
+    return (ts, clean_id(row.get("platform_post_id")))
+
+
+def _assertion_row_sort_key(row: dict[str, object]) -> tuple[str, int, datetime]:
+    post_uid = str(row.get("post_uid") or "").strip()
+    try:
+        idx = int(str(row.get("idx") or "0").strip() or 0)
+    except ValueError:
+        idx = 0
+    created_at = to_ts(row.get("created_at")) or _timestamp_sort_fallback()
+    return (post_uid, idx, created_at)
+
+
+def _prepare_posts(posts_all: list[dict[str, object]]) -> list[dict[str, object]]:
     base_cols = [
         "post_uid",
         "platform_post_id",
@@ -69,36 +87,36 @@ def _prepare_posts(posts_all: pd.DataFrame) -> pd.DataFrame:
         "url",
         "raw_text",
     ]
-    have_cols = [col for col in base_cols if col in posts_all.columns]
-    if not have_cols:
-        return pd.DataFrame()
+    posts: list[dict[str, object]] = []
+    seen_post_ids: set[str] = set()
+    for raw_row in posts_all:
+        row = {col: raw_row.get(col) for col in base_cols}
+        platform_post_id = clean_id(row.get("platform_post_id"))
+        if not platform_post_id:
+            platform_post_id = clean_id(extract_platform_post_id(row.get("post_uid")))
+        if not platform_post_id or platform_post_id in seen_post_ids:
+            continue
+        seen_post_ids.add(platform_post_id)
+        row["platform_post_id"] = platform_post_id
+        posts.append(row)
+    return sorted(posts, key=_post_sort_key)
 
-    posts = posts_all[have_cols].copy()
-    if "platform_post_id" not in posts.columns and "post_uid" in posts.columns:
-        posts["platform_post_id"] = posts["post_uid"].apply(extract_platform_post_id)
-    posts["platform_post_id"] = posts["platform_post_id"].apply(clean_id)
-    posts = posts[posts["platform_post_id"].astype(str).str.strip().ne("")]
-    posts = posts.drop_duplicates(subset=["platform_post_id"], keep="first")
-    if "created_at" in posts.columns:
-        posts["created_at"] = posts["created_at"].apply(to_ts)
-        posts = posts.sort_values(
-            by="created_at",
-            ascending=True,
-            na_position="last",
+
+def _add_csv_parent_columns(
+    posts: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    enriched: list[dict[str, object]] = []
+    for raw_row in posts:
+        row = dict(raw_row)
+        csv_fields = parse_weibo_csv_raw_fields(str(row.get("raw_text") or ""))
+        row["csv_fields"] = csv_fields
+        row["parent_post_id"] = clean_id(
+            extract_parent_post_id(csv_fields=csv_fields)
+            if isinstance(csv_fields, dict)
+            else ""
         )
-    return posts
-
-
-def _add_csv_parent_columns(posts: pd.DataFrame) -> pd.DataFrame:
-    posts = posts.copy()
-    posts["csv_fields"] = posts["raw_text"].apply(parse_weibo_csv_raw_fields)
-    posts["parent_post_id"] = posts["csv_fields"].apply(
-        lambda item: extract_parent_post_id(csv_fields=item)
-        if isinstance(item, dict)
-        else ""
-    )
-    posts["parent_post_id"] = posts["parent_post_id"].apply(clean_id)
-    return posts
+        enriched.append(row)
+    return enriched
 
 
 def _build_posts_text_index(posts_lookup: dict[str, dict]) -> dict[str, list[dict]]:
@@ -160,17 +178,19 @@ def _infer_parent_post_id(
         ]
 
     if child_ts is not None:
-        candidates = [
-            c
-            for c in candidates
-            if c.get("created_at") is not None and c.get("created_at") < child_ts
-        ]
+        filtered_candidates: list[dict] = []
+        for candidate in candidates:
+            candidate_ts = to_ts(candidate.get("created_at"))
+            if candidate_ts is None or candidate_ts >= child_ts:
+                continue
+            filtered_candidates.append(candidate)
+        candidates = filtered_candidates
     if not candidates:
         return ""
 
     best = max(
         candidates,
-        key=lambda c: to_ts(c.get("created_at")) or _TIMESTAMP_SORT_FALLBACK,
+        key=lambda c: to_ts(c.get("created_at")) or _timestamp_sort_fallback(),
     )
     parent_id = clean_id(best.get("post_id"))
     if not parent_id or parent_id == child_id:
@@ -178,21 +198,25 @@ def _infer_parent_post_id(
     return parent_id
 
 
-def _infer_missing_parent_ids(posts: pd.DataFrame) -> pd.DataFrame:
-    if posts.empty:
+def _infer_missing_parent_ids(
+    posts: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not posts:
         return posts
 
-    posts_lookup: dict[str, dict] = posts.set_index("platform_post_id").to_dict(
-        orient="index"
-    )
+    posts_lookup: dict[str, dict] = {
+        clean_id(row.get("platform_post_id")): dict(row) for row in posts
+    }
     text_index = _build_posts_text_index(posts_lookup) if posts_lookup else {}
     if not text_index:
         return posts
 
-    posts = posts.copy()
-    for idx, row in posts.iterrows():
+    inferred_rows: list[dict[str, object]] = []
+    for raw_row in posts:
+        row = dict(raw_row)
         current_parent = clean_id(row.get("parent_post_id"))
         if current_parent:
+            inferred_rows.append(row)
             continue
         child_id = clean_id(row.get("platform_post_id"))
         inferred = _infer_parent_post_id(
@@ -202,22 +226,25 @@ def _infer_missing_parent_ids(posts: pd.DataFrame) -> pd.DataFrame:
             text_index=text_index,
         )
         if inferred:
-            posts.at[idx, "parent_post_id"] = inferred
-    return posts
+            row["parent_post_id"] = inferred
+        inferred_rows.append(row)
+    return inferred_rows
 
 
 def _add_synthetic_sources(
-    posts: pd.DataFrame,
-) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
+    posts: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, dict[str, str]]]:
     # If a post quotes another speaker (raw_text has multi segments), but we still
     # can't find parent_id, create a synthetic "source" parent so root is correct.
     synthetic_sources: dict[str, dict[str, str]] = {}
-    if posts.empty:
+    if not posts:
         return posts, synthetic_sources
 
-    posts = posts.copy()
-    for idx, row in posts.iterrows():
+    enriched_posts: list[dict[str, object]] = []
+    for raw_row in posts:
+        row = dict(raw_row)
         if clean_id(row.get("parent_post_id")):
+            enriched_posts.append(row)
             continue
         post_author = str(row.get("author") or "").strip()
         raw_text = str(row.get("raw_text") or "").strip()
@@ -227,13 +254,15 @@ def _add_synthetic_sources(
             raw_text=raw_text,
         )
         if len(segments) < 2:
+            enriched_posts.append(row)
             continue
         first_speaker = extract_speaker_name(segments[0])
         if not first_speaker or not post_author or first_speaker == post_author:
+            enriched_posts.append(row)
             continue
 
         source_id = make_synthetic_source_id(segments[0])
-        posts.at[idx, "parent_post_id"] = source_id
+        row["parent_post_id"] = source_id
         synthetic_sources.setdefault(
             source_id,
             {
@@ -241,58 +270,65 @@ def _add_synthetic_sources(
                 "raw_text": segments[0],
             },
         )
-    return posts, synthetic_sources
+        enriched_posts.append(row)
+    return enriched_posts, synthetic_sources
 
 
 def _attach_parent_info(
-    posts: pd.DataFrame,
-) -> tuple[pd.DataFrame, dict[str, dict[str, str]]]:
+    posts: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, dict[str, str]]]:
     posts = _add_csv_parent_columns(posts)
     posts = _infer_missing_parent_ids(posts)
     return _add_synthetic_sources(posts)
 
 
-def _build_assertions_by_post(view_df: pd.DataFrame) -> dict[str, list[dict]]:
+def _build_assertions_by_post(
+    view_rows: list[dict[str, object]],
+) -> dict[str, list[dict]]:
     cols = ["idx", "action", "action_strength", "summary", "evidence", "confidence"]
-    assertion_cols = [col for col in cols if col in view_df.columns]
+    assertion_cols = [col for col in cols if any(col in row for row in view_rows)]
     if not assertion_cols:
         return {}
 
-    deduped = view_df.copy()
-    if "post_uid" not in deduped.columns:
+    if not any("post_uid" in row for row in view_rows):
         return {}
-    if "idx" in deduped.columns:
-        # When grouping by cluster, one assertion can appear multiple times (explode).
-        # Dedupe so the tree doesn't repeat the same assertion.
-        deduped = deduped.drop_duplicates(subset=["post_uid", "idx"], keep="first")
-    else:
-        deduped = deduped.drop_duplicates(
-            subset=["post_uid", *assertion_cols], keep="first"
-        )
+    deduped: list[dict[str, object]] = []
+    seen_keys: set[tuple[object, ...]] = set()
+    has_idx = any("idx" in row for row in view_rows)
+    for row in view_rows:
+        post_uid = str(row.get("post_uid") or "").strip()
+        if not post_uid:
+            continue
+        dedupe_key: tuple[object, ...]
+        if has_idx:
+            dedupe_key = (post_uid, row.get("idx"))
+        else:
+            dedupe_key = tuple([post_uid, *[row.get(col) for col in assertion_cols]])
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        deduped.append(dict(row))
 
-    order_cols = [
-        col for col in ["post_uid", "idx", "created_at"] if col in view_df.columns
-    ]
-    ordered = deduped.sort_values(by=order_cols, ascending=True)
+    ordered = sorted(deduped, key=_assertion_row_sort_key)
 
     assertions_by_post: dict[str, list[dict]] = {}
-    for post_uid, group in ordered.groupby("post_uid"):
-        records: list[dict] = []
-        for _, row in group[assertion_cols].iterrows():
-            record = {col: row.get(col) for col in assertion_cols}
-            records.append(record)
-        assertions_by_post[str(post_uid)] = records
+    for row in ordered:
+        post_uid = str(row.get("post_uid") or "").strip()
+        if not post_uid:
+            continue
+        record = {col: row.get(col) for col in assertion_cols}
+        assertions_by_post.setdefault(post_uid, []).append(record)
     return assertions_by_post
 
 
 def _build_nodes(
-    posts: pd.DataFrame,
+    posts: list[dict[str, object]],
     *,
     assertions_by_post: dict[str, list[dict]],
     synthetic_sources: dict[str, dict[str, str]],
 ) -> dict[str, dict]:
     nodes: dict[str, dict] = {}
-    for _, row in posts.iterrows():
+    for row in posts:
         platform_post_id = clean_id(row.get("platform_post_id"))
         if not platform_post_id:
             continue
@@ -412,7 +448,7 @@ def _build_children_map(nodes: dict[str, dict]) -> dict[str, list[str]]:
 
     def node_sort_key(nid: str) -> tuple:
         ts = to_ts((nodes.get(nid) or {}).get("created_at"))
-        ts_val = ts if ts is not None else _TIMESTAMP_SORT_FALLBACK
+        ts_val = ts if ts is not None else _timestamp_sort_fallback()
         return (ts_val, nid)
 
     for parent_id, kids in children.items():
@@ -462,10 +498,8 @@ def _subtree_ids(root_id: str, *, children: dict[str, list[str]]) -> set[str]:
     return subtree
 
 
-def _latest_activity(
-    subtree: set[str], *, nodes: dict[str, dict]
-) -> pd.Timestamp | None:
-    latest: pd.Timestamp | None = None
+def _latest_activity(subtree: set[str], *, nodes: dict[str, dict]) -> datetime | None:
+    latest: datetime | None = None
     for nid in subtree:
         ts = to_ts((nodes.get(nid) or {}).get("created_at"))
         if ts is None:
@@ -515,7 +549,7 @@ def _build_thread(
 
 
 def build_weibo_thread_forest(
-    view_df: pd.DataFrame, *, posts_all: pd.DataFrame
+    view_rows: list[dict[str, object]], *, posts_all: list[dict[str, object]]
 ) -> list[dict]:
     """
     Build parent-child thread forest for a selected topic/board.
@@ -525,19 +559,19 @@ def build_weibo_thread_forest(
     - real tree nodes come from posts_all (full posts table), so we can include
       siblings/children even if they have no assertions.
     """
-    if view_df.empty or "post_uid" not in view_df.columns:
+    if not view_rows or not any("post_uid" in row for row in view_rows):
         return []
 
-    selected_ids = _collect_selected_ids(view_df)
+    selected_ids = _collect_selected_ids(view_rows)
     if not selected_ids:
         return []
 
     posts = _prepare_posts(posts_all)
-    if posts.empty:
+    if not posts:
         return []
 
     posts, synthetic_sources = _attach_parent_info(posts)
-    assertions_by_post = _build_assertions_by_post(view_df)
+    assertions_by_post = _build_assertions_by_post(view_rows)
     nodes = _build_nodes(
         posts,
         assertions_by_post=assertions_by_post,
@@ -558,7 +592,8 @@ def build_weibo_thread_forest(
         for root_id in roots
     ]
     threads.sort(
-        key=lambda item: to_ts(item.get("latest_activity")) or _TIMESTAMP_SORT_FALLBACK,
+        key=lambda item: to_ts(item.get("latest_activity"))
+        or _timestamp_sort_fallback(),
         reverse=True,
     )
     return threads

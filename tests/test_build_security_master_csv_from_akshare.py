@@ -3,17 +3,25 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
-import pandas as pd
+
+class _FakeFrame:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self._rows = [dict(row) for row in rows]
+        self.columns = list(self._rows[0]) if self._rows else []
+
+    def to_dict(self, orient: str) -> list[dict[str, object]]:
+        assert orient == "records"
+        return [dict(row) for row in self._rows]
 
 
 class _FakeAkshare:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def stock_info_sh_name_code(self, *, symbol: str) -> pd.DataFrame:
+    def stock_info_sh_name_code(self, *, symbol: str) -> _FakeFrame:
         self.calls.append(("stock_info_sh_name_code", symbol))
         if symbol == "主板A股":
-            return pd.DataFrame(
+            return _FakeFrame(
                 [
                     {"证券代码": "600519", "证券简称": "贵州茅台"},
                     {"证券代码": "600519", "证券简称": "贵州茅台-重复"},
@@ -21,14 +29,14 @@ class _FakeAkshare:
                 ]
             )
         if symbol == "科创板":
-            return pd.DataFrame([{"证券代码": "688111", "证券简称": "金山办公"}])
+            return _FakeFrame([{"证券代码": "688111", "证券简称": "金山办公"}])
         raise AssertionError(f"unexpected symbol: {symbol}")
 
-    def stock_info_sz_name_code(self, *, symbol: str) -> pd.DataFrame:
+    def stock_info_sz_name_code(self, *, symbol: str) -> _FakeFrame:
         self.calls.append(("stock_info_sz_name_code", symbol))
         if symbol != "A股列表":
             raise AssertionError(f"unexpected symbol: {symbol}")
-        return pd.DataFrame(
+        return _FakeFrame(
             [
                 {"A股代码": "000001", "A股简称": "平安银行"},
                 {"A股代码": "300750", "A股简称": "宁德时代"},
@@ -53,8 +61,8 @@ class _FakeOpenCC:
         return mapping.get(text, text)
 
 
-def _hkex_equity_frame() -> pd.DataFrame:
-    return pd.DataFrame(
+def _hkex_equity_frame() -> _FakeFrame:
+    return _FakeFrame(
         [
             {
                 "股份代號": "00700",
@@ -135,7 +143,7 @@ def test_build_security_master_rows_reads_expected_sources() -> None:
             "stock_key": "stock:01810.HK",
             "market": "HK",
             "code": "01810",
-            "official_name": "小米集团－W",
+            "official_name": "小米集团-W",
         },
         {
             "stock_key": "stock:08495.HK",
@@ -168,15 +176,15 @@ def test_build_security_master_rows_fails_when_akshare_columns_change() -> None:
     script = importlib.import_module("build_security_master_csv_from_akshare")
 
     class _BrokenAkshare:
-        def stock_info_sh_name_code(self, *, symbol: str) -> pd.DataFrame:
+        def stock_info_sh_name_code(self, *, symbol: str) -> _FakeFrame:
             if symbol == "主板A股":
-                return pd.DataFrame([{"代码": "600519", "证券简称": "贵州茅台"}])
+                return _FakeFrame([{"代码": "600519", "证券简称": "贵州茅台"}])
             if symbol == "科创板":
-                return pd.DataFrame([{"证券代码": "688111", "证券简称": "金山办公"}])
+                return _FakeFrame([{"证券代码": "688111", "证券简称": "金山办公"}])
             raise AssertionError(f"unexpected symbol: {symbol}")
 
-        def stock_info_sz_name_code(self, *, symbol: str) -> pd.DataFrame:
-            return pd.DataFrame([{"A股代码": "000001", "A股简称": "平安银行"}])
+        def stock_info_sz_name_code(self, *, symbol: str) -> _FakeFrame:
+            return _FakeFrame([{"A股代码": "000001", "A股简称": "平安银行"}])
 
     try:
         script.build_security_master_rows(
@@ -207,7 +215,7 @@ def test_build_security_master_csv_writes_expected_csv(tmp_path: Path) -> None:
         "stock:000001.SZ,SZ,000001,平安银行\n"
         "stock:00700.HK,HK,00700,腾讯控股\n"
         "stock:00860.HK,HK,00860,APOLLO出行\n"
-        "stock:01810.HK,HK,01810,小米集团－W\n"
+        "stock:01810.HK,HK,01810,小米集团-W\n"
         "stock:08495.HK,HK,08495,1957&CO.(HOSPITALITY)\n"
         "stock:300750.SZ,SZ,300750,宁德时代\n"
         "stock:600519.SH,SH,600519,贵州茅台\n"
@@ -264,22 +272,22 @@ def test_build_security_master_rows_removes_whitespace_inside_official_name() ->
     fake_opencc = _FakeOpenCC()
 
     class _NameSpaceAkshare:
-        def stock_info_sh_name_code(self, *, symbol: str) -> pd.DataFrame:
+        def stock_info_sh_name_code(self, *, symbol: str) -> _FakeFrame:
             if symbol == "主板A股":
-                return pd.DataFrame([{"证券代码": "600519", "证券简称": "贵州茅台"}])
+                return _FakeFrame([{"证券代码": "600519", "证券简称": "贵州茅台"}])
             if symbol == "科创板":
-                return pd.DataFrame([{"证券代码": "688111", "证券简称": "金山办公"}])
+                return _FakeFrame([{"证券代码": "688111", "证券简称": "金山办公"}])
             raise AssertionError(f"unexpected symbol: {symbol}")
 
-        def stock_info_sz_name_code(self, *, symbol: str) -> pd.DataFrame:
+        def stock_info_sz_name_code(self, *, symbol: str) -> _FakeFrame:
             if symbol != "A股列表":
                 raise AssertionError(f"unexpected symbol: {symbol}")
-            return pd.DataFrame([{"A股代码": "000012", "A股简称": "南  玻Ａ"}])
+            return _FakeFrame([{"A股代码": "000012", "A股简称": "南  玻Ａ"}])
 
     rows = script.build_security_master_rows(
         _NameSpaceAkshare(),
         markets=("sz", "hk"),
-        hkex_securities_frame=pd.DataFrame(
+        hkex_securities_frame=_FakeFrame(
             [
                 {
                     "股份代號": "00700",
@@ -327,7 +335,7 @@ def test_append_hkex_equity_rows_fails_when_hkex_columns_change() -> None:
     try:
         script.append_hkex_equity_rows(
             rows_by_stock_key,
-            pd.DataFrame(
+            _FakeFrame(
                 [
                     {
                         "证券代码": "00700",
@@ -369,11 +377,11 @@ def test_load_hkex_securities_frame_fails_with_clear_error_when_fetch_breaks(
 ) -> None:
     script = importlib.import_module("build_security_master_csv_from_akshare")
 
-    def _fake_read_excel(*args, **kwargs):
+    def _fake_get(*args, **kwargs):
         del args, kwargs
         raise ConnectionError("boom")
 
-    monkeypatch.setattr(script.pd, "read_excel", _fake_read_excel)
+    monkeypatch.setattr(script.requests, "get", _fake_get)
 
     try:
         script.load_hkex_securities_frame()

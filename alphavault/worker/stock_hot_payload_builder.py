@@ -3,18 +3,22 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import pandas as pd
-
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.postgres_db import (
     PostgresConnection,
     qualify_postgres_table,
     require_postgres_schema_name,
 )
-from alphavault.db.sql_df import read_sql_df
+from alphavault.db.sql_rows import read_sql_rows
 from alphavault.domains.stock.keys import (
     normalize_stock_key as _normalize_stock_key,
     stock_key_lookup_candidates,
+)
+from alphavault.research_signal_view import (
+    coerce_signal_timestamp,
+    default_signal_reference_time,
+    format_signal_created_at_line,
+    merge_post_fields,
 )
 from alphavault.domains.thread_tree.service import build_post_tree_map
 from alphavault.research_workbench import RESEARCH_RELATIONS_TABLE
@@ -65,22 +69,28 @@ def _source_table(conn: object, table_name: str) -> str:
     )
 
 
-def _load_stock_alias_relations(conn: PostgresConnection) -> pd.DataFrame:
+def _load_stock_alias_relations(
+    conn: PostgresConnection,
+) -> list[dict[str, object]]:
     try:
-        return read_sql_df(conn, STOCK_ALIAS_RELATIONS_SQL)
+        return read_sql_rows(conn, STOCK_ALIAS_RELATIONS_SQL)
     except BaseException:
-        return pd.DataFrame()
+        return []
 
 
-def _alias_keys_for_stock(relations: pd.DataFrame, *, stock_key: str) -> list[str]:
-    if relations.empty:
+def _alias_keys_for_stock(
+    relations: list[dict[str, object]],
+    *,
+    stock_key: str,
+) -> list[str]:
+    if not relations:
         return []
     left = str(stock_key or "").strip()
     if not left:
         return []
     out: list[str] = []
     seen: set[str] = set()
-    for _, row in relations.iterrows():
+    for row in relations:
         relation_type = str(row.get("relation_type") or "").strip()
         relation_label = str(row.get("relation_label") or "").strip()
         if relation_type != "stock_alias" and relation_label != "alias_of":
@@ -98,10 +108,10 @@ def _load_stock_assertions(
     conn: PostgresConnection,
     *,
     stock_key: str,
-    stock_relations: pd.DataFrame,
+    stock_relations: list[dict[str, object]],
     window_days: int,
     max_rows: int,
-) -> pd.DataFrame:
+) -> list[dict[str, object]]:
     posts_table = _source_table(conn, "posts")
     assertions_table = _source_table(conn, "assertions")
     assertion_entities_table = _source_table(conn, "assertion_entities")
@@ -151,26 +161,32 @@ ORDER BY p.created_at DESC
 LIMIT :limit
 """
 
-    assertions = read_sql_df(conn, query, params=params)
-    if assertions.empty:
+    assertions = read_sql_rows(conn, query, params=params)
+    if not assertions:
         return assertions
-    out = assertions.copy()
-    for col in ["assertion_id", "post_uid", "summary", "action", "resolved_entity_key"]:
-        if col in out.columns:
-            out[col] = out[col].fillna("").astype(str)
-    out["sector_keys"] = out["assertion_id"].map(
-        _load_sector_keys_by_assertion_id(
-            conn,
-            assertion_ids=[
-                str(item or "").strip()
-                for item in out.get("assertion_id", pd.Series(dtype=str)).tolist()
-                if str(item or "").strip()
-            ],
-        )
+    sector_keys_by_assertion_id = _load_sector_keys_by_assertion_id(
+        conn,
+        assertion_ids=[
+            str(row.get("assertion_id") or "").strip()
+            for row in assertions
+            if str(row.get("assertion_id") or "").strip()
+        ],
     )
-    out["sector_keys"] = out["sector_keys"].apply(
-        lambda item: item if isinstance(item, list) else []
-    )
+    out: list[dict[str, object]] = []
+    for raw_row in assertions:
+        row = dict(raw_row)
+        for col in [
+            "assertion_id",
+            "post_uid",
+            "summary",
+            "action",
+            "resolved_entity_key",
+        ]:
+            if col in row:
+                row[col] = str(row.get(col) or "").strip()
+        assertion_id = str(row.get("assertion_id") or "").strip()
+        row["sector_keys"] = list(sector_keys_by_assertion_id.get(assertion_id, []))
+        out.append(row)
     return out
 
 
@@ -216,11 +232,11 @@ def _load_posts_for_assertions(
     conn: PostgresConnection,
     *,
     post_uids: list[str],
-) -> pd.DataFrame:
+) -> list[dict[str, object]]:
     posts_table = _source_table(conn, "posts")
     cleaned = [str(uid or "").strip() for uid in post_uids if str(uid or "").strip()]
     if not cleaned:
-        return pd.DataFrame()
+        return []
     placeholders = ", ".join(["?"] * len(cleaned))
     sql = f"""
 SELECT {", ".join(WANTED_POST_COLUMNS)}
@@ -228,110 +244,39 @@ FROM {posts_table}
 WHERE processed_at IS NOT NULL
   AND post_uid IN ({placeholders})
 """
-    posts = read_sql_df(conn, sql, params=cleaned)
-    if posts.empty:
-        return posts
-    out = posts.copy()
-    for col in ["post_uid", "author", "url", "raw_text"]:
-        if col not in out.columns:
-            out[col] = ""
-        out[col] = out[col].fillna("").astype(str)
+    posts = read_sql_rows(conn, sql, params=cleaned)
+    out: list[dict[str, object]] = []
+    for raw_row in posts:
+        row = dict(raw_row)
+        for col in ["post_uid", "author", "url", "raw_text"]:
+            row[col] = str(row.get(col) or "").strip()
+        out.append(row)
     return out
 
 
-def _merge_post_fields(assertions: pd.DataFrame, posts: pd.DataFrame) -> pd.DataFrame:
-    if assertions.empty or posts.empty or "post_uid" not in assertions.columns:
-        return assertions
-    # Include post url so UI can show an "open original" link.
-    wanted_post_cols = [
-        "post_uid",
-        "raw_text",
-        "author",
-        "url",
-        "created_at",
-    ]
-    post_cols = posts[[col for col in wanted_post_cols if col in posts.columns]].copy()
-    post_cols = post_cols.rename(
-        columns={
-            "raw_text": "_post_raw_text",
-            "author": "_post_author",
-            "url": "_post_url",
-            "created_at": "_post_created_at",
-        }
-    )
-    merged = assertions.merge(post_cols, on="post_uid", how="left")
-    for col in ["raw_text", "author", "url"]:
-        if col not in merged.columns:
-            merged[col] = ""
-        merged[col] = merged[col].fillna("").astype(str)
-    merged.loc[merged["raw_text"].eq(""), "raw_text"] = (
-        merged.loc[merged["raw_text"].eq(""), "_post_raw_text"].fillna("").astype(str)
-    )
-    merged.loc[merged["author"].eq(""), "author"] = (
-        merged.loc[merged["author"].eq(""), "_post_author"].fillna("").astype(str)
-    )
-    if "_post_url" in merged.columns:
-        merged.loc[merged["url"].eq(""), "url"] = (
-            merged.loc[merged["url"].eq(""), "_post_url"].fillna("").astype(str)
-        )
-
-    if "_post_created_at" in merged.columns:
-        post_created_at = pd.to_datetime(merged["_post_created_at"], errors="coerce")
-        if "created_at" not in merged.columns:
-            merged["created_at"] = post_created_at
-        else:
-            merged["created_at"] = pd.to_datetime(merged["created_at"], errors="coerce")
-            merged.loc[merged["created_at"].isna(), "created_at"] = post_created_at
-
-    return merged.drop(
-        columns=[
-            "_post_raw_text",
-            "_post_author",
-            "_post_url",
-            "_post_created_at",
-        ],
-        errors="ignore",
-    )
-
-
-def _coerce_timestamp(value: object) -> pd.Timestamp | None:
-    ts = pd.to_datetime(value, errors="coerce")
-    if pd.isna(ts):
-        return None
-    if getattr(ts, "tzinfo", None) is not None:
-        return ts.tz_convert(None)
-    return pd.Timestamp(ts)
-
-
 def _format_signal_timestamp(value: object) -> str:
-    ts = _coerce_timestamp(value)
+    ts = coerce_signal_timestamp(value)
     if ts is None:
         return ""
     return ts.strftime("%Y-%m-%d %H:%M")
 
 
-def _format_signal_created_at_line(value: object) -> str:
-    text = _format_signal_timestamp(value)
-    if not text:
-        return ""
-    now = pd.Timestamp.now(tz="UTC").tz_convert(None)
-    ts = _coerce_timestamp(value)
-    if ts is None:
-        return text
-    delta_seconds = max((now - ts).total_seconds(), 0.0)
-    minutes = int(delta_seconds // 60)
-    if minutes < 60:
-        age = f"{minutes}分钟前"
-    elif minutes < 24 * 60:
-        age = f"{minutes // 60}小时前"
-    else:
-        age = f"{minutes // (24 * 60)}天前"
-    return f"{text} · {age}"
+def _sort_rows_by_created_at(
+    rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    def _sort_key(row: dict[str, object]) -> tuple[int, float]:
+        ts = coerce_signal_timestamp(row.get("created_at"))
+        if ts is None:
+            return (1, 0.0)
+        return (0, -ts.timestamp())
+
+    return [dict(row) for row in sorted(rows, key=_sort_key)]
 
 
-def _build_related_sectors(rows: pd.DataFrame) -> list[dict[str, str]]:
+def _build_related_sectors(rows: list[dict[str, object]]) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
-    for item in rows.get("sector_keys", pd.Series(dtype=object)).tolist():
+    for row in rows:
+        item = row.get("sector_keys")
         if not isinstance(item, list):
             continue
         for raw in item:
@@ -375,7 +320,7 @@ def build_stock_hot_payload(
         window_days=signal_window_days,
         max_rows=max(1, int(signal_cap) * 4),
     )
-    if assertions.empty:
+    if not assertions:
         stock_value = normalized_key.removeprefix("stock:")
         return {
             "entity_key": normalized_key,
@@ -385,23 +330,21 @@ def build_stock_hot_payload(
             "related": [],
             "counters": {"signal_total": 0},
         }
-    rows = assertions.copy()
+    rows = _sort_rows_by_created_at(assertions)
     entity_key = normalized_key
-    if "created_at" in rows.columns:
-        rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
-        rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
-    total = int(len(rows.index))
-    rows = rows.head(max(1, int(signal_cap))).copy()
+    total = int(len(rows))
+    rows = rows[: max(1, int(signal_cap))]
     post_uids = [
         str(uid or "").strip()
-        for uid in rows.get("post_uid", pd.Series(dtype=str)).tolist()
+        for uid in [row.get("post_uid") for row in rows]
         if str(uid or "").strip()
     ]
     posts = _load_posts_for_assertions(conn, post_uids=post_uids)
-    rows = _merge_post_fields(rows, posts)
+    rows = merge_post_fields(rows, posts)
     tree_map = build_post_tree_map(post_uids=post_uids, posts=posts)
     signals: list[dict[str, str]] = []
-    for _, row in rows.iterrows():
+    reference_now = default_signal_reference_time()
+    for row in rows:
         post_uid = str(row.get("post_uid") or "").strip()
         tree_label, tree_text = tree_map.get(post_uid, ("", ""))
         signals.append(
@@ -412,8 +355,9 @@ def build_stock_hot_payload(
                 "action_strength": str(row.get("action_strength") or "").strip(),
                 "author": str(row.get("author") or "").strip(),
                 "created_at": _format_signal_timestamp(row.get("created_at")),
-                "created_at_line": _format_signal_created_at_line(
-                    row.get("created_at")
+                "created_at_line": format_signal_created_at_line(
+                    row.get("created_at"),
+                    now=reference_now,
                 ),
                 "url": str(row.get("url") or "").strip(),
                 "raw_text": str(row.get("raw_text") or "").strip(),

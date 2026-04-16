@@ -419,11 +419,9 @@ def resolve_assertion_mentions(
                 match_source=mention_type,
             )
             continue
-        if mention_type == "stock_name":
-            continue
 
         alias_key = f"stock:{mention_text}"
-        if mention_type == "stock_alias" and single_stock_code_key:
+        if single_stock_code_key:
             candidate = _build_alias_candidate(
                 stock_key=single_stock_code_key,
                 alias_key=alias_key,

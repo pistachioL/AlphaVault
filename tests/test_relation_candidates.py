@@ -1,18 +1,22 @@
 from __future__ import annotations
 
-import pandas as pd
-
 from alphavault.domains.relation.relation_candidates import (
     build_sector_relation_candidates,
     build_stock_alias_candidates,
     build_stock_sector_candidates,
     classify_sector_relation_label,
 )
+from alphavault.app.relation.candidate_builders import build_stock_pending_candidates
+from alphavault.domains.stock.object_index import build_stock_object_index
 from alphavault.infra.ai.relation_candidate_ranker import enrich_candidates_with_ai
 
 
+def _rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    return rows
+
+
 def test_build_stock_sector_candidates_prefers_high_overlap_entities() -> None:
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -36,7 +40,7 @@ def test_classify_sector_relation_label_without_ai_returns_related() -> None:
 
 
 def test_build_stock_alias_candidates_and_sector_relation_candidates() -> None:
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -70,7 +74,7 @@ def test_build_stock_alias_candidates_and_sector_relation_candidates() -> None:
 def test_build_stock_alias_candidates_and_sector_candidates_use_stock_object_rows() -> (
     None
 ):
-    assertions = pd.DataFrame(
+    assertions = _rows(
         [
             {
                 "post_uid": "p1",
@@ -98,6 +102,47 @@ def test_build_stock_alias_candidates_and_sector_candidates_use_stock_object_row
     assert sector_keys == {"gold"}
 
 
+def test_build_stock_alias_candidates_reuses_passed_stock_index(
+    monkeypatch,
+) -> None:
+    assertions = _rows(
+        [
+            {
+                "post_uid": "p1",
+                "entity_key": "stock:601899.SH",
+                "stock_codes": ["601899.SH"],
+                "stock_names": ["紫金矿业"],
+                "cluster_keys": ["gold"],
+            },
+            {
+                "post_uid": "p2",
+                "entity_key": "stock:紫金",
+                "stock_codes": [],
+                "stock_names": ["紫金"],
+                "cluster_keys": ["copper"],
+            },
+        ]
+    )
+    stock_index = build_stock_object_index(assertions)
+
+    def _should_not_rebuild(_assertions):  # type: ignore[no-untyped-def]
+        raise AssertionError("should_reuse_stock_index")
+
+    monkeypatch.setattr(
+        "alphavault.domains.relation.relation_candidates.build_stock_object_index",
+        _should_not_rebuild,
+    )
+
+    rows = build_stock_alias_candidates(
+        assertions,
+        stock_key="stock:601899.SH",
+        stock_index=stock_index,
+    )
+
+    alias_keys = {row["alias_key"] for row in rows}
+    assert "stock:紫金矿业" in alias_keys
+
+
 def test_enrich_candidates_with_ai_skips_when_disabled() -> None:
     rows = enrich_candidates_with_ai(
         [
@@ -113,3 +158,53 @@ def test_enrich_candidates_with_ai_skips_when_disabled() -> None:
         ai_enabled=False,
     )
     assert rows[0]["ai_status"] == "skipped"
+
+
+def test_build_stock_pending_candidates_skips_enrich_when_ai_disabled(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "alphavault.app.relation.candidate_builders.build_stock_alias_candidates",
+        lambda assertions, stock_key, stock_index=None: [
+            {
+                "candidate_key": "stock:紫金矿业",
+                "alias_key": "stock:紫金矿业",
+                "score": "2",
+                "evidence_summary": "同票名称共现 2 次",
+                "reason_code": "stock_alias_overlap",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "alphavault.app.relation.candidate_builders.build_stock_sector_candidates",
+        lambda assertions, stock_key, stock_index=None: [],
+    )
+    monkeypatch.setattr(
+        "alphavault.app.relation.candidate_builders.enrich_candidates_with_ai",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_enrich_candidates")
+        ),
+    )
+
+    rows = build_stock_pending_candidates(
+        [],
+        stock_key="stock:601899.SH",
+        ai_enabled=False,
+        relation_type="stock_alias",
+    )
+
+    assert rows == [
+        {
+            "candidate_key": "stock:紫金矿业",
+            "alias_key": "stock:紫金矿业",
+            "score": "2",
+            "evidence_summary": "同票名称共现 2 次",
+            "reason_code": "stock_alias_overlap",
+            "relation_type": "stock_alias",
+            "left_key": "stock:601899.SH",
+            "right_key": "stock:紫金矿业",
+            "relation_label": "alias_of",
+            "candidate_id": "stock_alias|alias_of|stock:601899.SH|stock:紫金矿业",
+            "suggestion_reason": "同票名称共现 2 次",
+        }
+    ]

@@ -124,6 +124,16 @@ LIMIT 1
 """
 
 
+def select_security_master_by_stock_keys(table: str, *, key_count: int) -> str:
+    count = max(1, int(key_count or 0))
+    placeholders = ", ".join(["?"] * count)
+    return f"""
+SELECT stock_key, official_name
+FROM {table}
+WHERE stock_key IN ({placeholders})
+"""
+
+
 def select_all_security_master(table: str) -> str:
     return f"""
 SELECT stock_key, official_name, official_name_norm

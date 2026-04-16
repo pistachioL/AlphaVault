@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pandas as pd
-
 from alphavault.domains.common.json_list import parse_json_list
 from alphavault.domains.stock.key_match import (
     build_grouped_key_candidates,
@@ -59,13 +57,13 @@ class StockObjectIndex:
 
 
 def build_stock_object_index(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
-    stock_relations: pd.DataFrame | None = None,
+    stock_relations: list[dict[str, object]] | None = None,
     ai_alias_map: dict[str, str] | None = None,
 ) -> StockObjectIndex:
     enriched = ensure_stock_columns(assertions)
-    if enriched.empty:
+    if not enriched:
         return StockObjectIndex({}, {}, {}, {})
 
     (
@@ -75,12 +73,12 @@ def build_stock_object_index(
         stock_key_to_code,
         stock_name_to_code,
     ) = build_grouped_key_candidates(enriched)
-    if grouped_counts.empty:
+    if not grouped_counts:
         return StockObjectIndex({}, {}, {}, {})
 
     stock_canons = [
         str(item).strip()
-        for item in grouped_counts.index.tolist()
+        for item in grouped_counts.keys()
         if str(item).strip().startswith(STOCK_KEY_PREFIX)
     ]
     if not stock_canons:
@@ -184,10 +182,10 @@ def build_stock_object_index(
 
 
 def resolve_stock_object_key(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     stock_key: str,
-    stock_relations: pd.DataFrame | None = None,
+    stock_relations: list[dict[str, object]] | None = None,
     ai_alias_map: dict[str, str] | None = None,
 ) -> str:
     return build_stock_object_index(
@@ -198,16 +196,16 @@ def resolve_stock_object_key(
 
 
 def filter_assertions_for_stock_object(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     stock_key: str,
-    stock_relations: pd.DataFrame | None = None,
+    stock_relations: list[dict[str, object]] | None = None,
     ai_alias_map: dict[str, str] | None = None,
     stock_index: StockObjectIndex | None = None,
-) -> pd.DataFrame:
+) -> list[dict[str, object]]:
     enriched = ensure_stock_columns(assertions)
-    if enriched.empty:
-        return enriched.head(0).copy()
+    if not enriched:
+        return []
     index = stock_index or build_stock_object_index(
         enriched,
         stock_relations=stock_relations,
@@ -215,20 +213,21 @@ def filter_assertions_for_stock_object(
     )
     target_key = index.resolve(stock_key)
     if not target_key:
-        return enriched.head(0).copy()
+        return []
     member_keys = index.member_keys_by_object_key.get(target_key)
     if not member_keys:
         member_keys = {target_key}
-    if "entity_key" not in enriched.columns:
-        return enriched.head(0).copy()
-    entity_keys = enriched["entity_key"].fillna("").astype(str).str.strip()
-    return enriched[entity_keys.isin(member_keys)].copy()
+    return [
+        dict(row)
+        for row in enriched
+        if str(row.get("entity_key") or "").strip() in member_keys
+    ]
 
 
 def build_stock_search_rows(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
-    stock_relations: pd.DataFrame | None = None,
+    stock_relations: list[dict[str, object]] | None = None,
     ai_alias_map: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     index = build_stock_object_index(
@@ -254,14 +253,14 @@ def build_stock_search_rows(
 
 
 def pick_unresolved_stock_alias_keys(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
-    stock_relations: pd.DataFrame | None = None,
+    stock_relations: list[dict[str, object]] | None = None,
     alias_keys: list[str] | None = None,
     base_index: StockObjectIndex | None = None,
 ) -> list[str]:
     enriched = ensure_stock_columns(assertions)
-    if enriched.empty:
+    if not enriched:
         return []
     index = base_index or build_stock_object_index(
         enriched, stock_relations=stock_relations
@@ -273,31 +272,21 @@ def pick_unresolved_stock_alias_keys(
     )
 
 
-def ensure_stock_columns(assertions: pd.DataFrame) -> pd.DataFrame:
-    if assertions.empty:
-        return assertions.copy()
-    out = assertions.copy()
-    raw_codes = (
-        out["stock_codes"]
-        if "stock_codes" in out.columns
-        else pd.Series(["[]"] * len(out), index=out.index)
-    )
-    out["stock_codes"] = raw_codes.apply(parse_json_list)
-    raw_names = (
-        out["stock_names"]
-        if "stock_names" in out.columns
-        else pd.Series(["[]"] * len(out), index=out.index)
-    )
-    out["stock_names"] = raw_names.apply(parse_json_list)
-    if "match_keys" not in out.columns:
-        out["match_keys"] = out.apply(
-            lambda row: _build_stock_match_keys(
-                resolved_entity_key=row.get("resolved_entity_key"),
-                entity_key=row.get("entity_key"),
-                stock_codes=row.get("stock_codes"),
-            ),
-            axis=1,
-        )
+def ensure_stock_columns(
+    assertions: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    out: list[dict[str, object]] = []
+    for row in assertions:
+        payload = dict(row)
+        payload["stock_codes"] = parse_json_list(payload.get("stock_codes"))
+        payload["stock_names"] = parse_json_list(payload.get("stock_names"))
+        if not isinstance(payload.get("match_keys"), list):
+            payload["match_keys"] = _build_stock_match_keys(
+                resolved_entity_key=payload.get("resolved_entity_key"),
+                entity_key=payload.get("entity_key"),
+                stock_codes=payload.get("stock_codes"),
+            )
+        out.append(payload)
     return out
 
 
@@ -328,12 +317,12 @@ def _build_stock_match_keys(
 
 
 def _iter_stock_alias_relations(
-    stock_relations: pd.DataFrame | None,
+    stock_relations: list[dict[str, object]] | None,
 ) -> list[dict[str, str]]:
-    if stock_relations is None or stock_relations.empty:
+    if not stock_relations:
         return []
     rows: list[dict[str, str]] = []
-    for _, row in stock_relations.iterrows():
+    for row in stock_relations:
         relation_type = str(row.get("relation_type") or "").strip()
         relation_label = str(row.get("relation_label") or "").strip()
         if (
@@ -351,7 +340,7 @@ def _iter_stock_alias_relations(
 
 
 def _pick_unresolved_alias_keys(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     base_index: StockObjectIndex,
     alias_keys: list[str] | None,
@@ -361,10 +350,7 @@ def _pick_unresolved_alias_keys(
     raw_candidates = (
         [str(key or "").strip() for key in alias_keys]
         if alias_keys
-        else [
-            str(item or "").strip()
-            for item in assertions.get("entity_key", pd.Series(dtype=str)).tolist()
-        ]
+        else [str(row.get("entity_key") or "").strip() for row in assertions]
     )
 
     for raw_key in raw_candidates:
@@ -389,7 +375,7 @@ def _pick_unresolved_alias_keys(
     return candidates
 
 
-def _choose_object_key(component: set[str], grouped_counts: pd.Series) -> str:
+def _choose_object_key(component: set[str], grouped_counts: dict[str, int]) -> str:
     code_members = sorted(
         key for key in component if is_stock_code_value(stock_value(key))
     )

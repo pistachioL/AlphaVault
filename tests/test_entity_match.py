@@ -213,6 +213,89 @@ def test_resolve_assertion_mentions_allows_stock_name_to_fallback_to_confirmed_a
         conn.close()
 
 
+def test_resolve_assertion_mentions_creates_candidate_for_unresolved_stock_name_with_unique_stock_code(
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn)
+    try:
+        result = resolve_assertion_mentions(
+            conn,
+            assertion_mentions=[
+                {
+                    "mention_text": "600900",
+                    "mention_type": "stock_code",
+                    "confidence": 0.95,
+                },
+                {
+                    "mention_text": "长江电力股份有限公司",
+                    "mention_type": "stock_name",
+                    "confidence": 0.88,
+                },
+            ],
+        )
+
+        assert result.entities == [
+            {
+                "entity_key": "stock:600900.SH",
+                "entity_type": "stock",
+                "match_source": "stock_code",
+                "is_primary": 1,
+            }
+        ]
+        assert result.relation_candidates == [
+            {
+                "candidate_id": "stock_alias|alias_of|stock:600900.SH|stock:长江电力股份有限公司",
+                "relation_type": "stock_alias",
+                "left_key": "stock:600900.SH",
+                "right_key": "stock:长江电力股份有限公司",
+                "relation_label": "alias_of",
+                "suggestion_reason": "同条观点里代码和简称一起出现",
+                "evidence_summary": "同条观点里代码和简称一起出现",
+                "score": 0.88,
+                "ai_status": "skipped",
+            }
+        ]
+        assert result.alias_task_keys == []
+    finally:
+        conn.close()
+
+
+def test_resolve_assertion_mentions_creates_alias_task_for_unresolved_stock_name_without_unique_stock_code(
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn)
+    try:
+        result = resolve_assertion_mentions(
+            conn,
+            assertion_mentions=[
+                {
+                    "mention_text": "长江电力股份有限公司",
+                    "mention_type": "stock_name",
+                    "confidence": 0.88,
+                }
+            ],
+            alias_task_sample={
+                "sample_post_uid": "weibo:2",
+                "sample_evidence": "长江电力股份有限公司今天很强",
+                "sample_raw_text_excerpt": "原文里直接写了公司全名。",
+            },
+        )
+
+        assert result.entities == []
+        assert result.relation_candidates == []
+        assert result.alias_task_keys == ["stock:长江电力股份有限公司"]
+        assert result.alias_task_samples == [
+            {
+                "alias_key": "stock:长江电力股份有限公司",
+                "sample_post_uid": "weibo:2",
+                "sample_evidence": "长江电力股份有限公司今天很强",
+                "sample_raw_text_excerpt": "原文里直接写了公司全名。",
+            }
+        ]
+    finally:
+        conn.close()
+
+
 def test_resolve_assertion_mentions_does_not_use_historical_stock_name_mapping(
     pg_conn,
 ) -> None:
@@ -256,7 +339,7 @@ VALUES (?, ?, ?, ?, ?)
 
         assert result.entities == []
         assert result.relation_candidates == []
-        assert result.alias_task_keys == []
+        assert result.alias_task_keys == ["stock:紫金矿业"]
     finally:
         conn.close()
 

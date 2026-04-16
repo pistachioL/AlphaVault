@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
-import pandas as pd
-
 from alphavault.domains.stock.keys import STOCK_KEY_PREFIX
 from alphavault.domains.stock.object_index import (
+    StockObjectIndex,
     build_stock_object_index,
     filter_assertions_for_stock_object,
 )
@@ -16,41 +15,42 @@ RELATION_LABEL_PARENT_CHILD = "parent_child"
 
 
 def build_stock_alias_candidates(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     stock_key: str,
+    stock_index: StockObjectIndex | None = None,
 ) -> list[dict[str, str]]:
     target = str(stock_key or "").strip()
-    if assertions.empty or not target or "entity_key" not in assertions.columns:
+    if not assertions or not target:
         return []
 
-    stock_index = build_stock_object_index(assertions)
-    entity_key = stock_index.resolve(target)
+    resolved_stock_index = stock_index or build_stock_object_index(assertions)
+    entity_key = resolved_stock_index.resolve(target)
     if not entity_key:
         return []
     stock_view = filter_assertions_for_stock_object(
         assertions,
         stock_key=entity_key,
-        stock_index=stock_index,
+        stock_index=resolved_stock_index,
     )
-    if stock_view.empty:
+    if not stock_view:
         return []
-    member_keys = stock_index.member_keys_by_object_key.get(entity_key, set())
+    member_keys = resolved_stock_index.member_keys_by_object_key.get(entity_key, set())
 
     alias_scores: Counter[str] = Counter()
     for member_key in member_keys:
         alias_key = str(member_key or "").strip()
         if not alias_key or alias_key == entity_key:
             continue
-        topic_hits = (
-            stock_view["entity_key"].astype(str).str.strip().eq(alias_key).sum()
-            if "entity_key" in stock_view.columns
-            else 0
+        topic_hits = sum(
+            1
+            for row in stock_view
+            if str(row.get("entity_key") or "").strip() == alias_key
         )
         if topic_hits:
             alias_scores[alias_key] += int(topic_hits)
 
-    for _, row in stock_view.iterrows():
+    for row in stock_view:
         for name in _coerce_list(row.get("stock_names")):
             alias_key = f"{STOCK_KEY_PREFIX}{name}"
             if alias_key != entity_key:
@@ -69,28 +69,29 @@ def build_stock_alias_candidates(
 
 
 def build_stock_sector_candidates(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     stock_key: str,
+    stock_index: StockObjectIndex | None = None,
 ) -> list[dict[str, str]]:
     target = str(stock_key or "").strip()
-    if assertions.empty or not target or "entity_key" not in assertions.columns:
+    if not assertions or not target:
         return []
 
-    stock_index = build_stock_object_index(assertions)
-    entity_key = stock_index.resolve(target)
+    resolved_stock_index = stock_index or build_stock_object_index(assertions)
+    entity_key = resolved_stock_index.resolve(target)
     if not entity_key:
         return []
     stock_view = filter_assertions_for_stock_object(
         assertions,
         stock_key=entity_key,
-        stock_index=stock_index,
+        stock_index=resolved_stock_index,
     )
-    if stock_view.empty:
+    if not stock_view:
         return []
 
     sector_scores: Counter[str] = Counter()
-    for _, row in stock_view.iterrows():
+    for row in stock_view:
         for sector_key in _row_sector_keys(row):
             sector_scores[sector_key] += 1
 
@@ -108,16 +109,16 @@ def build_stock_sector_candidates(
 
 
 def build_sector_relation_candidates(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
     sector_key: str,
 ) -> list[dict[str, str]]:
     target = str(sector_key or "").strip()
-    if assertions.empty or not target:
+    if not assertions or not target:
         return []
 
     stocks_by_sector: dict[str, set[str]] = defaultdict(set)
-    for _, row in assertions.iterrows():
+    for row in assertions:
         entity_key = str(row.get("entity_key") or "").strip()
         if not entity_key.startswith(STOCK_KEY_PREFIX):
             continue
@@ -156,7 +157,7 @@ def classify_sector_relation_label(*, ai_enabled: bool, explanation: str) -> str
     return RELATION_LABEL_RELATED
 
 
-def _row_sector_keys(row: pd.Series) -> list[str]:
+def _row_sector_keys(row: dict[str, object]) -> list[str]:
     keys = _coerce_list(row.get("cluster_keys"))
     if keys:
         return keys

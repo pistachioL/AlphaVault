@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
 import reflex as rx
 
 from alphavault.db.postgres_env import infer_platform_from_post_uid
@@ -173,7 +172,7 @@ class HomeworkState(rx.State):
 
         result = build_board(
             board_assertions,
-            pd.DataFrame(),
+            [],
             group_col="board_group_key",
             group_label="主题",
             window_days=int(self.window_days),
@@ -358,7 +357,7 @@ class HomeworkState(rx.State):
 
         yield
         posts, err = load_single_post_for_tree_from_env(uid)
-        debug_posts_count = int(len(posts.index))
+        debug_posts_count = int(len(posts))
         if err:
             self.tree_loading = False
             self.selected_tree_message = f"{TREE_MESSAGE_LOAD_ERROR_PREFIX}{err}"
@@ -372,7 +371,7 @@ class HomeworkState(rx.State):
             )
             return
 
-        if posts.empty:
+        if not posts:
             self.tree_loading = False
             self.selected_tree_message = TREE_MESSAGE_EMPTY
             self.selected_tree_debug_text = _build_tree_debug_text(
@@ -386,8 +385,8 @@ class HomeworkState(rx.State):
             return
 
         posts_view = slice_posts_for_single_post_tree(post_uid=uid, posts=posts)
-        debug_slice_count = int(len(posts_view.index))
-        if posts_view.empty:
+        debug_slice_count = int(len(posts_view))
+        if not posts_view:
             self.tree_loading = False
             self.selected_tree_message = TREE_MESSAGE_EMPTY
             self.selected_tree_debug_text = _build_tree_debug_text(
@@ -520,33 +519,29 @@ def _save_default_homework_trade_feed_payload(
 
 
 def _prepare_board_assertions(
-    assertions: pd.DataFrame,
+    assertions: list[dict[str, object]],
     *,
-    stock_relations: pd.DataFrame,
-) -> tuple[pd.DataFrame, dict[str, str]]:
-    if assertions.empty:
-        return assertions.copy(), {}
-    board_assertions = assertions.copy()
+    stock_relations: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], dict[str, str]]:
+    if not assertions:
+        return [], {}
+    board_assertions = [dict(row) for row in assertions]
     stock_index = build_stock_object_index(
         board_assertions,
         stock_relations=stock_relations,
     )
-    board_group_keys: list[str] = []
     board_topic_labels: dict[str, str] = {}
-    for raw_entity_key in board_assertions.get(
-        "entity_key", pd.Series(dtype=str)
-    ).tolist():
-        entity_key = str(raw_entity_key or "").strip()
+    for row in board_assertions:
+        entity_key = str(row.get("entity_key") or "").strip()
         if entity_key.startswith("stock:"):
             group_key = stock_index.resolve(entity_key)
-            board_group_keys.append(group_key)
+            row["board_group_key"] = group_key
             if group_key:
                 board_topic_labels[group_key] = stock_index.page_title(group_key)
             continue
-        board_group_keys.append(entity_key)
+        row["board_group_key"] = entity_key
         if entity_key:
             board_topic_labels[entity_key] = _topic_label(entity_key)
-    board_assertions["board_group_key"] = board_group_keys
     return board_assertions, board_topic_labels
 
 

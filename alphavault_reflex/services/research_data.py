@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-import pandas as pd
+from datetime import datetime
 
 from alphavault.research_sector_view import (
     SectorResearchView,
     build_sector_research_view,
 )
-from alphavault.research_signal_view import build_signal_rows, merge_post_fields
+from alphavault.research_signal_view import (
+    build_signal_rows,
+    coerce_signal_timestamp,
+    merge_post_fields,
+)
 from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
@@ -36,14 +39,14 @@ class StockResearchView:
 
 
 def build_search_index(
-    posts: pd.DataFrame,
-    assertions: pd.DataFrame,
+    posts: list[dict[str, object]],
+    assertions: list[dict[str, object]],
     *,
-    stock_relations: pd.DataFrame | None = None,
+    stock_relations: list[dict[str, object]] | None = None,
     ai_alias_map: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
     del posts
-    if assertions.empty:
+    if not assertions:
         return []
 
     stock_hits = build_stock_search_rows(
@@ -53,8 +56,8 @@ def build_search_index(
     )
     sector_hits: dict[str, dict[str, str]] = {}
 
-    for item in assertions.get("cluster_keys", pd.Series(dtype=object)).tolist():
-        for sector_key in _coerce_list(item):
+    for row in assertions:
+        for sector_key in _coerce_list(row.get("cluster_keys")):
             sector_hits.setdefault(
                 sector_key,
                 {
@@ -79,18 +82,18 @@ def build_search_index(
 
 
 def build_stock_research_view(
-    posts: pd.DataFrame,
-    assertions: pd.DataFrame,
+    posts: list[dict[str, object]],
+    assertions: list[dict[str, object]],
     *,
     stock_key: str,
-    stock_relations: pd.DataFrame | None = None,
+    stock_relations: list[dict[str, object]] | None = None,
     ai_alias_map: dict[str, str] | None = None,
     signal_page: int = 1,
     signal_page_size: int = MAX_SIGNAL_ROWS,
-    now: pd.Timestamp | None = None,
+    now: datetime | None = None,
 ) -> StockResearchView:
     stock_key = str(stock_key or "").strip()
-    if assertions.empty or not stock_key:
+    if not assertions or not stock_key:
         return StockResearchView(
             entity_key=stock_key,
             page_title=_stock_title(stock_key),
@@ -114,7 +117,7 @@ def build_stock_research_view(
         ai_alias_map=ai_alias_map,
         stock_index=stock_index,
     )
-    stock_view = merge_post_fields(stock_view.copy(), posts)
+    stock_view = merge_post_fields(stock_view, posts)
     signal_slice, signal_total, signal_page = _slice_signal_view(
         stock_view,
         page=signal_page,
@@ -147,44 +150,48 @@ def _clamp_signal_page_size(value: object) -> int:
 
 
 def _slice_signal_view(
-    view: pd.DataFrame,
+    view: list[dict[str, object]],
     *,
     page: int,
     page_size: int,
-) -> tuple[pd.DataFrame, int, int]:
-    if view.empty:
+) -> tuple[list[dict[str, object]], int, int]:
+    if not view:
         return view, 0, 1
 
     safe_page_size = _clamp_signal_page_size(page_size)
     safe_page = _coerce_positive_int(page, default=1)
 
-    rows = view.copy()
-    if "created_at" in rows.columns:
-        rows["created_at"] = pd.to_datetime(rows["created_at"], errors="coerce")
-        rows = rows.sort_values(by="created_at", ascending=False, na_position="last")
+    rows = sorted(view, key=_signal_sort_key)
 
-    total = int(len(rows.index))
+    total = int(len(rows))
     if total <= 0:
-        return rows.head(0), 0, 1
+        return [], 0, 1
 
     total_pages = max(1, (total + safe_page_size - 1) // safe_page_size)
     safe_page = min(safe_page, total_pages)
 
     start = (safe_page - 1) * safe_page_size
     end = start + safe_page_size
-    return rows.iloc[start:end], total, safe_page
+    return [dict(row) for row in rows[start:end]], total, safe_page
 
 
-def _build_related_sector_rows(view: pd.DataFrame) -> list[dict[str, str]]:
+def _build_related_sector_rows(view: list[dict[str, object]]) -> list[dict[str, str]]:
     counts: dict[str, int] = {}
-    for item in view.get("cluster_keys", pd.Series(dtype=object)).tolist():
-        for sector_key in _coerce_list(item):
+    for row in view:
+        for sector_key in _coerce_list(row.get("cluster_keys")):
             counts[sector_key] = int(counts.get(sector_key, 0)) + 1
     ranked = sorted(counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
     return [
         {"sector_key": sector_key, "mention_count": str(count)}
         for sector_key, count in ranked
     ]
+
+
+def _signal_sort_key(row: dict[str, object]) -> tuple[int, float]:
+    ts = coerce_signal_timestamp(row.get("created_at"))
+    if ts is None:
+        return (1, 0.0)
+    return (0, -ts.timestamp())
 
 
 def _coerce_list(value: object) -> list[str]:

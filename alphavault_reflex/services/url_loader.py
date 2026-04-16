@@ -7,10 +7,10 @@ from alphavault.db.postgres_db import (
     ensure_postgres_engine,
     postgres_connect_autocommit,
 )
+from alphavault.db.sql_rows import read_sql_rows
 from alphavault.db.postgres_env import (
     infer_platform_from_post_uid,
 )
-from alphavault.db.sql_df import read_sql_df
 from alphavault.env import load_dotenv_if_present
 from alphavault_reflex.services.source_loader import (
     DEFAULT_FATAL_EXCEPTIONS,
@@ -38,11 +38,11 @@ def load_post_urls_cached(
         f"WHERE post_uid IN ({placeholders})"
     )
     with postgres_connect_autocommit(engine) as conn:
-        df = read_sql_df(conn, sql, params=list(post_uids))
-    if df.empty or "post_uid" not in df.columns or "url" not in df.columns:
+        rows = read_sql_rows(conn, sql, params=list(post_uids))
+    if not rows:
         return {}
     out: dict[str, str] = {}
-    for _, row in df.iterrows():
+    for row in rows:
         uid = str(row.get("post_uid") or "").strip()
         url = str(row.get("url") or "").strip()
         if uid and url:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from alphavault.db.sql.research_workbench import (
     select_security_master_by_official_names,
     select_security_master_by_stock_key,
+    select_security_master_by_stock_keys,
     upsert_security_master_stock as upsert_security_master_stock_sql,
 )
 from alphavault.db.postgres_db import (
@@ -11,6 +12,10 @@ from alphavault.db.postgres_db import (
     run_postgres_transaction,
 )
 from alphavault.domains.stock.keys import normalize_stock_key, stock_value
+from alphavault.domains.stock.names import (
+    normalize_stock_official_name,
+    normalize_stock_official_name_norm,
+)
 from alphavault.infra.entity_match_redis import (
     sync_stock_name_shadow_dict_best_effort,
 )
@@ -28,7 +33,7 @@ def _clean_text(value: object) -> str:
 
 
 def _normalize_name(value: object) -> str:
-    return _clean_text(value).casefold()
+    return normalize_stock_official_name_norm(value)
 
 
 def _resolve_market(*, stock_key: str, market: str) -> str:
@@ -61,7 +66,7 @@ def _build_security_master_upsert_payload(
     resolved_stock_key = normalize_stock_key(stock_key)
     resolved_market = _resolve_market(stock_key=resolved_stock_key, market=market)
     resolved_code = _resolve_code(stock_key=resolved_stock_key, code=code)
-    resolved_name = _clean_text(official_name)
+    resolved_name = normalize_stock_official_name(official_name)
     if (
         not resolved_stock_key
         or not resolved_code
@@ -197,8 +202,40 @@ def get_stock_keys_by_official_names(
     }
 
 
+def get_official_names_by_stock_keys(
+    engine_or_conn: PostgresEngine | PostgresConnection,
+    stock_keys: list[str],
+) -> dict[str, str]:
+    cleaned_keys = [
+        normalize_stock_key(item) for item in stock_keys if normalize_stock_key(item)
+    ]
+    if not cleaned_keys:
+        return {}
+    unique_keys = list(dict.fromkeys(cleaned_keys))
+    sql = select_security_master_by_stock_keys(
+        RESEARCH_SECURITY_MASTER_TABLE,
+        key_count=len(unique_keys),
+    )
+    try:
+        with use_conn(engine_or_conn) as conn:
+            rows = conn.execute(sql, unique_keys).fetchall()
+    except BaseException as err:
+        handle_db_error(engine_or_conn, err)
+    out: dict[str, str] = {}
+    for row in rows:
+        if not row:
+            continue
+        stock_key = normalize_stock_key(row[0])
+        official_name = _clean_text(row[1])
+        if not stock_key or not official_name:
+            continue
+        out[stock_key] = official_name
+    return out
+
+
 __all__ = [
     "bulk_upsert_security_master_stocks",
+    "get_official_names_by_stock_keys",
     "get_stock_keys_by_official_names",
     "upsert_security_master_stock",
 ]
