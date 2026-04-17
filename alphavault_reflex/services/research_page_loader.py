@@ -1,21 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import importlib
+from functools import cache
+from types import ModuleType
 
 from alphavault.domains.thread_tree.service import (
     normalize_tree_lookup_post_uid,
     slice_posts_for_single_post_tree,
-)
-from alphavault_reflex.services.research_data import build_sector_research_view
-from alphavault_reflex.services.homework_board import build_tree
-from alphavault_reflex.services.sector_hot_read import load_sector_cached_view_from_env
-from alphavault_reflex.services.source_read import (
-    load_single_post_for_tree_from_env,
-    load_sources_from_env,
-)
-from alphavault_reflex.services.stock_hot_read import (
-    load_stock_cached_view_from_env,
-    load_stock_sidebar_cached_view as load_stock_sidebar_cached_view_from_env,
 )
 
 from .research_state_utils import (
@@ -26,6 +18,31 @@ from .research_state_utils import (
 
 TREE_MESSAGE_EMPTY = "没有对话流。"
 TREE_MESSAGE_LOAD_ERROR_PREFIX = "加载失败："
+
+
+@cache
+def _load_homework_board_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.homework_board")
+
+
+@cache
+def _load_research_data_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.research_data")
+
+
+@cache
+def _load_sector_hot_read_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.sector_hot_read")
+
+
+@cache
+def _load_source_read_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.source_read")
+
+
+@cache
+def _load_stock_hot_read_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.stock_hot_read")
 
 
 def _empty_stock_page_view(
@@ -65,15 +82,16 @@ def load_stock_page_cached_view(
     author_filter = str(author or "").strip()
     normalized_signal_page = normalize_signal_page(signal_page)
     normalized_signal_page_size = normalize_signal_page_size(signal_page_size)
+    stock_hot_read = _load_stock_hot_read_module()
     if author_filter:
-        view = load_stock_cached_view_from_env(
+        view = stock_hot_read.load_stock_cached_view_from_env(
             stock_key,
             signal_page=normalized_signal_page,
             signal_page_size=normalized_signal_page_size,
             author=author_filter,
         )
     else:
-        view = load_stock_cached_view_from_env(
+        view = stock_hot_read.load_stock_cached_view_from_env(
             stock_key,
             signal_page=normalized_signal_page,
             signal_page_size=normalized_signal_page_size,
@@ -89,7 +107,7 @@ def load_stock_page_cached_view(
 
 def load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
     stock_key = normalize_stock_key(stock_slug)
-    view = load_stock_sidebar_cached_view_from_env(stock_key)
+    view = _load_stock_hot_read_module().load_stock_sidebar_cached_view(stock_key)
     if not view.get("related_sectors") and str(view.get("load_error") or "").strip():
         return _empty_stock_sidebar_view(
             load_error=str(view.get("load_error") or "").strip(),
@@ -111,7 +129,7 @@ def load_stock_signal_detail_view(post_uid: str) -> dict[str, object]:
             "load_error": "",
         }
 
-    posts, err = load_single_post_for_tree_from_env(uid)
+    posts, err = _load_source_read_module().load_single_post_for_tree_from_env(uid)
     if err:
         return {
             "post_uid": uid,
@@ -141,7 +159,7 @@ def load_stock_signal_detail_view(post_uid: str) -> dict[str, object]:
     raw_text = str(matched_post.get("raw_text") or "").strip()
     posts_view = slice_posts_for_single_post_tree(post_uid=uid, posts=posts)
     _label, tree_text = (
-        build_tree(post_uid=uid, posts=posts_view)
+        _load_homework_board_module().build_tree(post_uid=uid, posts=posts_view)
         if posts_view
         else (
             "",
@@ -163,7 +181,9 @@ def load_stock_signal_detail_view(post_uid: str) -> dict[str, object]:
 
 def load_sector_page_view(sector_slug: str) -> dict[str, object]:
     sector_key = str(sector_slug or "").strip()
-    cached_view = load_sector_cached_view_from_env(sector_key)
+    cached_view = _load_sector_hot_read_module().load_sector_cached_view_from_env(
+        sector_key
+    )
     if bool(cached_view.get("snapshot_hit")):
         return {
             "page_title": str(cached_view.get("page_title") or "").strip(),
@@ -179,7 +199,7 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
             "related_stocks": [],
             "load_error": cached_error,
         }
-    posts, assertions, err = load_sources_from_env()
+    posts, assertions, err = _load_source_read_module().load_sources_from_env()
     if err:
         return {
             "page_title": sector_key,
@@ -187,7 +207,11 @@ def load_sector_page_view(sector_slug: str) -> dict[str, object]:
             "related_stocks": [],
             "load_error": err,
         }
-    view = build_sector_research_view(posts, assertions, sector_key=sector_key)
+    view = _load_research_data_module().build_sector_research_view(
+        posts,
+        assertions,
+        sector_key=sector_key,
+    )
     result = asdict(view)
     result["load_error"] = ""
     return result

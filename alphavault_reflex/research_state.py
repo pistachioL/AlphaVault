@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
+from functools import cache
 import reflex as rx
 from reflex import constants as rx_constants
+from types import ModuleType
 
 from alphavault_reflex.services.research_page_loader import (
     load_sector_page_view,
@@ -40,9 +43,17 @@ from alphavault_reflex.services.stock_related_feed import (
     normalize_related_filter,
     normalize_related_limit,
 )
-from alphavault_reflex.services.stock_hot_read import clear_stock_hot_read_caches
-from alphavault_reflex.services.source_read import clear_reflex_source_caches
 from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
+
+
+@cache
+def _load_source_read_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.source_read")
+
+
+@cache
+def _load_stock_hot_read_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.stock_hot_read")
 
 
 class ResearchState(rx.State):
@@ -385,8 +396,8 @@ class ResearchState(rx.State):
 
         success_message = str(result.get("message") or "").strip()
         self._reset_feedback_state(close_dialog=True, clear_success=False)
-        clear_reflex_source_caches()
-        clear_stock_hot_read_caches()
+        _load_source_read_module().clear_reflex_source_caches()
+        _load_stock_hot_read_module().clear_stock_hot_read_caches()
         if self.entity_key.startswith("stock:"):
             self.load_stock_page(
                 self.entity_key.removeprefix("stock:"),
@@ -531,8 +542,8 @@ class ResearchState(rx.State):
 
     @rx.event
     def refresh_stock_related(self) -> None:
-        clear_reflex_source_caches()
-        clear_stock_hot_read_caches()
+        _load_source_read_module().clear_reflex_source_caches()
+        _load_stock_hot_read_module().clear_stock_hot_read_caches()
         if self.entity_key.startswith("stock:"):
             return self.load_stock_page(
                 self.entity_key.removeprefix("stock:"),

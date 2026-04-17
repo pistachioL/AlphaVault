@@ -1,44 +1,16 @@
 from __future__ import annotations
 
+import importlib
+from functools import cache
 import reflex as rx
+from types import ModuleType
 from typing import cast
 from typing import TypedDict
 
-from alphavault.infra.ai.relation_candidate_ranker import (
-    AI_RANK_BATCH_CAP,
-    enrich_candidates_with_ai,
-)
-from alphavault.infra.ai.alias_resolve_predictor import enrich_alias_tasks_with_ai
-from alphavault.research_workbench import (
-    ALIAS_TASK_STATUS_BLOCKED,
-    ALIAS_TASK_STATUS_RESOLVED,
-    get_research_workbench_engine_from_env,
-    get_official_names_by_stock_keys,
-    list_pending_candidates,
-    list_candidate_status_map,
-    list_pending_alias_resolve_tasks,
-    record_stock_alias_relation,
-    set_alias_resolve_task_status,
-    upsert_relation_candidate,
-)
-from alphavault_reflex.services.relation_actions import apply_candidate_action_by_id
-from alphavault.app.relation.candidate_builders import (
-    build_sector_pending_candidates,
-    build_stock_pending_candidates,
-)
-from alphavault_reflex.services.research_data import (
-    build_search_index,
-)
-from alphavault_reflex.services.source_read import (
-    clear_reflex_source_caches,
-    load_stock_alias_relations_from_env,
-    load_sources_from_env,
-)
 from alphavault.domains.stock.key_match import (
     is_stock_code_value,
     normalize_stock_code,
 )
-from alphavault.domains.stock.object_index import build_stock_object_index
 
 
 SECTION_STOCK_ALIAS = "stock_alias"
@@ -46,8 +18,6 @@ SECTION_STOCK_SECTOR = "stock_sector"
 SECTION_SECTOR_SECTOR = "sector_sector"
 SECTION_ALIAS_MANUAL = "alias_manual"
 SECTION_CANDIDATE_LIMIT = 30
-STOCK_ALIAS_PAGE_LIMIT = AI_RANK_BATCH_CAP
-STOCK_ALIAS_PAGE_STEP = AI_RANK_BATCH_CAP
 STOCK_ALIAS_GROUP_MERGE = "merge"
 STOCK_ALIAS_GROUP_REJECT = "reject"
 STOCK_ALIAS_GROUP_OTHER = "other"
@@ -75,6 +45,61 @@ class StockAliasPendingGroup(TypedDict):
     group_key: str
     group_label: str
     rows: list[PendingRow]
+
+
+@cache
+def _load_relation_candidate_ranker_module() -> ModuleType:
+    return importlib.import_module("alphavault.infra.ai.relation_candidate_ranker")
+
+
+@cache
+def _load_alias_resolve_predictor_module() -> ModuleType:
+    return importlib.import_module("alphavault.infra.ai.alias_resolve_predictor")
+
+
+@cache
+def _load_research_workbench_module() -> ModuleType:
+    return importlib.import_module("alphavault.research_workbench")
+
+
+@cache
+def _load_relation_actions_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.relation_actions")
+
+
+@cache
+def _load_candidate_builders_module() -> ModuleType:
+    return importlib.import_module("alphavault.app.relation.candidate_builders")
+
+
+@cache
+def _load_research_data_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.research_data")
+
+
+@cache
+def _load_source_read_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.source_read")
+
+
+@cache
+def _load_stock_object_index_module() -> ModuleType:
+    return importlib.import_module("alphavault.domains.stock.object_index")
+
+
+def _stock_alias_batch_cap() -> int:
+    return int(_load_relation_candidate_ranker_module().AI_RANK_BATCH_CAP)
+
+
+def _normalized_stock_alias_limit(value: object) -> int:
+    raw_limit = str(value or "").strip()
+    try:
+        limit = int(raw_limit) if raw_limit else 0
+    except (TypeError, ValueError):
+        limit = 0
+    if limit > 0:
+        return limit
+    return _stock_alias_batch_cap()
 
 
 def _coerce_pending_rows(rows: list[dict[str, str]]) -> list[PendingRow]:
@@ -321,7 +346,7 @@ class OrganizerState(rx.State):
     loading: bool = False
     loaded_once: bool = False
     load_error: str = ""
-    stock_alias_limit: int = STOCK_ALIAS_PAGE_LIMIT
+    stock_alias_limit: int = 0
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT
 
     alias_manual_dialog_open: bool = False
@@ -392,7 +417,7 @@ class OrganizerState(rx.State):
         self.candidate_action_pending_id = ""
         self.selected_candidate_ids = []
         if self.active_section == SECTION_STOCK_ALIAS:
-            self.stock_alias_limit = STOCK_ALIAS_PAGE_LIMIT
+            self.stock_alias_limit = 0
         if self.active_section == SECTION_ALIAS_MANUAL:
             self.alias_task_limit = ALIAS_TASK_PAGE_LIMIT
         yield from self._reload_pending_rows_with_loading()
@@ -504,17 +529,18 @@ class OrganizerState(rx.State):
         self._start_loading()
         yield
         try:
-            engine = get_research_workbench_engine_from_env()
-            record_stock_alias_relation(
+            research_workbench = _load_research_workbench_module()
+            engine = research_workbench.get_research_workbench_engine_from_env()
+            research_workbench.record_stock_alias_relation(
                 engine,
                 stock_key=target_key,
                 alias_key=alias_key,
                 source="manual",
             )
-            set_alias_resolve_task_status(
+            research_workbench.set_alias_resolve_task_status(
                 engine,
                 alias_key=alias_key,
-                status=ALIAS_TASK_STATUS_RESOLVED,
+                status=research_workbench.ALIAS_TASK_STATUS_RESOLVED,
             )
         except BaseException as err:
             if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
@@ -523,7 +549,7 @@ class OrganizerState(rx.State):
             return
         finally:
             self._finish_loading()
-        clear_reflex_source_caches()
+        _load_source_read_module().clear_reflex_source_caches()
         self.close_alias_manual_dialog()
         self._reload_pending_rows()
 
@@ -535,11 +561,12 @@ class OrganizerState(rx.State):
         self._start_loading()
         yield
         try:
-            engine = get_research_workbench_engine_from_env()
-            set_alias_resolve_task_status(
+            research_workbench = _load_research_workbench_module()
+            engine = research_workbench.get_research_workbench_engine_from_env()
+            research_workbench.set_alias_resolve_task_status(
                 engine,
                 alias_key=alias_key,
-                status=ALIAS_TASK_STATUS_BLOCKED,
+                status=research_workbench.ALIAS_TASK_STATUS_BLOCKED,
             )
         except BaseException as err:
             if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
@@ -548,7 +575,7 @@ class OrganizerState(rx.State):
             return
         finally:
             self._finish_loading()
-        clear_reflex_source_caches()
+        _load_source_read_module().clear_reflex_source_caches()
         self.close_alias_manual_dialog()
         self._reload_pending_rows()
 
@@ -567,10 +594,12 @@ class OrganizerState(rx.State):
         self._start_loading()
         yield
         try:
-            enriched_rows = enrich_alias_tasks_with_ai(
-                target_rows,
-                ai_enabled=True,
-                limit=10,
+            enriched_rows = (
+                _load_alias_resolve_predictor_module().enrich_alias_tasks_with_ai(
+                    target_rows,
+                    ai_enabled=True,
+                    limit=10,
+                )
             )
             merged_rows = [dict(row) for row in self.pending_rows]
             for index, row in zip(target_indexes, enriched_rows, strict=False):
@@ -598,7 +627,8 @@ class OrganizerState(rx.State):
         if self.active_section != SECTION_STOCK_ALIAS:
             return
         self.stock_alias_limit = (
-            max(0, int(self.stock_alias_limit)) + STOCK_ALIAS_PAGE_STEP
+            _normalized_stock_alias_limit(self.stock_alias_limit)
+            + _stock_alias_batch_cap()
         )
         yield from self._reload_pending_rows_with_loading()
 
@@ -616,23 +646,27 @@ class OrganizerState(rx.State):
         self._start_loading()
         yield
         try:
-            engine = get_research_workbench_engine_from_env()
-            official_names_by_stock_key = get_official_names_by_stock_keys(
-                engine,
-                [
-                    str(row.get("left_key") or "").strip()
-                    for row in target_rows
-                    if str(row.get("left_key") or "").strip()
-                ],
+            research_workbench = _load_research_workbench_module()
+            relation_candidate_ranker = _load_relation_candidate_ranker_module()
+            engine = research_workbench.get_research_workbench_engine_from_env()
+            official_names_by_stock_key = (
+                research_workbench.get_official_names_by_stock_keys(
+                    engine,
+                    [
+                        str(row.get("left_key") or "").strip()
+                        for row in target_rows
+                        if str(row.get("left_key") or "").strip()
+                    ],
+                )
             )
             merged_rows = [cast(PendingRow, dict(row)) for row in self.pending_rows]
             for batch_rows in _chunk_pending_rows(
                 target_rows,
-                chunk_size=AI_RANK_BATCH_CAP,
+                chunk_size=relation_candidate_ranker.AI_RANK_BATCH_CAP,
             ):
                 enriched_rows = [
                     _decorate_stock_alias_row(cast(PendingRow, dict(row)))
-                    for row in enrich_candidates_with_ai(
+                    for row in relation_candidate_ranker.enrich_candidates_with_ai(
                         [
                             {
                                 **dict(row),
@@ -648,7 +682,7 @@ class OrganizerState(rx.State):
                     )
                 ]
                 for row in enriched_rows:
-                    upsert_relation_candidate(
+                    research_workbench.upsert_relation_candidate(
                         engine,
                         candidate_id=str(row.get("candidate_id") or "").strip(),
                         relation_type=str(row.get("relation_type") or "").strip(),
@@ -691,7 +725,7 @@ class OrganizerState(rx.State):
         elif self.active_section == SECTION_STOCK_ALIAS:
             pending_rows, load_error = load_pending_rows(
                 self.active_section,
-                stock_alias_limit=self.stock_alias_limit,
+                stock_alias_limit=_normalized_stock_alias_limit(self.stock_alias_limit),
             )
         else:
             pending_rows, load_error = load_pending_rows(self.active_section)
@@ -733,14 +767,14 @@ class OrganizerState(rx.State):
             self.candidate_action_pending_id = str(candidate_id or "").strip()
             yield
             try:
-                applied = apply_candidate_action_by_id(
+                applied = _load_relation_actions_module().apply_candidate_action_by_id(
                     rows=self.pending_rows,
                     candidate_id=candidate_id,
                     action=action,
                 )
                 if not applied:
                     return
-                clear_reflex_source_caches()
+                _load_source_read_module().clear_reflex_source_caches()
                 self.pending_rows = _remove_candidate_row_by_id(
                     self.pending_rows,
                     candidate_id=candidate_id,
@@ -760,14 +794,14 @@ class OrganizerState(rx.State):
         self._start_loading()
         yield
         try:
-            applied = apply_candidate_action_by_id(
+            applied = _load_relation_actions_module().apply_candidate_action_by_id(
                 rows=self.pending_rows,
                 candidate_id=candidate_id,
                 action=action,
             )
             if not applied:
                 return
-            clear_reflex_source_caches()
+            _load_source_read_module().clear_reflex_source_caches()
             self.pending_rows, self.load_error = load_pending_rows(self.active_section)
         finally:
             self._finish_loading()
@@ -784,7 +818,7 @@ class OrganizerState(rx.State):
             self.candidate_action_pending_id = str(candidate_id or "").strip()
             yield
             try:
-                applied = apply_candidate_action_by_id(
+                applied = _load_relation_actions_module().apply_candidate_action_by_id(
                     rows=self.pending_rows,
                     candidate_id=candidate_id,
                     action=action,
@@ -803,7 +837,7 @@ class OrganizerState(rx.State):
                 candidate_id=candidate_id,
             )
         if succeeded_candidate_ids:
-            clear_reflex_source_caches()
+            _load_source_read_module().clear_reflex_source_caches()
         self.selected_candidate_ids = _sync_selected_candidate_ids(
             self.pending_rows,
             self.selected_candidate_ids,
@@ -817,14 +851,15 @@ class OrganizerState(rx.State):
 
 
 def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
-    posts, assertions, err = load_sources_from_env()
+    source_read = _load_source_read_module()
+    posts, assertions, err = source_read.load_sources_from_env()
     if err:
         return [], err
     needle = str(query or "").strip()
-    stock_relations, relation_err = load_stock_alias_relations_from_env()
+    stock_relations, relation_err = source_read.load_stock_alias_relations_from_env()
     if relation_err:
         return [], relation_err
-    rows = build_search_index(
+    rows = _load_research_data_module().build_search_index(
         posts,
         assertions,
         stock_relations=stock_relations,
@@ -846,13 +881,14 @@ def load_pending_rows(
     section: str,
     *,
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT,
-    stock_alias_limit: int = STOCK_ALIAS_PAGE_LIMIT,
+    stock_alias_limit: int = 0,
 ) -> tuple[list[PendingRow], str]:
     section_key = str(section or SECTION_ALIAS_MANUAL).strip()
     if section_key == SECTION_ALIAS_MANUAL:
         try:
-            engine = get_research_workbench_engine_from_env()
-            task_rows = list_pending_alias_resolve_tasks(
+            research_workbench = _load_research_workbench_module()
+            engine = research_workbench.get_research_workbench_engine_from_env()
+            task_rows = research_workbench.list_pending_alias_resolve_tasks(
                 engine,
                 limit=max(1, int(alias_task_limit)),
             )
@@ -888,8 +924,9 @@ def load_pending_rows(
 
     if section_key == SECTION_STOCK_ALIAS:
         try:
-            engine = get_research_workbench_engine_from_env()
-            pending_candidate_rows = list_pending_candidates(engine)
+            research_workbench = _load_research_workbench_module()
+            engine = research_workbench.get_research_workbench_engine_from_env()
+            pending_candidate_rows = research_workbench.list_pending_candidates(engine)
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
@@ -924,7 +961,7 @@ def load_pending_rows(
             )
         return stock_alias_rows[: max(1, int(stock_alias_limit))], ""
 
-    posts, assertions, err = load_sources_from_env()
+    posts, assertions, err = _load_source_read_module().load_sources_from_env()
     del posts
     if err:
         return [], err
@@ -962,11 +999,12 @@ def _stock_candidates_for_relation_type(
     *,
     relation_type: str,
 ) -> list[dict[str, str]]:
-    stock_index = build_stock_object_index(assertions)
+    candidate_builders = _load_candidate_builders_module()
+    stock_index = _load_stock_object_index_module().build_stock_object_index(assertions)
     out: list[dict[str, str]] = []
     for stock_key in _unique_stock_keys(assertions):
         out.extend(
-            build_stock_pending_candidates(
+            candidate_builders.build_stock_pending_candidates(
                 assertions,
                 stock_key=stock_key,
                 ai_enabled=False,
@@ -980,10 +1018,11 @@ def _stock_candidates_for_relation_type(
 
 
 def _sector_relation_candidates(assertions) -> list[dict[str, str]]:
+    candidate_builders = _load_candidate_builders_module()
     out: list[dict[str, str]] = []
     for sector_key in _unique_sector_keys(assertions):
         out.extend(
-            build_sector_pending_candidates(
+            candidate_builders.build_sector_pending_candidates(
                 assertions, sector_key=sector_key, ai_enabled=False
             )
         )
@@ -1025,8 +1064,9 @@ def _filter_known_candidate_statuses(
     if not rows:
         return []
     try:
-        engine = get_research_workbench_engine_from_env()
-        status_map = list_candidate_status_map(
+        research_workbench = _load_research_workbench_module()
+        engine = research_workbench.get_research_workbench_engine_from_env()
+        status_map = research_workbench.list_candidate_status_map(
             engine,
             [str(row.get("candidate_id") or "").strip() for row in rows],
         )

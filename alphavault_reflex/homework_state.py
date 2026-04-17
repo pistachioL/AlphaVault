@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import importlib
+from functools import cache
 import reflex as rx
+from types import ModuleType
 
 from alphavault.db.postgres_env import infer_platform_from_post_uid
 from alphavault_reflex.services.analysis_feedback import (
@@ -24,17 +27,8 @@ from alphavault_reflex.services.research_models import (
 )
 from alphavault.domains.thread_tree.service import normalize_tree_lookup_post_uid
 from alphavault.domains.thread_tree.service import slice_posts_for_single_post_tree
-from alphavault.domains.stock.object_index import (
-    build_stock_object_index,
-)
 from alphavault_reflex.services.thread_tree_lines import TREE_COLLAPSE_HINT_PREFIX
 from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
-from alphavault_reflex.services.source_read import (
-    clear_reflex_source_caches,
-    load_homework_board_payload_from_env,
-    load_post_urls_from_env,
-    load_single_post_for_tree_from_env,
-)
 
 TREE_MESSAGE_EMPTY = "没有对话流。"
 TREE_MESSAGE_LOAD_ERROR_PREFIX = "加载失败："
@@ -45,6 +39,16 @@ TREE_DEBUG_STAGE_LOAD_ERROR = "load_error"
 TREE_DEBUG_STAGE_POSTS_EMPTY = "posts_empty"
 TREE_DEBUG_STAGE_SLICE_EMPTY = "slice_empty"
 TREE_DEBUG_STAGE_TREE_EMPTY = "tree_empty"
+
+
+@cache
+def _load_source_read_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.source_read")
+
+
+@cache
+def _load_stock_object_index_module() -> ModuleType:
+    return importlib.import_module("alphavault.domains.stock.object_index")
 
 
 class HomeworkState(rx.State):
@@ -137,8 +141,10 @@ class HomeworkState(rx.State):
         return build_tree_render_lines(self.selected_tree_render_text)
 
     def _refresh(self) -> None:
-        assertions, stock_relations, err = load_homework_board_payload_from_env(
-            int(self.window_days)
+        assertions, stock_relations, err = (
+            _load_source_read_module().load_homework_board_payload_from_env(
+                int(self.window_days)
+            )
         )
         if err:
             self.load_error = err
@@ -194,7 +200,7 @@ class HomeworkState(rx.State):
         self.tree_dialog_open = False
         self.tree_loading = False
         self.selected_tree_debug_text = ""
-        clear_reflex_source_caches()
+        _load_source_read_module().clear_reflex_source_caches()
         yield
         self._refresh()
         self.loaded_once = True
@@ -299,7 +305,7 @@ class HomeworkState(rx.State):
         success_message = str(result.get("message") or "").strip()
         self._reset_feedback_state(close_dialog=True, clear_success=False)
         self.feedback_success = success_message
-        clear_reflex_source_caches()
+        _load_source_read_module().clear_reflex_source_caches()
         self._refresh()
 
     @rx.event
@@ -332,7 +338,7 @@ class HomeworkState(rx.State):
             return
 
         yield
-        posts, err = load_single_post_for_tree_from_env(uid)
+        posts, err = _load_source_read_module().load_single_post_for_tree_from_env(uid)
         debug_posts_count = int(len(posts))
         if err:
             self.tree_loading = False
@@ -471,7 +477,7 @@ def _prepare_board_assertions(
     if not assertions:
         return [], {}
     board_assertions = [dict(row) for row in assertions]
-    stock_index = build_stock_object_index(
+    stock_index = _load_stock_object_index_module().build_stock_object_index(
         board_assertions,
         stock_relations=stock_relations,
     )
@@ -499,7 +505,7 @@ def _fill_trade_board_urls(rows: list[dict[str, str]]) -> None:
         return
 
     post_uids = [row.get("tree_post_uid", "") for row in rows]
-    url_map, _ = load_post_urls_from_env(post_uids)
+    url_map, _ = _load_source_read_module().load_post_urls_from_env(post_uids)
     if not url_map:
         return
 

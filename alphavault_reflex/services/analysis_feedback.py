@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from alphavault.db.analysis_feedback import (
-    ENTRYPOINT_HOMEWORK_TREE,
-    ENTRYPOINT_STOCK_RESEARCH,
-    submit_post_analysis_feedback as _submit_post_analysis_feedback,
-)
+import importlib
+from functools import cache
+from types import ModuleType
+
+
+ENTRYPOINT_STOCK_RESEARCH = "stock_research"
+ENTRYPOINT_HOMEWORK_TREE = "homework_tree"
 
 ANALYSIS_FEEDBACK_DIALOG_TITLE = "标错并重跑"
 ANALYSIS_FEEDBACK_TAG_LABEL = "错在哪"
@@ -29,6 +31,11 @@ ANALYSIS_FEEDBACK_TAG_OPTIONS = [
 _SUCCESS_QUEUE_STATUSES = frozenset(("pushed", "duplicate"))
 
 
+@cache
+def _load_db_analysis_feedback_module() -> ModuleType:
+    return importlib.import_module("alphavault.db.analysis_feedback")
+
+
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
 
@@ -49,7 +56,7 @@ def submit_post_analysis_feedback(
     if not resolved_tag:
         return {"ok": "0", "message": ANALYSIS_FEEDBACK_MISSING_TAG_TEXT}
     try:
-        result = _submit_post_analysis_feedback(
+        result = _load_db_analysis_feedback_module().submit_post_analysis_feedback(
             post_uid=resolved_post_uid,
             feedback_tag=resolved_tag,
             feedback_note=resolved_note,

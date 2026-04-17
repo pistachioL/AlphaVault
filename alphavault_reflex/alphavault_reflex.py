@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import time
 
 import reflex as rx
@@ -8,11 +9,6 @@ from starlette.responses import JSONResponse
 
 from alphavault.env import load_dotenv_if_present
 from alphavault.logging_config import get_logger
-from alphavault.worker.manual_rss_trigger import (
-    load_worker_admin_trigger_key,
-    run_manual_db_requeue_once,
-    run_manual_rss_ingest_once,
-)
 from alphavault_reflex.organizer_state import OrganizerState
 from alphavault_reflex.homework_state import HomeworkState
 from alphavault_reflex.pages.homework import homework_page
@@ -72,8 +68,13 @@ app.add_page(
 )
 
 
+def _load_manual_worker_admin_module():
+    return importlib.import_module("alphavault.worker.manual_rss_trigger")
+
+
 async def _manual_rss_trigger_get(request: Request) -> JSONResponse:
-    expected_key = load_worker_admin_trigger_key()
+    manual_admin_module = _load_manual_worker_admin_module()
+    expected_key = manual_admin_module.load_worker_admin_trigger_key()
     if not expected_key:
         return JSONResponse(
             {"ok": False, "error": "missing_manual_trigger_key"},
@@ -86,7 +87,7 @@ async def _manual_rss_trigger_get(request: Request) -> JSONResponse:
 
     started_at = time.perf_counter()
     try:
-        result = run_manual_rss_ingest_once()
+        result = manual_admin_module.run_manual_rss_ingest_once()
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
@@ -119,7 +120,8 @@ def _parse_query_bool(value: object) -> bool:
 
 
 async def _manual_db_requeue_get(request: Request) -> JSONResponse:
-    expected_key = load_worker_admin_trigger_key()
+    manual_admin_module = _load_manual_worker_admin_module()
+    expected_key = manual_admin_module.load_worker_admin_trigger_key()
     if not expected_key:
         return JSONResponse(
             {"ok": False, "error": "missing_manual_trigger_key"},
@@ -140,7 +142,7 @@ async def _manual_db_requeue_get(request: Request) -> JSONResponse:
 
     started_at = time.perf_counter()
     try:
-        result = run_manual_db_requeue_once(
+        result = manual_admin_module.run_manual_db_requeue_once(
             mode=mode,
             platform=platform,
             limit=int(limit),
@@ -163,7 +165,8 @@ async def _manual_db_requeue_get(request: Request) -> JSONResponse:
 
 
 async def _manual_process_metrics_get(request: Request) -> JSONResponse:
-    expected_key = load_worker_admin_trigger_key()
+    manual_admin_module = _load_manual_worker_admin_module()
+    expected_key = manual_admin_module.load_worker_admin_trigger_key()
     if not expected_key:
         return JSONResponse(
             {"ok": False, "error": "missing_manual_trigger_key"},

@@ -14,6 +14,52 @@ def _client() -> TestClient:
     return TestClient(reflex_app.app._api)
 
 
+def _stub_manual_admin_module(
+    *,
+    key: str = "expected-key",
+    run_manual_rss_ingest_once=None,
+    run_manual_db_requeue_once=None,
+) -> SimpleNamespace:
+    def _default_run_manual_rss_ingest_once() -> dict[str, object]:
+        return {
+            "accepted_total": 2,
+            "enqueue_error": False,
+            "sources": [
+                {
+                    "source": "weibo",
+                    "platform": "weibo",
+                    "rss_url_count": 1,
+                    "accepted": 2,
+                    "enqueue_error": False,
+                    "error": "",
+                }
+            ],
+        }
+
+    def _default_run_manual_db_requeue_once(
+        *, mode: str, platform: str | None, limit: int, dry_run: bool
+    ) -> dict[str, object]:
+        return {
+            "mode": mode,
+            "platform": platform,
+            "limit": limit,
+            "dry_run": dry_run,
+            "scanned_total": 4,
+            "enqueued_total": 0,
+            "sources": [],
+        }
+
+    return SimpleNamespace(
+        load_worker_admin_trigger_key=lambda: key,
+        run_manual_rss_ingest_once=(
+            run_manual_rss_ingest_once or _default_run_manual_rss_ingest_once
+        ),
+        run_manual_db_requeue_once=(
+            run_manual_db_requeue_once or _default_run_manual_db_requeue_once
+        ),
+    )
+
+
 def test_manual_rss_trigger_returns_500_when_key_env_missing(monkeypatch) -> None:
     monkeypatch.delenv("WORKER_ADMIN_TRIGGER_KEY", raising=False)
 
@@ -33,28 +79,11 @@ def test_manual_rss_trigger_returns_401_when_key_invalid(monkeypatch) -> None:
 
 
 def test_manual_rss_trigger_returns_result_when_key_valid(monkeypatch) -> None:
-    monkeypatch.setenv("WORKER_ADMIN_TRIGGER_KEY", "expected-key")
-
-    def _fake_run_manual_rss_ingest_once() -> dict[str, object]:
-        return {
-            "accepted_total": 2,
-            "enqueue_error": False,
-            "sources": [
-                {
-                    "source": "weibo",
-                    "platform": "weibo",
-                    "rss_url_count": 1,
-                    "accepted": 2,
-                    "enqueue_error": False,
-                    "error": "",
-                }
-            ],
-        }
-
     monkeypatch.setattr(
         reflex_app,
-        "run_manual_rss_ingest_once",
-        _fake_run_manual_rss_ingest_once,
+        "_load_manual_worker_admin_module",
+        lambda: _stub_manual_admin_module(),
+        raising=False,
     )
 
     response = _client().get("/api/rss/trigger", params={"key": "expected-key"})
@@ -79,8 +108,6 @@ def test_manual_db_requeue_returns_400_when_mode_invalid(monkeypatch) -> None:
 
 
 def test_manual_db_requeue_returns_result_when_key_valid(monkeypatch) -> None:
-    monkeypatch.setenv("WORKER_ADMIN_TRIGGER_KEY", "expected-key")
-
     def _fake_run_manual_db_requeue_once(
         *, mode: str, platform: str | None, limit: int, dry_run: bool
     ) -> dict[str, object]:
@@ -100,8 +127,11 @@ def test_manual_db_requeue_returns_result_when_key_valid(monkeypatch) -> None:
 
     monkeypatch.setattr(
         reflex_app,
-        "run_manual_db_requeue_once",
-        _fake_run_manual_db_requeue_once,
+        "_load_manual_worker_admin_module",
+        lambda: _stub_manual_admin_module(
+            run_manual_db_requeue_once=_fake_run_manual_db_requeue_once
+        ),
+        raising=False,
     )
 
     response = _client().get(
@@ -125,12 +155,15 @@ def test_manual_db_requeue_returns_result_when_key_valid(monkeypatch) -> None:
 
 
 def test_manual_db_requeue_returns_500_when_runner_raises(monkeypatch) -> None:
-    monkeypatch.setenv("WORKER_ADMIN_TRIGGER_KEY", "expected-key")
-
     def _fake_raise(**_kwargs) -> dict[str, object]:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(reflex_app, "run_manual_db_requeue_once", _fake_raise)
+    monkeypatch.setattr(
+        reflex_app,
+        "_load_manual_worker_admin_module",
+        lambda: _stub_manual_admin_module(run_manual_db_requeue_once=_fake_raise),
+        raising=False,
+    )
 
     response = _client().get(
         "/api/admin/requeue-from-db",
