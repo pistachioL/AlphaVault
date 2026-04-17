@@ -25,6 +25,12 @@
 uv sync
 ```
 
+如果你要跑 `build_security_master_csv_from_akshare.py`，再补这一组依赖：
+
+```bash
+uv sync --group akshare
+```
+
 ## 开发（pre-commit + tests）
 ```bash
 # 1) 安装 hooks（提交前自动检查）
@@ -130,6 +136,7 @@ uv run python scripts/requeue_all_ai_from_db.py --limit 200 --sleep-seconds 5 --
 2. 配置 `POSTGRES_DSN`
 3. 确认 `standard` schema 已装好表
 4. 先执行 `uv sync`
+5. 如果要生成默认市场，或者要包含 `sh` / `sz`，再执行 `uv sync --group akshare`
 
 第一版清单文件在 `data/security_master.csv`，固定 4 列：
 
@@ -140,6 +147,8 @@ uv run python scripts/requeue_all_ai_from_db.py --limit 200 --sleep-seconds 5 --
 
 先生成 `CSV`：
 
+- 默认 Web / Worker 运行时不需要 `akshare`
+- 只有这里要抓沪市、深市清单时，才需要 `uv sync --group akshare`
 - 沪市、深市：`AKShare`
 - 港股：`HKEX` 官方 `ListOfSecurities_c.xlsx`
 - 港股只保留真正股票：

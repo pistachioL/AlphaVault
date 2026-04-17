@@ -29,6 +29,11 @@ def test_dockerfile_prunes_uv_cache_and_no_pip_cache_mount() -> None:
     assert "--mount=type=cache,target=/root/.cache/pip" not in dockerfile_text
 
 
+def test_dockerfile_runtime_sync_skips_akshare_group() -> None:
+    dockerfile_text = _read_text(DOCKERFILE_PATH)
+    assert "--no-group akshare" in dockerfile_text
+
+
 def test_dockerfile_runtime_copy_is_selective() -> None:
     dockerfile_text = _read_text(DOCKERFILE_PATH)
     assert "COPY --from=builder /app /app" not in dockerfile_text
@@ -48,6 +53,14 @@ def test_streamlit_dependency_is_removed() -> None:
     assert "streamlit" not in project_deps
     dependency_groups = pyproject.get("dependency-groups", {})
     assert "streamlit" not in dependency_groups
+
+
+def test_akshare_dependency_is_opt_in_only() -> None:
+    pyproject = _load_pyproject()
+    project_deps = pyproject["project"]["dependencies"]
+    assert "akshare" not in project_deps
+    dependency_groups = pyproject.get("dependency-groups", {})
+    assert dependency_groups.get("akshare") == ["akshare"]
 
 
 def test_streamlit_entry_is_removed() -> None:
