@@ -3,7 +3,6 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault.db.postgres_env import infer_platform_from_post_uid
-from alphavault.homework_trade_feed import HOMEWORK_DEFAULT_VIEW_KEY
 from alphavault_reflex.services.analysis_feedback import (
     ENTRYPOINT_HOMEWORK_TREE,
     submit_post_analysis_feedback,
@@ -33,10 +32,8 @@ from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 from alphavault_reflex.services.source_read import (
     clear_reflex_source_caches,
     load_homework_board_payload_from_env,
-    load_homework_trade_feed_from_env,
     load_post_urls_from_env,
     load_single_post_for_tree_from_env,
-    save_homework_trade_feed_from_env,
 )
 
 TREE_MESSAGE_EMPTY = "没有对话流。"
@@ -140,21 +137,6 @@ class HomeworkState(rx.State):
         return build_tree_render_lines(self.selected_tree_render_text)
 
     def _refresh(self) -> None:
-        use_default_feed = _is_default_homework_trade_feed_view(
-            window_days=int(self.window_days),
-            trade_filter=str(self.trade_filter),
-        )
-        if use_default_feed:
-            feed_payload = _load_default_homework_trade_feed_payload()
-            if feed_payload:
-                _apply_homework_rows(
-                    self,
-                    caption=feed_payload.get("caption"),
-                    used_window_days=feed_payload.get("used_window_days"),
-                    rows=feed_payload.get("rows"),
-                )
-                return
-
         assertions, stock_relations, err = load_homework_board_payload_from_env(
             int(self.window_days)
         )
@@ -205,12 +187,6 @@ class HomeworkState(rx.State):
             used_window_days=result.used_window_days,
             rows=result.rows,
         )
-        if use_default_feed:
-            _save_default_homework_trade_feed_payload(
-                caption=self.caption,
-                used_window_days=self.window_days,
-                rows=self.rows,
-            )
 
     def _refresh_with_loading(self):
         self.loading = True
@@ -485,37 +461,6 @@ def _coerce_homework_rows(rows: object) -> list[dict[str, str]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
-
-
-def _is_default_homework_trade_feed_view(
-    *, window_days: int, trade_filter: str
-) -> bool:
-    return (
-        max(1, int(window_days or 1)) == TRADE_BOARD_DEFAULT_WINDOW_DAYS
-        and str(trade_filter or TRADE_FILTER_OPTIONS[0]).strip()
-        == TRADE_FILTER_OPTIONS[0]
-    )
-
-
-def _load_default_homework_trade_feed_payload() -> dict[str, object]:
-    try:
-        return load_homework_trade_feed_from_env(view_key=HOMEWORK_DEFAULT_VIEW_KEY)
-    except Exception:
-        return {}
-
-
-def _save_default_homework_trade_feed_payload(
-    *, caption: str, used_window_days: int, rows: list[dict[str, str]]
-) -> None:
-    try:
-        save_homework_trade_feed_from_env(
-            view_key=HOMEWORK_DEFAULT_VIEW_KEY,
-            caption=caption,
-            used_window_days=used_window_days,
-            rows=rows,
-        )
-    except Exception:
-        return
 
 
 def _prepare_board_assertions(
