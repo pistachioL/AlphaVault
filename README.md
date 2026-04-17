@@ -39,7 +39,7 @@ uv run pre-commit install
 # 2) 手动跑一遍检查
 uv run pre-commit run -a
 
-# 3) 跑 tests
+# 3) 跑 tests（仓库只保留核心链路测试）
 uv run pytest
 ```
 
