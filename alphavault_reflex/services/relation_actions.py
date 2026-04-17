@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from alphavault.research_stock_cache import mark_entity_page_dirty
 from alphavault.research_workbench import (
     accept_relation_candidate,
     block_relation_candidate,
@@ -10,7 +9,6 @@ from alphavault.research_workbench import (
     ignore_relation_candidate,
     upsert_relation_candidate,
 )
-from alphavault_reflex.services.source_read import load_source_engines_from_env
 
 
 def apply_candidate_action(candidate_row: Mapping[str, object], action: str) -> None:
@@ -36,13 +34,6 @@ def apply_candidate_action(candidate_row: Mapping[str, object], action: str) -> 
         ignore_relation_candidate(engine, candidate_id=candidate_id)
     elif action_name == "block":
         block_relation_candidate(engine, candidate_id=candidate_id)
-    if left_key.startswith("stock:"):
-        for source_engine in load_source_engines_from_env():
-            mark_entity_page_dirty(
-                source_engine,
-                stock_key=left_key,
-                reason="candidate_action",
-            )
 
 
 def apply_candidate_action_by_id(

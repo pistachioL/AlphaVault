@@ -138,3 +138,11 @@ def test_stock_research_page_renders_feedback_dialog_controls() -> None:
     assert "feedback_dialog_open_rx_state_" in rendered
     assert "open_feedback_dialog" in rendered
     assert "submit_feedback" in rendered
+
+
+def test_stock_research_page_renders_signal_detail_dialog_controls() -> None:
+    rendered = str(stock_research_page().render())
+
+    assert "signal_detail_open_rx_state_" in rendered
+    assert "open_signal_detail" in rendered
+    assert "set_signal_detail_open" in rendered

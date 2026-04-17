@@ -635,14 +635,12 @@ def test_non_stock_alias_candidate_action_keeps_reload_behavior(monkeypatch) -> 
     assert state.selected_candidate_ids == []
 
 
-def test_apply_candidate_action_marks_all_source_engines_dirty(
+def test_apply_candidate_action_no_longer_marks_stock_page_dirty(
     monkeypatch,
 ) -> None:
     from alphavault_reflex.services import relation_actions
 
     standard_engine = object()
-    weibo_engine = object()
-    xueqiu_engine = object()
     upsert_calls: list[object] = []
     accept_calls: list[object] = []
     dirty_calls: list[tuple[object, str, str]] = []
@@ -655,7 +653,9 @@ def test_apply_candidate_action_marks_all_source_engines_dirty(
     monkeypatch.setattr(
         relation_actions,
         "load_source_engines_from_env",
-        lambda: [weibo_engine, xueqiu_engine],
+        lambda: (_ for _ in ()).throw(
+            AssertionError("股票 snapshot 已停，不该再去拿 source engines")
+        ),
         raising=False,
     )
     monkeypatch.setattr(
@@ -672,14 +672,6 @@ def test_apply_candidate_action_marks_all_source_engines_dirty(
             (engine, candidate_id, source)
         ),
     )
-    monkeypatch.setattr(
-        relation_actions,
-        "mark_entity_page_dirty",
-        lambda engine, *, stock_key, reason: dirty_calls.append(
-            (engine, stock_key, reason)
-        ),
-    )
-
     relation_actions.apply_candidate_action(
         {
             "candidate_id": "cand-1",
@@ -697,10 +689,7 @@ def test_apply_candidate_action_marks_all_source_engines_dirty(
 
     assert upsert_calls == [(standard_engine, "cand-1", "stock:601899.SH")]
     assert accept_calls == [(standard_engine, "cand-1", "manual")]
-    assert dirty_calls == [
-        (weibo_engine, "stock:601899.SH", "candidate_action"),
-        (xueqiu_engine, "stock:601899.SH", "candidate_action"),
-    ]
+    assert dirty_calls == []
 
 
 def test_load_search_results_returns_relation_error_when_standard_alias_fails(

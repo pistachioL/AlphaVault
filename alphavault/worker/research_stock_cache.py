@@ -7,14 +7,10 @@ from alphavault.logging_config import get_logger
 from alphavault.db.postgres_db import (
     PostgresConnection,
     PostgresEngine,
-    qualify_postgres_table,
-    require_postgres_schema_name,
     postgres_connect_autocommit,
 )
 from alphavault.research_stock_cache import (
-    DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT,
     EntityPageDirtyEntry,
-    ENTITY_PAGE_SNAPSHOT_TABLE,
     claim_entity_page_dirty_entries,
     fail_entity_page_dirty_claims,
     list_entity_page_dirty_keys,
@@ -23,9 +19,7 @@ from alphavault.research_stock_cache import (
     save_entity_page_signal_snapshot,
 )
 from alphavault.worker.job_state import (
-    load_worker_job_cursor,
     release_worker_job_lock,
-    save_worker_job_cursor,
     try_acquire_worker_job_lock,
 )
 from alphavault.worker.stock_hot_payload_builder import (
@@ -36,9 +30,6 @@ from alphavault.worker.sector_hot_payload_builder import (
 )
 
 STOCK_HOT_CACHE_LOCK_KEY = "stock_hot_cache.lock"
-STOCK_HOT_CACHE_BOOTSTRAP_CURSOR_STATE_KEY = (
-    "worker.progress.stock_hot.bootstrap_cursor"
-)
 STOCK_HOT_CACHE_LOCK_LEASE_SECONDS = 600
 STOCK_HOT_CACHE_MAX_STOCKS_PER_RUN = 4
 STOCK_HOT_CACHE_DIRTY_LIMIT = 16
@@ -60,89 +51,8 @@ def _is_sector_entity_key(value: str) -> bool:
     return str(value or "").strip().startswith("cluster:")
 
 
-def _source_table(conn: PostgresConnection, table_name: str) -> str:
-    return qualify_postgres_table(
-        require_postgres_schema_name(conn),
-        table_name,
-    )
-
-
-def _load_bootstrap_cursor(conn: object) -> str:
-    if not isinstance(conn, PostgresConnection):
-        return ""
-    try:
-        return load_worker_job_cursor(
-            conn,
-            state_key=STOCK_HOT_CACHE_BOOTSTRAP_CURSOR_STATE_KEY,
-        )
-    except BaseException:
-        return ""
-
-
-def _save_bootstrap_cursor(conn: object, cursor: str) -> None:
-    if not isinstance(conn, PostgresConnection):
-        return
-    try:
-        save_worker_job_cursor(
-            conn,
-            state_key=STOCK_HOT_CACHE_BOOTSTRAP_CURSOR_STATE_KEY,
-            cursor=cursor,
-        )
-    except BaseException:
-        return
-
-
-def _list_missing_hot_cache_stock_keys(
-    conn: PostgresConnection,
-    *,
-    limit: int,
-    after_stock_key: str = "",
-) -> list[str]:
-    assertions_table = _source_table(conn, "assertions")
-    assertion_entities_table = _source_table(conn, "assertion_entities")
-    entity_page_snapshot_table = _source_table(conn, ENTITY_PAGE_SNAPSHOT_TABLE)
-    cursor = str(after_stock_key or "").strip()
-    cursor_sql = ""
-    params: dict[str, object] = {"limit": max(1, int(limit))}
-    if cursor:
-        cursor_sql = "AND ae.entity_key > :after_stock_key"
-        params["after_stock_key"] = cursor
-    sql = f"""
-SELECT DISTINCT ae.entity_key
-FROM {assertions_table} a
-JOIN {assertion_entities_table} ae
-  ON ae.assertion_id = a.assertion_id
-WHERE a.action LIKE 'trade.%'
-  AND ae.entity_type = 'stock'
-  AND ae.entity_key LIKE 'stock:%'
-  {cursor_sql}
-  AND NOT EXISTS (
-    SELECT 1
-    FROM {entity_page_snapshot_table} hot
-    WHERE hot.entity_key = ae.entity_key
-  )
-ORDER BY ae.entity_key ASC
-LIMIT :limit
-"""
-    rows = conn.execute(sql, params).fetchall()
-    return [
-        str(row[0] or "").strip()
-        for row in rows
-        if row and str(row[0] or "").strip().startswith("stock:")
-    ]
-
-
-def _has_missing_hot_cache_stock_keys(
-    conn: PostgresConnection,
-    *,
-    after_stock_key: str = "",
-) -> bool:
-    keys = _list_missing_hot_cache_stock_keys(
-        conn,
-        limit=1,
-        after_stock_key=after_stock_key,
-    )
-    return bool(keys)
+def _is_stock_entity_key(value: str) -> bool:
+    return str(value or "").strip().startswith("stock:")
 
 
 def _release_claimed_entries(
@@ -230,43 +140,14 @@ def sync_stock_hot_cache(
             if isinstance(engine_or_conn, PostgresEngine)
             else engine_or_conn
         ) as conn:
-            bootstrap_keys: list[str] = []
             dirty_entries: list[EntityPageDirtyEntry] = claim_entity_page_dirty_entries(
                 conn,
                 limit=max(1, int(max_stocks_per_run)),
                 claim_ttl_seconds=int(lock_lease_seconds),
             )
-            if not dirty_entries:
-                bootstrap_cursor = _load_bootstrap_cursor(conn)
-                bootstrap_keys = _list_missing_hot_cache_stock_keys(
-                    conn,
-                    limit=max(1, int(max_stocks_per_run)),
-                    after_stock_key=bootstrap_cursor,
-                )
-                if not bootstrap_keys and bootstrap_cursor:
-                    _save_bootstrap_cursor(conn, "")
-                    bootstrap_keys = _list_missing_hot_cache_stock_keys(
-                        conn,
-                        limit=max(1, int(max_stocks_per_run)),
-                    )
-                dirty_entries = [
-                    {
-                        "stock_key": key,
-                        "reason_mask": DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT,
-                        "dirty_since": "",
-                        "last_dirty_at": "",
-                        "claim_until": "",
-                        "attempt_count": 0,
-                        "updated_at": "",
-                    }
-                    for key in bootstrap_keys
-                ]
             _log_stock_hot_cache(
                 level="debug",
-                message=(
-                    f"queue_loaded dirty={int(len(dirty_entries))} "
-                    f"bootstrap={int(len(bootstrap_keys))}"
-                ),
+                message=(f"queue_loaded dirty={int(len(dirty_entries))} bootstrap=0"),
             )
             if not dirty_entries:
                 _log_stock_hot_cache(level="debug", message="queue_empty skip=1")
@@ -280,6 +161,18 @@ def sync_stock_hot_cache(
                     continue
                 claim_until = str(entry["claim_until"]).strip()
                 reason_mask = int(entry["reason_mask"])
+                if _is_stock_entity_key(stock_key):
+                    remove_entity_page_dirty_keys(
+                        conn,
+                        stock_keys=[stock_key],
+                        claim_until=claim_until,
+                    )
+                    processed_keys.append(stock_key)
+                    _log_stock_hot_cache(
+                        level="debug",
+                        message=f"stock_skip stock_key={stock_key}",
+                    )
+                    continue
                 try:
                     entity_key = refresh_stock_hot_for_key(
                         conn,
@@ -298,8 +191,6 @@ def sync_stock_hot_cache(
                             stock_keys=[entity_key],
                             claim_until=claim_until,
                         )
-                    if reason_mask == DIRTY_REASON_MASK_BOOTSTRAP_MISSING_HOT:
-                        _save_bootstrap_cursor(conn, stock_key)
                     processed_keys.append(stock_key)
                     written += 1
                     _log_stock_hot_cache(
@@ -344,11 +235,6 @@ def sync_stock_hot_cache(
 
             remaining = list_entity_page_dirty_keys(conn, limit=1)
             has_more = bool(remaining)
-            if (not has_more) and bootstrap_keys:
-                has_more = _has_missing_hot_cache_stock_keys(
-                    conn,
-                    after_stock_key=bootstrap_keys[-1],
-                )
             _log_stock_hot_cache(
                 level="info",
                 message=(

@@ -210,6 +210,60 @@ def test_open_stock_sidebar_loads_sidebar_once(monkeypatch) -> None:
     assert not hasattr(state, "pending_candidates")
 
 
+def test_open_signal_detail_loads_tree_and_raw_text_on_demand(monkeypatch) -> None:
+    seen_post_uids: list[str] = []
+
+    def _fake_load_stock_signal_detail_view(post_uid: str) -> dict[str, object]:
+        seen_post_uids.append(post_uid)
+        return {
+            "post_uid": post_uid,
+            "raw_text": "原文内容",
+            "tree_text": "根\n└── 叶",
+            "message": "",
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        "alphavault_reflex.research_state.load_stock_signal_detail_view",
+        _fake_load_stock_signal_detail_view,
+        raising=False,
+    )
+
+    state = ResearchState()
+
+    list(state.open_signal_detail("weibo:1", title="继续加仓"))
+
+    assert seen_post_uids == ["weibo:1"]
+    assert state.signal_detail_open is True
+    assert state.signal_detail_loading is False
+    assert state.signal_detail_post_uid == "weibo:1"
+    assert state.signal_detail_title == "继续加仓"
+    assert state.signal_detail_raw_text == "原文内容"
+    assert state.signal_detail_tree_text == "根\n└── 叶"
+    assert state.signal_detail_message == ""
+
+
+def test_close_signal_detail_resets_dialog_state() -> None:
+    state = ResearchState()
+    state.signal_detail_open = True
+    state.signal_detail_loading = True
+    state.signal_detail_post_uid = "weibo:1"
+    state.signal_detail_title = "继续加仓"
+    state.signal_detail_raw_text = "原文内容"
+    state.signal_detail_tree_text = "根\n└── 叶"
+    state.signal_detail_message = "旧消息"
+
+    state.close_signal_detail()
+
+    assert state.signal_detail_open is False
+    assert state.signal_detail_loading is False
+    assert state.signal_detail_post_uid == ""
+    assert state.signal_detail_title == ""
+    assert state.signal_detail_raw_text == ""
+    assert state.signal_detail_tree_text == ""
+    assert state.signal_detail_message == ""
+
+
 def test_open_feedback_dialog_resets_form_for_post() -> None:
     state = ResearchState()
     state.feedback_tag = "其他"

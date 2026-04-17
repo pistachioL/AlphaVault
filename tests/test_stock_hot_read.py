@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 from alphavault_reflex.services import stock_hot_read
@@ -22,6 +21,96 @@ def _setup_single_source(monkeypatch) -> None:
         lambda: ([], ""),
     )
     stock_hot_read.clear_stock_hot_read_caches()
+
+
+def _signal_row(
+    *,
+    post_uid: str = "weibo:1",
+    summary: str = "现查分页",
+    created_at: str = "2099-01-01 00:00",
+    created_at_line: str = "2099-01-01 00:00 · 0分钟前",
+) -> dict[str, str]:
+    return {
+        "post_uid": post_uid,
+        "summary": summary,
+        "action": "trade.buy",
+        "action_strength": "high",
+        "author": "alice",
+        "created_at": created_at,
+        "created_at_line": created_at_line,
+        "url": "https://example.com/post",
+    }
+
+
+def test_load_stock_cached_view_queries_rows_directly_without_snapshot_lookup(
+    monkeypatch,
+) -> None:
+    _setup_single_source(monkeypatch)
+    seen_calls: list[dict[str, object]] = []
+
+    def _fake_load_stock_page_rows_from_env(
+        stock_key: str,
+        *,
+        signal_page: int,
+        signal_page_size: int,
+        author: str = "",
+    ) -> dict[str, object]:
+        seen_calls.append(
+            {
+                "stock_key": stock_key,
+                "signal_page": signal_page,
+                "signal_page_size": signal_page_size,
+                "author": author,
+            }
+        )
+        return {
+            "entity_key": stock_key,
+            "page_title": stock_key.removeprefix("stock:"),
+            "signals": [{"post_uid": "weibo:1", "summary": "现查分页"}],
+            "signal_total": 1,
+            "signal_page": signal_page,
+            "signal_page_size": signal_page_size,
+            "load_error": "",
+        }
+
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_entity_page_signal_snapshot",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_read_snapshot")
+        ),
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_page_rows_from_env",
+        _fake_load_stock_page_rows_from_env,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_worker_job_cursor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_read_worker_progress")
+        ),
+    )
+
+    payload = stock_hot_read.load_stock_cached_view_from_env(
+        "600519.SH",
+        signal_page=2,
+        signal_page_size=20,
+        author="alice",
+    )
+
+    assert seen_calls == [
+        {
+            "stock_key": "stock:600519.SH",
+            "signal_page": 2,
+            "signal_page_size": 20,
+            "author": "alice",
+        }
+    ]
+    assert payload["signals"] == [{"post_uid": "weibo:1", "summary": "现查分页"}]
+    assert payload["signal_total"] == 1
 
 
 def test_load_stock_cached_view_without_running_worker_has_no_processing_warning(
@@ -53,51 +142,67 @@ def test_load_stock_cached_view_normalizes_prefixed_cn_slug_before_snapshot_look
     monkeypatch,
 ) -> None:
     _setup_single_source(monkeypatch)
-    seen_stock_keys: list[str] = []
-
-    def _fake_load_snapshot(
-        _engine, *, stock_key: str, author: str = ""
-    ) -> dict[str, object]:
-        del author
-        seen_stock_keys.append(stock_key)
-        return {
-            "entity_key": stock_key,
-            "entity_type": "stock",
-            "header": {"title": stock_key.removeprefix("stock:")},
-            "signal_top": [
-                {
-                    "post_uid": "xueqiu:1",
-                    "summary": "规范 key 先命中",
-                    "action": "trade.buy",
-                    "author": "alice",
-                    "created_at": "2099-01-01 00:00",
-                    "created_at_line": "2099-01-01 00:00 · 0分钟前",
-                }
-            ],
-            "related": [],
-            "counters": {"signal_total": 1},
-        }
+    seen_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
         stock_hot_read,
         "load_entity_page_signal_snapshot",
-        _fake_load_snapshot,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_read_snapshot")
+        ),
     )
     monkeypatch.setattr(
         stock_hot_read,
         "load_worker_job_cursor",
-        lambda *_args, **_kwargs: "",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_read_worker_progress")
+        ),
     )
 
-    payload = stock_hot_read.load_stock_cached_view_from_env(
+    def _fake_load_source_signal_page(
+        _source,
+        *,
+        stock_keys: list[str],
+        author: str,
+        signal_page: int,
+        signal_page_size: int,
+        signal_window_days: int,
+    ) -> tuple[list[dict[str, str]], int]:
+        seen_calls.append(
+            {
+                "stock_keys": list(stock_keys),
+                "author": author,
+                "signal_page": signal_page,
+                "signal_page_size": signal_page_size,
+                "signal_window_days": signal_window_days,
+            }
+        )
+        return ([_signal_row(post_uid="xueqiu:1", summary="规范 key 先命中")], 1)
+
+    monkeypatch.setattr(
+        stock_hot_read,
+        "_load_source_signal_page",
+        _fake_load_source_signal_page,
+    )
+
+    payload = stock_hot_read.load_stock_page_rows_from_env(
         "SZ000725.US",
         signal_page=1,
         signal_page_size=5,
     )
 
-    assert seen_stock_keys == ["stock:000725.SZ"]
+    assert seen_calls == [
+        {
+            "stock_keys": ["stock:000725.SZ"],
+            "author": "",
+            "signal_page": 1,
+            "signal_page_size": 5,
+            "signal_window_days": 30,
+        }
+    ]
     assert payload["entity_key"] == "stock:000725.SZ"
     assert payload["page_title"] == "000725.SZ"
+    assert payload["signal_total"] == 1
 
 
 def test_load_stock_cached_view_passes_author_to_snapshot_lookup(
@@ -106,40 +211,26 @@ def test_load_stock_cached_view_passes_author_to_snapshot_lookup(
     _setup_single_source(monkeypatch)
     seen_calls: list[dict[str, str]] = []
 
-    def _fake_load_snapshot(
-        _engine, *, stock_key: str, author: str = ""
-    ) -> dict[str, object]:
-        seen_calls.append({"stock_key": stock_key, "author": author})
-        return {
-            "entity_key": stock_key,
-            "entity_type": "stock",
-            "header": {"title": stock_key.removeprefix("stock:")},
-            "signal_top": [
-                {
-                    "post_uid": "weibo:1",
-                    "summary": "只看 alice",
-                    "action": "trade.buy",
-                    "author": "alice",
-                    "created_at": "2099-01-01 00:00",
-                    "created_at_line": "2099-01-01 00:00 · 0分钟前",
-                }
-            ],
-            "related": [],
-            "counters": {"signal_total": 1},
-        }
+    def _fake_load_source_signal_page(
+        _source,
+        *,
+        stock_keys: list[str],
+        author: str,
+        signal_page: int,
+        signal_page_size: int,
+        signal_window_days: int,
+    ) -> tuple[list[dict[str, str]], int]:
+        del signal_page, signal_page_size, signal_window_days
+        seen_calls.append({"stock_key": stock_keys[0], "author": author})
+        return ([_signal_row(summary="只看 alice")], 1)
 
     monkeypatch.setattr(
         stock_hot_read,
-        "load_entity_page_signal_snapshot",
-        _fake_load_snapshot,
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
-        "load_worker_job_cursor",
-        lambda *_args, **_kwargs: "",
+        "_load_source_signal_page",
+        _fake_load_source_signal_page,
     )
 
-    payload = stock_hot_read.load_stock_cached_view_from_env(
+    payload = stock_hot_read.load_stock_page_rows_from_env(
         "600519.SH",
         signal_page=1,
         signal_page_size=5,
@@ -156,43 +247,29 @@ def test_load_stock_cached_view_falls_back_to_legacy_prefixed_cn_snapshot(
     _setup_single_source(monkeypatch)
     seen_stock_keys: list[str] = []
 
-    def _fake_load_snapshot(
-        _engine, *, stock_key: str, author: str = ""
-    ) -> dict[str, object]:
-        del author
+    def _fake_load_source_signal_page(
+        _source,
+        *,
+        stock_keys: list[str],
+        author: str,
+        signal_page: int,
+        signal_page_size: int,
+        signal_window_days: int,
+    ) -> tuple[list[dict[str, str]], int]:
+        del author, signal_page, signal_page_size, signal_window_days
+        stock_key = stock_keys[0]
         seen_stock_keys.append(stock_key)
         if stock_key == "stock:000725.SZ":
-            return {}
-        return {
-            "entity_key": "stock:SZ000725.US",
-            "entity_type": "stock",
-            "header": {"title": "SZ000725.US"},
-            "signal_top": [
-                {
-                    "post_uid": "xueqiu:1",
-                    "summary": "旧快照",
-                    "action": "trade.buy",
-                    "author": "alice",
-                    "created_at": "2099-01-01 00:00",
-                    "created_at_line": "2099-01-01 00:00 · 0分钟前",
-                }
-            ],
-            "related": [],
-            "counters": {"signal_total": 1},
-        }
+            return ([], 0)
+        return ([_signal_row(post_uid="xueqiu:1", summary="旧 key 回退命中")], 1)
 
     monkeypatch.setattr(
         stock_hot_read,
-        "load_entity_page_signal_snapshot",
-        _fake_load_snapshot,
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
-        "load_worker_job_cursor",
-        lambda *_args, **_kwargs: "",
+        "_load_source_signal_page",
+        _fake_load_source_signal_page,
     )
 
-    payload = stock_hot_read.load_stock_cached_view_from_env(
+    payload = stock_hot_read.load_stock_page_rows_from_env(
         "SZ000725.US",
         signal_page=1,
         signal_page_size=5,
@@ -250,43 +327,29 @@ def test_load_stock_cached_view_keeps_canonical_entity_key_when_alias_snapshot_h
     )
     seen_stock_keys: list[str] = []
 
-    def _fake_load_snapshot(
-        _engine, *, stock_key: str, author: str = ""
-    ) -> dict[str, object]:
-        del author
+    def _fake_load_source_signal_page(
+        _source,
+        *,
+        stock_keys: list[str],
+        author: str,
+        signal_page: int,
+        signal_page_size: int,
+        signal_window_days: int,
+    ) -> tuple[list[dict[str, str]], int]:
+        del author, signal_page, signal_page_size, signal_window_days
+        stock_key = stock_keys[0]
         seen_stock_keys.append(stock_key)
         if stock_key != "stock:京东方A":
-            return {}
-        return {
-            "entity_key": "stock:京东方A",
-            "entity_type": "stock",
-            "header": {"title": "京东方A"},
-            "signal_top": [
-                {
-                    "post_uid": "xueqiu:2",
-                    "summary": "alias 快照命中",
-                    "action": "trade.buy",
-                    "author": "alice",
-                    "created_at": "2099-01-02 00:00",
-                    "created_at_line": "2099-01-02 00:00 · 0分钟前",
-                }
-            ],
-            "related": [],
-            "counters": {"signal_total": 1},
-        }
+            return ([], 0)
+        return ([_signal_row(post_uid="xueqiu:2", summary="alias 行情命中")], 1)
 
     monkeypatch.setattr(
         stock_hot_read,
-        "load_entity_page_signal_snapshot",
-        _fake_load_snapshot,
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
-        "load_worker_job_cursor",
-        lambda *_args, **_kwargs: "",
+        "_load_source_signal_page",
+        _fake_load_source_signal_page,
     )
 
-    payload = stock_hot_read.load_stock_cached_view_from_env(
+    payload = stock_hot_read.load_stock_page_rows_from_env(
         "000725.SZ",
         signal_page=1,
         signal_page_size=5,
@@ -294,38 +357,47 @@ def test_load_stock_cached_view_keeps_canonical_entity_key_when_alias_snapshot_h
 
     assert seen_stock_keys == ["stock:000725.SZ", "stock:SZ000725.US", "stock:京东方A"]
     assert payload["entity_key"] == "stock:000725.SZ"
-    assert payload["page_title"] == "京东方A"
+    assert payload["page_title"] == "000725.SZ"
     assert payload["signal_total"] == 1
 
 
-def test_load_stock_cached_view_with_running_worker_includes_status(
+def test_load_stock_cached_view_ignores_worker_state_reads(
     monkeypatch,
 ) -> None:
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
         stock_hot_read,
         "load_entity_page_signal_snapshot",
-        lambda *_args, **_kwargs: {},
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_read_snapshot")
+        ),
     )
     monkeypatch.setattr(
         stock_hot_read,
         "load_worker_job_cursor",
-        lambda *_args, **_kwargs: "",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("should_not_read_worker_progress")
+        ),
     )
-
-    def _fake_state(_engine, *, state_key: str) -> str:
-        if state_key.endswith(".cycle"):
-            return json.dumps(
-                {
-                    "status": "running",
-                    "next_run_at": "2026-03-28 15:10:00",
-                    "updated_at": "2026-03-28 15:00:00",
-                },
-                ensure_ascii=False,
-            )
-        return ""
-
-    monkeypatch.setattr(stock_hot_read, "load_worker_job_cursor", _fake_state)
+    monkeypatch.setattr(
+        stock_hot_read,
+        "load_stock_page_rows_from_env",
+        lambda stock_key, *, signal_page, signal_page_size, author="": {
+            "entity_key": stock_key,
+            "page_title": stock_key.removeprefix("stock:"),
+            "signals": [_signal_row()],
+            "signal_total": 1,
+            "signal_page": signal_page,
+            "signal_page_size": signal_page_size,
+            "related_sectors": [],
+            "load_error": "",
+            "load_warning": "",
+            "worker_status_text": "",
+            "worker_next_run_at": "",
+            "worker_cycle_updated_at": "",
+            "worker_running": False,
+        },
+    )
 
     payload = stock_hot_read.load_stock_cached_view_from_env(
         "600519.SH",
@@ -333,42 +405,30 @@ def test_load_stock_cached_view_with_running_worker_includes_status(
         signal_page_size=5,
     )
 
-    assert "后台处理中" in str(payload.get("load_warning") or "")
-    assert bool(payload.get("worker_running", False)) is True
-    assert str(payload.get("worker_next_run_at") or "") == "2026-03-28 15:10:00"
-    assert str(payload.get("worker_cycle_updated_at") or "") == "2026-03-28 15:00:00"
+    assert str(payload.get("load_warning") or "") == ""
+    assert bool(payload.get("worker_running", True)) is False
+    assert str(payload.get("worker_status_text") or "") == ""
 
 
 def test_load_stock_cached_view_does_not_emit_nat_created_at(monkeypatch) -> None:
     _setup_single_source(monkeypatch)
     monkeypatch.setattr(
         stock_hot_read,
-        "load_entity_page_signal_snapshot",
-        lambda *_args, **_kwargs: {
-            "entity_key": "stock:600519.SH",
-            "entity_type": "stock",
-            "header": {"title": "600519.SH"},
-            "signal_top": [
-                {
-                    "post_uid": "p1",
-                    "summary": "s",
-                    "action": "trade.buy",
-                    "author": "a",
-                    "created_at": "",
-                    "created_at_line": "",
-                }
+        "_load_source_signal_page",
+        lambda _source, **_kwargs: (
+            [
+                _signal_row(
+                    post_uid="p1",
+                    summary="s",
+                    created_at="",
+                    created_at_line="",
+                )
             ],
-            "related": [],
-            "counters": {"signal_total": 1},
-        },
-    )
-    monkeypatch.setattr(
-        stock_hot_read,
-        "load_worker_job_cursor",
-        lambda *_args, **_kwargs: "",
+            1,
+        ),
     )
 
-    payload = stock_hot_read.load_stock_cached_view_from_env(
+    payload = stock_hot_read.load_stock_page_rows_from_env(
         "600519.SH",
         signal_page=1,
         signal_page_size=5,
