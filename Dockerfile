@@ -25,7 +25,7 @@ RUN python -m pip install --upgrade pip \
 COPY pyproject.toml uv.lock /app/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project \
+    uv sync --frozen --no-dev --no-group akshare --no-install-project \
     && uv pip install -p /app/.venv/bin/python gunicorn "uvicorn[standard]" \
     && uv cache prune --ci
 
