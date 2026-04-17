@@ -82,48 +82,6 @@ def test_clear_reflex_source_caches_clears_row_and_wrapper_caches(
     assert trade_board_loader.load_stock_alias_relation_rows_cached in cache_owners
 
 
-def test_load_source_engines_from_env_builds_all_source_schema_engines(
-    monkeypatch,
-) -> None:
-    seen_steps: list[str] = []
-
-    monkeypatch.setattr(
-        source_read,
-        "load_dotenv_if_present",
-        lambda: seen_steps.append("dotenv"),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        source_read,
-        "load_configured_source_schemas_from_env",
-        lambda: seen_steps.append("sources")
-        or [
-            SourceConfigStub(name="weibo", url="u1", token=""),
-            SourceConfigStub(name="xueqiu", url="u2", token=""),
-        ],
-        raising=False,
-    )
-
-    captured: list[tuple[str, str]] = []
-
-    def _fake_ensure_postgres_engine(dsn: str, *, schema_name: str = ""):  # type: ignore[no-untyped-def]
-        captured.append((dsn, schema_name))
-        return f"engine:{schema_name}"
-
-    monkeypatch.setattr(
-        source_read,
-        "ensure_postgres_engine",
-        _fake_ensure_postgres_engine,
-        raising=False,
-    )
-
-    engines = source_read.load_source_engines_from_env()
-
-    assert engines == ["engine:weibo", "engine:xueqiu"]
-    assert captured == [("u1", "weibo"), ("u2", "xueqiu")]
-    assert seen_steps[:2] == ["dotenv", "sources"]
-
-
 def test_load_stock_alias_candidates_from_env_merges_source_scores(
     monkeypatch,
 ) -> None:

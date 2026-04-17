@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
+from alphavault.ai._errors import format_llm_error_one_line
 from alphavault.ai.analyze import _call_ai_with_litellm
 from alphavault.ai.topic_cluster_suggest import ai_is_configured
 from alphavault.domains.stock.key_match import (
@@ -17,8 +19,12 @@ AI_STATUS_RANKED = "ranked"
 AI_STATUS_ERROR = "error"
 
 _ALIAS_AI_BATCH_CAP = 10
-_ALIAS_AI_TIMEOUT_SECONDS_CAP = 20.0
 _ALIAS_AI_RETRY_CAP = 1
+AI_ERROR_REASON_PREFIX = "AI失败："
+INVALID_PREDICTIONS_REASON = "AI失败：返回格式不对"
+MISSING_PREDICTION_REASON = "AI失败：未返回这条简称的结果"
+
+logger = logging.getLogger(__name__)
 
 
 def _clean_text(value: object) -> str:
@@ -40,6 +46,30 @@ def _format_confidence(value: object) -> str:
     score = _clamp_confidence(value)
     text = f"{score:.2f}".rstrip("0").rstrip(".")
     return text or "0"
+
+
+def _format_ai_error_reason(err: BaseException) -> str:
+    return f"{AI_ERROR_REASON_PREFIX}{format_llm_error_one_line(err, limit=160)}"
+
+
+def _log_ai_error(
+    *,
+    alias_key: str,
+    model: str,
+    api_mode: str,
+    err: BaseException,
+) -> None:
+    logger.warning(
+        " ".join(
+            [
+                "[organizer_ai] alias_manual_error",
+                f"alias_key={alias_key or '(empty)'}",
+                f"cfg_model={model or '(empty)'}",
+                f"api_mode={api_mode or '(empty)'}",
+                f"error={format_llm_error_one_line(err, limit=240)}",
+            ]
+        )
+    )
 
 
 def _normalize_bool_flag(value: object) -> str:
@@ -130,8 +160,12 @@ def enrich_alias_tasks_with_ai(
 
     try:
         ranked = _predict_alias_tasks_with_ai(attempted)
-    except Exception:
-        ranked = [_with_ai_fields(item, status=AI_STATUS_ERROR) for item in attempted]
+    except Exception as err:
+        error_reason = _format_ai_error_reason(err)
+        ranked = [
+            _with_ai_fields(item, status=AI_STATUS_ERROR, reason=error_reason)
+            for item in attempted
+        ]
     return ranked + untouched
 
 
@@ -186,26 +220,51 @@ def _predict_alias_tasks_with_ai(
 - 不要输出 Markdown。
 """.strip()
 
-    parsed = _call_ai_with_litellm(
-        prompt=prompt,
-        api_mode=config.api_mode,
-        ai_stream=False,
-        model_name=config.model,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        timeout_seconds=min(
-            float(config.timeout_seconds),
-            _ALIAS_AI_TIMEOUT_SECONDS_CAP,
-        ),
-        retry_count=min(int(config.retries), _ALIAS_AI_RETRY_CAP),
-        temperature=float(config.temperature),
-        reasoning_effort=str(config.reasoning_effort),
-        trace_out=None,
-        trace_label="alias_tasks:predict",
-    )
+    try:
+        parsed = _call_ai_with_litellm(
+            prompt=prompt,
+            api_mode=config.api_mode,
+            ai_stream=False,
+            model_name=config.model,
+            base_url=config.base_url,
+            api_key=config.api_key,
+            timeout_seconds=float(config.timeout_seconds),
+            retry_count=min(int(config.retries), _ALIAS_AI_RETRY_CAP),
+            temperature=float(config.temperature),
+            reasoning_effort=str(config.reasoning_effort),
+            trace_out=None,
+            trace_label="alias_tasks:predict",
+        )
+    except Exception as err:
+        alias_key = str(tasks[0].get("alias_key") or "").strip() if tasks else ""
+        _log_ai_error(
+            alias_key=alias_key,
+            model=str(config.model or "").strip(),
+            api_mode=str(config.api_mode or "").strip(),
+            err=err,
+        )
+        raise
     predictions = parsed.get("predictions") if isinstance(parsed, dict) else None
     if not isinstance(predictions, list):
-        return [_with_ai_fields(item, status=AI_STATUS_ERROR) for item in tasks]
+        logger.warning(
+            " ".join(
+                [
+                    "[organizer_ai] alias_manual_invalid_output",
+                    f"alias_key={str(tasks[0].get('alias_key') or '').strip() if tasks else '(empty)'}",
+                    f"cfg_model={str(config.model or '').strip() or '(empty)'}",
+                    f"api_mode={str(config.api_mode or '').strip() or '(empty)'}",
+                    "error=predictions_missing",
+                ]
+            )
+        )
+        return [
+            _with_ai_fields(
+                item,
+                status=AI_STATUS_ERROR,
+                reason=INVALID_PREDICTIONS_REASON,
+            )
+            for item in tasks
+        ]
 
     prediction_map: dict[str, dict[str, Any]] = {}
     for item in predictions:
@@ -225,7 +284,7 @@ def _predict_alias_tasks_with_ai(
                 _with_ai_fields(
                     item,
                     status=AI_STATUS_ERROR,
-                    reason="AI 未返回这条简称的结果",
+                    reason=MISSING_PREDICTION_REASON,
                     uncertain="true",
                 )
             )

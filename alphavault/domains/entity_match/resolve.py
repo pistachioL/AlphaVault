@@ -8,6 +8,7 @@ from alphavault.domains.common.assertion_entities import (
     coerce_stock_code_entity_key,
 )
 from alphavault.infra.entity_match_redis import load_stock_dict_targets_best_effort
+from alphavault.infra.ai.relation_candidate_ranker import enrich_candidates_with_ai
 from alphavault.domains.relation.ids import make_candidate_id
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_BLOCKED,
@@ -16,6 +17,7 @@ from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_RESOLVED,
     AliasResolveTaskInfo,
     RESEARCH_RELATIONS_TABLE,
+    get_official_names_by_stock_keys,
     get_stock_keys_by_official_names,
     get_alias_resolve_tasks_map,
     set_alias_resolve_task_status,
@@ -246,6 +248,7 @@ def _build_alias_candidate(
     stock_key: str,
     alias_key: str,
     confidence: float,
+    sample: dict[str, str],
 ) -> dict[str, object]:
     return {
         "candidate_id": make_candidate_id(
@@ -262,6 +265,9 @@ def _build_alias_candidate(
         "evidence_summary": "同条观点里代码和简称一起出现",
         "score": float(confidence),
         "ai_status": _AI_STATUS_SKIPPED,
+        "sample_post_uid": _clean_text(sample.get("sample_post_uid")),
+        "sample_evidence": _clean_text(sample.get("sample_evidence")),
+        "sample_raw_text_excerpt": _clean_text(sample.get("sample_raw_text_excerpt")),
     }
 
 
@@ -426,6 +432,7 @@ def resolve_assertion_mentions(
                 stock_key=single_stock_code_key,
                 alias_key=alias_key,
                 confidence=confidence,
+                sample=cleaned_alias_task_sample,
             )
             candidate_id = _clean_text(candidate.get("candidate_id"))
             if candidate_id and candidate_id not in seen_candidate_ids:
@@ -454,7 +461,10 @@ def resolve_assertion_mentions(
 
 
 def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) -> None:
-    for item in result.relation_candidates:
+    relation_candidates = _enrich_stock_alias_candidates_with_ai(
+        engine_or_conn, result.relation_candidates
+    )
+    for item in relation_candidates:
         upsert_relation_candidate(
             engine_or_conn,
             candidate_id=_clean_text(item.get("candidate_id")),
@@ -466,6 +476,11 @@ def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) ->
             evidence_summary=_clean_text(item.get("evidence_summary")),
             score=_clamp_confidence(item.get("score")),
             ai_status=_clean_text(item.get("ai_status")) or _AI_STATUS_SKIPPED,
+            ai_reason=_clean_text(item.get("ai_reason")),
+            ai_confidence=_clean_text(item.get("ai_confidence")),
+            sample_post_uid=_clean_text(item.get("sample_post_uid")),
+            sample_evidence=_clean_text(item.get("sample_evidence")),
+            sample_raw_text_excerpt=_clean_text(item.get("sample_raw_text_excerpt")),
         )
 
     tasks_map = get_alias_resolve_tasks_map(engine_or_conn, result.alias_task_keys)
@@ -497,6 +512,56 @@ def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) ->
             sample_evidence=_clean_text(sample.get("sample_evidence")),
             sample_raw_text_excerpt=_clean_text(sample.get("sample_raw_text_excerpt")),
         )
+
+
+def _enrich_stock_alias_candidates_with_ai(
+    engine_or_conn,
+    candidates: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not candidates:
+        return []
+    official_names_by_stock_key = get_official_names_by_stock_keys(
+        engine_or_conn,
+        [
+            _clean_text(item.get("left_key"))
+            for item in candidates
+            if _clean_text(item.get("left_key"))
+        ],
+    )
+    alias_rows = [
+        {
+            **dict(item),
+            "candidate_key": _clean_text(item.get("right_key")),
+            "left_official_name": official_names_by_stock_key.get(
+                _clean_text(item.get("left_key")),
+                "",
+            ),
+        }
+        for item in candidates
+        if _clean_text(item.get("relation_type")) == _STOCK_ALIAS_RELATION_TYPE
+    ]
+    if not alias_rows:
+        return [dict(item) for item in candidates]
+
+    enriched_rows = enrich_candidates_with_ai(
+        alias_rows,
+        relation_type=_STOCK_ALIAS_RELATION_TYPE,
+        ai_enabled=True,
+    )
+    enriched_by_candidate_id = {
+        _clean_text(item.get("candidate_id")): item
+        for item in enriched_rows
+        if _clean_text(item.get("candidate_id"))
+    }
+
+    out: list[dict[str, object]] = []
+    for item in candidates:
+        candidate_id = _clean_text(item.get("candidate_id"))
+        if not candidate_id:
+            out.append(dict(item))
+            continue
+        out.append(dict(enriched_by_candidate_id.get(candidate_id, item)))
+    return out
 
 
 __all__ = [

@@ -27,6 +27,7 @@ Uses `uv` (lockfile: `uv.lock`).
 ## Testing Guidelines
 - Framework: `pytest` (tests live in `tests/`).
 - Keep unit tests deterministic and fast; if a test needs env/config, document required variables in the test or link to `.env.example`.
+- 只保留核心业务用例；不是核心链路、只是绑内部实现细节的用例不要添加。
 - 测试里不要用 `lambda` 包 `list.append(...)` 再顺手返回别的值，比如 `(seen.append(x), data)[1]` 或 `seen.append(x) or data` 这种写法；`mypy` 会把它当成错误。
 - 如果测试 stub 里既要记日志、又要返回数据，改成一个小的本地 `def _fake_*(): ...`，先 `append`，再 `return`。
 

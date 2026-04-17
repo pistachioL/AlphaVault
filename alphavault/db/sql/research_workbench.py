@@ -70,6 +70,11 @@ INSERT INTO {table} AS target(
     evidence_summary,
     score,
     ai_status,
+    ai_reason,
+    ai_confidence,
+    sample_post_uid,
+    sample_evidence,
+    sample_raw_text_excerpt,
     status,
     created_at,
     updated_at
@@ -84,6 +89,11 @@ VALUES (
     :evidence_summary,
     :score,
     :ai_status,
+    :ai_reason,
+    :ai_confidence,
+    :sample_post_uid,
+    :sample_evidence,
+    :sample_raw_text_excerpt,
     :status,
     :now,
     :now
@@ -97,6 +107,20 @@ ON CONFLICT(candidate_id) DO UPDATE SET
     evidence_summary = excluded.evidence_summary,
     score = excluded.score,
     ai_status = excluded.ai_status,
+    ai_reason = excluded.ai_reason,
+    ai_confidence = excluded.ai_confidence,
+    sample_post_uid = CASE
+        WHEN COALESCE(target.sample_post_uid, '') <> '' THEN target.sample_post_uid
+        ELSE excluded.sample_post_uid
+    END,
+    sample_evidence = CASE
+        WHEN COALESCE(target.sample_evidence, '') <> '' THEN target.sample_evidence
+        ELSE excluded.sample_evidence
+    END,
+    sample_raw_text_excerpt = CASE
+        WHEN COALESCE(target.sample_raw_text_excerpt, '') <> '' THEN target.sample_raw_text_excerpt
+        ELSE excluded.sample_raw_text_excerpt
+    END,
     status = CASE
         WHEN target.status IN ('accepted', 'ignored', 'blocked') THEN target.status
         ELSE excluded.status
@@ -162,7 +186,10 @@ SELECT candidate_id,
            ELSE right_key
        END AS candidate_key,
        relation_label,
-       suggestion_reason, evidence_summary, score, ai_status, status,
+       suggestion_reason, evidence_summary, score,
+       ai_status, ai_reason, ai_confidence,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt,
+       status,
        created_at, updated_at
 FROM {table}
 WHERE status = 'pending'
@@ -182,7 +209,10 @@ SELECT candidate_id,
            ELSE right_key
        END AS candidate_key,
        relation_label,
-       suggestion_reason, evidence_summary, score, ai_status, status,
+       suggestion_reason, evidence_summary, score,
+       ai_status, ai_reason, ai_confidence,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt,
+       status,
        created_at, updated_at
 FROM {table}
 WHERE status = 'pending'
@@ -195,7 +225,10 @@ LIMIT :limit
 def select_candidate_by_id(table: str) -> str:
     return f"""
 SELECT candidate_id, relation_type, left_key, right_key, relation_label,
-       suggestion_reason, evidence_summary, score, ai_status, status,
+       suggestion_reason, evidence_summary, score,
+       ai_status, ai_reason, ai_confidence,
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt,
+       status,
        created_at, updated_at
 FROM {table}
 WHERE candidate_id = :candidate_id

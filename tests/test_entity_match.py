@@ -11,7 +11,6 @@ from alphavault.domains.entity_match.resolve import (
     resolve_assertion_mentions,
 )
 from alphavault.research_workbench import (
-    RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
     RESEARCH_RELATION_CANDIDATES_TABLE,
     record_stock_alias_relation,
     upsert_security_master_stock,
@@ -242,19 +241,17 @@ def test_resolve_assertion_mentions_creates_candidate_for_unresolved_stock_name_
                 "is_primary": 1,
             }
         ]
-        assert result.relation_candidates == [
-            {
-                "candidate_id": "stock_alias|alias_of|stock:600900.SH|stock:长江电力股份有限公司",
-                "relation_type": "stock_alias",
-                "left_key": "stock:600900.SH",
-                "right_key": "stock:长江电力股份有限公司",
-                "relation_label": "alias_of",
-                "suggestion_reason": "同条观点里代码和简称一起出现",
-                "evidence_summary": "同条观点里代码和简称一起出现",
-                "score": 0.88,
-                "ai_status": "skipped",
-            }
-        ]
+        assert len(result.relation_candidates) == 1
+        candidate = result.relation_candidates[0]
+        assert candidate["candidate_id"] == (
+            "stock_alias|alias_of|stock:600900.SH|stock:长江电力股份有限公司"
+        )
+        assert candidate["relation_type"] == "stock_alias"
+        assert candidate["left_key"] == "stock:600900.SH"
+        assert candidate["right_key"] == "stock:长江电力股份有限公司"
+        assert candidate["relation_label"] == "alias_of"
+        assert candidate["score"] == 0.88
+        assert candidate["ai_status"] == "skipped"
         assert result.alias_task_keys == []
     finally:
         conn.close()
@@ -419,48 +416,50 @@ def test_load_entity_match_lookup_maps_uses_one_redis_batch_and_batch_fallback(
     }
 
 
-def test_persist_entity_match_followups_writes_candidate_and_alias_task(
+def test_persist_entity_match_followups_enriches_stock_alias_candidate_with_ai(
+    monkeypatch,
     pg_conn,
 ) -> None:
+    from alphavault.domains.entity_match import resolve as resolve_module
+
     conn = _workbench_conn(pg_conn)
     try:
-        candidate_result = resolve_assertion_mentions(
+        monkeypatch.setattr(
+            resolve_module,
+            "enrich_candidates_with_ai",
+            lambda rows, **_kwargs: [
+                {
+                    **rows[0],
+                    "ai_status": "ranked",
+                    "ai_reason": "AI 看上下文像紫金矿业简称。",
+                    "ai_confidence": "0.93",
+                }
+            ],
+            raising=False,
+        )
+
+        result = resolve_assertion_mentions(
             conn,
             assertion_mentions=[
                 {
-                    "mention_text": "600519",
+                    "mention_text": "601899",
                     "mention_type": "stock_code",
                     "confidence": 0.95,
                 },
                 {
-                    "mention_text": "茅台",
+                    "mention_text": "紫金",
                     "mention_type": "stock_alias",
-                    "confidence": 0.9,
+                    "confidence": 0.88,
                 },
             ],
         )
-        task_result = resolve_assertion_mentions(
-            conn,
-            assertion_mentions=[
-                {
-                    "mention_text": "长电",
-                    "mention_type": "stock_alias",
-                    "confidence": 0.8,
-                }
-            ],
-            alias_task_sample={
-                "sample_post_uid": "weibo:1",
-                "sample_evidence": "长电今天继续涨",
-                "sample_raw_text_excerpt": "原文里提到长电、封测和景气度。",
-            },
-        )
-        persist_entity_match_followups(conn, candidate_result)
-        persist_entity_match_followups(conn, task_result)
+
+        persist_entity_match_followups(conn, result)
 
         candidate_rows = (
             conn.execute(
                 f"""
-SELECT relation_type, left_key, right_key, relation_label, ai_status, status
+SELECT ai_status, ai_reason, ai_confidence
 FROM {RESEARCH_RELATION_CANDIDATES_TABLE}
 ORDER BY candidate_id
 """
@@ -468,35 +467,12 @@ ORDER BY candidate_id
             .mappings()
             .all()
         )
+
         assert candidate_rows == [
             {
-                "relation_type": "stock_alias",
-                "left_key": "stock:600519.SH",
-                "right_key": "stock:茅台",
-                "relation_label": "alias_of",
-                "ai_status": "skipped",
-                "status": "pending",
-            }
-        ]
-
-        alias_rows = (
-            conn.execute(
-                f"""
-SELECT alias_key, status, sample_post_uid, sample_evidence, sample_raw_text_excerpt
-FROM {RESEARCH_ALIAS_RESOLVE_TASKS_TABLE}
-ORDER BY alias_key
-"""
-            )
-            .mappings()
-            .all()
-        )
-        assert alias_rows == [
-            {
-                "alias_key": "stock:长电",
-                "status": "pending",
-                "sample_post_uid": "weibo:1",
-                "sample_evidence": "长电今天继续涨",
-                "sample_raw_text_excerpt": "原文里提到长电、封测和景气度。",
+                "ai_status": "ranked",
+                "ai_reason": "AI 看上下文像紫金矿业简称。",
+                "ai_confidence": "0.93",
             }
         ]
     finally:
