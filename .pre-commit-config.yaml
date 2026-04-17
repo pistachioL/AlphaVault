@@ -57,9 +57,9 @@ repos:
   - repo: local
     hooks:
       - id: pytest
-        name: pytest-core
-        # Keep commit-time checks fast; run `uv run pytest` for the full suite.
-        entry: /bin/bash scripts/run_precommit_core_tests.sh
+        name: pytest
+        # The repository keeps only the core-path suite; run it with ephemeral Postgres.
+        entry: mise run test:db-hook
         language: system
         pass_filenames: false
         always_run: true

@@ -15,7 +15,7 @@ Uses `uv` (lockfile: `uv.lock`).
 - `uv sync`: install dependencies.
 - `uv run pre-commit install`: install git hooks.
 - `uv run pre-commit run -a`: run format/lint/type-check/spell-check/tests (Ruff, mypy, codespell, vulture, pytest).
-- `uv run pytest`: run all tests.
+- `uv run pytest`: run the core-path test suite.
 - `uv run pytest tests/test_foo.py::test_bar`: run a single test.
 - `uv run reflex run`: start the Reflex dev server.
 - `uv run python weibo_rss_worker.py --log-level info`: run the RSS → AI → Postgres worker locally.
@@ -78,6 +78,7 @@ The AI worker requires `REDIS_URL`. Redis holds the runtime queue state: ready /
 
 ## Testing
 - Framework: `pytest` (tests in `tests/`).
+- The repository keeps only core-path tests.
 - Run a single test: `uv run pytest tests/test_foo.py::test_bar -v`.
 - Tests must be deterministic and fast; document any required env vars or link to `.env.example`.
 
