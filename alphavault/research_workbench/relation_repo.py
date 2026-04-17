@@ -39,6 +39,14 @@ def _clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
+def _normalize_relation_key(value: object) -> str:
+    key = _clean_text(value)
+    if not key.startswith("stock:"):
+        return key
+    normalized = normalize_stock_key(key)
+    return normalized or key
+
+
 def _market_text(stock_key: str) -> str:
     text = _clean_text(stock_key)
     if "." not in text:
@@ -64,18 +72,20 @@ def record_relation(
     source: str,
 ) -> None:
     now = _now_str()
+    resolved_left_key = _normalize_relation_key(left_key)
+    resolved_right_key = _normalize_relation_key(right_key)
     conn.execute(
         upsert_research_relation(RESEARCH_RELATIONS_TABLE),
         {
             "relation_id": make_relation_id(
                 relation_type=relation_type,
-                left_key=left_key,
-                right_key=right_key,
+                left_key=resolved_left_key,
+                right_key=resolved_right_key,
                 relation_label=relation_label,
             ),
             "relation_type": str(relation_type or "").strip(),
-            "left_key": str(left_key or "").strip(),
-            "right_key": str(right_key or "").strip(),
+            "left_key": resolved_left_key,
+            "right_key": resolved_right_key,
             "relation_label": str(relation_label or "").strip(),
             "source": str(source or "").strip(),
             "now": now,
@@ -235,12 +245,15 @@ def record_stock_alias_relation(
     alias_key: str,
     source: str,
 ) -> None:
+    normalized_stock_key = _normalize_relation_key(stock_key)
+    normalized_alias_key = _normalize_relation_key(alias_key)
+
     def _record(conn: PostgresConnection) -> None:
         record_relation(
             conn,
             relation_type=RELATION_TYPE_STOCK_ALIAS,
-            left_key=stock_key,
-            right_key=alias_key,
+            left_key=normalized_stock_key,
+            right_key=normalized_alias_key,
             relation_label=RELATION_LABEL_ALIAS,
             source=source,
         )
@@ -248,8 +261,8 @@ def record_stock_alias_relation(
     run_postgres_transaction(engine_or_conn, _record)
     try:
         sync_stock_alias_shadow_dict_best_effort(
-            stock_key=stock_key,
-            alias_key=alias_key,
+            stock_key=normalized_stock_key,
+            alias_key=normalized_alias_key,
         )
     except Exception:
         pass

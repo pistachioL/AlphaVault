@@ -664,7 +664,7 @@ class OrganizerState(rx.State):
                     )
                 ]
                 for row in enriched_rows:
-                    research_workbench.upsert_relation_candidate(
+                    persisted_candidate = research_workbench.upsert_relation_candidate(
                         engine,
                         candidate_id=str(row.get("candidate_id") or "").strip(),
                         relation_type=str(row.get("relation_type") or "").strip(),
@@ -687,7 +687,7 @@ class OrganizerState(rx.State):
                     )
                     if research_workbench.auto_accept_relation_candidate_if_needed(
                         engine,
-                        candidate_row=row,
+                        candidate_row={**dict(row), **persisted_candidate},
                     ):
                         auto_accept_count += 1
             if auto_accept_count > 0:

@@ -466,7 +466,7 @@ def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) ->
         engine_or_conn, result.relation_candidates
     )
     for item in relation_candidates:
-        upsert_relation_candidate(
+        persisted_candidate = upsert_relation_candidate(
             engine_or_conn,
             candidate_id=_clean_text(item.get("candidate_id")),
             relation_type=_clean_text(item.get("relation_type")),
@@ -485,7 +485,7 @@ def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) ->
         )
         auto_accept_relation_candidate_if_needed(
             engine_or_conn,
-            candidate_row=item,
+            candidate_row={**dict(item), **persisted_candidate},
         )
 
     tasks_map = get_alias_resolve_tasks_map(engine_or_conn, result.alias_task_keys)

@@ -14,7 +14,7 @@ from alphavault.research_workbench import (
 def apply_candidate_action(candidate_row: Mapping[str, object], action: str) -> None:
     engine = get_research_workbench_engine_from_env()
     left_key = str(candidate_row.get("left_key") or "").strip()
-    upsert_relation_candidate(
+    persisted_candidate = upsert_relation_candidate(
         engine,
         candidate_id=str(candidate_row.get("candidate_id") or "").strip(),
         relation_type=str(candidate_row.get("relation_type") or "").strip(),
@@ -34,7 +34,7 @@ def apply_candidate_action(candidate_row: Mapping[str, object], action: str) -> 
         ).strip(),
     )
     action_name = str(action or "").strip()
-    candidate_id = str(candidate_row.get("candidate_id") or "").strip()
+    candidate_id = str(persisted_candidate.get("candidate_id") or "").strip()
     if action_name == "accept":
         accept_relation_candidate(engine, candidate_id=candidate_id, source="manual")
     elif action_name == "ignore":

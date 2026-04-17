@@ -19,6 +19,8 @@ from alphavault.infra.entity_match_redis import (
     sync_stock_alias_shadow_dict_best_effort,
 )
 from alphavault.timeutil import now_cst_str
+from alphavault.domains.relation.ids import make_candidate_id
+from alphavault.domains.stock.keys import normalize_stock_key
 
 from .relation_repo import (
     RELATION_LABEL_ALIAS,
@@ -48,6 +50,64 @@ def _coerce_confidence(value: object) -> float:
         return float(_clean_text(value) or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _normalize_relation_key(value: object) -> str:
+    key = _clean_text(value)
+    if not key.startswith("stock:"):
+        return key
+    normalized = normalize_stock_key(key)
+    return normalized or key
+
+
+def _build_normalized_candidate_payload(
+    *,
+    candidate_id: str,
+    relation_type: str,
+    left_key: str,
+    right_key: str,
+    relation_label: str,
+    suggestion_reason: str,
+    evidence_summary: str,
+    score: float,
+    ai_status: str,
+    ai_reason: str,
+    ai_confidence: str,
+    sample_post_uid: str,
+    sample_evidence: str,
+    sample_raw_text_excerpt: str,
+    status: str,
+    now: str,
+) -> dict[str, object]:
+    resolved_relation_type = _clean_text(relation_type)
+    resolved_left_key = _normalize_relation_key(left_key)
+    resolved_right_key = _normalize_relation_key(right_key)
+    resolved_relation_label = _clean_text(relation_label)
+    resolved_candidate_id = make_candidate_id(
+        relation_type=resolved_relation_type,
+        left_key=resolved_left_key,
+        right_key=resolved_right_key,
+        relation_label=resolved_relation_label,
+    )
+    return {
+        "raw_candidate_id": _clean_text(candidate_id),
+        "candidate_id": resolved_candidate_id,
+        "relation_type": resolved_relation_type,
+        "left_key": resolved_left_key,
+        "right_key": resolved_right_key,
+        "relation_label": resolved_relation_label,
+        "suggestion_reason": _clean_text(suggestion_reason),
+        "evidence_summary": _clean_text(evidence_summary),
+        "score": float(score),
+        "ai_status": _clean_text(ai_status),
+        "ai_reason": _clean_text(ai_reason),
+        "ai_confidence": _clean_text(ai_confidence),
+        "sample_post_uid": _clean_text(sample_post_uid),
+        "sample_evidence": _clean_text(sample_evidence),
+        "sample_raw_text_excerpt": _clean_text(sample_raw_text_excerpt),
+        "status": _clean_text(status) or STATUS_PENDING,
+        "now": now,
+    }
 
 
 def should_auto_accept_relation_candidate_row(
@@ -101,35 +161,44 @@ def upsert_relation_candidate(
     sample_evidence: str = "",
     sample_raw_text_excerpt: str = "",
     status: str = STATUS_PENDING,
-) -> None:
+) -> dict[str, object]:
     now = _now_str()
+    payload = _build_normalized_candidate_payload(
+        candidate_id=candidate_id,
+        relation_type=relation_type,
+        left_key=left_key,
+        right_key=right_key,
+        relation_label=relation_label,
+        suggestion_reason=suggestion_reason,
+        evidence_summary=evidence_summary,
+        score=score,
+        ai_status=ai_status,
+        ai_reason=ai_reason,
+        ai_confidence=ai_confidence,
+        sample_post_uid=sample_post_uid,
+        sample_evidence=sample_evidence,
+        sample_raw_text_excerpt=sample_raw_text_excerpt,
+        status=status,
+        now=now,
+    )
     try:
         with use_conn(engine_or_conn) as conn:
+            db_payload = dict(payload)
+            db_payload.pop("raw_candidate_id", None)
             conn.execute(
                 upsert_relation_candidate_sql(RESEARCH_RELATION_CANDIDATES_TABLE),
-                {
-                    "candidate_id": str(candidate_id or "").strip(),
-                    "relation_type": str(relation_type or "").strip(),
-                    "left_key": str(left_key or "").strip(),
-                    "right_key": str(right_key or "").strip(),
-                    "relation_label": str(relation_label or "").strip(),
-                    "suggestion_reason": str(suggestion_reason or "").strip(),
-                    "evidence_summary": str(evidence_summary or "").strip(),
-                    "score": float(score),
-                    "ai_status": str(ai_status or "").strip(),
-                    "ai_reason": str(ai_reason or "").strip(),
-                    "ai_confidence": str(ai_confidence or "").strip(),
-                    "sample_post_uid": str(sample_post_uid or "").strip(),
-                    "sample_evidence": str(sample_evidence or "").strip(),
-                    "sample_raw_text_excerpt": str(
-                        sample_raw_text_excerpt or ""
-                    ).strip(),
-                    "status": str(status or STATUS_PENDING).strip(),
-                    "now": now,
-                },
+                db_payload,
             )
+            raw_candidate_id = str(payload.get("raw_candidate_id") or "").strip()
+            resolved_candidate_id = str(payload.get("candidate_id") or "").strip()
+            if raw_candidate_id and raw_candidate_id != resolved_candidate_id:
+                conn.execute(
+                    f"DELETE FROM {RESEARCH_RELATION_CANDIDATES_TABLE} WHERE candidate_id = :candidate_id",
+                    {"candidate_id": raw_candidate_id},
+                )
     except BaseException as err:
         handle_db_error(engine_or_conn, err)
+    return payload
 
 
 def list_pending_candidates(
@@ -155,7 +224,7 @@ def list_pending_candidates_for_left_key(
     left_key: str,
     limit: int = 12,
 ) -> list[dict[str, object]]:
-    key = str(left_key or "").strip()
+    key = _normalize_relation_key(left_key)
     if not key:
         return []
     try:
@@ -250,8 +319,8 @@ def accept_relation_candidate(
             if not row:
                 return
             accepted_relation_type = str(row.get("relation_type") or "").strip()
-            accepted_left_key = str(row.get("left_key") or "").strip()
-            accepted_right_key = str(row.get("right_key") or "").strip()
+            accepted_left_key = _normalize_relation_key(row.get("left_key"))
+            accepted_right_key = _normalize_relation_key(row.get("right_key"))
             accepted_relation_label = str(row.get("relation_label") or "").strip()
 
             def _accept(tx_conn: PostgresConnection) -> None:
