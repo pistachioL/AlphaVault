@@ -839,15 +839,13 @@ def test_rerun_stock_alias_ai_current_page_updates_visible_rows_and_persists_res
     assert state.pending_rows[1]["ai_reason"] == "AI:candidate-2"
 
 
-def test_apply_candidate_action_marks_all_source_engines_dirty(
+def test_apply_candidate_action_no_longer_marks_stock_page_dirty(
     monkeypatch,
 ) -> None:
     from alphavault_reflex.services import relation_actions
 
     standard_engine = object()
-    weibo_engine = object()
-    xueqiu_engine = object()
-    upsert_calls: list[object] = []
+    upsert_calls: list[tuple[object, str, str, str, str, str]] = []
     accept_calls: list[object] = []
     dirty_calls: list[tuple[object, str, str]] = []
 
@@ -859,14 +857,23 @@ def test_apply_candidate_action_marks_all_source_engines_dirty(
     monkeypatch.setattr(
         relation_actions,
         "load_source_engines_from_env",
-        lambda: [weibo_engine, xueqiu_engine],
+        lambda: (_ for _ in ()).throw(
+            AssertionError("股票 snapshot 已停，不该再去拿 source engines")
+        ),
         raising=False,
     )
     monkeypatch.setattr(
         relation_actions,
         "upsert_relation_candidate",
         lambda engine, **kwargs: upsert_calls.append(
-            (engine, kwargs["candidate_id"], kwargs["left_key"])
+            (
+                engine,
+                str(kwargs["candidate_id"]),
+                str(kwargs["left_key"]),
+                str(kwargs["ai_reason"]),
+                str(kwargs["ai_confidence"]),
+                str(kwargs["sample_post_uid"]),
+            )
         ),
     )
     monkeypatch.setattr(
@@ -876,14 +883,6 @@ def test_apply_candidate_action_marks_all_source_engines_dirty(
             (engine, candidate_id, source)
         ),
     )
-    monkeypatch.setattr(
-        relation_actions,
-        "mark_entity_page_dirty",
-        lambda engine, *, stock_key, reason: dirty_calls.append(
-            (engine, stock_key, reason)
-        ),
-    )
-
     relation_actions.apply_candidate_action(
         {
             "candidate_id": "cand-1",
@@ -894,17 +893,28 @@ def test_apply_candidate_action_marks_all_source_engines_dirty(
             "suggestion_reason": "人工确认",
             "evidence_summary": "同票简称",
             "score": "2",
-            "ai_status": "",
+            "ai_status": "merge",
+            "ai_reason": "AI 说这是同一只票的简称。",
+            "ai_confidence": "0.93",
+            "sample_post_uid": "weibo:1",
+            "sample_evidence": "同帖一起出现",
+            "sample_raw_text_excerpt": "紫金今天又被提到。",
         },
         "accept",
     )
 
-    assert upsert_calls == [(standard_engine, "cand-1", "stock:601899.SH")]
-    assert accept_calls == [(standard_engine, "cand-1", "manual")]
-    assert dirty_calls == [
-        (weibo_engine, "stock:601899.SH", "candidate_action"),
-        (xueqiu_engine, "stock:601899.SH", "candidate_action"),
+    assert upsert_calls == [
+        (
+            standard_engine,
+            "cand-1",
+            "stock:601899.SH",
+            "AI 说这是同一只票的简称。",
+            "0.93",
+            "weibo:1",
+        )
     ]
+    assert accept_calls == [(standard_engine, "cand-1", "manual")]
+    assert dirty_calls == []
 
 
 def test_load_search_results_returns_relation_error_when_standard_alias_fails(

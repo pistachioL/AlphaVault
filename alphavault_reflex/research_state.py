@@ -7,6 +7,7 @@ from alphavault_reflex.services.research_page_loader import (
     load_sector_page_view,
     load_stock_page_cached_view,
     load_stock_sidebar_cached_view,
+    load_stock_signal_detail_view,
 )
 from alphavault_reflex.services.analysis_feedback import (
     ENTRYPOINT_STOCK_RESEARCH,
@@ -41,6 +42,7 @@ from alphavault_reflex.services.stock_related_feed import (
 )
 from alphavault_reflex.services.stock_hot_read import clear_stock_hot_read_caches
 from alphavault_reflex.services.source_read import clear_reflex_source_caches
+from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 
 
 class ResearchState(rx.State):
@@ -72,6 +74,13 @@ class ResearchState(rx.State):
     related_filter: str = RELATED_FILTER_ALL
     related_limit: int = DEFAULT_RELATED_LIMIT
     author_filter: str = ""
+    signal_detail_open: bool = False
+    signal_detail_loading: bool = False
+    signal_detail_post_uid: str = ""
+    signal_detail_title: str = ""
+    signal_detail_raw_text: str = ""
+    signal_detail_tree_text: str = ""
+    signal_detail_message: str = ""
     feedback_dialog_open: bool = False
     feedback_submitting: bool = False
     feedback_post_uid: str = ""
@@ -183,6 +192,20 @@ class ResearchState(rx.State):
         pages = max(int(self.signal_total_pages or 1), 1)
         return f"第{page}页 / 共{pages}页（{total}条）"
 
+    @rx.var
+    def signal_detail_tree_lines(self) -> list[dict[str, str]]:
+        return build_tree_render_lines(self.signal_detail_tree_text)
+
+    def _reset_signal_detail_state(self, *, close_dialog: bool) -> None:
+        if close_dialog:
+            self.signal_detail_open = False
+        self.signal_detail_loading = False
+        self.signal_detail_post_uid = ""
+        self.signal_detail_title = ""
+        self.signal_detail_raw_text = ""
+        self.signal_detail_tree_text = ""
+        self.signal_detail_message = ""
+
     @rx.event
     def load_stock_page(self, stock_slug: str | None = None, author: str | None = None):
         self.loading = True
@@ -200,6 +223,7 @@ class ResearchState(rx.State):
             self.signal_page = 1
             self.related_limit = DEFAULT_RELATED_LIMIT
             self._reset_feedback_state(close_dialog=True, clear_success=True)
+            self._reset_signal_detail_state(close_dialog=True)
         if is_new_stock:
             self.related_filter = RELATED_FILTER_ALL
             self._reset_stock_sidebar_state(close_sidebar=True)
@@ -292,6 +316,42 @@ class ResearchState(rx.State):
         self._reset_feedback_state(close_dialog=False, clear_success=True)
         self.feedback_dialog_open = True
         self.feedback_post_uid = str(post_uid or "").strip()
+
+    @rx.event
+    def set_signal_detail_open(self, value: bool) -> None:
+        if value:
+            self.signal_detail_open = True
+            return
+        self.close_signal_detail()
+
+    @rx.event
+    def close_signal_detail(self) -> None:
+        self._reset_signal_detail_state(close_dialog=True)
+
+    @rx.event
+    def open_signal_detail(self, post_uid: str, title: str = ""):
+        uid = str(post_uid or "").strip()
+        self.signal_detail_open = True
+        self.signal_detail_loading = True
+        self.signal_detail_post_uid = uid
+        self.signal_detail_title = str(title or "").strip()
+        self.signal_detail_raw_text = ""
+        self.signal_detail_tree_text = ""
+        self.signal_detail_message = ""
+        if not uid:
+            self.signal_detail_loading = False
+            self.signal_detail_message = "没有对话流。"
+            return
+
+        yield
+        detail = load_stock_signal_detail_view(uid)
+        self.signal_detail_post_uid = str(detail.get("post_uid") or uid).strip()
+        if not self.signal_detail_title:
+            self.signal_detail_title = str(detail.get("title") or "").strip()
+        self.signal_detail_raw_text = str(detail.get("raw_text") or "").strip()
+        self.signal_detail_tree_text = str(detail.get("tree_text") or "").strip()
+        self.signal_detail_message = str(detail.get("message") or "").strip()
+        self.signal_detail_loading = False
 
     @rx.event
     def close_feedback_dialog(self) -> None:
@@ -483,6 +543,7 @@ class ResearchState(rx.State):
     def load_sector_page(self, sector_slug: str | None = None) -> None:
         self.loading = True
         self._reset_feedback_state(close_dialog=True, clear_success=True)
+        self._reset_signal_detail_state(close_dialog=True)
         slug = _resolve_route_slug(
             self,
             explicit_slug=sector_slug,

@@ -486,7 +486,7 @@ ORDER BY job_type ASC, target_key ASC
     ]
 
 
-def test_mark_entity_page_dirty_from_assertions_reads_stock_and_sector_entities(
+def test_mark_entity_page_dirty_from_assertions_only_marks_sector_entities(
     stock_cache_conn: PostgresConnection,
 ) -> None:
     stock_cache_conn.execute(
@@ -540,9 +540,9 @@ VALUES (
         ],
         reason="ai",
     )
-    assert marked == 3
+    assert marked == 2
     keys = set(list_entity_page_dirty_keys(stock_cache_conn, limit=10))
-    assert keys == {"stock:601899.SH", "cluster:gold", "cluster:energy"}
+    assert keys == {"cluster:gold", "cluster:energy"}
 
 
 def _assert_transaction_helper_used(
