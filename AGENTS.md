@@ -13,7 +13,7 @@ Uses `uv` (lockfile: `uv.lock`).
 - `uv sync`: install dependencies.
 - `uv run pre-commit install`: install git hooks.
 - `uv run pre-commit run -a`: run format/lint/type-check/spell-check/tests (Ruff, mypy, codespell, vulture, pytest).
-- `uv run pytest`: run tests.
+- `uv run pytest`: run the repository's core-path test suite.
 - `uv run reflex run`: start the Reflex dev server.
 - `uv run python weibo_rss_worker.py --log-level info`: run the RSS → AI → Postgres worker locally.
 - `docker compose up --build`: run the container on `http://localhost:8080` using `.env`.
@@ -26,8 +26,10 @@ Uses `uv` (lockfile: `uv.lock`).
 
 ## Testing Guidelines
 - Framework: `pytest` (tests live in `tests/`).
+- 仓库只保留核心链路测试；`uv run pytest` 跑的就是全部核心测试。
 - Keep unit tests deterministic and fast; if a test needs env/config, document required variables in the test or link to `.env.example`.
-- 只保留核心业务用例；不是核心链路、只是绑内部实现细节的用例不要添加。
+- 只给主链路和硬约束补测试：RSS 抓取、Redis 入队、AI 处理、Postgres 写库、管理接口入口、Reflex 主入口、架构边界、schema 规则。
+- 不要给页面摆放、文案、小 UI 状态、helper 调用顺序、缓存内部细节、脚本 `--help`、历史兼容残留这种非核心内容继续加测试。
 - 测试里不要用 `lambda` 包 `list.append(...)` 再顺手返回别的值，比如 `(seen.append(x), data)[1]` 或 `seen.append(x) or data` 这种写法；`mypy` 会把它当成错误。
 - 如果测试 stub 里既要记日志、又要返回数据，改成一个小的本地 `def _fake_*(): ...`，先 `append`，再 `return`。
 

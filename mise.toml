@@ -38,7 +38,7 @@ export TEST_POSTGRES_DSN="${TEST_POSTGRES_DSN:-dbname=postgres host=$PGSOCKET_DI
 if [[ -n "${DB_TEST_CMD:-}" ]]; then
     eval "$DB_TEST_CMD"
 else
-    psql -h "$PGSOCKET_DIR" -p $PGPORT -d postgres -c "SELECT 1;"
+    uv run pytest -p no:cacheprovider -q
 fi
 
 echo "Check passed!"
