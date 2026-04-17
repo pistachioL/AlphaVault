@@ -13,12 +13,16 @@ from .alias_task_repo import (
     set_alias_resolve_task_status,
 )
 from .candidate_repo import (
+    AUTO_ACCEPT_CONFIDENCE_THRESHOLD,
+    AUTO_ACCEPT_SOURCE,
     accept_relation_candidate,
+    auto_accept_relation_candidate_if_needed,
     block_relation_candidate,
     ignore_relation_candidate,
     list_candidate_status_map,
     list_pending_candidates,
     list_pending_candidates_for_left_key,
+    should_auto_accept_relation_candidate_row,
     upsert_relation_candidate,
 )
 from .relation_repo import (
@@ -54,6 +58,8 @@ __all__ = [
     "ALIAS_TASK_STATUS_PENDING",
     "ALIAS_TASK_STATUS_RESOLVED",
     "AliasResolveTaskInfo",
+    "AUTO_ACCEPT_CONFIDENCE_THRESHOLD",
+    "AUTO_ACCEPT_SOURCE",
     "RESEARCH_ALIAS_RESOLVE_TASKS_TABLE",
     "RESEARCH_RELATION_CANDIDATES_TABLE",
     "RESEARCH_RELATIONS_TABLE",
@@ -64,6 +70,7 @@ __all__ = [
     "RELATION_TYPE_STOCK_SIBLING",
     "RELATION_TYPE_STOCK_SECTOR",
     "accept_relation_candidate",
+    "auto_accept_relation_candidate_if_needed",
     "block_relation_candidate",
     "get_official_names_by_stock_keys",
     "get_stock_keys_by_official_names",
@@ -82,6 +89,7 @@ __all__ = [
     "record_stock_sector_relation",
     "rebuild_stock_dict_shadow_best_effort",
     "set_alias_resolve_task_status",
+    "should_auto_accept_relation_candidate_row",
     "sync_stock_sibling_relations_from_security_master",
     "upsert_security_master_stock",
     "upsert_relation_candidate",

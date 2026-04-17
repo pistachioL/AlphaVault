@@ -17,6 +17,7 @@ from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_RESOLVED,
     AliasResolveTaskInfo,
     RESEARCH_RELATIONS_TABLE,
+    auto_accept_relation_candidate_if_needed,
     get_official_names_by_stock_keys,
     get_stock_keys_by_official_names,
     get_alias_resolve_tasks_map,
@@ -481,6 +482,10 @@ def persist_entity_match_followups(engine_or_conn, result: EntityMatchResult) ->
             sample_post_uid=_clean_text(item.get("sample_post_uid")),
             sample_evidence=_clean_text(item.get("sample_evidence")),
             sample_raw_text_excerpt=_clean_text(item.get("sample_raw_text_excerpt")),
+        )
+        auto_accept_relation_candidate_if_needed(
+            engine_or_conn,
+            candidate_row=item,
         )
 
     tasks_map = get_alias_resolve_tasks_map(engine_or_conn, result.alias_task_keys)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from alphavault.db.sql.research_workbench import (
     select_candidate_by_id,
     select_candidate_status_by_ids,
@@ -29,10 +31,56 @@ STATUS_PENDING = "pending"
 STATUS_ACCEPTED = "accepted"
 STATUS_IGNORED = "ignored"
 STATUS_BLOCKED = "blocked"
+AUTO_ACCEPT_SOURCE = "ai_auto"
+AUTO_ACCEPT_CONFIDENCE_THRESHOLD = 0.9
 
 
 def _now_str() -> str:
     return now_cst_str()
+
+
+def _clean_text(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _coerce_confidence(value: object) -> float:
+    try:
+        return float(_clean_text(value) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def should_auto_accept_relation_candidate_row(
+    candidate_row: Mapping[str, object],
+) -> bool:
+    if _clean_text(candidate_row.get("relation_type")) != RELATION_TYPE_STOCK_ALIAS:
+        return False
+    if _clean_text(candidate_row.get("relation_label")) != RELATION_LABEL_ALIAS:
+        return False
+    if _clean_text(candidate_row.get("ai_status")) != "merge":
+        return False
+    return (
+        _coerce_confidence(candidate_row.get("ai_confidence"))
+        >= AUTO_ACCEPT_CONFIDENCE_THRESHOLD
+    )
+
+
+def auto_accept_relation_candidate_if_needed(
+    engine_or_conn: PostgresEngine | PostgresConnection,
+    *,
+    candidate_row: Mapping[str, object],
+) -> bool:
+    candidate_id = _clean_text(candidate_row.get("candidate_id"))
+    if not candidate_id:
+        return False
+    if not should_auto_accept_relation_candidate_row(candidate_row):
+        return False
+    accept_relation_candidate(
+        engine_or_conn,
+        candidate_id=candidate_id,
+        source=AUTO_ACCEPT_SOURCE,
+    )
+    return True
 
 
 def upsert_relation_candidate(
@@ -265,15 +313,19 @@ def block_relation_candidate(
 
 
 __all__ = [
+    "AUTO_ACCEPT_CONFIDENCE_THRESHOLD",
+    "AUTO_ACCEPT_SOURCE",
     "STATUS_ACCEPTED",
     "STATUS_BLOCKED",
     "STATUS_IGNORED",
     "STATUS_PENDING",
     "accept_relation_candidate",
+    "auto_accept_relation_candidate_if_needed",
     "block_relation_candidate",
     "ignore_relation_candidate",
     "list_candidate_status_map",
     "list_pending_candidates",
     "list_pending_candidates_for_left_key",
+    "should_auto_accept_relation_candidate_row",
     "upsert_relation_candidate",
 ]

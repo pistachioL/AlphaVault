@@ -172,66 +172,79 @@ def _candidate_card(row: rx.Var[PendingRow]) -> rx.Component:
 
 
 def _stock_alias_batch_toolbar() -> rx.Component:
-    return rx.hstack(
-        rx.text(
-            f"已选 {OrganizerState.selected_stock_alias_candidate_count} 条",
-            class_name="av-research-muted",
+    return rx.vstack(
+        rx.hstack(
+            rx.text(
+                f"已选 {OrganizerState.selected_stock_alias_candidate_count} 条",
+                class_name="av-research-muted",
+            ),
+            rx.button(
+                "AI重跑当前页",
+                on_click=OrganizerState.rerun_stock_alias_ai_current_page,
+                class_name="av-btn av-btn-small",
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending,
+            ),
+            rx.button(
+                "再看10条",
+                on_click=OrganizerState.load_more_stock_alias_candidates,
+                variant="soft",
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending,
+            ),
+            rx.button(
+                "全选本页",
+                on_click=OrganizerState.select_all_stock_alias_candidates,
+                variant="soft",
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending,
+            ),
+            rx.button(
+                "清空选择",
+                on_click=OrganizerState.clear_selected_stock_alias_candidates,
+                variant="soft",
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending,
+            ),
+            rx.button(
+                "批量确认",
+                on_click=OrganizerState.batch_accept_selected_candidates,
+                class_name="av-btn av-btn-small",
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending
+                | (~OrganizerState.has_selected_stock_alias_candidates),
+            ),
+            rx.button(
+                "批量忽略",
+                on_click=OrganizerState.batch_ignore_selected_candidates,
+                variant="soft",
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending
+                | (~OrganizerState.has_selected_stock_alias_candidates),
+            ),
+            rx.button(
+                "批量不再推荐",
+                on_click=OrganizerState.batch_block_selected_candidates,
+                variant="soft",
+                color_scheme="gray",
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_candidate_action_pending
+                | (~OrganizerState.has_selected_stock_alias_candidates),
+            ),
+            spacing="3",
+            wrap="wrap",
+            width="100%",
         ),
-        rx.button(
-            "AI重跑当前页",
-            on_click=OrganizerState.rerun_stock_alias_ai_current_page,
-            class_name="av-btn av-btn-small",
-            disabled=OrganizerState.show_loading
-            | OrganizerState.has_candidate_action_pending,
+        rx.cond(
+            OrganizerState.stock_alias_auto_merge_message != "",
+            rx.text(
+                OrganizerState.stock_alias_auto_merge_message,
+                class_name="av-research-muted",
+            ),
+            rx.el.div(),
         ),
-        rx.button(
-            "再看10条",
-            on_click=OrganizerState.load_more_stock_alias_candidates,
-            variant="soft",
-            disabled=OrganizerState.show_loading
-            | OrganizerState.has_candidate_action_pending,
-        ),
-        rx.button(
-            "全选本页",
-            on_click=OrganizerState.select_all_stock_alias_candidates,
-            variant="soft",
-            disabled=OrganizerState.show_loading
-            | OrganizerState.has_candidate_action_pending,
-        ),
-        rx.button(
-            "清空选择",
-            on_click=OrganizerState.clear_selected_stock_alias_candidates,
-            variant="soft",
-            disabled=OrganizerState.show_loading
-            | OrganizerState.has_candidate_action_pending,
-        ),
-        rx.button(
-            "批量确认",
-            on_click=OrganizerState.batch_accept_selected_candidates,
-            class_name="av-btn av-btn-small",
-            disabled=OrganizerState.show_loading
-            | OrganizerState.has_candidate_action_pending
-            | (~OrganizerState.has_selected_stock_alias_candidates),
-        ),
-        rx.button(
-            "批量忽略",
-            on_click=OrganizerState.batch_ignore_selected_candidates,
-            variant="soft",
-            disabled=OrganizerState.show_loading
-            | OrganizerState.has_candidate_action_pending
-            | (~OrganizerState.has_selected_stock_alias_candidates),
-        ),
-        rx.button(
-            "批量不再推荐",
-            on_click=OrganizerState.batch_block_selected_candidates,
-            variant="soft",
-            color_scheme="gray",
-            disabled=OrganizerState.show_loading
-            | OrganizerState.has_candidate_action_pending
-            | (~OrganizerState.has_selected_stock_alias_candidates),
-        ),
-        spacing="3",
-        wrap="wrap",
+        align="start",
+        spacing="2",
         margin_top="12px",
     )
 

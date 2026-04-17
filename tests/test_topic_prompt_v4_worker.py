@@ -5,7 +5,11 @@ from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO
 from alphavault.db.cloud_schema import apply_cloud_schema
 from alphavault.db.postgres_db import PostgresConnection
 from alphavault.db.source_queue import CloudPost
-from alphavault.domains.entity_match.resolve import EntityMatchResult
+from alphavault.domains.entity_match import resolve as entity_match_resolve
+from alphavault.domains.entity_match.resolve import (
+    EntityMatchResult,
+    persist_entity_match_followups,
+)
 from alphavault.research_workbench import (
     RESEARCH_ALIAS_RESOLVE_TASKS_TABLE,
     RESEARCH_RELATION_CANDIDATES_TABLE,
@@ -1169,6 +1173,180 @@ ORDER BY candidate_id
             .all()
         )
         assert candidate_rows == []
+    finally:
+        conn.close()
+
+
+def test_persist_entity_match_followups_auto_accepts_threshold_stock_alias(
+    monkeypatch,
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn)
+    try:
+        monkeypatch.setattr(
+            entity_match_resolve,
+            "get_official_names_by_stock_keys",
+            lambda _engine_or_conn, _stock_keys: {"stock:600519.SH": "贵州茅台"},
+        )
+        monkeypatch.setattr(
+            entity_match_resolve,
+            "enrich_candidates_with_ai",
+            lambda _rows, **_kwargs: [
+                {
+                    "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
+                    "relation_type": "stock_alias",
+                    "left_key": "stock:600519.SH",
+                    "right_key": "stock:茅台",
+                    "relation_label": "alias_of",
+                    "suggestion_reason": "同条里一起出现",
+                    "evidence_summary": "正文同时出现代码和简称",
+                    "score": 0.95,
+                    "ai_status": "merge",
+                    "ai_reason": "代码和简称对得上",
+                    "ai_confidence": "0.9",
+                    "sample_post_uid": "weibo:1",
+                    "sample_evidence": "600519 就是茅台",
+                    "sample_raw_text_excerpt": "原文说 600519 就是茅台。",
+                }
+            ],
+        )
+        result = EntityMatchResult(
+            entities=[],
+            relation_candidates=[
+                {
+                    "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
+                    "relation_type": "stock_alias",
+                    "left_key": "stock:600519.SH",
+                    "right_key": "stock:茅台",
+                    "relation_label": "alias_of",
+                    "suggestion_reason": "同条里一起出现",
+                    "evidence_summary": "正文同时出现代码和简称",
+                    "score": 0.95,
+                }
+            ],
+            alias_task_keys=[],
+        )
+
+        persist_entity_match_followups(conn, result)
+
+        candidate_row = (
+            conn.execute(
+                f"""
+SELECT candidate_id, status, ai_status, ai_confidence
+FROM {RESEARCH_RELATION_CANDIDATES_TABLE}
+"""
+            )
+            .mappings()
+            .fetchone()
+        )
+        relation_row = (
+            conn.execute(
+                f"""
+SELECT relation_type, left_key, right_key, relation_label, source
+FROM {RESEARCH_RELATIONS_TABLE}
+"""
+            )
+            .mappings()
+            .fetchone()
+        )
+
+        assert candidate_row == {
+            "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
+            "status": "accepted",
+            "ai_status": "merge",
+            "ai_confidence": "0.9",
+        }
+        assert relation_row == {
+            "relation_type": "stock_alias",
+            "left_key": "stock:600519.SH",
+            "right_key": "stock:茅台",
+            "relation_label": "alias_of",
+            "source": "ai_auto",
+        }
+    finally:
+        conn.close()
+
+
+def test_persist_entity_match_followups_keeps_sub_threshold_confidence_pending(
+    monkeypatch,
+    pg_conn,
+) -> None:
+    conn = _workbench_conn(pg_conn)
+    try:
+        monkeypatch.setattr(
+            entity_match_resolve,
+            "get_official_names_by_stock_keys",
+            lambda _engine_or_conn, _stock_keys: {"stock:600519.SH": "贵州茅台"},
+        )
+        monkeypatch.setattr(
+            entity_match_resolve,
+            "enrich_candidates_with_ai",
+            lambda _rows, **_kwargs: [
+                {
+                    "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
+                    "relation_type": "stock_alias",
+                    "left_key": "stock:600519.SH",
+                    "right_key": "stock:茅台",
+                    "relation_label": "alias_of",
+                    "suggestion_reason": "同条里一起出现",
+                    "evidence_summary": "正文同时出现代码和简称",
+                    "score": 0.95,
+                    "ai_status": "merge",
+                    "ai_reason": "代码和简称对得上",
+                    "ai_confidence": "0.89",
+                    "sample_post_uid": "weibo:1",
+                    "sample_evidence": "600519 就是茅台",
+                    "sample_raw_text_excerpt": "原文说 600519 就是茅台。",
+                }
+            ],
+        )
+        result = EntityMatchResult(
+            entities=[],
+            relation_candidates=[
+                {
+                    "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
+                    "relation_type": "stock_alias",
+                    "left_key": "stock:600519.SH",
+                    "right_key": "stock:茅台",
+                    "relation_label": "alias_of",
+                    "suggestion_reason": "同条里一起出现",
+                    "evidence_summary": "正文同时出现代码和简称",
+                    "score": 0.95,
+                }
+            ],
+            alias_task_keys=[],
+        )
+
+        persist_entity_match_followups(conn, result)
+
+        candidate_row = (
+            conn.execute(
+                f"""
+SELECT candidate_id, status, ai_status, ai_confidence
+FROM {RESEARCH_RELATION_CANDIDATES_TABLE}
+"""
+            )
+            .mappings()
+            .fetchone()
+        )
+        relation_rows = (
+            conn.execute(
+                f"""
+SELECT relation_type, left_key, right_key, relation_label, source
+FROM {RESEARCH_RELATIONS_TABLE}
+"""
+            )
+            .mappings()
+            .all()
+        )
+
+        assert candidate_row == {
+            "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
+            "status": "pending",
+            "ai_status": "merge",
+            "ai_confidence": "0.89",
+        }
+        assert relation_rows == []
     finally:
         conn.close()
 

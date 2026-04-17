@@ -260,27 +260,6 @@ def _remove_candidate_row_by_id(
     ]
 
 
-def _merge_candidate_rows_by_id(
-    old_rows: list[PendingRow],
-    new_rows: list[PendingRow],
-) -> list[PendingRow]:
-    if not old_rows:
-        return [cast(PendingRow, dict(row)) for row in new_rows]
-    replacement_map = {
-        str(row.get("candidate_id") or "").strip(): cast(PendingRow, dict(row))
-        for row in new_rows
-        if str(row.get("candidate_id") or "").strip()
-    }
-    merged_rows: list[PendingRow] = []
-    for row in old_rows:
-        candidate_id = str(row.get("candidate_id") or "").strip()
-        if candidate_id and candidate_id in replacement_map:
-            merged_rows.append(replacement_map[candidate_id])
-            continue
-        merged_rows.append(cast(PendingRow, dict(row)))
-    return merged_rows
-
-
 def _chunk_pending_rows(
     rows: list[PendingRow],
     *,
@@ -348,6 +327,7 @@ class OrganizerState(rx.State):
     load_error: str = ""
     stock_alias_limit: int = 0
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT
+    stock_alias_auto_merge_message: str = ""
 
     alias_manual_dialog_open: bool = False
     alias_manual_alias_key: str = ""
@@ -416,6 +396,7 @@ class OrganizerState(rx.State):
         self.active_section = str(value or SECTION_STOCK_ALIAS)
         self.candidate_action_pending_id = ""
         self.selected_candidate_ids = []
+        self.stock_alias_auto_merge_message = ""
         if self.active_section == SECTION_STOCK_ALIAS:
             self.stock_alias_limit = 0
         if self.active_section == SECTION_ALIAS_MANUAL:
@@ -636,6 +617,7 @@ class OrganizerState(rx.State):
     def rerun_stock_alias_ai_current_page(self):
         if self.active_section != SECTION_STOCK_ALIAS:
             return
+        self.stock_alias_auto_merge_message = ""
         target_rows = [
             cast(PendingRow, dict(row))
             for row in self.pending_rows
@@ -659,7 +641,7 @@ class OrganizerState(rx.State):
                     ],
                 )
             )
-            merged_rows = [cast(PendingRow, dict(row)) for row in self.pending_rows]
+            auto_accept_count = 0
             for batch_rows in _chunk_pending_rows(
                 target_rows,
                 chunk_size=relation_candidate_ranker.AI_RANK_BATCH_CAP,
@@ -703,11 +685,18 @@ class OrganizerState(rx.State):
                             row.get("sample_raw_text_excerpt") or ""
                         ).strip(),
                     )
-                merged_rows = _merge_candidate_rows_by_id(merged_rows, enriched_rows)
-            self.pending_rows = _apply_selected_candidate_flags(
-                merged_rows,
-                self.selected_candidate_ids,
-            )
+                    if research_workbench.auto_accept_relation_candidate_if_needed(
+                        engine,
+                        candidate_row=row,
+                    ):
+                        auto_accept_count += 1
+            if auto_accept_count > 0:
+                _load_source_read_module().clear_reflex_source_caches()
+            self._reload_pending_rows()
+            if auto_accept_count > 0:
+                self.stock_alias_auto_merge_message = (
+                    f"已自动合并 {auto_accept_count} 条"
+                )
             self.load_error = ""
         except BaseException as err:
             if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
