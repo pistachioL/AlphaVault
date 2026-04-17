@@ -33,6 +33,10 @@ SIDEBAR_CLOSE_TEXT = "关"
 RELATED_SECTION_TITLE = "相关板块"
 SIDEBAR_READY_TEXT = "关系数据已就绪。"
 SIDEBAR_UPDATED_AT_PREFIX = "扩展数据更新时间："
+DETAIL_BUTTON_TEXT = "详情"
+DETAIL_DIALOG_TITLE = "帖子详情"
+DETAIL_TREE_TITLE = "对话流"
+DETAIL_RAW_TITLE = "原文"
 
 
 def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
@@ -93,62 +97,27 @@ def _author_filter_notice() -> rx.Component:
 
 
 def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
-    root_open_line = rx.cond(
-        row["tree_root_full_line"]["content"] != "",
-        tree_line_row(row["tree_root_full_line"]),
-        tree_line_row(row["tree_root_preview_line"]),
-    )
-    root_expand_inline = rx.el.details(
-        rx.el.summary(
-            rx.el.div(
-                rx.el.div(
-                    tree_line_row(row["tree_root_preview_line"]),
-                    class_name="av-research-root-closed",
-                ),
-                rx.el.div(
-                    root_open_line,
-                    class_name="av-research-root-open",
-                ),
-                class_name="av-research-root-summary-text",
-            ),
-            rx.el.span(
-                row["tree_root_expand_label"],
-                class_name="av-research-tree-expand av-research-tree-expand-pill",
-            ),
-            class_name="av-research-root-summary",
-        ),
-        class_name="av-research-root-inline-details",
-    )
     return rx.el.div(
         rx.text(row["title"], class_name="av-research-signal-title"),
         _signal_meta_row(row),
         rx.cond(
-            row["tree_text"] != "",
-            rx.el.div(
-                rx.cond(
-                    row["tree_root_can_expand"] == "1",
-                    rx.el.div(
-                        root_expand_inline,
-                        rx.foreach(row["tree_tail_lines"], tree_line_row),
-                        class_name="av-tree-lines",
-                    ),
-                    rx.el.div(
-                        rx.foreach(row["tree_lines"], tree_line_row),
-                        class_name="av-tree-lines",
-                    ),
-                ),
-            ),
-            rx.cond(
-                row["raw_text"] != "",
-                rx.text(row["raw_text"], class_name="av-research-signal-body"),
-                rx.cond(
-                    row["preview"] != "",
-                    rx.text(row["preview"], class_name="av-research-signal-body"),
-                    rx.el.div(),
-                ),
-            ),
+            row["preview"] != "",
+            rx.text(row["preview"], class_name="av-research-signal-body"),
+            rx.el.div(),
         ),
         rx.hstack(
+            rx.cond(
+                row["post_uid"] != "",
+                rx.button(
+                    DETAIL_BUTTON_TEXT,
+                    on_click=lambda: ResearchState.open_signal_detail(
+                        row["post_uid"],
+                        row["title"],
+                    ),
+                    variant="soft",
+                ),
+                rx.el.span(""),
+            ),
             rx.cond(
                 row["url"] != "",
                 rx.link(
@@ -240,6 +209,91 @@ def _related_link(row: rx.Var[dict[str, str]]) -> rx.Component:
         row["label"],
         href=row["href"],
         class_name="av-research-chip",
+    )
+
+
+def _signal_detail_dialog() -> rx.Component:
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.hstack(
+                rx.dialog.title(DETAIL_DIALOG_TITLE),
+                rx.spacer(),
+                rx.dialog.close(
+                    rx.button(
+                        SIDEBAR_CLOSE_TEXT,
+                        variant="soft",
+                        on_click=ResearchState.close_signal_detail,
+                    )
+                ),
+                width="100%",
+                align="center",
+            ),
+            rx.cond(
+                ResearchState.signal_detail_title != "",
+                rx.text(
+                    ResearchState.signal_detail_title,
+                    class_name="av-research-signal-title",
+                ),
+                rx.el.div(),
+            ),
+            rx.cond(
+                ResearchState.signal_detail_loading,
+                _section_loading(),
+                rx.vstack(
+                    rx.cond(
+                        ResearchState.signal_detail_tree_text != "",
+                        rx.vstack(
+                            rx.text(DETAIL_TREE_TITLE, class_name="av-research-muted"),
+                            rx.el.div(
+                                rx.foreach(
+                                    ResearchState.signal_detail_tree_lines,
+                                    tree_line_row,
+                                ),
+                                class_name="av-tree-lines",
+                            ),
+                            spacing="2",
+                            align="stretch",
+                            width="100%",
+                        ),
+                        rx.el.div(),
+                    ),
+                    rx.cond(
+                        ResearchState.signal_detail_raw_text != "",
+                        rx.vstack(
+                            rx.text(DETAIL_RAW_TITLE, class_name="av-research-muted"),
+                            rx.el.pre(
+                                ResearchState.signal_detail_raw_text,
+                                class_name="av-tree-pre",
+                            ),
+                            spacing="2",
+                            align="stretch",
+                            width="100%",
+                        ),
+                        rx.el.div(),
+                    ),
+                    rx.cond(
+                        (ResearchState.signal_detail_tree_text == "")
+                        & (ResearchState.signal_detail_raw_text == "")
+                        & (ResearchState.signal_detail_message != ""),
+                        rx.text(
+                            ResearchState.signal_detail_message,
+                            class_name="av-research-muted",
+                        ),
+                        rx.el.div(),
+                    ),
+                    spacing="3",
+                    align="stretch",
+                    width="100%",
+                ),
+            ),
+            style={
+                "max_width": "min(960px, 92vw)",
+                "max_height": "85vh",
+                "overflow": "auto",
+            },
+        ),
+        open=ResearchState.signal_detail_open,
+        on_open_change=ResearchState.set_signal_detail_open,
     )
 
 
@@ -481,6 +535,7 @@ def stock_research_page() -> rx.Component:
             class_name="av-research-layout av-stock-research-layout",
         ),
         _feedback_dialog(),
+        _signal_detail_dialog(),
         _stock_sidebar(),
         class_name="av-research-page",
     )

@@ -5,7 +5,6 @@ description = "AlphaVault"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "akshare",
   "feedparser",
   "litellm",
   "openpyxl",
@@ -22,6 +21,9 @@ dependencies = [
 ]
 
 [dependency-groups]
+akshare = [
+  "akshare",
+]
 dev = [
   "pre-commit>=3.0.0",
   "pytest>=8.0.0",

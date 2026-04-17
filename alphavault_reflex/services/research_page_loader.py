@@ -2,16 +2,30 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from alphavault.domains.thread_tree.service import (
+    normalize_tree_lookup_post_uid,
+    slice_posts_for_single_post_tree,
+)
 from alphavault_reflex.services.research_data import build_sector_research_view
+from alphavault_reflex.services.homework_board import build_tree
 from alphavault_reflex.services.sector_hot_read import load_sector_cached_view_from_env
-from alphavault_reflex.services.stock_hot_read import load_stock_cached_view_from_env
-from alphavault_reflex.services.source_read import load_sources_from_env
+from alphavault_reflex.services.source_read import (
+    load_single_post_for_tree_from_env,
+    load_sources_from_env,
+)
+from alphavault_reflex.services.stock_hot_read import (
+    load_stock_cached_view_from_env,
+    load_stock_sidebar_cached_view as load_stock_sidebar_cached_view_from_env,
+)
 
 from .research_state_utils import (
     normalize_signal_page,
     normalize_signal_page_size,
     normalize_stock_key,
 )
+
+TREE_MESSAGE_EMPTY = "没有对话流。"
+TREE_MESSAGE_LOAD_ERROR_PREFIX = "加载失败："
 
 
 def _empty_stock_page_view(
@@ -75,18 +89,75 @@ def load_stock_page_cached_view(
 
 def load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
     stock_key = normalize_stock_key(stock_slug)
-    view = load_stock_cached_view_from_env(
-        stock_key,
-        signal_page=1,
-        signal_page_size=1,
-    )
-    if str(view.get("entity_key") or "").strip() == "":
+    view = load_stock_sidebar_cached_view_from_env(stock_key)
+    if not view.get("related_sectors") and str(view.get("load_error") or "").strip():
         return _empty_stock_sidebar_view(
             load_error=str(view.get("load_error") or "").strip(),
         )
     return {
         "related_sectors": view.get("related_sectors") or [],
         "load_error": str(view.get("load_error") or "").strip(),
+    }
+
+
+def load_stock_signal_detail_view(post_uid: str) -> dict[str, object]:
+    uid = normalize_tree_lookup_post_uid(post_uid)
+    if not uid:
+        return {
+            "post_uid": "",
+            "raw_text": "",
+            "tree_text": "",
+            "message": TREE_MESSAGE_EMPTY,
+            "load_error": "",
+        }
+
+    posts, err = load_single_post_for_tree_from_env(uid)
+    if err:
+        return {
+            "post_uid": uid,
+            "raw_text": "",
+            "tree_text": "",
+            "message": f"{TREE_MESSAGE_LOAD_ERROR_PREFIX}{err}",
+            "load_error": err,
+        }
+
+    if not posts:
+        return {
+            "post_uid": uid,
+            "raw_text": "",
+            "tree_text": "",
+            "message": TREE_MESSAGE_EMPTY,
+            "load_error": "",
+        }
+
+    matched_post = next(
+        (
+            dict(row)
+            for row in posts
+            if normalize_tree_lookup_post_uid(row.get("post_uid")) == uid
+        ),
+        dict(posts[0]),
+    )
+    raw_text = str(matched_post.get("raw_text") or "").strip()
+    posts_view = slice_posts_for_single_post_tree(post_uid=uid, posts=posts)
+    _label, tree_text = (
+        build_tree(post_uid=uid, posts=posts_view)
+        if posts_view
+        else (
+            "",
+            "",
+        )
+    )
+    if raw_text or tree_text:
+        message = ""
+    else:
+        message = TREE_MESSAGE_EMPTY
+    return {
+        "post_uid": uid,
+        "raw_text": raw_text,
+        "tree_text": str(tree_text or "").strip(),
+        "message": message,
+        "load_error": "",
     }
 
 
@@ -126,4 +197,5 @@ __all__ = [
     "load_sector_page_view",
     "load_stock_page_cached_view",
     "load_stock_sidebar_cached_view",
+    "load_stock_signal_detail_view",
 ]

@@ -205,7 +205,6 @@ name = "alphavault"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "akshare" },
     { name = "feedparser" },
     { name = "litellm" },
     { name = "opencc" },
@@ -222,6 +221,9 @@ dependencies = [
 ]
 
 [package.dev-dependencies]
+akshare = [
+    { name = "akshare" },
+]
 dev = [
     { name = "pre-commit" },
     { name = "pytest" },
@@ -229,7 +231,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "akshare" },
     { name = "feedparser" },
     { name = "litellm" },
     { name = "opencc" },
@@ -246,6 +247,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
+akshare = [{ name = "akshare" }]
 dev = [
     { name = "pre-commit", specifier = ">=3.0.0" },
     { name = "pytest", specifier = ">=8.0.0" },

@@ -14,7 +14,6 @@ from alphavault.db.postgres_db import (
     postgres_connect_autocommit,
     run_postgres_transaction,
 )
-from alphavault.domains.common.assertion_entities import extract_stock_entity_keys
 from alphavault.timeutil import CST, format_cst_datetime, now_cst_str
 from alphavault.db.sql.research_stock_cache import (
     select_claimable_research_stock_dirty_keys,
@@ -764,7 +763,7 @@ def mark_entity_page_dirty_from_assertions(
     assertions: list[dict[str, object]],
     reason: str,
 ) -> int:
-    keys = set(extract_stock_entity_keys(assertions))
+    keys: set[str] = set()
     try:
         with _use_conn(engine_or_conn) as conn:
             topic_keys, direct_cluster_keys = _extract_topic_and_cluster_entity_keys(
