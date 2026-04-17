@@ -25,6 +25,13 @@ def apply_candidate_action(candidate_row: Mapping[str, object], action: str) -> 
         evidence_summary=str(candidate_row.get("evidence_summary") or "").strip(),
         score=float(str(candidate_row.get("score") or "0") or 0),
         ai_status=str(candidate_row.get("ai_status") or "").strip(),
+        ai_reason=str(candidate_row.get("ai_reason") or "").strip(),
+        ai_confidence=str(candidate_row.get("ai_confidence") or "").strip(),
+        sample_post_uid=str(candidate_row.get("sample_post_uid") or "").strip(),
+        sample_evidence=str(candidate_row.get("sample_evidence") or "").strip(),
+        sample_raw_text_excerpt=str(
+            candidate_row.get("sample_raw_text_excerpt") or ""
+        ).strip(),
     )
     action_name = str(action or "").strip()
     candidate_id = str(candidate_row.get("candidate_id") or "").strip()

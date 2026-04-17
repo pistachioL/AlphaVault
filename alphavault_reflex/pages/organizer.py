@@ -5,6 +5,7 @@ from reflex.vars.base import Var
 
 from alphavault_reflex.organizer_state import (
     OrganizerState,
+    PendingRow,
     SECTION_ALIAS_MANUAL,
     SECTION_SECTOR_SECTOR,
     SECTION_STOCK_ALIAS,
@@ -33,7 +34,7 @@ def _section_loading() -> rx.Component:
     )
 
 
-def _candidate_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+def _candidate_card(row: rx.Var[PendingRow]) -> rx.Component:
     row_action_pending = (
         OrganizerState.candidate_action_pending_id == row["candidate_id"]
     )
@@ -77,6 +78,53 @@ def _candidate_card(row: rx.Var[dict[str, str]]) -> rx.Component:
             (row["evidence_summary"] != "")
             & (row["evidence_summary"] != row["suggestion_reason"]),
             rx.text(row["evidence_summary"], class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
+            (row["relation_type"] == SECTION_STOCK_ALIAS)
+            & (row["sample_post_uid"] != ""),
+            rx.text(
+                f"样例帖子：{row['sample_post_uid']}",
+                class_name="av-research-muted",
+            ),
+            rx.el.div(),
+        ),
+        rx.cond(
+            (row["relation_type"] == SECTION_STOCK_ALIAS)
+            & (row["sample_evidence"] != ""),
+            rx.text(row["sample_evidence"], class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.cond(
+            (row["relation_type"] == SECTION_STOCK_ALIAS)
+            & (row["sample_raw_text_excerpt"] != ""),
+            rx.text(
+                row["sample_raw_text_excerpt"],
+                class_name="av-research-muted",
+            ),
+            rx.el.div(),
+        ),
+        rx.cond(
+            (row["relation_type"] == SECTION_STOCK_ALIAS) & (row["ai_status"] != ""),
+            rx.el.div(
+                rx.text(
+                    f"{row['ai_display_title']}：{row['ai_display_label']}",
+                    class_name="av-research-muted",
+                ),
+                rx.cond(
+                    row["ai_confidence"] != "",
+                    rx.text(
+                        f"AI 置信度：{row['ai_confidence']}",
+                        class_name="av-research-muted",
+                    ),
+                    rx.el.div(),
+                ),
+                rx.cond(
+                    row["ai_reason"] != "",
+                    rx.text(row["ai_reason"], class_name="av-research-muted"),
+                    rx.el.div(),
+                ),
+            ),
             rx.el.div(),
         ),
         rx.cond(
@@ -130,6 +178,20 @@ def _stock_alias_batch_toolbar() -> rx.Component:
             class_name="av-research-muted",
         ),
         rx.button(
+            "AI重跑当前页",
+            on_click=OrganizerState.rerun_stock_alias_ai_current_page,
+            class_name="av-btn av-btn-small",
+            disabled=OrganizerState.show_loading
+            | OrganizerState.has_candidate_action_pending,
+        ),
+        rx.button(
+            "再看10条",
+            on_click=OrganizerState.load_more_stock_alias_candidates,
+            variant="soft",
+            disabled=OrganizerState.show_loading
+            | OrganizerState.has_candidate_action_pending,
+        ),
+        rx.button(
             "全选本页",
             on_click=OrganizerState.select_all_stock_alias_candidates,
             variant="soft",
@@ -171,6 +233,32 @@ def _stock_alias_batch_toolbar() -> rx.Component:
         spacing="3",
         wrap="wrap",
         margin_top="12px",
+    )
+
+
+def _stock_alias_group_header(row: rx.Var[PendingRow]) -> rx.Component:
+    return rx.el.div(
+        rx.text(row["group_label"], class_name="av-research-side-title"),
+        style={
+            "marginTop": "16px",
+        },
+    )
+
+
+def _stock_alias_display_row(row: rx.Var[PendingRow]) -> rx.Component:
+    return rx.cond(
+        row["row_kind"] == "group_header",
+        _stock_alias_group_header(row),
+        _candidate_card(row),
+    )
+
+
+def _stock_alias_grouped_display_list(
+    rows: rx.Var[list[PendingRow]] | list[PendingRow],
+) -> rx.Component:
+    return rx.el.div(
+        rx.foreach(rows, _stock_alias_display_row),
+        class_name="av-research-side-list",
     )
 
 
@@ -408,9 +496,15 @@ def organizer_page() -> rx.Component:
                         rx.foreach(OrganizerState.pending_rows, _manual_alias_card),
                         class_name="av-research-side-list",
                     ),
-                    rx.el.div(
-                        rx.foreach(OrganizerState.pending_rows, _candidate_card),
-                        class_name="av-research-side-list",
+                    rx.cond(
+                        OrganizerState.active_section == SECTION_STOCK_ALIAS,
+                        _stock_alias_grouped_display_list(
+                            OrganizerState.stock_alias_grouped_display_rows
+                        ),
+                        rx.el.div(
+                            rx.foreach(OrganizerState.pending_rows, _candidate_card),
+                            class_name="av-research-side-list",
+                        ),
                     ),
                 ),
                 rx.cond(

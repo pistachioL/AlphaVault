@@ -26,7 +26,12 @@ def test_organizer_state_starts_in_loading_state() -> None:
 def test_load_pending_marks_loaded_before_showing_empty(monkeypatch) -> None:
     seen_sections: list[str] = []
 
-    def _fake_load_pending_rows(section, alias_task_limit=0):  # type: ignore[no-untyped-def]
+    def _fake_load_pending_rows(  # type: ignore[no-untyped-def]
+        section,
+        alias_task_limit=0,
+        stock_alias_limit=0,
+    ):
+        del alias_task_limit, stock_alias_limit
         seen_sections.append(str(section))
         return ([], "")
 
@@ -48,7 +53,12 @@ def test_load_pending_marks_loaded_before_showing_empty(monkeypatch) -> None:
 def test_set_active_section_empty_value_falls_back_to_stock_alias(monkeypatch) -> None:
     seen_sections: list[str] = []
 
-    def _fake_load_pending_rows(section, alias_task_limit=0):  # type: ignore[no-untyped-def]
+    def _fake_load_pending_rows(  # type: ignore[no-untyped-def]
+        section,
+        alias_task_limit=0,
+        stock_alias_limit=0,
+    ):
+        del alias_task_limit, stock_alias_limit
         seen_sections.append(str(section))
         return ([], "")
 
@@ -227,6 +237,54 @@ def test_preview_alias_ai_batch_skips_rows_with_existing_ai_status(
     assert state.pending_rows[1]["ai_stock_code"] == "600584.SH"
 
 
+def test_stock_alias_grouped_pending_rows_orders_merge_reject_then_other() -> None:
+    state = OrganizerState()
+    state.active_section = SECTION_STOCK_ALIAS
+    state.pending_rows = [
+        {"candidate_id": "candidate-1", "ai_status": "", "candidate_key": "stock:甲"},
+        {
+            "candidate_id": "candidate-2",
+            "ai_status": "reject",
+            "candidate_key": "stock:乙",
+        },
+        {
+            "candidate_id": "candidate-3",
+            "ai_status": "merge",
+            "candidate_key": "stock:丙",
+        },
+        {
+            "candidate_id": "candidate-4",
+            "ai_status": "merge",
+            "candidate_key": "stock:丁",
+        },
+    ]
+
+    grouped_rows = state.stock_alias_grouped_pending_rows
+
+    assert [row["group_key"] for row in grouped_rows] == [
+        "merge",
+        "reject",
+        "other",
+    ]
+    assert [row["group_label"] for row in grouped_rows] == [
+        "建议合并（2）",
+        "不建议合并（1）",
+        "其他候选（1）",
+    ]
+    assert [
+        item["candidate_id"]
+        for item in grouped_rows[0]["rows"]  # type: ignore[index]
+    ] == ["candidate-3", "candidate-4"]
+    assert [
+        item["candidate_id"]
+        for item in grouped_rows[1]["rows"]  # type: ignore[index]
+    ] == ["candidate-2"]
+    assert [
+        item["candidate_id"]
+        for item in grouped_rows[2]["rows"]  # type: ignore[index]
+    ] == ["candidate-1"]
+
+
 def test_load_more_alias_tasks_increases_limit_and_reloads(monkeypatch) -> None:
     state = OrganizerState()
     state.active_section = SECTION_ALIAS_MANUAL
@@ -234,7 +292,12 @@ def test_load_more_alias_tasks_increases_limit_and_reloads(monkeypatch) -> None:
 
     seen_limits: list[int] = []
 
-    def _fake_load_pending_rows(section, alias_task_limit=0):  # type: ignore[no-untyped-def]
+    def _fake_load_pending_rows(  # type: ignore[no-untyped-def]
+        section,
+        alias_task_limit=0,
+        stock_alias_limit=0,
+    ):
+        del stock_alias_limit
         seen_limits.append(int(alias_task_limit))
         return ([{"alias_key": f"stock:{alias_task_limit}"}], "")
 
@@ -248,6 +311,35 @@ def test_load_more_alias_tasks_increases_limit_and_reloads(monkeypatch) -> None:
     assert state.alias_task_limit == ALIAS_TASK_PAGE_LIMIT * 2
     assert seen_limits == [ALIAS_TASK_PAGE_LIMIT * 2]
     assert state.pending_rows == [{"alias_key": f"stock:{ALIAS_TASK_PAGE_LIMIT * 2}"}]
+
+
+def test_load_more_stock_alias_candidates_increases_limit_and_reloads(
+    monkeypatch,
+) -> None:
+    seen_limits: list[int] = []
+
+    def _fake_load_pending_rows(  # type: ignore[no-untyped-def]
+        section,
+        alias_task_limit=0,
+        stock_alias_limit=0,
+    ):
+        del alias_task_limit
+        assert str(section) == SECTION_STOCK_ALIAS
+        seen_limits.append(int(stock_alias_limit))
+        return ([], "")
+
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.load_pending_rows",
+        _fake_load_pending_rows,
+    )
+
+    state = OrganizerState()
+    state.active_section = SECTION_STOCK_ALIAS
+
+    assert list(state.load_more_stock_alias_candidates()) == [None]
+
+    assert state.stock_alias_limit == 20
+    assert seen_limits == [20]
 
 
 def test_load_more_alias_tasks_keeps_existing_ai_preview(monkeypatch) -> None:
@@ -359,7 +451,12 @@ def test_confirm_alias_manual_merge_keeps_limit_and_ai_preview(monkeypatch) -> N
         lambda: None,
     )
 
-    def _fake_load_pending_rows(section, alias_task_limit=0):  # type: ignore[no-untyped-def]
+    def _fake_load_pending_rows(  # type: ignore[no-untyped-def]
+        section,
+        alias_task_limit=0,
+        stock_alias_limit=0,
+    ):
+        del stock_alias_limit
         seen_limits.append(int(alias_task_limit))
         return (
             [
@@ -615,7 +712,12 @@ def test_non_stock_alias_candidate_action_keeps_reload_behavior(monkeypatch) -> 
         lambda: None,
     )
 
-    def _fake_load_pending_rows(section, alias_task_limit=0):  # type: ignore[no-untyped-def]
+    def _fake_load_pending_rows(  # type: ignore[no-untyped-def]
+        section,
+        alias_task_limit=0,
+        stock_alias_limit=0,
+    ):
+        del stock_alias_limit
         del alias_task_limit
         seen_loads.append(str(section))
         return ([{"candidate_id": "reloaded-row"}], "")
@@ -635,13 +737,115 @@ def test_non_stock_alias_candidate_action_keeps_reload_behavior(monkeypatch) -> 
     assert state.selected_candidate_ids == []
 
 
+def test_rerun_stock_alias_ai_current_page_updates_visible_rows_and_persists_result(
+    monkeypatch,
+) -> None:
+    state = OrganizerState()
+    state.active_section = SECTION_STOCK_ALIAS
+    state.pending_rows = [
+        {
+            "candidate_id": "candidate-1",
+            "relation_type": SECTION_STOCK_ALIAS,
+            "left_key": "stock:601899.SH",
+            "right_key": "stock:别名1",
+            "candidate_key": "stock:别名1",
+            "relation_label": "alias_of",
+            "suggestion_reason": "同条内容一起出现",
+            "evidence_summary": "同条内容一起出现",
+            "score": "8",
+            "ai_status": "old",
+            "ai_reason": "旧理由",
+            "ai_confidence": "0.11",
+            "selected": False,
+        },
+        {
+            "candidate_id": "candidate-2",
+            "relation_type": SECTION_STOCK_ALIAS,
+            "left_key": "stock:601899.SH",
+            "right_key": "stock:别名2",
+            "candidate_key": "stock:别名2",
+            "relation_label": "alias_of",
+            "suggestion_reason": "同条内容一起出现",
+            "evidence_summary": "同条内容一起出现",
+            "score": "8",
+            "ai_status": "old",
+            "ai_reason": "旧理由",
+            "ai_confidence": "0.11",
+            "selected": False,
+        },
+    ]
+
+    saved_rows: list[tuple[str, str, str, str]] = []
+
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.get_research_workbench_engine_from_env",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.get_official_names_by_stock_keys",
+        lambda _engine, _stock_keys: {"stock:601899.SH": "紫金矿业"},
+        raising=False,
+    )
+
+    def _fake_enrich_candidates_with_ai(  # type: ignore[no-untyped-def]
+        rows,
+        *,
+        relation_type,
+        ai_enabled,
+        should_continue=None,
+    ):
+        del relation_type, ai_enabled, should_continue
+
+        def _build_row(row):  # type: ignore[no-untyped-def]
+            candidate_id = str(row["candidate_id"])
+            return {
+                **row,
+                "ai_status": "ranked",
+                "ai_reason": f"AI:{candidate_id}",
+                "ai_confidence": "0.9",
+            }
+
+        return [_build_row(row) for row in rows]
+
+    def _fake_upsert_relation_candidate(engine, **kwargs):  # type: ignore[no-untyped-def]
+        del engine
+        saved_rows.append(
+            (
+                str(kwargs["candidate_id"]),
+                str(kwargs["ai_status"]),
+                str(kwargs["ai_reason"]),
+                str(kwargs["ai_confidence"]),
+            )
+        )
+
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.enrich_candidates_with_ai",
+        _fake_enrich_candidates_with_ai,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "alphavault_reflex.organizer_state.upsert_relation_candidate",
+        _fake_upsert_relation_candidate,
+        raising=False,
+    )
+
+    assert list(state.rerun_stock_alias_ai_current_page()) == [None]
+
+    assert saved_rows == [
+        ("candidate-1", "ranked", "AI:candidate-1", "0.9"),
+        ("candidate-2", "ranked", "AI:candidate-2", "0.9"),
+    ]
+    assert state.pending_rows[0]["ai_reason"] == "AI:candidate-1"
+    assert state.pending_rows[1]["ai_reason"] == "AI:candidate-2"
+
+
 def test_apply_candidate_action_no_longer_marks_stock_page_dirty(
     monkeypatch,
 ) -> None:
     from alphavault_reflex.services import relation_actions
 
     standard_engine = object()
-    upsert_calls: list[object] = []
+    upsert_calls: list[tuple[object, str, str, str, str, str]] = []
     accept_calls: list[object] = []
     dirty_calls: list[tuple[object, str, str]] = []
 
@@ -662,7 +866,14 @@ def test_apply_candidate_action_no_longer_marks_stock_page_dirty(
         relation_actions,
         "upsert_relation_candidate",
         lambda engine, **kwargs: upsert_calls.append(
-            (engine, kwargs["candidate_id"], kwargs["left_key"])
+            (
+                engine,
+                str(kwargs["candidate_id"]),
+                str(kwargs["left_key"]),
+                str(kwargs["ai_reason"]),
+                str(kwargs["ai_confidence"]),
+                str(kwargs["sample_post_uid"]),
+            )
         ),
     )
     monkeypatch.setattr(
@@ -682,12 +893,26 @@ def test_apply_candidate_action_no_longer_marks_stock_page_dirty(
             "suggestion_reason": "人工确认",
             "evidence_summary": "同票简称",
             "score": "2",
-            "ai_status": "",
+            "ai_status": "merge",
+            "ai_reason": "AI 说这是同一只票的简称。",
+            "ai_confidence": "0.93",
+            "sample_post_uid": "weibo:1",
+            "sample_evidence": "同帖一起出现",
+            "sample_raw_text_excerpt": "紫金今天又被提到。",
         },
         "accept",
     )
 
-    assert upsert_calls == [(standard_engine, "cand-1", "stock:601899.SH")]
+    assert upsert_calls == [
+        (
+            standard_engine,
+            "cand-1",
+            "stock:601899.SH",
+            "AI 说这是同一只票的简称。",
+            "0.93",
+            "weibo:1",
+        )
+    ]
     assert accept_calls == [(standard_engine, "cand-1", "manual")]
     assert dirty_calls == []
 
@@ -756,6 +981,9 @@ def test_load_pending_rows_stock_alias_reads_pending_relation_candidates(
                 "score": "8",
                 "suggestion_reason": "同条观点里代码和简称一起出现",
                 "evidence_summary": "同条观点里代码和简称一起出现",
+                "ai_status": "ranked",
+                "ai_reason": "AI 看上下文像茅台简称。",
+                "ai_confidence": "0.95",
                 "status": "pending",
             },
             {
@@ -777,22 +1005,16 @@ def test_load_pending_rows_stock_alias_reads_pending_relation_candidates(
         _fake_list_pending_candidates,
     )
 
-    rows, err = load_pending_rows(SECTION_STOCK_ALIAS)
+    rows, err = load_pending_rows(SECTION_STOCK_ALIAS, stock_alias_limit=10)
 
     assert err == ""
-    assert rows == [
-        {
-            "relation_type": "stock_alias",
-            "left_key": "stock:600519.SH",
-            "right_key": "stock:茅台",
-            "relation_label": "alias_of",
-            "candidate_id": "candidate-1",
-            "candidate_key": "stock:茅台",
-            "score": "8",
-            "suggestion_reason": "同条观点里代码和简称一起出现",
-            "evidence_summary": "同条观点里代码和简称一起出现",
-        }
-    ]
+    assert len(rows) == 1
+    assert rows[0]["candidate_id"] == "candidate-1"
+    assert rows[0]["relation_type"] == "stock_alias"
+    assert rows[0]["candidate_key"] == "stock:茅台"
+    assert rows[0]["ai_status"] == "ranked"
+    assert rows[0]["ai_reason"] == "AI 看上下文像茅台简称。"
+    assert rows[0]["ai_confidence"] == "0.95"
 
 
 def test_stock_alias_candidates_builds_stock_index_once_and_only_requests_alias(
