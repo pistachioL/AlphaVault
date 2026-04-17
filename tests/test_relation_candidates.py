@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from alphavault.domains.relation.relation_candidates import (
     build_sector_relation_candidates,
     build_stock_alias_candidates,
@@ -158,6 +160,66 @@ def test_enrich_candidates_with_ai_skips_when_disabled() -> None:
         ai_enabled=False,
     )
     assert rows[0]["ai_status"] == "skipped"
+
+
+def test_enrich_candidates_with_ai_returns_stock_alias_merge_result(
+    monkeypatch,
+) -> None:
+    from alphavault.infra.ai import relation_candidate_ranker as ranker_module
+
+    monkeypatch.setattr(ranker_module, "ai_is_configured", lambda: (True, ""))
+    monkeypatch.setattr(
+        ranker_module,
+        "ai_runtime_config_from_env",
+        lambda **_kwargs: SimpleNamespace(
+            api_mode="responses",
+            model="test-model",
+            base_url="",
+            api_key="k",
+            timeout_seconds=10.0,
+            retries=0,
+            temperature=0.0,
+            reasoning_effort="low",
+        ),
+    )
+    monkeypatch.setattr(
+        ranker_module,
+        "_call_ai_with_litellm",
+        lambda **_kwargs: {
+            "can_merge": True,
+            "reason": "同条内容里代码和简称一起出现，可以合并。",
+            "confidence": 0.87,
+        },
+    )
+
+    rows = enrich_candidates_with_ai(
+        [
+            {
+                "left_key": "stock:601899.SH",
+                "right_key": "stock:紫金",
+                "candidate_key": "stock:紫金",
+                "relation_label": "alias_of",
+                "score": "4",
+                "evidence_summary": "同条内容里代码和简称一起出现",
+            }
+        ],
+        relation_type="stock_alias",
+        ai_enabled=True,
+    )
+
+    assert rows == [
+        {
+            "left_key": "stock:601899.SH",
+            "right_key": "stock:紫金",
+            "candidate_key": "stock:紫金",
+            "relation_label": "alias_of",
+            "score": "4",
+            "evidence_summary": "同条内容里代码和简称一起出现",
+            "ai_status": "merge",
+            "ai_reason": "同条内容里代码和简称一起出现，可以合并。",
+            "ai_confidence": "0.87",
+        }
+    ]
 
 
 def test_build_stock_pending_candidates_skips_enrich_when_ai_disabled(

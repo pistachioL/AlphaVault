@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.relation_candidates (
     evidence_summary TEXT NOT NULL DEFAULT '',
     score REAL NOT NULL DEFAULT 0,
     ai_status TEXT NOT NULL DEFAULT '',
+    ai_reason TEXT NOT NULL DEFAULT '',
+    ai_confidence TEXT NOT NULL DEFAULT '',
+    sample_post_uid TEXT NOT NULL DEFAULT '',
+    sample_evidence TEXT NOT NULL DEFAULT '',
+    sample_raw_text_excerpt TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL

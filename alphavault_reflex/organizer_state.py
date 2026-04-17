@@ -2,17 +2,24 @@ from __future__ import annotations
 
 import reflex as rx
 from typing import cast
+from typing import TypedDict
 
+from alphavault.infra.ai.relation_candidate_ranker import (
+    AI_RANK_BATCH_CAP,
+    enrich_candidates_with_ai,
+)
 from alphavault.infra.ai.alias_resolve_predictor import enrich_alias_tasks_with_ai
 from alphavault.research_workbench import (
     ALIAS_TASK_STATUS_BLOCKED,
     ALIAS_TASK_STATUS_RESOLVED,
     get_research_workbench_engine_from_env,
+    get_official_names_by_stock_keys,
     list_pending_candidates,
     list_candidate_status_map,
     list_pending_alias_resolve_tasks,
     record_stock_alias_relation,
     set_alias_resolve_task_status,
+    upsert_relation_candidate,
 )
 from alphavault_reflex.services.relation_actions import apply_candidate_action_by_id
 from alphavault.app.relation.candidate_builders import (
@@ -39,6 +46,16 @@ SECTION_STOCK_SECTOR = "stock_sector"
 SECTION_SECTOR_SECTOR = "sector_sector"
 SECTION_ALIAS_MANUAL = "alias_manual"
 SECTION_CANDIDATE_LIMIT = 30
+STOCK_ALIAS_PAGE_LIMIT = AI_RANK_BATCH_CAP
+STOCK_ALIAS_PAGE_STEP = AI_RANK_BATCH_CAP
+STOCK_ALIAS_GROUP_MERGE = "merge"
+STOCK_ALIAS_GROUP_REJECT = "reject"
+STOCK_ALIAS_GROUP_OTHER = "other"
+STOCK_ALIAS_RESULT_GROUPS = (
+    (STOCK_ALIAS_GROUP_MERGE, "建议合并"),
+    (STOCK_ALIAS_GROUP_REJECT, "不建议合并"),
+    (STOCK_ALIAS_GROUP_OTHER, "其他候选"),
+)
 ALIAS_TASK_PAGE_LIMIT = 30
 ALIAS_TASK_PAGE_STEP = 30
 ALIAS_AI_PREVIEW_KEYS = (
@@ -51,11 +68,110 @@ ALIAS_AI_PREVIEW_KEYS = (
 )
 
 
-PendingRow = dict[str, object]
+PendingRow = dict[str, str | bool]
+
+
+class StockAliasPendingGroup(TypedDict):
+    group_key: str
+    group_label: str
+    rows: list[PendingRow]
 
 
 def _coerce_pending_rows(rows: list[dict[str, str]]) -> list[PendingRow]:
-    return [cast(PendingRow, dict(row)) for row in rows]
+    out: list[PendingRow] = []
+    for row in rows:
+        next_row = cast(PendingRow, dict(row))
+        next_row.setdefault("ai_status", "")
+        next_row.setdefault("ai_reason", "")
+        next_row.setdefault("ai_confidence", "")
+        next_row.setdefault("ai_display_title", "")
+        next_row.setdefault("ai_display_label", "")
+        out.append(next_row)
+    return out
+
+
+def _stock_alias_ai_display(status: object) -> tuple[str, str]:
+    text = str(status or "").strip()
+    if text == "merge":
+        return "AI 判断", "建议合并"
+    if text == "reject":
+        return "AI 判断", "不建议合并"
+    if text == "ranked":
+        return "AI 状态", "已排序"
+    if text == "skipped":
+        return "AI 状态", "未判断"
+    if text == "error":
+        return "AI 状态", "error"
+    if not text:
+        return "", ""
+    return "AI 状态", text
+
+
+def _decorate_stock_alias_row(row: PendingRow) -> PendingRow:
+    next_row = cast(PendingRow, dict(row))
+    next_row.setdefault("sample_post_uid", "")
+    next_row.setdefault("sample_evidence", "")
+    next_row.setdefault("sample_raw_text_excerpt", "")
+    title, label = _stock_alias_ai_display(next_row.get("ai_status"))
+    next_row["ai_display_title"] = title
+    next_row["ai_display_label"] = label
+    return next_row
+
+
+def _stock_alias_group_key(status: object) -> str:
+    text = str(status or "").strip()
+    if text == STOCK_ALIAS_GROUP_MERGE:
+        return STOCK_ALIAS_GROUP_MERGE
+    if text == STOCK_ALIAS_GROUP_REJECT:
+        return STOCK_ALIAS_GROUP_REJECT
+    return STOCK_ALIAS_GROUP_OTHER
+
+
+def _group_stock_alias_pending_rows(
+    rows: list[PendingRow],
+) -> list[StockAliasPendingGroup]:
+    grouped_rows: dict[str, list[PendingRow]] = {
+        group_key: [] for group_key, _group_title in STOCK_ALIAS_RESULT_GROUPS
+    }
+    for row in rows:
+        grouped_rows[_stock_alias_group_key(row.get("ai_status"))].append(
+            cast(PendingRow, dict(row))
+        )
+
+    out: list[StockAliasPendingGroup] = []
+    for group_key, group_title in STOCK_ALIAS_RESULT_GROUPS:
+        group_rows = grouped_rows[group_key]
+        if not group_rows:
+            continue
+        out.append(
+            {
+                "group_key": group_key,
+                "group_label": f"{group_title}（{len(group_rows)}）",
+                "rows": group_rows,
+            }
+        )
+    return out
+
+
+def _stock_alias_grouped_display_rows(
+    rows: list[PendingRow],
+) -> list[PendingRow]:
+    out: list[PendingRow] = []
+    for group in _group_stock_alias_pending_rows(rows):
+        out.append(
+            {
+                "row_kind": "group_header",
+                "group_label": str(group["group_label"]),
+            }
+        )
+        out.extend(
+            {
+                **cast(PendingRow, dict(row)),
+                "row_kind": "candidate",
+            }
+            for row in group["rows"]
+        )
+    return out
 
 
 def _parse_manual_alias_target_stock_key(value: str) -> str:
@@ -119,6 +235,36 @@ def _remove_candidate_row_by_id(
     ]
 
 
+def _merge_candidate_rows_by_id(
+    old_rows: list[PendingRow],
+    new_rows: list[PendingRow],
+) -> list[PendingRow]:
+    if not old_rows:
+        return [cast(PendingRow, dict(row)) for row in new_rows]
+    replacement_map = {
+        str(row.get("candidate_id") or "").strip(): cast(PendingRow, dict(row))
+        for row in new_rows
+        if str(row.get("candidate_id") or "").strip()
+    }
+    merged_rows: list[PendingRow] = []
+    for row in old_rows:
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        if candidate_id and candidate_id in replacement_map:
+            merged_rows.append(replacement_map[candidate_id])
+            continue
+        merged_rows.append(cast(PendingRow, dict(row)))
+    return merged_rows
+
+
+def _chunk_pending_rows(
+    rows: list[PendingRow],
+    *,
+    chunk_size: int,
+) -> list[list[PendingRow]]:
+    size = max(1, int(chunk_size or 1))
+    return [rows[index : index + size] for index in range(0, len(rows), size)]
+
+
 def _visible_stock_alias_candidate_ids(rows: list[PendingRow]) -> list[str]:
     out: list[str] = []
     for row in rows:
@@ -175,6 +321,7 @@ class OrganizerState(rx.State):
     loading: bool = False
     loaded_once: bool = False
     load_error: str = ""
+    stock_alias_limit: int = STOCK_ALIAS_PAGE_LIMIT
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT
 
     alias_manual_dialog_open: bool = False
@@ -189,6 +336,18 @@ class OrganizerState(rx.State):
     @rx.var
     def has_pending_rows(self) -> bool:
         return bool(self.pending_rows)
+
+    @rx.var
+    def stock_alias_grouped_pending_rows(self) -> list[StockAliasPendingGroup]:
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return []
+        return _group_stock_alias_pending_rows(self.pending_rows)
+
+    @rx.var
+    def stock_alias_grouped_display_rows(self) -> list[PendingRow]:
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return []
+        return _stock_alias_grouped_display_rows(self.pending_rows)
 
     @rx.var
     def has_candidate_action_pending(self) -> bool:
@@ -232,6 +391,8 @@ class OrganizerState(rx.State):
         self.active_section = str(value or SECTION_STOCK_ALIAS)
         self.candidate_action_pending_id = ""
         self.selected_candidate_ids = []
+        if self.active_section == SECTION_STOCK_ALIAS:
+            self.stock_alias_limit = STOCK_ALIAS_PAGE_LIMIT
         if self.active_section == SECTION_ALIAS_MANUAL:
             self.alias_task_limit = ALIAS_TASK_PAGE_LIMIT
         yield from self._reload_pending_rows_with_loading()
@@ -432,11 +593,108 @@ class OrganizerState(rx.State):
         )
         yield from self._reload_pending_rows_with_loading()
 
-    def _reload_pending_rows(self) -> None:
-        pending_rows, load_error = load_pending_rows(
-            self.active_section,
-            alias_task_limit=self.alias_task_limit,
+    @rx.event
+    def load_more_stock_alias_candidates(self):
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return
+        self.stock_alias_limit = (
+            max(0, int(self.stock_alias_limit)) + STOCK_ALIAS_PAGE_STEP
         )
+        yield from self._reload_pending_rows_with_loading()
+
+    @rx.event
+    def rerun_stock_alias_ai_current_page(self):
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return
+        target_rows = [
+            cast(PendingRow, dict(row))
+            for row in self.pending_rows
+            if str(row.get("candidate_id") or "").strip()
+        ]
+        if not target_rows:
+            return
+        self._start_loading()
+        yield
+        try:
+            engine = get_research_workbench_engine_from_env()
+            official_names_by_stock_key = get_official_names_by_stock_keys(
+                engine,
+                [
+                    str(row.get("left_key") or "").strip()
+                    for row in target_rows
+                    if str(row.get("left_key") or "").strip()
+                ],
+            )
+            merged_rows = [cast(PendingRow, dict(row)) for row in self.pending_rows]
+            for batch_rows in _chunk_pending_rows(
+                target_rows,
+                chunk_size=AI_RANK_BATCH_CAP,
+            ):
+                enriched_rows = [
+                    _decorate_stock_alias_row(cast(PendingRow, dict(row)))
+                    for row in enrich_candidates_with_ai(
+                        [
+                            {
+                                **dict(row),
+                                "left_official_name": official_names_by_stock_key.get(
+                                    str(row.get("left_key") or "").strip(),
+                                    "",
+                                ),
+                            }
+                            for row in batch_rows
+                        ],
+                        relation_type=SECTION_STOCK_ALIAS,
+                        ai_enabled=True,
+                    )
+                ]
+                for row in enriched_rows:
+                    upsert_relation_candidate(
+                        engine,
+                        candidate_id=str(row.get("candidate_id") or "").strip(),
+                        relation_type=str(row.get("relation_type") or "").strip(),
+                        left_key=str(row.get("left_key") or "").strip(),
+                        right_key=str(row.get("right_key") or "").strip(),
+                        relation_label=str(row.get("relation_label") or "").strip(),
+                        suggestion_reason=str(
+                            row.get("suggestion_reason") or ""
+                        ).strip(),
+                        evidence_summary=str(row.get("evidence_summary") or "").strip(),
+                        score=float(str(row.get("score") or "0") or 0),
+                        ai_status=str(row.get("ai_status") or "").strip(),
+                        ai_reason=str(row.get("ai_reason") or "").strip(),
+                        ai_confidence=str(row.get("ai_confidence") or "").strip(),
+                        sample_post_uid=str(row.get("sample_post_uid") or "").strip(),
+                        sample_evidence=str(row.get("sample_evidence") or "").strip(),
+                        sample_raw_text_excerpt=str(
+                            row.get("sample_raw_text_excerpt") or ""
+                        ).strip(),
+                    )
+                merged_rows = _merge_candidate_rows_by_id(merged_rows, enriched_rows)
+            self.pending_rows = _apply_selected_candidate_flags(
+                merged_rows,
+                self.selected_candidate_ids,
+            )
+            self.load_error = ""
+        except BaseException as err:
+            if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                raise
+            self.load_error = str(err)
+        finally:
+            self._finish_loading()
+
+    def _reload_pending_rows(self) -> None:
+        if self.active_section == SECTION_ALIAS_MANUAL:
+            pending_rows, load_error = load_pending_rows(
+                self.active_section,
+                alias_task_limit=self.alias_task_limit,
+            )
+        elif self.active_section == SECTION_STOCK_ALIAS:
+            pending_rows, load_error = load_pending_rows(
+                self.active_section,
+                stock_alias_limit=self.stock_alias_limit,
+            )
+        else:
+            pending_rows, load_error = load_pending_rows(self.active_section)
         if self.active_section == SECTION_ALIAS_MANUAL:
             pending_rows = _merge_alias_ai_preview_rows(self.pending_rows, pending_rows)
             self.selected_candidate_ids = []
@@ -588,6 +846,7 @@ def load_pending_rows(
     section: str,
     *,
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT,
+    stock_alias_limit: int = STOCK_ALIAS_PAGE_LIMIT,
 ) -> tuple[list[PendingRow], str]:
     section_key = str(section or SECTION_ALIAS_MANUAL).strip()
     if section_key == SECTION_ALIAS_MANUAL:
@@ -640,22 +899,30 @@ def load_pending_rows(
             if str(row.get("relation_type") or "").strip() != SECTION_STOCK_ALIAS:
                 continue
             stock_alias_rows.append(
-                {
-                    key: str(row.get(key) or "").strip()
-                    for key in [
-                        "candidate_id",
-                        "relation_type",
-                        "left_key",
-                        "right_key",
-                        "candidate_key",
-                        "relation_label",
-                        "suggestion_reason",
-                        "evidence_summary",
-                        "score",
-                    ]
-                }
+                _decorate_stock_alias_row(
+                    {
+                        key: str(row.get(key) or "").strip()
+                        for key in [
+                            "candidate_id",
+                            "relation_type",
+                            "left_key",
+                            "right_key",
+                            "candidate_key",
+                            "relation_label",
+                            "suggestion_reason",
+                            "evidence_summary",
+                            "score",
+                            "ai_status",
+                            "ai_reason",
+                            "ai_confidence",
+                            "sample_post_uid",
+                            "sample_evidence",
+                            "sample_raw_text_excerpt",
+                        ]
+                    }
+                )
             )
-        return stock_alias_rows, ""
+        return stock_alias_rows[: max(1, int(stock_alias_limit))], ""
 
     posts, assertions, err = load_sources_from_env()
     del posts

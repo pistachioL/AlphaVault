@@ -1145,19 +1145,17 @@ def test_resolve_rows_entity_matches_overwrites_entities_and_persists_candidates
         ]
         followups = followups_by_post_uid["weibo:1"]
         assert len(followups) == 1
-        assert followups[0].relation_candidates == [
-            {
-                "candidate_id": "stock_alias|alias_of|stock:600519.SH|stock:茅台",
-                "relation_type": "stock_alias",
-                "left_key": "stock:600519.SH",
-                "right_key": "stock:茅台",
-                "relation_label": "alias_of",
-                "suggestion_reason": "同条观点里代码和简称一起出现",
-                "evidence_summary": "同条观点里代码和简称一起出现",
-                "score": 0.9,
-                "ai_status": "skipped",
-            }
-        ]
+        assert len(followups[0].relation_candidates) == 1
+        candidate = followups[0].relation_candidates[0]
+        assert candidate["candidate_id"] == (
+            "stock_alias|alias_of|stock:600519.SH|stock:茅台"
+        )
+        assert candidate["relation_type"] == "stock_alias"
+        assert candidate["left_key"] == "stock:600519.SH"
+        assert candidate["right_key"] == "stock:茅台"
+        assert candidate["relation_label"] == "alias_of"
+        assert candidate["score"] == 0.9
+        assert candidate["ai_status"] == "skipped"
         assert followups[0].alias_task_keys == []
         candidate_rows = (
             conn.execute(

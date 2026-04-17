@@ -47,6 +47,11 @@ def upsert_relation_candidate(
     evidence_summary: str,
     score: float,
     ai_status: str,
+    ai_reason: str = "",
+    ai_confidence: str = "",
+    sample_post_uid: str = "",
+    sample_evidence: str = "",
+    sample_raw_text_excerpt: str = "",
     status: str = STATUS_PENDING,
 ) -> None:
     now = _now_str()
@@ -64,6 +69,13 @@ def upsert_relation_candidate(
                     "evidence_summary": str(evidence_summary or "").strip(),
                     "score": float(score),
                     "ai_status": str(ai_status or "").strip(),
+                    "ai_reason": str(ai_reason or "").strip(),
+                    "ai_confidence": str(ai_confidence or "").strip(),
+                    "sample_post_uid": str(sample_post_uid or "").strip(),
+                    "sample_evidence": str(sample_evidence or "").strip(),
+                    "sample_raw_text_excerpt": str(
+                        sample_raw_text_excerpt or ""
+                    ).strip(),
                     "status": str(status or STATUS_PENDING).strip(),
                     "now": now,
                 },
