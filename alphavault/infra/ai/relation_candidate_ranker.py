@@ -12,7 +12,7 @@ from alphavault.domains.relation.relation_candidates import (
     classify_sector_relation_label,
 )
 
-from .runtime_config import ai_runtime_config_from_env
+from .runtime_config import AiRuntimeConfig, ai_runtime_config_from_env
 
 
 AI_STATUS_SKIPPED = "skipped"
@@ -90,6 +90,29 @@ def _split_stock_key(value: object) -> tuple[str, str]:
     return code, market
 
 
+def _stock_alias_candidate_key(item: dict[str, Any]) -> str:
+    return _clean_text(item.get("candidate_key") or item.get("right_key"))
+
+
+def _stock_alias_decision_key(item: dict[str, Any]) -> str:
+    return _clean_text(
+        item.get("candidate_id") or item.get("candidate_key") or item.get("right_key")
+    )
+
+
+def _resolve_runtime_config(runtime_config: AiRuntimeConfig | None) -> AiRuntimeConfig:
+    if runtime_config is not None:
+        return runtime_config
+    return ai_runtime_config_from_env(timeout_seconds_default=1000.0)
+
+
+def _has_runtime_config(runtime_config: AiRuntimeConfig | None) -> bool:
+    if runtime_config is None:
+        ok, _err = ai_is_configured()
+        return bool(ok)
+    return bool(_clean_text(runtime_config.api_key))
+
+
 def _with_error_reason(item: dict[str, Any], *, reason: str) -> dict[str, Any]:
     row = _with_ai_status(item, AI_STATUS_ERROR)
     row["ai_reason"] = str(reason or INVALID_RANKED_CANDIDATES_REASON).strip()
@@ -160,13 +183,15 @@ def enrich_candidates_with_ai(
     relation_type: str,
     ai_enabled: bool,
     should_continue: Callable[[], bool] | None = None,
+    runtime_config: AiRuntimeConfig | None = None,
+    request_gate: Callable[[], None] | None = None,
+    stock_alias_batch_size: int | None = None,
 ) -> list[dict[str, Any]]:
     if not candidates:
         return []
     if not ai_enabled:
         return [_with_ai_status(item, AI_STATUS_SKIPPED) for item in candidates]
-    ok, _err = ai_is_configured()
-    if not ok:
+    if not _has_runtime_config(runtime_config):
         return [_with_ai_status(item, AI_STATUS_SKIPPED) for item in candidates]
     try:
         if relation_type == "stock_alias":
@@ -174,11 +199,16 @@ def enrich_candidates_with_ai(
                 candidates,
                 relation_type=relation_type,
                 should_continue=should_continue,
+                runtime_config=runtime_config,
+                request_gate=request_gate,
+                stock_alias_batch_size=stock_alias_batch_size,
             )
         return _rank_candidates_with_ai(
             candidates,
             relation_type=relation_type,
             should_continue=should_continue,
+            runtime_config=runtime_config,
+            request_gate=request_gate,
         )
     except Exception as err:
         error_reason = _format_ai_error_reason(err)
@@ -199,6 +229,8 @@ def _rank_candidates_with_ai(
     *,
     relation_type: str,
     should_continue: Callable[[], bool] | None = None,
+    runtime_config: AiRuntimeConfig | None = None,
+    request_gate: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
     if should_continue is not None:
         try:
@@ -207,7 +239,7 @@ def _rank_candidates_with_ai(
         except Exception:
             return [_with_ai_status(item, AI_STATUS_SKIPPED) for item in candidates]
 
-    config = ai_runtime_config_from_env(timeout_seconds_default=1000.0)
+    config = _resolve_runtime_config(runtime_config)
     candidate_lines: list[str] = []
     for item in candidates[:AI_RANK_BATCH_CAP]:
         candidate_lines.append(
@@ -255,6 +287,7 @@ relation_type: {relation_type}
             reasoning_effort=str(config.reasoning_effort),
             trace_out=None,
             trace_label=f"relation_candidates:{relation_type}",
+            request_gate=request_gate,
         )
     except Exception as err:
         candidate_key = (
@@ -276,7 +309,10 @@ relation_type: {relation_type}
                 [
                     "[organizer_ai] stock_alias_invalid_output",
                     f"relation_type={relation_type}",
-                    f"candidate_key={str(candidates[0].get('candidate_key') or '').strip() if candidates else '(empty)'}",
+                    "candidate_key="
+                    f"{str(candidates[0].get('candidate_key') or '').strip()}"
+                    if candidates
+                    else "candidate_key=(empty)",
                     f"cfg_model={str(config.model or '').strip() or '(empty)'}",
                     f"api_mode={str(config.api_mode or '').strip() or '(empty)'}",
                     "error=ranked_candidates_missing",
@@ -343,36 +379,55 @@ relation_type: {relation_type}
     return out
 
 
-def _build_stock_alias_prompt(item: dict[str, Any]) -> str:
-    left_key = _clean_text(item.get("left_key"))
-    right_key = _clean_text(item.get("right_key") or item.get("candidate_key"))
-    left_code, left_market = _split_stock_key(left_key)
+def _build_stock_alias_prompt(candidates: list[dict[str, Any]]) -> str:
+    candidate_blocks: list[str] = []
+    for item in candidates:
+        left_key = _clean_text(item.get("left_key"))
+        right_key = _clean_text(item.get("right_key") or item.get("candidate_key"))
+        left_code, left_market = _split_stock_key(left_key)
+        candidate_blocks.append(
+            "\n".join(
+                [
+                    f"- candidate_id={_stock_alias_decision_key(item)}",
+                    f"  candidate_key={_stock_alias_candidate_key(item)}",
+                    f"  left_key={left_key}",
+                    f"  left_code={left_code}",
+                    f"  left_market={left_market}",
+                    "  left_official_name="
+                    f"{_clean_text(item.get('left_official_name'))}",
+                    f"  right_key={right_key}",
+                    f"  alias_text={_stock_key_value(right_key)}",
+                    f"  score={_clean_text(item.get('score'))}",
+                    f"  suggestion_reason={_clean_text(item.get('suggestion_reason'))}",
+                    f"  evidence_summary={_clean_text(item.get('evidence_summary'))}",
+                    f"  sample_post_uid={_clean_text(item.get('sample_post_uid'))}",
+                    f"  sample_evidence={_clean_text(item.get('sample_evidence'))}",
+                    "  sample_raw_text_excerpt="
+                    f"{_clean_text(item.get('sample_raw_text_excerpt'))}",
+                ]
+            )
+        )
     return f"""
-你是股票归并判断助手。请只判断当前这 1 对候选能不能合并成同一只股票，并输出严格 JSON。
+你是股票归并判断助手。请逐条判断下面这些候选能不能合并成同一只股票，并输出严格 JSON。
 
-当前候选：
-- left_key={left_key}
-- left_code={left_code}
-- left_market={left_market}
-- left_official_name={_clean_text(item.get("left_official_name"))}
-- right_key={right_key}
-- alias_text={_stock_key_value(right_key)}
-- score={_clean_text(item.get("score"))}
-- suggestion_reason={_clean_text(item.get("suggestion_reason"))}
-- evidence_summary={_clean_text(item.get("evidence_summary"))}
-- sample_post_uid={_clean_text(item.get("sample_post_uid"))}
-- sample_evidence={_clean_text(item.get("sample_evidence"))}
-- sample_raw_text_excerpt={_clean_text(item.get("sample_raw_text_excerpt"))}
+候选列表：
+{chr(10).join(candidate_blocks)}
 
 输出 JSON：
 {{
-  "can_merge": true,
-  "confidence": 0.0,
-  "reason": "一句话理由"
+  "decisions": [
+    {{
+      "candidate_id": "...",
+      "can_merge": true,
+      "confidence": 0.0,
+      "reason": "一句话理由"
+    }}
+  ]
 }}
 
 规则：
-- 只能判断当前这对 left_key/right_key，禁止换成别的股票，禁止跨候选重新配对。
+- 只能判断输入里的候选，禁止换成别的股票，禁止跨候选重新配对。
+- `candidate_id` 只能使用输入里的值，每个候选最多返回一次。
 - 只有非常明确是同一只股票的别名、简称或代码时，can_merge=true。
 - 只要市场、代码、名字或上下文明显对不上，就返回 can_merge=false。
 - 没把握时也返回 can_merge=false。
@@ -380,71 +435,100 @@ def _build_stock_alias_prompt(item: dict[str, Any]) -> str:
 """.strip()
 
 
-def _judge_stock_alias_candidates_with_ai(
+def _judge_stock_alias_candidate_batch_with_ai(
     candidates: list[dict[str, Any]],
     *,
     relation_type: str,
-    should_continue: Callable[[], bool] | None = None,
+    config: AiRuntimeConfig,
+    request_gate: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
-    config = ai_runtime_config_from_env(timeout_seconds_default=1000.0)
-    out: list[dict[str, Any]] = []
-    for index, item in enumerate(candidates):
-        if should_continue is not None:
-            try:
-                if not bool(should_continue()):
-                    out.extend(
-                        _with_ai_status(rest, AI_STATUS_SKIPPED)
-                        for rest in candidates[index:]
-                    )
-                    break
-            except Exception:
-                out.extend(
-                    _with_ai_status(rest, AI_STATUS_SKIPPED)
-                    for rest in candidates[index:]
-                )
-                break
+    if not candidates:
+        return []
+    try:
+        parsed = _call_ai_with_litellm(
+            prompt=_build_stock_alias_prompt(candidates),
+            api_mode=config.api_mode,
+            ai_stream=False,
+            model_name=config.model,
+            base_url=config.base_url,
+            api_key=config.api_key,
+            timeout_seconds=float(config.timeout_seconds),
+            retry_count=max(0, int(config.retries)),
+            temperature=float(config.temperature),
+            reasoning_effort=str(config.reasoning_effort),
+            trace_out=None,
+            trace_label="relation_candidates:stock_alias",
+            request_gate=request_gate,
+        )
+    except Exception as err:
+        candidate_key = _stock_alias_candidate_key(candidates[0]) if candidates else ""
+        _log_ai_error(
+            relation_type=relation_type,
+            candidate_key=candidate_key,
+            model=str(config.model or "").strip(),
+            api_mode=str(config.api_mode or "").strip(),
+            err=err,
+        )
+        return [
+            _with_error_reason(item, reason=_format_ai_error_reason(err))
+            for item in candidates
+        ]
 
-        candidate_key = _clean_text(item.get("candidate_key") or item.get("right_key"))
-        try:
-            parsed = _call_ai_with_litellm(
-                prompt=_build_stock_alias_prompt(item),
-                api_mode=config.api_mode,
-                ai_stream=False,
-                model_name=config.model,
-                base_url=config.base_url,
-                api_key=config.api_key,
-                timeout_seconds=float(config.timeout_seconds),
-                retry_count=min(int(config.retries), AI_RANK_RETRY_CAP),
-                temperature=float(config.temperature),
-                reasoning_effort=str(config.reasoning_effort),
-                trace_out=None,
-                trace_label="relation_candidates:stock_alias",
-            )
-        except Exception as err:
-            _log_ai_error(
-                relation_type=relation_type,
-                candidate_key=candidate_key,
-                model=str(config.model or "").strip(),
-                api_mode=str(config.api_mode or "").strip(),
-                err=err,
-            )
-            out.append(_with_error_reason(item, reason=_format_ai_error_reason(err)))
+    if not isinstance(parsed, dict):
+        _log_ai_invalid_output(
+            relation_type=relation_type,
+            candidate_key=_stock_alias_candidate_key(candidates[0]),
+            model=str(config.model or "").strip(),
+            api_mode=str(config.api_mode or "").strip(),
+            error="parsed_not_dict",
+        )
+        return [
+            _with_error_reason(item, reason=INVALID_RANKED_CANDIDATES_REASON)
+            for item in candidates
+        ]
+
+    decisions = parsed.get("decisions")
+    if not isinstance(decisions, list):
+        _log_ai_invalid_output(
+            relation_type=relation_type,
+            candidate_key=_stock_alias_candidate_key(candidates[0]),
+            model=str(config.model or "").strip(),
+            api_mode=str(config.api_mode or "").strip(),
+            error="decisions_missing",
+        )
+        return [
+            _with_error_reason(item, reason=INVALID_RANKED_CANDIDATES_REASON)
+            for item in candidates
+        ]
+
+    decisions_by_id: dict[str, dict[str, Any]] = {}
+    for item in decisions:
+        if not isinstance(item, dict):
             continue
+        candidate_id = _clean_text(item.get("candidate_id"))
+        if not candidate_id or candidate_id in decisions_by_id:
+            continue
+        decisions_by_id[candidate_id] = item
 
-        if not isinstance(parsed, dict):
+    out: list[dict[str, Any]] = []
+    for item in candidates:
+        candidate_id = _stock_alias_decision_key(item)
+        candidate_key = _stock_alias_candidate_key(item)
+        decision = decisions_by_id.get(candidate_id)
+        if not isinstance(decision, dict):
             _log_ai_invalid_output(
                 relation_type=relation_type,
                 candidate_key=candidate_key,
                 model=str(config.model or "").strip(),
                 api_mode=str(config.api_mode or "").strip(),
-                error="parsed_not_dict",
+                error="decision_missing",
             )
             out.append(
                 _with_error_reason(item, reason=INVALID_RANKED_CANDIDATES_REASON)
             )
             continue
 
-        can_merge = _coerce_bool(parsed.get("can_merge"))
+        can_merge = _coerce_bool(decision.get("can_merge"))
         if can_merge is None:
             _log_ai_invalid_output(
                 relation_type=relation_type,
@@ -462,8 +546,48 @@ def _judge_stock_alias_candidates_with_ai(
             _with_stock_alias_decision(
                 item,
                 can_merge=can_merge,
-                reason=_clean_text(parsed.get("reason")),
-                confidence=parsed.get("confidence"),
+                reason=_clean_text(decision.get("reason")),
+                confidence=decision.get("confidence"),
+            )
+        )
+    return out
+
+
+def _judge_stock_alias_candidates_with_ai(
+    candidates: list[dict[str, Any]],
+    *,
+    relation_type: str,
+    should_continue: Callable[[], bool] | None = None,
+    runtime_config: AiRuntimeConfig | None = None,
+    request_gate: Callable[[], None] | None = None,
+    stock_alias_batch_size: int | None = None,
+) -> list[dict[str, Any]]:
+    config = _resolve_runtime_config(runtime_config)
+    batch_size = max(1, int(stock_alias_batch_size or AI_RANK_BATCH_CAP))
+    out: list[dict[str, Any]] = []
+    for start in range(0, len(candidates), batch_size):
+        batch_rows = candidates[start : start + batch_size]
+        if should_continue is not None:
+            try:
+                if not bool(should_continue()):
+                    out.extend(
+                        _with_ai_status(rest, AI_STATUS_SKIPPED)
+                        for rest in candidates[start:]
+                    )
+                    break
+            except Exception:
+                out.extend(
+                    _with_ai_status(rest, AI_STATUS_SKIPPED)
+                    for rest in candidates[start:]
+                )
+                break
+
+        out.extend(
+            _judge_stock_alias_candidate_batch_with_ai(
+                batch_rows,
+                relation_type=relation_type,
+                config=config,
+                request_gate=request_gate,
             )
         )
     return out
