@@ -172,7 +172,42 @@ def _candidate_card(row: rx.Var[PendingRow]) -> rx.Component:
 
 
 def _stock_alias_batch_toolbar() -> rx.Component:
+    def _summary_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+        return rx.el.div(
+            rx.text(row["label"], class_name="av-research-muted"),
+            rx.text(
+                row["value"],
+                class_name="av-research-side-title",
+                style={"fontSize": "24px", "lineHeight": "1.1"},
+            ),
+            class_name="av-research-side-item",
+            style={
+                "padding": "12px 14px",
+                "display": "flex",
+                "flexDirection": "column",
+                "gap": "6px",
+                "minWidth": "0",
+            },
+        )
+
     return rx.vstack(
+        rx.vstack(
+            rx.text("全库状态", class_name="av-research-muted"),
+            rx.el.div(
+                rx.foreach(
+                    OrganizerState.stock_alias_status_summary_rows, _summary_card
+                ),
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "repeat(auto-fit, minmax(120px, 1fr))",
+                    "gap": "10px",
+                    "width": "100%",
+                },
+            ),
+            spacing="2",
+            width="100%",
+            align="stretch",
+        ),
         rx.hstack(
             rx.text(
                 f"已选 {OrganizerState.selected_stock_alias_candidate_count} 条",

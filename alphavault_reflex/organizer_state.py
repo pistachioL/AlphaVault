@@ -47,6 +47,11 @@ class StockAliasPendingGroup(TypedDict):
     rows: list[PendingRow]
 
 
+class StockAliasStatusSummaryRow(TypedDict):
+    label: str
+    value: str
+
+
 @cache
 def _load_relation_candidate_ranker_module() -> ModuleType:
     return importlib.import_module("alphavault.infra.ai.relation_candidate_ranker")
@@ -315,6 +320,32 @@ def _apply_selected_candidate_flags(
     return out
 
 
+def _coerce_non_negative_int(value: object) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stock_alias_summary_text(value: object) -> str:
+    return str(_coerce_non_negative_int(value))
+
+
+def _empty_stock_alias_status_summary() -> dict[str, int]:
+    return {
+        "total_count": 0,
+        "accepted_count": 0,
+        "pending_ai_count": 0,
+        "pending_review_count": 0,
+        "ai_error_count": 0,
+        "ignored_count": 0,
+        "blocked_count": 0,
+    }
+
+
 class OrganizerState(rx.State):
     search_query: str = ""
     search_results: list[dict[str, str]] = []
@@ -328,6 +359,13 @@ class OrganizerState(rx.State):
     stock_alias_limit: int = 0
     alias_task_limit: int = ALIAS_TASK_PAGE_LIMIT
     stock_alias_auto_merge_message: str = ""
+    stock_alias_total_count: int = 0
+    stock_alias_accepted_count: int = 0
+    stock_alias_pending_ai_count: int = 0
+    stock_alias_pending_review_count: int = 0
+    stock_alias_ai_error_count: int = 0
+    stock_alias_ignored_count: int = 0
+    stock_alias_blocked_count: int = 0
 
     alias_manual_dialog_open: bool = False
     alias_manual_alias_key: str = ""
@@ -365,6 +403,43 @@ class OrganizerState(rx.State):
     @rx.var
     def has_selected_stock_alias_candidates(self) -> bool:
         return bool(self.selected_candidate_ids)
+
+    @rx.var
+    def stock_alias_status_summary_rows(self) -> list[StockAliasStatusSummaryRow]:
+        if self.active_section != SECTION_STOCK_ALIAS:
+            return []
+        return [
+            {
+                "label": "总候选",
+                "value": _stock_alias_summary_text(self.stock_alias_total_count),
+            },
+            {
+                "label": "已合并",
+                "value": _stock_alias_summary_text(self.stock_alias_accepted_count),
+            },
+            {
+                "label": "待 AI 处理",
+                "value": _stock_alias_summary_text(self.stock_alias_pending_ai_count),
+            },
+            {
+                "label": "待审核",
+                "value": _stock_alias_summary_text(
+                    self.stock_alias_pending_review_count
+                ),
+            },
+            {
+                "label": "AI 异常",
+                "value": _stock_alias_summary_text(self.stock_alias_ai_error_count),
+            },
+            {
+                "label": "已忽略",
+                "value": _stock_alias_summary_text(self.stock_alias_ignored_count),
+            },
+            {
+                "label": "不再推荐",
+                "value": _stock_alias_summary_text(self.stock_alias_blocked_count),
+            },
+        ]
 
     @rx.var
     def show_loading(self) -> bool:
@@ -705,7 +780,39 @@ class OrganizerState(rx.State):
         finally:
             self._finish_loading()
 
+    def _apply_stock_alias_status_summary(self, summary: dict[str, int]) -> None:
+        self.stock_alias_total_count = _coerce_non_negative_int(
+            summary.get("total_count")
+        )
+        self.stock_alias_accepted_count = _coerce_non_negative_int(
+            summary.get("accepted_count")
+        )
+        self.stock_alias_pending_ai_count = _coerce_non_negative_int(
+            summary.get("pending_ai_count")
+        )
+        self.stock_alias_pending_review_count = _coerce_non_negative_int(
+            summary.get("pending_review_count")
+        )
+        self.stock_alias_ai_error_count = _coerce_non_negative_int(
+            summary.get("ai_error_count")
+        )
+        self.stock_alias_ignored_count = _coerce_non_negative_int(
+            summary.get("ignored_count")
+        )
+        self.stock_alias_blocked_count = _coerce_non_negative_int(
+            summary.get("blocked_count")
+        )
+
+    def _reload_stock_alias_status_summary(self) -> str:
+        if self.active_section != SECTION_STOCK_ALIAS:
+            self._apply_stock_alias_status_summary(_empty_stock_alias_status_summary())
+            return ""
+        summary, load_error = load_stock_alias_status_summary()
+        self._apply_stock_alias_status_summary(summary)
+        return load_error
+
     def _reload_pending_rows(self) -> None:
+        summary_load_error = ""
         if self.active_section == SECTION_ALIAS_MANUAL:
             pending_rows, load_error = load_pending_rows(
                 self.active_section,
@@ -721,6 +828,7 @@ class OrganizerState(rx.State):
         if self.active_section == SECTION_ALIAS_MANUAL:
             pending_rows = _merge_alias_ai_preview_rows(self.pending_rows, pending_rows)
             self.selected_candidate_ids = []
+            self._apply_stock_alias_status_summary(_empty_stock_alias_status_summary())
         elif self.active_section == SECTION_STOCK_ALIAS:
             self.selected_candidate_ids = _sync_selected_candidate_ids(
                 pending_rows,
@@ -730,10 +838,12 @@ class OrganizerState(rx.State):
                 pending_rows,
                 self.selected_candidate_ids,
             )
+            summary_load_error = self._reload_stock_alias_status_summary()
         else:
             self.selected_candidate_ids = []
+            self._apply_stock_alias_status_summary(_empty_stock_alias_status_summary())
         self.pending_rows = pending_rows
-        self.load_error = load_error
+        self.load_error = load_error or summary_load_error
 
     def _start_loading(self) -> None:
         self.loading = True
@@ -776,7 +886,7 @@ class OrganizerState(rx.State):
                     self.pending_rows,
                     self.selected_candidate_ids,
                 )
-                self.load_error = ""
+                self.load_error = self._reload_stock_alias_status_summary()
             finally:
                 self.candidate_action_pending_id = ""
             return
@@ -835,7 +945,8 @@ class OrganizerState(rx.State):
             self.pending_rows,
             self.selected_candidate_ids,
         )
-        self.load_error = first_error
+        summary_load_error = self._reload_stock_alias_status_summary()
+        self.load_error = first_error or summary_load_error
         self.candidate_action_pending_id = ""
 
 
@@ -956,6 +1067,28 @@ def load_pending_rows(
         return [], err
     section_candidate_rows = _build_section_candidates(assertions, section_key)
     return _filter_known_candidate_statuses(section_candidate_rows), ""
+
+
+def load_stock_alias_status_summary() -> tuple[dict[str, int], str]:
+    try:
+        research_workbench = _load_research_workbench_module()
+        engine = research_workbench.get_research_workbench_engine_from_env()
+        summary = research_workbench.get_stock_alias_status_summary(engine)
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
+        return _empty_stock_alias_status_summary(), str(exc)
+    return {
+        "total_count": _coerce_non_negative_int(summary.get("total_count")),
+        "accepted_count": _coerce_non_negative_int(summary.get("accepted_count")),
+        "pending_ai_count": _coerce_non_negative_int(summary.get("pending_ai_count")),
+        "pending_review_count": _coerce_non_negative_int(
+            summary.get("pending_review_count")
+        ),
+        "ai_error_count": _coerce_non_negative_int(summary.get("ai_error_count")),
+        "ignored_count": _coerce_non_negative_int(summary.get("ignored_count")),
+        "blocked_count": _coerce_non_negative_int(summary.get("blocked_count")),
+    }, ""
 
 
 def _build_section_candidates(

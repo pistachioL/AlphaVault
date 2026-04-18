@@ -7,6 +7,7 @@ from alphavault.db.sql.research_workbench import (
     select_candidate_status_by_ids,
     select_pending_candidates as select_pending_candidates_sql,
     select_pending_candidates_for_left_key as select_pending_candidates_for_left_key_sql,
+    select_stock_alias_status_summary as select_stock_alias_status_summary_sql,
     update_candidate_status,
     upsert_relation_candidate as upsert_relation_candidate_sql,
 )
@@ -37,6 +38,9 @@ AUTO_ACCEPT_SOURCE = "ai_auto"
 AUTO_ACCEPT_CONFIDENCE_THRESHOLD = 0.9
 
 
+StockAliasStatusSummary = dict[str, int]
+
+
 def _now_str() -> str:
     return now_cst_str()
 
@@ -58,6 +62,28 @@ def _normalize_relation_key(value: object) -> str:
         return key
     normalized = normalize_stock_key(key)
     return normalized or key
+
+
+def _coerce_count(value: object) -> int:
+    raw = str(value or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _empty_stock_alias_status_summary() -> StockAliasStatusSummary:
+    return {
+        "total_count": 0,
+        "accepted_count": 0,
+        "pending_ai_count": 0,
+        "pending_review_count": 0,
+        "ai_error_count": 0,
+        "ignored_count": 0,
+        "blocked_count": 0,
+    }
 
 
 def _build_normalized_candidate_payload(
@@ -272,6 +298,35 @@ def list_candidate_status_map(
     raise AssertionError("unreachable")
 
 
+def get_stock_alias_status_summary(
+    engine_or_conn: PostgresEngine | PostgresConnection,
+) -> StockAliasStatusSummary:
+    try:
+        with use_conn(engine_or_conn) as conn:
+            row = (
+                conn.execute(
+                    select_stock_alias_status_summary_sql(
+                        RESEARCH_RELATION_CANDIDATES_TABLE
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
+    except BaseException as err:
+        handle_db_error(engine_or_conn, err)
+    if not row:
+        return _empty_stock_alias_status_summary()
+    return {
+        "total_count": _coerce_count(row.get("total_count")),
+        "accepted_count": _coerce_count(row.get("accepted_count")),
+        "pending_ai_count": _coerce_count(row.get("pending_ai_count")),
+        "pending_review_count": _coerce_count(row.get("pending_review_count")),
+        "ai_error_count": _coerce_count(row.get("ai_error_count")),
+        "ignored_count": _coerce_count(row.get("ignored_count")),
+        "blocked_count": _coerce_count(row.get("blocked_count")),
+    }
+
+
 def _set_candidate_status(
     engine_or_conn: PostgresEngine | PostgresConnection,
     *,
@@ -388,9 +443,11 @@ __all__ = [
     "STATUS_BLOCKED",
     "STATUS_IGNORED",
     "STATUS_PENDING",
+    "StockAliasStatusSummary",
     "accept_relation_candidate",
     "auto_accept_relation_candidate_if_needed",
     "block_relation_candidate",
+    "get_stock_alias_status_summary",
     "ignore_relation_candidate",
     "list_candidate_status_map",
     "list_pending_candidates",

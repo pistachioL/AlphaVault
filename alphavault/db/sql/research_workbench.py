@@ -245,6 +245,51 @@ WHERE candidate_id IN ({placeholders})
 """
 
 
+def select_stock_alias_status_summary(table: str) -> str:
+    return f"""
+SELECT
+    COUNT(*) AS total_count,
+    COALESCE(SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END), 0) AS accepted_count,
+    COALESCE(SUM(CASE WHEN status = 'ignored' THEN 1 ELSE 0 END), 0) AS ignored_count,
+    COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked_count,
+    COALESCE(
+        SUM(
+            CASE
+                WHEN status = 'pending'
+                 AND (COALESCE(ai_status, '') = '' OR ai_status = 'skipped')
+                THEN 1
+                ELSE 0
+            END
+        ),
+        0
+    ) AS pending_ai_count,
+    COALESCE(
+        SUM(
+            CASE
+                WHEN status = 'pending' AND ai_status = 'error'
+                THEN 1
+                ELSE 0
+            END
+        ),
+        0
+    ) AS ai_error_count,
+    COALESCE(
+        SUM(
+            CASE
+                WHEN status = 'pending'
+                 AND COALESCE(ai_status, '') <> ''
+                 AND ai_status NOT IN ('skipped', 'error')
+                THEN 1
+                ELSE 0
+            END
+        ),
+        0
+    ) AS pending_review_count
+FROM {table}
+WHERE relation_type = 'stock_alias'
+"""
+
+
 def update_candidate_status(table: str) -> str:
     return f"""
 UPDATE {table}
