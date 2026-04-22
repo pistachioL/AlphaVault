@@ -171,32 +171,31 @@ def _candidate_card(row: rx.Var[PendingRow]) -> rx.Component:
     )
 
 
-def _stock_alias_batch_toolbar() -> rx.Component:
-    def _summary_card(row: rx.Var[dict[str, str]]) -> rx.Component:
-        return rx.el.div(
-            rx.text(row["label"], class_name="av-research-muted"),
-            rx.text(
-                row["value"],
-                class_name="av-research-side-title",
-                style={"fontSize": "24px", "lineHeight": "1.1"},
-            ),
-            class_name="av-research-side-item",
-            style={
-                "padding": "12px 14px",
-                "display": "flex",
-                "flexDirection": "column",
-                "gap": "6px",
-                "minWidth": "0",
-            },
-        )
+def _summary_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.div(
+        rx.text(row["label"], class_name="av-research-muted"),
+        rx.text(
+            row["value"],
+            class_name="av-research-side-title",
+            style={"fontSize": "24px", "lineHeight": "1.1"},
+        ),
+        class_name="av-research-side-item",
+        style={
+            "padding": "12px 14px",
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": "6px",
+            "minWidth": "0",
+        },
+    )
 
+
+def _summary_toolbar(rows: rx.Var[list[dict[str, str]]]) -> rx.Component:
     return rx.vstack(
         rx.vstack(
             rx.text("全库状态", class_name="av-research-muted"),
             rx.el.div(
-                rx.foreach(
-                    OrganizerState.stock_alias_status_summary_rows, _summary_card
-                ),
+                rx.foreach(rows, _summary_card),
                 style={
                     "display": "grid",
                     "gridTemplateColumns": "repeat(auto-fit, minmax(120px, 1fr))",
@@ -208,6 +207,14 @@ def _stock_alias_batch_toolbar() -> rx.Component:
             width="100%",
             align="stretch",
         ),
+        width="100%",
+        align="stretch",
+    )
+
+
+def _stock_alias_batch_toolbar() -> rx.Component:
+    return rx.vstack(
+        _summary_toolbar(OrganizerState.stock_alias_status_summary_rows),
         rx.hstack(
             rx.text(
                 f"已选 {OrganizerState.selected_stock_alias_candidate_count} 条",
@@ -284,6 +291,62 @@ def _stock_alias_batch_toolbar() -> rx.Component:
     )
 
 
+def _alias_manual_batch_toolbar() -> rx.Component:
+    return rx.vstack(
+        _summary_toolbar(OrganizerState.alias_manual_status_summary_rows),
+        rx.hstack(
+            rx.text(
+                f"已选 {OrganizerState.selected_alias_manual_count} 条",
+                class_name="av-research-muted",
+            ),
+            rx.button(
+                "AI重跑当前页",
+                on_click=OrganizerState.rerun_alias_manual_ai_current_page,
+                class_name="av-btn av-btn-small",
+                disabled=OrganizerState.show_loading,
+            ),
+            rx.button(
+                "再看10条",
+                on_click=OrganizerState.load_more_alias_tasks,
+                variant="soft",
+                disabled=OrganizerState.show_loading,
+            ),
+            rx.button(
+                "全选本页",
+                on_click=OrganizerState.select_all_alias_manual_tasks,
+                variant="soft",
+                disabled=OrganizerState.show_loading,
+            ),
+            rx.button(
+                "清空选择",
+                on_click=OrganizerState.clear_selected_alias_manual_tasks,
+                variant="soft",
+                disabled=OrganizerState.show_loading,
+            ),
+            rx.button(
+                "批量确认",
+                on_click=OrganizerState.batch_confirm_selected_alias_manual_tasks,
+                class_name="av-btn av-btn-small",
+                disabled=OrganizerState.show_loading
+                | (~OrganizerState.has_selected_alias_manual_tasks),
+            ),
+            rx.button(
+                "批量忽略",
+                on_click=OrganizerState.batch_ignore_selected_alias_manual_tasks,
+                variant="soft",
+                disabled=OrganizerState.show_loading
+                | (~OrganizerState.has_selected_alias_manual_tasks),
+            ),
+            spacing="3",
+            wrap="wrap",
+            width="100%",
+        ),
+        align="start",
+        spacing="2",
+        margin_top="12px",
+    )
+
+
 def _stock_alias_group_header(row: rx.Var[PendingRow]) -> rx.Component:
     return rx.el.div(
         rx.text(row["group_label"], class_name="av-research-side-title"),
@@ -310,9 +373,21 @@ def _stock_alias_grouped_display_list(
     )
 
 
-def _manual_alias_card(row: rx.Var[dict[str, str]]) -> rx.Component:
+def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
     return rx.el.div(
-        rx.text(row["alias_key"], class_name="av-research-side-title"),
+        rx.hstack(
+            rx.checkbox(
+                checked=_checkbox_checked(row["selected"]),
+                on_change=lambda checked: OrganizerState.toggle_alias_manual_task(
+                    row["alias_key"],
+                    checked,
+                ),
+                disabled=OrganizerState.show_loading,
+            ),
+            rx.text(row["alias_key"], class_name="av-research-side-title"),
+            align="center",
+            spacing="2",
+        ),
         rx.text(
             f"已尝试 {row['attempt_count']} 次",
             class_name="av-research-muted",
@@ -338,47 +413,51 @@ def _manual_alias_card(row: rx.Var[dict[str, str]]) -> rx.Component:
             ),
             rx.el.div(),
         ),
-        rx.cond(
-            row["ai_status"] != "",
-            rx.el.div(
+        rx.el.div(
+            rx.text(
+                f"AI 状态：{row['ai_status_display']}",
+                class_name="av-research-muted",
+            ),
+            rx.cond(
+                row["ai_stock_code"] != "",
                 rx.text(
-                    f"AI 状态：{row['ai_status']}",
+                    f"AI 代码：{row['ai_stock_code']}",
                     class_name="av-research-muted",
                 ),
-                rx.cond(
-                    row["ai_stock_code"] != "",
-                    rx.text(
-                        f"AI 代码：{row['ai_stock_code']}",
-                        class_name="av-research-muted",
-                    ),
-                    rx.el.div(),
-                ),
-                rx.cond(
-                    row["ai_official_name"] != "",
-                    rx.text(
-                        f"AI 全名：{row['ai_official_name']}",
-                        class_name="av-research-muted",
-                    ),
-                    rx.el.div(),
-                ),
-                rx.cond(
-                    row["ai_confidence"] != "",
-                    rx.text(
-                        f"AI 置信度：{row['ai_confidence']}",
-                        class_name="av-research-muted",
-                    ),
-                    rx.el.div(),
-                ),
-                rx.cond(
-                    row["ai_reason"] != "",
-                    rx.text(
-                        row["ai_reason"],
-                        class_name="av-research-muted",
-                    ),
-                    rx.el.div(),
-                ),
+                rx.el.div(),
             ),
-            rx.el.div(),
+            rx.cond(
+                row["ai_official_name"] != "",
+                rx.text(
+                    f"AI 全名：{row['ai_official_name']}",
+                    class_name="av-research-muted",
+                ),
+                rx.el.div(),
+            ),
+            rx.cond(
+                row["ai_confidence"] != "",
+                rx.text(
+                    f"AI 置信度：{row['ai_confidence']}",
+                    class_name="av-research-muted",
+                ),
+                rx.el.div(),
+            ),
+            rx.cond(
+                row["ai_validation_label"] != "",
+                rx.text(
+                    f"校验：{row['ai_validation_label']}",
+                    class_name="av-research-muted",
+                ),
+                rx.el.div(),
+            ),
+            rx.cond(
+                row["ai_reason"] != "",
+                rx.text(
+                    row["ai_reason"],
+                    class_name="av-research-muted",
+                ),
+                rx.el.div(),
+            ),
         ),
         rx.hstack(
             rx.button(
@@ -507,21 +586,7 @@ def organizer_page() -> rx.Component:
         ),
         rx.cond(
             OrganizerState.active_section == SECTION_ALIAS_MANUAL,
-            rx.hstack(
-                rx.button(
-                    "AI预判前10条",
-                    on_click=OrganizerState.preview_alias_ai_batch,
-                    class_name="av-btn av-btn-small",
-                    disabled=OrganizerState.show_loading,
-                ),
-                rx.button(
-                    "再看30条",
-                    on_click=OrganizerState.load_more_alias_tasks,
-                    variant="soft",
-                    disabled=OrganizerState.show_loading,
-                ),
-                spacing="3",
-            ),
+            _alias_manual_batch_toolbar(),
             rx.el.div(),
         ),
         rx.cond(

@@ -113,9 +113,33 @@ def _clean_mentions(
                 "mention_text": mention_text,
                 "mention_type": mention_type,
                 "confidence": _clamp_confidence(item.get("confidence")),
+                "evidence": _clip_text(item.get("evidence"), limit=220),
             }
         )
     return out
+
+
+def _alias_task_sample_for_mention(
+    item: dict[str, object],
+    *,
+    base_sample: dict[str, str],
+) -> dict[str, str]:
+    mention_evidence = _clip_text(item.get("evidence"), limit=220)
+    sample_evidence = _clip_text(
+        mention_evidence or base_sample.get("sample_evidence"),
+        limit=120,
+    )
+    sample_raw_text_excerpt = _clip_text(
+        mention_evidence
+        or base_sample.get("sample_raw_text_excerpt")
+        or base_sample.get("sample_evidence"),
+        limit=220,
+    )
+    return {
+        "sample_post_uid": _clean_text(base_sample.get("sample_post_uid")),
+        "sample_evidence": sample_evidence,
+        "sample_raw_text_excerpt": sample_raw_text_excerpt,
+    }
 
 
 def _unique_texts(values: list[str]) -> list[str]:
@@ -300,14 +324,14 @@ def load_entity_match_lookup_maps(
     stock_name_targets = dict(redis_stock_names)
     stock_alias_targets = dict(redis_stock_aliases)
 
-    missing_stock_names = [
-        text for text in unique_stock_names if text not in stock_name_targets
+    missing_official_name_texts = [
+        text for text in stock_like_texts if text not in stock_name_targets
     ]
-    if missing_stock_names:
+    if missing_official_name_texts:
         stock_name_targets.update(
             get_stock_keys_by_official_names(
                 engine_or_conn,
-                missing_stock_names,
+                missing_official_name_texts,
             )
         )
 
@@ -409,7 +433,10 @@ def resolve_assertion_mentions(
                 or stock_alias_targets.get(mention_text)
             )
         else:
-            target_key = _clean_text(stock_alias_targets.get(mention_text))
+            target_key = _clean_text(
+                stock_alias_targets.get(mention_text)
+                or stock_name_targets.get(mention_text)
+            )
 
         if target_key:
             if _has_entity(
@@ -428,12 +455,16 @@ def resolve_assertion_mentions(
             continue
 
         alias_key = f"stock:{mention_text}"
+        mention_sample = _alias_task_sample_for_mention(
+            item,
+            base_sample=cleaned_alias_task_sample,
+        )
         if single_stock_code_key:
             candidate = _build_alias_candidate(
                 stock_key=single_stock_code_key,
                 alias_key=alias_key,
                 confidence=confidence,
-                sample=cleaned_alias_task_sample,
+                sample=mention_sample,
             )
             candidate_id = _clean_text(candidate.get("candidate_id"))
             if candidate_id and candidate_id not in seen_candidate_ids:
@@ -447,7 +478,7 @@ def resolve_assertion_mentions(
             alias_task_samples.append(
                 {
                     "alias_key": alias_key,
-                    **cleaned_alias_task_sample,
+                    **mention_sample,
                 }
             )
 

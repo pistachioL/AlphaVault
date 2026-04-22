@@ -290,6 +290,49 @@ WHERE relation_type = 'stock_alias'
 """
 
 
+def select_alias_resolve_task_status_summary(table: str) -> str:
+    return f"""
+SELECT
+    COUNT(*) AS total_count,
+    COALESCE(SUM(CASE WHEN status = 'resolved' THEN 1 ELSE 0 END), 0) AS resolved_count,
+    COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked_count,
+    COALESCE(
+        SUM(
+            CASE
+                WHEN status = 'pending'
+                 AND (COALESCE(ai_status, '') = '' OR ai_status = 'skipped')
+                THEN 1
+                ELSE 0
+            END
+        ),
+        0
+    ) AS pending_ai_count,
+    COALESCE(
+        SUM(
+            CASE
+                WHEN status = 'pending' AND ai_status = 'error'
+                THEN 1
+                ELSE 0
+            END
+        ),
+        0
+    ) AS ai_error_count,
+    COALESCE(
+        SUM(
+            CASE
+                WHEN status = 'pending'
+                 AND COALESCE(ai_status, '') <> ''
+                 AND ai_status NOT IN ('skipped', 'error')
+                THEN 1
+                ELSE 0
+            END
+        ),
+        0
+    ) AS pending_review_count
+FROM {table}
+"""
+
+
 def update_candidate_status(table: str) -> str:
     return f"""
 UPDATE {table}
@@ -323,6 +366,13 @@ INSERT INTO {table} AS target(
     sample_post_uid,
     sample_evidence,
     sample_raw_text_excerpt,
+    ai_status,
+    ai_stock_code,
+    ai_official_name,
+    ai_confidence,
+    ai_reason,
+    ai_uncertain,
+    ai_validation_status,
     created_at,
     updated_at
 )
@@ -333,23 +383,37 @@ VALUES (
     :sample_post_uid,
     :sample_evidence,
     :sample_raw_text_excerpt,
+    :ai_status,
+    :ai_stock_code,
+    :ai_official_name,
+    :ai_confidence,
+    :ai_reason,
+    :ai_uncertain,
+    :ai_validation_status,
     :now,
     :now
 )
 ON CONFLICT(alias_key) DO UPDATE SET
     status = excluded.status,
     sample_post_uid = CASE
-        WHEN COALESCE(target.sample_post_uid, '') <> '' THEN target.sample_post_uid
-        ELSE excluded.sample_post_uid
+        WHEN COALESCE(excluded.sample_post_uid, '') <> '' THEN excluded.sample_post_uid
+        ELSE target.sample_post_uid
     END,
     sample_evidence = CASE
-        WHEN COALESCE(target.sample_evidence, '') <> '' THEN target.sample_evidence
-        ELSE excluded.sample_evidence
+        WHEN COALESCE(excluded.sample_evidence, '') <> '' THEN excluded.sample_evidence
+        ELSE target.sample_evidence
     END,
     sample_raw_text_excerpt = CASE
-        WHEN COALESCE(target.sample_raw_text_excerpt, '') <> '' THEN target.sample_raw_text_excerpt
-        ELSE excluded.sample_raw_text_excerpt
+        WHEN COALESCE(excluded.sample_raw_text_excerpt, '') <> '' THEN excluded.sample_raw_text_excerpt
+        ELSE target.sample_raw_text_excerpt
     END,
+    ai_status = excluded.ai_status,
+    ai_stock_code = excluded.ai_stock_code,
+    ai_official_name = excluded.ai_official_name,
+    ai_confidence = excluded.ai_confidence,
+    ai_reason = excluded.ai_reason,
+    ai_uncertain = excluded.ai_uncertain,
+    ai_validation_status = excluded.ai_validation_status,
     updated_at = excluded.updated_at
 """
 
@@ -359,7 +423,9 @@ def select_alias_resolve_tasks_by_keys(table: str, *, key_count: int) -> str:
     placeholders = ", ".join(["?"] * count)
     return f"""
 SELECT alias_key, status, attempt_count,
-       sample_post_uid, sample_evidence, sample_raw_text_excerpt
+       sample_post_uid, sample_evidence, sample_raw_text_excerpt,
+       ai_status, ai_stock_code, ai_official_name,
+       ai_confidence, ai_reason, ai_uncertain, ai_validation_status
 FROM {table}
 WHERE alias_key IN ({placeholders})
 """
@@ -376,6 +442,8 @@ def select_alias_resolve_tasks_by_status(
     return f"""
 SELECT alias_key, status, attempt_count,
        sample_post_uid, sample_evidence, sample_raw_text_excerpt,
+       ai_status, ai_stock_code, ai_official_name,
+       ai_confidence, ai_reason, ai_uncertain, ai_validation_status,
        created_at, updated_at
 FROM {table}
 WHERE status = :status

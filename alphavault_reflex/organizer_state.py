@@ -26,8 +26,9 @@ STOCK_ALIAS_RESULT_GROUPS = (
     (STOCK_ALIAS_GROUP_REJECT, "不建议合并"),
     (STOCK_ALIAS_GROUP_OTHER, "其他候选"),
 )
-ALIAS_TASK_PAGE_LIMIT = 30
-ALIAS_TASK_PAGE_STEP = 30
+ALIAS_TASK_PAGE_LIMIT = 10
+ALIAS_TASK_PAGE_STEP = 10
+ALIAS_TASK_AI_BATCH_LIMIT = 10
 ALIAS_AI_PREVIEW_KEYS = (
     "ai_status",
     "ai_stock_code",
@@ -35,7 +36,9 @@ ALIAS_AI_PREVIEW_KEYS = (
     "ai_confidence",
     "ai_reason",
     "ai_uncertain",
+    "ai_validation_status",
 )
+AI_VALIDATION_MARKETS = frozenset(("SH", "SZ", "BJ", "HK"))
 
 
 PendingRow = dict[str, str | bool]
@@ -47,7 +50,7 @@ class StockAliasPendingGroup(TypedDict):
     rows: list[PendingRow]
 
 
-class StockAliasStatusSummaryRow(TypedDict):
+class StatusSummaryRow(TypedDict):
     label: str
     value: str
 
@@ -116,8 +119,78 @@ def _coerce_pending_rows(rows: list[dict[str, str]]) -> list[PendingRow]:
         next_row.setdefault("ai_confidence", "")
         next_row.setdefault("ai_display_title", "")
         next_row.setdefault("ai_display_label", "")
+        next_row.setdefault("ai_validation_status", "")
+        next_row.setdefault("ai_validation_label", "")
+        next_row.setdefault("ai_status_display", "")
         out.append(next_row)
     return out
+
+
+def _alias_ai_status_label(status: object) -> str:
+    text = str(status or "").strip()
+    if not text:
+        return "未跑"
+    if text == "skipped":
+        return "未判断"
+    if text == "error":
+        return "失败"
+    return text
+
+
+def _alias_ai_validation_label(status: object) -> str:
+    text = str(status or "").strip()
+    if text == "validated":
+        return "A/H 已过表"
+    if text == "missing_security_master":
+        return "A/H 表里没有这只票"
+    if text == "unvalidated_market":
+        return "当前市场暂未校验"
+    return ""
+
+
+def _ai_stock_key(value: object) -> str:
+    code = normalize_stock_code(str(value or "").strip())
+    if not is_stock_code_value(code):
+        return ""
+    return f"stock:{code}"
+
+
+def _ai_stock_market(stock_key: str) -> str:
+    text = str(stock_key or "").strip()
+    if "." not in text:
+        return ""
+    return str(text.rsplit(".", 1)[1]).strip().upper()
+
+
+def _decorate_alias_task_row(row: PendingRow) -> PendingRow:
+    next_row = cast(PendingRow, dict(row))
+    next_row.setdefault("ai_status", "")
+    next_row.setdefault("ai_stock_code", "")
+    next_row.setdefault("ai_official_name", "")
+    next_row.setdefault("ai_confidence", "")
+    next_row.setdefault("ai_reason", "")
+    next_row.setdefault("ai_uncertain", "")
+    next_row.setdefault("ai_validation_status", "")
+    next_row["ai_status_display"] = _alias_ai_status_label(next_row.get("ai_status"))
+    next_row["ai_validation_label"] = _alias_ai_validation_label(
+        next_row.get("ai_validation_status")
+    )
+    return next_row
+
+
+def _apply_alias_ai_validation(
+    rows: list[dict[str, str]],
+    *,
+    official_names_by_stock_key: dict[str, str],
+) -> list[PendingRow]:
+    research_workbench = _load_research_workbench_module()
+    return [
+        _decorate_alias_task_row(cast(PendingRow, dict(row)))
+        for row in research_workbench.apply_alias_ai_validation(
+            rows,
+            official_names_by_stock_key=official_names_by_stock_key,
+        )
+    ]
 
 
 def _stock_alias_ai_display(status: object) -> tuple[str, str]:
@@ -265,6 +338,50 @@ def _remove_candidate_row_by_id(
     ]
 
 
+def _visible_alias_task_keys(rows: list[PendingRow]) -> list[str]:
+    out: list[str] = []
+    for row in rows:
+        alias_key = str(row.get("alias_key") or "").strip()
+        if not alias_key:
+            continue
+        out.append(alias_key)
+    return out
+
+
+def _sync_selected_alias_keys(
+    rows: list[PendingRow],
+    selected_alias_keys: list[str],
+) -> list[str]:
+    selected_set = {
+        str(alias_key or "").strip()
+        for alias_key in selected_alias_keys
+        if str(alias_key or "").strip()
+    }
+    if not selected_set:
+        return []
+    visible_keys = _visible_alias_task_keys(rows)
+    return [alias_key for alias_key in visible_keys if alias_key in selected_set]
+
+
+def _apply_selected_alias_flags(
+    rows: list[PendingRow],
+    selected_alias_keys: list[str],
+) -> list[PendingRow]:
+    selected_set = {
+        str(alias_key or "").strip()
+        for alias_key in selected_alias_keys
+        if str(alias_key or "").strip()
+    }
+    out: list[PendingRow] = []
+    for row in rows:
+        next_row = cast(PendingRow, dict(row))
+        next_row["selected"] = (
+            str(next_row.get("alias_key") or "").strip() in selected_set
+        )
+        out.append(next_row)
+    return out
+
+
 def _chunk_pending_rows(
     rows: list[PendingRow],
     *,
@@ -330,7 +447,83 @@ def _coerce_non_negative_int(value: object) -> int:
         return 0
 
 
-def _stock_alias_summary_text(value: object) -> str:
+def _next_alias_task_limit(value: object) -> int:
+    return _coerce_non_negative_int(value) + ALIAS_TASK_PAGE_STEP
+
+
+def _confirm_alias_manual_target(
+    *,
+    research_workbench: ModuleType,
+    engine,
+    alias_key: str,
+    target_key: str,
+    source: str,
+) -> None:
+    research_workbench.record_stock_alias_relation(
+        engine,
+        stock_key=target_key,
+        alias_key=alias_key,
+        source=source,
+    )
+    research_workbench.set_alias_resolve_task_status(
+        engine,
+        alias_key=alias_key,
+        status=research_workbench.ALIAS_TASK_STATUS_RESOLVED,
+    )
+
+
+def _block_alias_manual_target(
+    *,
+    research_workbench: ModuleType,
+    engine,
+    alias_key: str,
+) -> None:
+    research_workbench.set_alias_resolve_task_status(
+        engine,
+        alias_key=alias_key,
+        status=research_workbench.ALIAS_TASK_STATUS_BLOCKED,
+    )
+
+
+def _rerun_alias_ai_current_page_rows(
+    rows: list[dict[str, str]] | list[PendingRow],
+    *,
+    predictor_module: ModuleType,
+) -> list[PendingRow]:
+    research_workbench = _load_research_workbench_module()
+    return [
+        cast(PendingRow, dict(row))
+        for row in research_workbench.enrich_alias_task_rows_with_ai(
+            rows,
+            predictor_module=predictor_module,
+            ai_enabled=True,
+            ai_batch_size=ALIAS_TASK_AI_BATCH_LIMIT,
+        )
+    ]
+
+
+def _rerun_alias_manual_ai_current_page_sync(
+    target_rows: list[PendingRow],
+    *,
+    alias_task_limit: int,
+) -> tuple[list[PendingRow], str]:
+    research_workbench = _load_research_workbench_module()
+    engine = research_workbench.get_research_workbench_engine_from_env()
+    research_workbench.run_alias_manual_ai_rows(
+        engine,
+        target_rows=target_rows,
+        predictor_module=_load_alias_resolve_predictor_module(),
+        ai_enabled=True,
+        apply=True,
+        ai_batch_size=ALIAS_TASK_AI_BATCH_LIMIT,
+    )
+    return load_pending_rows(
+        SECTION_ALIAS_MANUAL,
+        alias_task_limit=alias_task_limit,
+    )
+
+
+def _status_summary_text(value: object) -> str:
     return str(_coerce_non_negative_int(value))
 
 
@@ -346,6 +539,17 @@ def _empty_stock_alias_status_summary() -> dict[str, int]:
     }
 
 
+def _empty_alias_manual_status_summary() -> dict[str, int]:
+    return {
+        "total_count": 0,
+        "pending_ai_count": 0,
+        "pending_review_count": 0,
+        "ai_error_count": 0,
+        "resolved_count": 0,
+        "blocked_count": 0,
+    }
+
+
 class OrganizerState(rx.State):
     search_query: str = ""
     search_results: list[dict[str, str]] = []
@@ -353,6 +557,7 @@ class OrganizerState(rx.State):
     pending_rows: list[PendingRow] = []
     candidate_action_pending_id: str = ""
     selected_candidate_ids: list[str] = []
+    selected_alias_keys: list[str] = []
     loading: bool = False
     loaded_once: bool = False
     load_error: str = ""
@@ -366,6 +571,12 @@ class OrganizerState(rx.State):
     stock_alias_ai_error_count: int = 0
     stock_alias_ignored_count: int = 0
     stock_alias_blocked_count: int = 0
+    alias_manual_total_count: int = 0
+    alias_manual_pending_ai_count: int = 0
+    alias_manual_pending_review_count: int = 0
+    alias_manual_ai_error_count: int = 0
+    alias_manual_resolved_count: int = 0
+    alias_manual_blocked_count: int = 0
 
     alias_manual_dialog_open: bool = False
     alias_manual_alias_key: str = ""
@@ -405,39 +616,76 @@ class OrganizerState(rx.State):
         return bool(self.selected_candidate_ids)
 
     @rx.var
-    def stock_alias_status_summary_rows(self) -> list[StockAliasStatusSummaryRow]:
+    def selected_alias_manual_count(self) -> int:
+        return len(self.selected_alias_keys)
+
+    @rx.var
+    def has_selected_alias_manual_tasks(self) -> bool:
+        return bool(self.selected_alias_keys)
+
+    @rx.var
+    def stock_alias_status_summary_rows(self) -> list[StatusSummaryRow]:
         if self.active_section != SECTION_STOCK_ALIAS:
             return []
         return [
             {
                 "label": "总候选",
-                "value": _stock_alias_summary_text(self.stock_alias_total_count),
+                "value": _status_summary_text(self.stock_alias_total_count),
             },
             {
                 "label": "已合并",
-                "value": _stock_alias_summary_text(self.stock_alias_accepted_count),
+                "value": _status_summary_text(self.stock_alias_accepted_count),
             },
             {
                 "label": "待 AI 处理",
-                "value": _stock_alias_summary_text(self.stock_alias_pending_ai_count),
+                "value": _status_summary_text(self.stock_alias_pending_ai_count),
             },
             {
                 "label": "待审核",
-                "value": _stock_alias_summary_text(
-                    self.stock_alias_pending_review_count
-                ),
+                "value": _status_summary_text(self.stock_alias_pending_review_count),
             },
             {
                 "label": "AI 异常",
-                "value": _stock_alias_summary_text(self.stock_alias_ai_error_count),
+                "value": _status_summary_text(self.stock_alias_ai_error_count),
             },
             {
                 "label": "已忽略",
-                "value": _stock_alias_summary_text(self.stock_alias_ignored_count),
+                "value": _status_summary_text(self.stock_alias_ignored_count),
             },
             {
                 "label": "不再推荐",
-                "value": _stock_alias_summary_text(self.stock_alias_blocked_count),
+                "value": _status_summary_text(self.stock_alias_blocked_count),
+            },
+        ]
+
+    @rx.var
+    def alias_manual_status_summary_rows(self) -> list[StatusSummaryRow]:
+        if self.active_section != SECTION_ALIAS_MANUAL:
+            return []
+        return [
+            {
+                "label": "总任务",
+                "value": _status_summary_text(self.alias_manual_total_count),
+            },
+            {
+                "label": "待 AI 处理",
+                "value": _status_summary_text(self.alias_manual_pending_ai_count),
+            },
+            {
+                "label": "待人工确认",
+                "value": _status_summary_text(self.alias_manual_pending_review_count),
+            },
+            {
+                "label": "AI 异常",
+                "value": _status_summary_text(self.alias_manual_ai_error_count),
+            },
+            {
+                "label": "已合并",
+                "value": _status_summary_text(self.alias_manual_resolved_count),
+            },
+            {
+                "label": "已忽略",
+                "value": _status_summary_text(self.alias_manual_blocked_count),
             },
         ]
 
@@ -471,6 +719,7 @@ class OrganizerState(rx.State):
         self.active_section = str(value or SECTION_STOCK_ALIAS)
         self.candidate_action_pending_id = ""
         self.selected_candidate_ids = []
+        self.selected_alias_keys = []
         self.stock_alias_auto_merge_message = ""
         if self.active_section == SECTION_STOCK_ALIAS:
             self.stock_alias_limit = 0
@@ -542,6 +791,51 @@ class OrganizerState(rx.State):
         yield from self._mutate_selected_candidates_with_loading(action="block")
 
     @rx.event
+    def toggle_alias_manual_task(self, alias_key: str, checked: bool) -> None:
+        if self.active_section != SECTION_ALIAS_MANUAL:
+            return
+        target = str(alias_key or "").strip()
+        if not target:
+            return
+        selected = list(self.selected_alias_keys)
+        if checked:
+            if target not in selected:
+                selected.append(target)
+        else:
+            selected = [item for item in selected if item != target]
+        self.selected_alias_keys = _sync_selected_alias_keys(
+            self.pending_rows,
+            selected,
+        )
+        self.pending_rows = _apply_selected_alias_flags(
+            self.pending_rows,
+            self.selected_alias_keys,
+        )
+
+    @rx.event
+    def select_all_alias_manual_tasks(self) -> None:
+        if self.active_section != SECTION_ALIAS_MANUAL:
+            return
+        self.selected_alias_keys = _visible_alias_task_keys(self.pending_rows)
+        self.pending_rows = _apply_selected_alias_flags(
+            self.pending_rows,
+            self.selected_alias_keys,
+        )
+
+    @rx.event
+    def clear_selected_alias_manual_tasks(self) -> None:
+        self.selected_alias_keys = []
+        self.pending_rows = _apply_selected_alias_flags(self.pending_rows, [])
+
+    @rx.event
+    def batch_confirm_selected_alias_manual_tasks(self):
+        yield from self._mutate_selected_alias_tasks_with_loading(action="merge")
+
+    @rx.event
+    def batch_ignore_selected_alias_manual_tasks(self):
+        yield from self._mutate_selected_alias_tasks_with_loading(action="block")
+
+    @rx.event
     def set_alias_manual_dialog_open(self, value: bool) -> None:
         if value:
             self.alias_manual_dialog_open = True
@@ -587,16 +881,12 @@ class OrganizerState(rx.State):
         try:
             research_workbench = _load_research_workbench_module()
             engine = research_workbench.get_research_workbench_engine_from_env()
-            research_workbench.record_stock_alias_relation(
-                engine,
-                stock_key=target_key,
+            _confirm_alias_manual_target(
+                research_workbench=research_workbench,
+                engine=engine,
                 alias_key=alias_key,
+                target_key=target_key,
                 source="manual",
-            )
-            research_workbench.set_alias_resolve_task_status(
-                engine,
-                alias_key=alias_key,
-                status=research_workbench.ALIAS_TASK_STATUS_RESOLVED,
             )
         except BaseException as err:
             if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
@@ -619,10 +909,10 @@ class OrganizerState(rx.State):
         try:
             research_workbench = _load_research_workbench_module()
             engine = research_workbench.get_research_workbench_engine_from_env()
-            research_workbench.set_alias_resolve_task_status(
-                engine,
+            _block_alias_manual_target(
+                research_workbench=research_workbench,
+                engine=engine,
                 alias_key=alias_key,
-                status=research_workbench.ALIAS_TASK_STATUS_BLOCKED,
             )
         except BaseException as err:
             if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
@@ -635,47 +925,60 @@ class OrganizerState(rx.State):
         self.close_alias_manual_dialog()
         self._reload_pending_rows()
 
-    @rx.event
-    def preview_alias_ai_batch(self):
-        if self.active_section != SECTION_ALIAS_MANUAL:
-            return
-        target_indexes = [
-            index
-            for index, row in enumerate(self.pending_rows)
-            if not str(row.get("ai_status") or "").strip()
-        ]
-        if not target_indexes:
-            return
-        target_rows = [dict(self.pending_rows[index]) for index in target_indexes]
-        self._start_loading()
-        yield
+    @rx.event(background=True)
+    async def rerun_alias_manual_ai_current_page(self):
+        async with self:
+            if self.active_section != SECTION_ALIAS_MANUAL:
+                return
+            target_rows = [
+                cast(PendingRow, dict(row))
+                for row in self.pending_rows
+                if str(row.get("alias_key") or "").strip()
+            ]
+            if not target_rows:
+                return
+            alias_task_limit = int(self.alias_task_limit)
+            self._start_loading()
         try:
-            enriched_rows = (
-                _load_alias_resolve_predictor_module().enrich_alias_tasks_with_ai(
+
+            def _run_job() -> tuple[list[PendingRow], str]:
+                return _rerun_alias_manual_ai_current_page_sync(
                     target_rows,
-                    ai_enabled=True,
-                    limit=10,
+                    alias_task_limit=alias_task_limit,
                 )
-            )
-            merged_rows = [dict(row) for row in self.pending_rows]
-            for index, row in zip(target_indexes, enriched_rows, strict=False):
-                merged_rows[index] = row
-            self.pending_rows = merged_rows
-            self.load_error = ""
+
+            pending_rows, load_error = await rx.run_in_thread(_run_job)
         except BaseException as err:
             if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
-            self.load_error = str(err)
-        finally:
+            async with self:
+                self.load_error = str(err)
+                self._finish_loading()
+            return
+
+        async with self:
+            if self.active_section == SECTION_ALIAS_MANUAL:
+                self.selected_alias_keys = _sync_selected_alias_keys(
+                    pending_rows,
+                    self.selected_alias_keys,
+                )
+                self.pending_rows = _apply_selected_alias_flags(
+                    pending_rows,
+                    self.selected_alias_keys,
+                )
+                self.selected_candidate_ids = []
+                summary_load_error = self._reload_alias_manual_status_summary()
+                self._apply_stock_alias_status_summary(
+                    _empty_stock_alias_status_summary()
+                )
+                self.load_error = load_error or summary_load_error
             self._finish_loading()
 
     @rx.event
     def load_more_alias_tasks(self):
         if self.active_section != SECTION_ALIAS_MANUAL:
             return
-        self.alias_task_limit = (
-            max(0, int(self.alias_task_limit)) + ALIAS_TASK_PAGE_STEP
-        )
+        self.alias_task_limit = _next_alias_task_limit(self.alias_task_limit)
         yield from self._reload_pending_rows_with_loading()
 
     @rx.event
@@ -803,12 +1106,42 @@ class OrganizerState(rx.State):
             summary.get("blocked_count")
         )
 
+    def _apply_alias_manual_status_summary(self, summary: dict[str, int]) -> None:
+        self.alias_manual_total_count = _coerce_non_negative_int(
+            summary.get("total_count")
+        )
+        self.alias_manual_pending_ai_count = _coerce_non_negative_int(
+            summary.get("pending_ai_count")
+        )
+        self.alias_manual_pending_review_count = _coerce_non_negative_int(
+            summary.get("pending_review_count")
+        )
+        self.alias_manual_ai_error_count = _coerce_non_negative_int(
+            summary.get("ai_error_count")
+        )
+        self.alias_manual_resolved_count = _coerce_non_negative_int(
+            summary.get("resolved_count")
+        )
+        self.alias_manual_blocked_count = _coerce_non_negative_int(
+            summary.get("blocked_count")
+        )
+
     def _reload_stock_alias_status_summary(self) -> str:
         if self.active_section != SECTION_STOCK_ALIAS:
             self._apply_stock_alias_status_summary(_empty_stock_alias_status_summary())
             return ""
         summary, load_error = load_stock_alias_status_summary()
         self._apply_stock_alias_status_summary(summary)
+        return load_error
+
+    def _reload_alias_manual_status_summary(self) -> str:
+        if self.active_section != SECTION_ALIAS_MANUAL:
+            self._apply_alias_manual_status_summary(
+                _empty_alias_manual_status_summary()
+            )
+            return ""
+        summary, load_error = load_alias_manual_status_summary()
+        self._apply_alias_manual_status_summary(summary)
         return load_error
 
     def _reload_pending_rows(self) -> None:
@@ -827,9 +1160,19 @@ class OrganizerState(rx.State):
             pending_rows, load_error = load_pending_rows(self.active_section)
         if self.active_section == SECTION_ALIAS_MANUAL:
             pending_rows = _merge_alias_ai_preview_rows(self.pending_rows, pending_rows)
+            self.selected_alias_keys = _sync_selected_alias_keys(
+                pending_rows,
+                self.selected_alias_keys,
+            )
+            pending_rows = _apply_selected_alias_flags(
+                pending_rows,
+                self.selected_alias_keys,
+            )
             self.selected_candidate_ids = []
+            summary_load_error = self._reload_alias_manual_status_summary()
             self._apply_stock_alias_status_summary(_empty_stock_alias_status_summary())
         elif self.active_section == SECTION_STOCK_ALIAS:
+            self.selected_alias_keys = []
             self.selected_candidate_ids = _sync_selected_candidate_ids(
                 pending_rows,
                 self.selected_candidate_ids,
@@ -839,9 +1182,16 @@ class OrganizerState(rx.State):
                 self.selected_candidate_ids,
             )
             summary_load_error = self._reload_stock_alias_status_summary()
+            self._apply_alias_manual_status_summary(
+                _empty_alias_manual_status_summary()
+            )
         else:
             self.selected_candidate_ids = []
+            self.selected_alias_keys = []
             self._apply_stock_alias_status_summary(_empty_stock_alias_status_summary())
+            self._apply_alias_manual_status_summary(
+                _empty_alias_manual_status_summary()
+            )
         self.pending_rows = pending_rows
         self.load_error = load_error or summary_load_error
 
@@ -949,6 +1299,69 @@ class OrganizerState(rx.State):
         self.load_error = first_error or summary_load_error
         self.candidate_action_pending_id = ""
 
+    def _mutate_selected_alias_tasks_with_loading(self, *, action: str):
+        if self.active_section != SECTION_ALIAS_MANUAL:
+            return
+        selected_alias_keys = list(self.selected_alias_keys)
+        if not selected_alias_keys:
+            return
+        self._start_loading()
+        yield
+        succeeded = False
+        first_error = ""
+        try:
+            research_workbench = _load_research_workbench_module()
+            engine = research_workbench.get_research_workbench_engine_from_env()
+            rows_by_alias_key = {
+                str(row.get("alias_key") or "").strip(): cast(PendingRow, dict(row))
+                for row in self.pending_rows
+                if str(row.get("alias_key") or "").strip()
+            }
+            for alias_key in selected_alias_keys:
+                row = rows_by_alias_key.get(str(alias_key or "").strip())
+                if row is None:
+                    continue
+                try:
+                    if action == "merge":
+                        target_key = _parse_manual_alias_target_stock_key(
+                            str(row.get("ai_stock_code") or "")
+                        )
+                        if not target_key:
+                            if not first_error:
+                                first_error = (
+                                    f"{str(alias_key or '').strip()} 没有可用 AI 代码"
+                                )
+                            continue
+                        _confirm_alias_manual_target(
+                            research_workbench=research_workbench,
+                            engine=engine,
+                            alias_key=str(alias_key or "").strip(),
+                            target_key=target_key,
+                            source="manual",
+                        )
+                    elif action == "block":
+                        _block_alias_manual_target(
+                            research_workbench=research_workbench,
+                            engine=engine,
+                            alias_key=str(alias_key or "").strip(),
+                        )
+                    else:
+                        continue
+                except BaseException as err:
+                    if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                        raise
+                    if not first_error:
+                        first_error = str(err)
+                    continue
+                succeeded = True
+            if succeeded:
+                _load_source_read_module().clear_reflex_source_caches()
+            self._reload_pending_rows()
+            if first_error:
+                self.load_error = first_error
+        finally:
+            self._finish_loading()
+
 
 def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
     source_read = _load_source_read_module()
@@ -988,10 +1401,20 @@ def load_pending_rows(
         try:
             research_workbench = _load_research_workbench_module()
             engine = research_workbench.get_research_workbench_engine_from_env()
-            task_rows = research_workbench.list_pending_alias_resolve_tasks(
-                engine,
-                limit=max(1, int(alias_task_limit)),
-            )
+            limit_value = max(1, int(alias_task_limit))
+            while True:
+                task_rows = research_workbench.list_pending_alias_resolve_tasks(
+                    engine,
+                    limit=limit_value,
+                )
+                resolved_alias_keys = (
+                    research_workbench.cleanup_known_pending_alias_resolve_tasks(
+                        engine,
+                        [str(row.get("alias_key") or "").strip() for row in task_rows],
+                    )
+                )
+                if not resolved_alias_keys:
+                    break
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
@@ -1002,23 +1425,34 @@ def load_pending_rows(
             if not alias_key:
                 continue
             out.append(
-                {
-                    "alias_key": alias_key,
-                    "attempt_count": str(row.get("attempt_count") or "0").strip(),
-                    "status": str(row.get("status") or "").strip(),
-                    "sample_post_uid": str(row.get("sample_post_uid") or "").strip(),
-                    "sample_evidence": str(row.get("sample_evidence") or "").strip(),
-                    "sample_raw_text_excerpt": str(
-                        row.get("sample_raw_text_excerpt") or ""
-                    ).strip(),
-                    "updated_at": str(row.get("updated_at") or "").strip(),
-                    "ai_status": "",
-                    "ai_stock_code": "",
-                    "ai_official_name": "",
-                    "ai_confidence": "",
-                    "ai_reason": "",
-                    "ai_uncertain": "",
-                }
+                _decorate_alias_task_row(
+                    {
+                        "alias_key": alias_key,
+                        "attempt_count": str(row.get("attempt_count") or "0").strip(),
+                        "status": str(row.get("status") or "").strip(),
+                        "sample_post_uid": str(
+                            row.get("sample_post_uid") or ""
+                        ).strip(),
+                        "sample_evidence": str(
+                            row.get("sample_evidence") or ""
+                        ).strip(),
+                        "sample_raw_text_excerpt": str(
+                            row.get("sample_raw_text_excerpt") or ""
+                        ).strip(),
+                        "updated_at": str(row.get("updated_at") or "").strip(),
+                        "ai_status": str(row.get("ai_status") or "").strip(),
+                        "ai_stock_code": str(row.get("ai_stock_code") or "").strip(),
+                        "ai_official_name": str(
+                            row.get("ai_official_name") or ""
+                        ).strip(),
+                        "ai_confidence": str(row.get("ai_confidence") or "").strip(),
+                        "ai_reason": str(row.get("ai_reason") or "").strip(),
+                        "ai_uncertain": str(row.get("ai_uncertain") or "").strip(),
+                        "ai_validation_status": str(
+                            row.get("ai_validation_status") or ""
+                        ).strip(),
+                    }
+                )
             )
         return out, ""
 
@@ -1087,6 +1521,27 @@ def load_stock_alias_status_summary() -> tuple[dict[str, int], str]:
         ),
         "ai_error_count": _coerce_non_negative_int(summary.get("ai_error_count")),
         "ignored_count": _coerce_non_negative_int(summary.get("ignored_count")),
+        "blocked_count": _coerce_non_negative_int(summary.get("blocked_count")),
+    }, ""
+
+
+def load_alias_manual_status_summary() -> tuple[dict[str, int], str]:
+    try:
+        research_workbench = _load_research_workbench_module()
+        engine = research_workbench.get_research_workbench_engine_from_env()
+        summary = research_workbench.get_alias_resolve_task_status_summary(engine)
+    except BaseException as exc:
+        if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+            raise
+        return _empty_alias_manual_status_summary(), str(exc)
+    return {
+        "total_count": _coerce_non_negative_int(summary.get("total_count")),
+        "pending_ai_count": _coerce_non_negative_int(summary.get("pending_ai_count")),
+        "pending_review_count": _coerce_non_negative_int(
+            summary.get("pending_review_count")
+        ),
+        "ai_error_count": _coerce_non_negative_int(summary.get("ai_error_count")),
+        "resolved_count": _coerce_non_negative_int(summary.get("resolved_count")),
         "blocked_count": _coerce_non_negative_int(summary.get("blocked_count")),
     }, ""
 

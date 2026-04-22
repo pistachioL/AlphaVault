@@ -11,7 +11,7 @@ from alphavault.domains.stock.key_match import (
     normalize_stock_code,
 )
 
-from .runtime_config import ai_runtime_config_from_env
+from .runtime_config import AiRuntimeConfig, ai_runtime_config_from_env
 
 
 AI_STATUS_SKIPPED = "skipped"
@@ -118,12 +118,27 @@ def _ensure_ai_fields(item: dict[str, Any]) -> dict[str, Any]:
     return row
 
 
+def _resolve_runtime_config(runtime_config: AiRuntimeConfig | None) -> AiRuntimeConfig:
+    if runtime_config is not None:
+        return runtime_config
+    return ai_runtime_config_from_env(timeout_seconds_default=1000.0)
+
+
+def _has_runtime_config(runtime_config: AiRuntimeConfig | None) -> bool:
+    if runtime_config is None:
+        ok, _err = ai_is_configured()
+        return bool(ok)
+    return bool(_clean_text(runtime_config.api_key))
+
+
 def enrich_alias_tasks_with_ai(
     tasks: list[dict[str, Any]],
     *,
     ai_enabled: bool,
     limit: int = _ALIAS_AI_BATCH_CAP,
     should_continue: Callable[[], bool] | None = None,
+    runtime_config: AiRuntimeConfig | None = None,
+    request_gate: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
     rows = [_ensure_ai_fields(item) for item in tasks]
     if not rows:
@@ -152,14 +167,17 @@ def enrich_alias_tasks_with_ai(
             _with_ai_fields(item, status=AI_STATUS_SKIPPED) for item in attempted
         ] + untouched
 
-    ok, _err = ai_is_configured()
-    if not ok:
+    if not _has_runtime_config(runtime_config):
         return [
             _with_ai_fields(item, status=AI_STATUS_SKIPPED) for item in attempted
         ] + untouched
 
     try:
-        ranked = _predict_alias_tasks_with_ai(attempted)
+        ranked = _predict_alias_tasks_with_ai(
+            attempted,
+            runtime_config=runtime_config,
+            request_gate=request_gate,
+        )
     except Exception as err:
         error_reason = _format_ai_error_reason(err)
         ranked = [
@@ -171,8 +189,11 @@ def enrich_alias_tasks_with_ai(
 
 def _predict_alias_tasks_with_ai(
     tasks: list[dict[str, Any]],
+    *,
+    runtime_config: AiRuntimeConfig | None = None,
+    request_gate: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
-    config = ai_runtime_config_from_env(timeout_seconds_default=1000.0)
+    config = _resolve_runtime_config(runtime_config)
     task_lines: list[str] = []
     for item in tasks:
         alias_key = _clean_text(item.get("alias_key"))
@@ -234,6 +255,7 @@ def _predict_alias_tasks_with_ai(
             reasoning_effort=str(config.reasoning_effort),
             trace_out=None,
             trace_label="alias_tasks:predict",
+            request_gate=request_gate,
         )
     except Exception as err:
         alias_key = str(tasks[0].get("alias_key") or "").strip() if tasks else ""

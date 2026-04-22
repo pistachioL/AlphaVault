@@ -23,6 +23,7 @@ from alphavault.timeutil import now_cst_str
 from alphavault.domains.relation.ids import make_candidate_id
 from alphavault.domains.stock.keys import normalize_stock_key
 
+from .alias_task_repo import ALIAS_TASK_STATUS_RESOLVED, set_alias_resolve_task_status
 from .relation_repo import (
     RELATION_LABEL_ALIAS,
     RELATION_TYPE_STOCK_ALIAS,
@@ -407,6 +408,14 @@ def accept_relation_candidate(
             sync_stock_alias_shadow_dict_best_effort(
                 stock_key=accepted_left_key,
                 alias_key=accepted_right_key,
+            )
+        except Exception:
+            pass
+        try:
+            set_alias_resolve_task_status(
+                engine_or_conn,
+                alias_key=accepted_right_key,
+                status=ALIAS_TASK_STATUS_RESOLVED,
             )
         except Exception:
             pass

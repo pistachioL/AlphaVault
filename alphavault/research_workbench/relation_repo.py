@@ -62,6 +62,42 @@ def _is_hk_market(market: str) -> bool:
     return _clean_text(market).upper() == "HK"
 
 
+def get_confirmed_stock_alias_targets(
+    engine_or_conn: PostgresEngine | PostgresConnection,
+    alias_keys: list[str],
+) -> dict[str, str]:
+    cleaned_keys = [
+        _normalize_relation_key(item)
+        for item in alias_keys
+        if _normalize_relation_key(item)
+    ]
+    if not cleaned_keys:
+        return {}
+    placeholders = ", ".join(["?"] * len(cleaned_keys))
+    sql = f"""
+SELECT right_key, left_key
+FROM {RESEARCH_RELATIONS_TABLE}
+WHERE relation_type = '{RELATION_TYPE_STOCK_ALIAS}'
+  AND relation_label = '{RELATION_LABEL_ALIAS}'
+  AND right_key IN ({placeholders})
+"""
+    try:
+        with use_conn(engine_or_conn) as conn:
+            rows = conn.execute(sql, cleaned_keys).fetchall()
+    except BaseException as err:
+        handle_db_error(engine_or_conn, err)
+    out: dict[str, str] = {}
+    for row in rows:
+        if not row:
+            continue
+        alias_key = _normalize_relation_key(row[0])
+        target_key = _normalize_relation_key(row[1])
+        if not alias_key or not target_key:
+            continue
+        out[alias_key] = target_key
+    return out
+
+
 def record_relation(
     conn: PostgresConnection,
     *,
@@ -269,6 +305,7 @@ def record_stock_alias_relation(
 
 
 __all__ = [
+    "get_confirmed_stock_alias_targets",
     "RELATION_LABEL_ALIAS",
     "RELATION_LABEL_SAME_COMPANY",
     "RELATION_TYPE_STOCK_ALIAS",

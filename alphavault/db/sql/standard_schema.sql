@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.alias_resolve_tasks (
     sample_post_uid TEXT NOT NULL DEFAULT '',
     sample_evidence TEXT NOT NULL DEFAULT '',
     sample_raw_text_excerpt TEXT NOT NULL DEFAULT '',
+    ai_status TEXT NOT NULL DEFAULT '',
+    ai_stock_code TEXT NOT NULL DEFAULT '',
+    ai_official_name TEXT NOT NULL DEFAULT '',
+    ai_confidence TEXT NOT NULL DEFAULT '',
+    ai_reason TEXT NOT NULL DEFAULT '',
+    ai_uncertain TEXT NOT NULL DEFAULT '',
+    ai_validation_status TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
