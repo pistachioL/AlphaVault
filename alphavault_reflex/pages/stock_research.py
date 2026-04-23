@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from alphavault_reflex.pages.original_link_components import original_post_link
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import research_page_loading_var
 from alphavault_reflex.research_state import stock_page_title_var
@@ -120,10 +121,10 @@ def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
             ),
             rx.cond(
                 row["url"] != "",
-                rx.link(
+                original_post_link(
                     "原文链",
-                    href=row["url"],
-                    is_external=True,
+                    row["url"],
+                    row["post_uid"],
                     class_name="av-research-chip",
                 ),
                 rx.el.span(""),

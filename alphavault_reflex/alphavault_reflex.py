@@ -19,6 +19,7 @@ from alphavault_reflex.pages.stock_research import stock_research_page
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import sector_browser_title_var
 from alphavault_reflex.research_state import stock_browser_title_var
+from alphavault_reflex.services.original_link import ORIGINAL_LINK_SCRIPT_PATH
 from alphavault_reflex.services.process_metrics import load_container_memory_metrics
 from alphavault_reflex.services.process_metrics import load_process_metrics
 
@@ -37,6 +38,7 @@ app = rx.App(
         "/research_workbench.css",
     ],
     head_components=[
+        rx.script(src=ORIGINAL_LINK_SCRIPT_PATH),
         rx.script(src="/table_resizer.js"),
     ],
 )
