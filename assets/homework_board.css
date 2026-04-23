@@ -35,10 +35,26 @@ body {
 }
 
 .av-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   border: 1px solid var(--av-border);
   border-radius: 12px;
   padding: 12px 12px 10px 12px;
   background: var(--av-panel);
+}
+
+.av-controls-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.av-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .av-label {

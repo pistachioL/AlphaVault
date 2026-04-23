@@ -10,14 +10,17 @@ from alphavault_reflex.services.analysis_feedback import (
     ENTRYPOINT_HOMEWORK_TREE,
     submit_post_analysis_feedback,
 )
-from alphavault_reflex.services.homework_constants import (
-    TRADE_BOARD_DEFAULT_WINDOW_DAYS,
-    TRADE_BOARD_MAX_WINDOW_DAYS,
-)
 from alphavault_reflex.services.homework_board import (
     TRADE_FILTER_OPTIONS,
     build_board,
     build_tree,
+)
+from alphavault_reflex.services.homework_time_range import (
+    HomeworkTimeRange,
+    default_homework_time_range,
+    format_homework_query_datetime,
+    parse_homework_time_range,
+    resolve_homework_time_shortcut,
 )
 from alphavault_reflex.services.research_models import (
     CLUSTER_KEY_PREFIX,
@@ -57,8 +60,8 @@ class HomeworkState(rx.State):
     load_error: str = ""
     caption: str = ""
 
-    window_max_days: int = TRADE_BOARD_MAX_WINDOW_DAYS
-    window_days: int = TRADE_BOARD_DEFAULT_WINDOW_DAYS
+    window_start_local: str = ""
+    window_end_local: str = ""
     trade_filter: str = TRADE_FILTER_OPTIONS[0]
 
     rows: list[dict[str, str]] = []
@@ -140,10 +143,11 @@ class HomeworkState(rx.State):
     def selected_tree_render_lines(self) -> list[dict[str, str]]:
         return build_tree_render_lines(self.selected_tree_render_text)
 
-    def _refresh(self) -> None:
+    def _refresh(self, *, selected_range: HomeworkTimeRange) -> None:
         assertions, stock_relations, err = (
             _load_source_read_module().load_homework_board_payload_from_env(
-                int(self.window_days)
+                format_homework_query_datetime(selected_range.start_utc),
+                format_homework_query_datetime(selected_range.end_exclusive_utc),
             )
         )
         if err:
@@ -163,7 +167,10 @@ class HomeworkState(rx.State):
             [],
             group_col="board_group_key",
             group_label="主题",
-            window_days=int(self.window_days),
+            range_start_utc=selected_range.start_utc,
+            range_end_exclusive_utc=selected_range.end_exclusive_utc,
+            range_caption=selected_range.caption,
+            age_reference_utc=selected_range.end_reference_utc,
             trade_filter=str(self.trade_filter),
         )
         _fill_trade_board_urls(result.rows)
@@ -190,7 +197,6 @@ class HomeworkState(rx.State):
         _apply_homework_rows(
             self,
             caption=result.caption,
-            used_window_days=result.used_window_days,
             rows=result.rows,
         )
 
@@ -200,9 +206,21 @@ class HomeworkState(rx.State):
         self.tree_dialog_open = False
         self.tree_loading = False
         self.selected_tree_debug_text = ""
+        _ensure_homework_time_range_inputs(self)
+        selected_range, time_range_error = _selected_homework_time_range(self)
+        if time_range_error:
+            self.caption = ""
+            self.rows = []
+            self.load_error = time_range_error
+            self.loaded_once = True
+            self.loading = False
+            _clear_selected_tree(self)
+            yield
+            return
         _load_source_read_module().clear_reflex_source_caches()
         yield
-        self._refresh()
+        if selected_range is not None:
+            self._refresh(selected_range=selected_range)
         self.loaded_once = True
         self.loading = False
 
@@ -217,9 +235,21 @@ class HomeworkState(rx.State):
         yield from self._refresh_with_loading()
 
     @rx.event
-    def set_window_days(self, value: list[int | float]):
-        if value:
-            self.window_days = int(value[0])
+    def set_window_start_local(self, value: str) -> None:
+        self.window_start_local = str(value or "").strip()
+        self.load_error = ""
+
+    @rx.event
+    def set_window_end_local(self, value: str) -> None:
+        self.window_end_local = str(value or "").strip()
+        self.load_error = ""
+
+    @rx.event
+    def apply_time_shortcut(self, value: str):
+        selected_range = resolve_homework_time_shortcut(str(value or "").strip())
+        self.window_start_local = selected_range.start_local
+        self.window_end_local = selected_range.end_local
+        self.load_error = ""
         yield from self._refresh_with_loading()
 
     @rx.event
@@ -306,7 +336,12 @@ class HomeworkState(rx.State):
         self._reset_feedback_state(close_dialog=True, clear_success=False)
         self.feedback_success = success_message
         _load_source_read_module().clear_reflex_source_caches()
-        self._refresh()
+        selected_range, time_range_error = _selected_homework_time_range(self)
+        if time_range_error:
+            self.load_error = time_range_error
+            return
+        if selected_range is not None:
+            self._refresh(selected_range=selected_range)
 
     @rx.event
     def open_tree_dialog(self, post_uid: str):
@@ -438,26 +473,30 @@ def _clear_selected_tree(state: HomeworkState) -> None:
     state.selected_tree_debug_text = ""
 
 
-def _coerce_positive_window_days(value: object) -> int:
-    text = str(value or "").strip()
-    if not text:
-        return 1
-    try:
-        return max(1, int(text))
-    except (TypeError, ValueError):
-        return 1
+def _ensure_homework_time_range_inputs(state: HomeworkState) -> None:
+    if state.window_start_local or state.window_end_local:
+        return
+    default_range = default_homework_time_range()
+    state.window_start_local = default_range.start_local
+    state.window_end_local = default_range.end_local
+
+
+def _selected_homework_time_range(
+    state: HomeworkState,
+) -> tuple[HomeworkTimeRange | None, str]:
+    return parse_homework_time_range(
+        state.window_start_local,
+        state.window_end_local,
+    )
 
 
 def _apply_homework_rows(
     state: HomeworkState,
     *,
     caption: object,
-    used_window_days: object,
     rows: object,
 ) -> None:
     state.caption = str(caption or "").strip()
-    state.window_max_days = TRADE_BOARD_MAX_WINDOW_DAYS
-    state.window_days = _coerce_positive_window_days(used_window_days)
     state.rows = _coerce_homework_rows(rows)
     if not state.rows:
         _clear_selected_tree(state)

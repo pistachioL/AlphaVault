@@ -231,21 +231,27 @@ def clear_reflex_source_caches() -> None:
 
 
 def load_homework_board_payload_from_env(
-    lookback_days: int,
+    start_time: str,
+    end_time: str,
     *,
     load_cached_fn=None,
     resolve_workers_fn=None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
     trade_board_loader = _load_trade_board_loader_module()
     if load_cached_fn is None and resolve_workers_fn is None:
-        return trade_board_loader.load_homework_board_payload_from_env(lookback_days)
+        return trade_board_loader.load_homework_board_payload_from_env(
+            start_time,
+            end_time,
+        )
     kwargs: dict[str, object] = {}
     if load_cached_fn is not None:
         kwargs["load_cached_fn"] = load_cached_fn
     if resolve_workers_fn is not None:
         kwargs["resolve_workers_fn"] = resolve_workers_fn
     return trade_board_loader.load_homework_board_payload_from_env(
-        lookback_days, **kwargs
+        start_time,
+        end_time,
+        **kwargs,
     )
 
 

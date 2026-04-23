@@ -6,13 +6,9 @@ import math
 import re
 from typing import cast
 
-from alphavault_reflex.services.homework_constants import (
-    TRADE_BOARD_DEFAULT_WINDOW_DAYS,
-    TRADE_BOARD_MAX_WINDOW_DAYS,
-)
-from alphavault.research_signal_view import coerce_signal_timestamp
 from alphavault.domains.thread_tree.service import build_post_tree
 from alphavault.domains.thread_tree.service import normalize_tree_lookup_post_uid
+from alphavault_reflex.services.homework_time_range import coerce_homework_timestamp
 
 TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})
@@ -40,8 +36,6 @@ TRADE_FILTER_VALUES = {
 @dataclass(frozen=True)
 class BoardResult:
     caption: str
-    window_max_days: int
-    used_window_days: int
     rows: list[dict[str, str]]
 
 
@@ -82,31 +76,12 @@ def trade_action_badge(action: str, strength: object) -> str:
     return " · ".join([p for p in parts if str(p).strip()])
 
 
-def _trade_data_coverage(
-    assertions: list[dict[str, object]],
-) -> tuple[int, datetime | None, datetime | None]:
-    created = [
-        ts
-        for ts in (coerce_signal_timestamp(row.get("created_at")) for row in assertions)
-        if ts is not None
-    ]
-    if not created:
-        return 1, None, None
-    min_ts = min(created)
-    max_ts = max(created)
-    try:
-        days = int((max_ts - min_ts).days) + 1
-    except Exception:
-        days = 1
-    return max(1, days), min_ts, max_ts
-
-
 def _build_latest_post_uid_candidates(
     board_view: list[dict[str, object]], *, group_col: str
 ) -> dict[str, list[str]]:
     if not board_view:
         return {}
-    ordered = sorted(board_view, key=_sort_row_desc)
+    ordered = sorted(board_view, key=_row_recency_key, reverse=True)
 
     candidates: dict[str, list[str]] = {}
     for row in ordered:
@@ -147,18 +122,26 @@ def _bucket_authors(bucket: dict[str, object]) -> set[str]:
     return set()
 
 
+def _bucket_recent_key(bucket: dict[str, object]) -> tuple[float, str, int]:
+    return _row_recency_key(_bucket_recent_row(bucket))
+
+
 def build_board(
     assertions: list[dict[str, object]],
     posts: list[dict[str, object]],
     *,
     group_col: str,
     group_label: str,
-    window_days: int,
+    range_start_utc: datetime,
+    range_end_exclusive_utc: datetime,
+    range_caption: str,
+    age_reference_utc: datetime,
     trade_filter: str,
 ) -> BoardResult:
     del posts, group_label
+    empty_result = BoardResult(caption=str(range_caption or "").strip(), rows=[])
     if not assertions:
-        return BoardResult(caption="", window_max_days=1, used_window_days=1, rows=[])
+        return empty_result
 
     trade_rows = [
         dict(row)
@@ -166,19 +149,7 @@ def build_board(
         if str(row.get("action") or "").strip().startswith("trade.")
     ]
     if not trade_rows:
-        return BoardResult(caption="", window_max_days=1, used_window_days=1, rows=[])
-
-    coverage_days, _min_ts, max_ts_full = _trade_data_coverage(trade_rows)
-    window_max_days = max(1, min(int(coverage_days), TRADE_BOARD_MAX_WINDOW_DAYS))
-    used_window_days = max(
-        1, min(int(window_days or TRADE_BOARD_DEFAULT_WINDOW_DAYS), window_max_days)
-    )
-
-    caption = ""
-    if max_ts_full:
-        window_start = max_ts_full - timedelta(days=max(0, used_window_days - 1))
-        window_line = f"窗口：最近 {used_window_days} 天：{window_start.date()} ~ {max_ts_full.date()}"
-        caption = window_line
+        return empty_result
 
     if not any(group_col in row for row in trade_rows):
         if any("entity_key" in row for row in trade_rows):
@@ -187,39 +158,16 @@ def build_board(
     board_rows: list[dict[str, object]] = []
     for row in trade_rows:
         topic = str(row.get(group_col) or "").strip()
-        created_at = coerce_signal_timestamp(row.get("created_at"))
+        created_at = coerce_homework_timestamp(row.get("created_at"))
         if not topic or created_at is None:
+            continue
+        if created_at < range_start_utc or created_at >= range_end_exclusive_utc:
             continue
         payload = dict(row)
         payload["_created_at_ts"] = created_at
         board_rows.append(payload)
     if not board_rows:
-        return BoardResult(
-            caption=caption,
-            window_max_days=window_max_days,
-            used_window_days=used_window_days,
-            rows=[],
-        )
-
-    max_ts = max(
-        coerce_signal_timestamp(row.get("_created_at_ts")) or datetime.min
-        for row in board_rows
-    )
-    cutoff_day = max_ts.date() - timedelta(days=max(0, int(used_window_days) - 1))
-    cutoff = datetime.combine(cutoff_day, datetime.min.time())
-    board_rows = [
-        row
-        for row in board_rows
-        if (coerce_signal_timestamp(row.get("_created_at_ts")) or datetime.min)
-        >= cutoff
-    ]
-    if not board_rows:
-        return BoardResult(
-            caption=caption,
-            window_max_days=window_max_days,
-            used_window_days=used_window_days,
-            rows=[],
-        )
+        return empty_result
 
     grouped: dict[str, dict[str, object]] = {}
     for row in board_rows:
@@ -228,7 +176,10 @@ def build_board(
             continue
         action = str(row.get("action") or "").strip()
         strength = _coerce_strength(row.get("action_strength"))
-        created_at = coerce_signal_timestamp(row.get("_created_at_ts")) or datetime.min
+        created_at_value = row.get("_created_at_ts")
+        created_at = (
+            created_at_value if isinstance(created_at_value, datetime) else datetime.min
+        )
         bucket = grouped.setdefault(
             topic,
             {
@@ -256,14 +207,14 @@ def build_board(
             )
         if action in TRADE_HOLD_ACTIONS:
             bucket["hold_mentions_sum"] = _bucket_int(bucket, "hold_mentions_sum") + 1
-        recent_time = _bucket_recent_time(bucket)
-        if recent_time is None or created_at >= recent_time:
+        if _row_recency_key(row) >= _bucket_recent_key(bucket):
             bucket["recent_time"] = created_at
             bucket["recent_row"] = dict(row)
 
     agg_sorted = sorted(
         grouped.items(),
-        key=lambda item: -(_bucket_recent_time(item[1]) or datetime.min).timestamp(),
+        key=lambda item: (_bucket_recent_key(item[1]), str(item[0])),
+        reverse=True,
     )
 
     allowed_actions = TRADE_FILTER_VALUES.get(str(trade_filter or "").strip())
@@ -317,7 +268,9 @@ def build_board(
                     str(recent_row.get("action") or "").strip(),
                     recent_row.get("action_strength"),
                 ),
-                "recent_age": format_age_label(max_ts, recent_dt) if recent_dt else "",
+                "recent_age": (
+                    format_age_label(age_reference_utc, recent_dt) if recent_dt else ""
+                ),
                 "recent_author": str(recent_row.get("author") or "").strip(),
                 "net_strength": net_strength,
                 "buy_strength": buy_strength,
@@ -329,9 +282,7 @@ def build_board(
         )
 
     return BoardResult(
-        caption=caption,
-        window_max_days=window_max_days,
-        used_window_days=used_window_days,
+        caption=str(range_caption or "").strip(),
         rows=rows,
     )
 
@@ -349,10 +300,35 @@ def _coerce_strength(value: object) -> int:
 
 
 def _sort_row_desc(row: dict[str, object]) -> tuple[int, float]:
-    ts = coerce_signal_timestamp(row.get("created_at"))
-    if ts is None:
+    recency = _row_recency_key(row)
+    if recency[0] == float("-inf"):
         return (1, 0.0)
-    return (0, -ts.timestamp())
+    return (0, -recency[0])
+
+
+def _row_recency_key(row: dict[str, object]) -> tuple[float, str, int]:
+    ts = _row_timestamp(row)
+    if ts is None:
+        return (float("-inf"), "", -1)
+    return (
+        ts.timestamp(),
+        str(row.get("post_uid") or "").strip(),
+        _row_idx(row.get("idx")),
+    )
+
+
+def _row_timestamp(row: dict[str, object]) -> datetime | None:
+    cached = row.get("_created_at_ts")
+    if isinstance(cached, datetime):
+        return cached
+    return coerce_homework_timestamp(row.get("created_at"))
+
+
+def _row_idx(value: object) -> int:
+    try:
+        return int(str(value or "").strip() or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _to_int_text(value: object) -> str:

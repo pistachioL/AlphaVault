@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 import json
 import logging
@@ -69,12 +69,26 @@ def _load_source_schemas_from_env() -> list[PostgresSource]:
     ]
 
 
+def _format_trade_board_query_datetime(value: datetime) -> str:
+    ts = value
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    else:
+        ts = ts.astimezone(UTC)
+    return ts.isoformat(sep=" ", timespec="seconds")
+
+
 def trade_board_cutoff_from_utc_now(*, lookback_days: int) -> str:
     days = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     cutoff_day = now.date() - timedelta(days=max(0, int(days) - 1))
-    cutoff = datetime.combine(cutoff_day, datetime.min.time())
-    return cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = datetime(
+        cutoff_day.year,
+        cutoff_day.month,
+        cutoff_day.day,
+        tzinfo=UTC,
+    )
+    return _format_trade_board_query_datetime(cutoff)
 
 
 def trade_board_select_expr() -> str:
@@ -90,6 +104,31 @@ def trade_board_select_expr() -> str:
 
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def trade_board_created_at_sql_expr(column: str) -> str:
+    as_text = f"CAST({column} AS text)"
+    normalized = f"btrim(replace({as_text}, 'T', ' '))"
+    normalized_utc = f"replace({normalized}, 'Z', '+00:00')"
+    with_timezone = (
+        f"{normalized} ~ "
+        "'^[0-9]{4}-[0-9]{2}-[0-9]{2} "
+        "[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]+)?)?"
+        "(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'"
+    )
+    without_timezone = (
+        f"{normalized} ~ "
+        "'^[0-9]{4}-[0-9]{2}-[0-9]{2} "
+        "[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]+)?)?$'"
+    )
+    return (
+        "CASE "
+        f"WHEN {normalized} = '' THEN NULL "
+        f"WHEN {with_timezone} THEN CAST({normalized_utc} AS timestamptz) "
+        f"WHEN {without_timezone} THEN CAST(({normalized} || '+08:00') AS timestamptz) "
+        "ELSE NULL "
+        "END"
+    )
 
 
 def _normalize_trade_board_assertion_rows(
@@ -137,13 +176,18 @@ def _dedupe_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
 
 
 def query_trade_board_assertion_rows(
-    *, conn: object, cutoff: str, source_name: str
+    *,
+    conn: object,
+    start_time: str,
+    end_time: str,
+    source_name: str,
 ) -> list[dict[str, object]]:
     posts_table = source_table(source_name, "posts")
     assertions_table = source_table(source_name, "assertions")
     assertion_entities_table = source_table(source_name, "assertion_entities")
     assertion_mentions_table = source_table(source_name, "assertion_mentions")
     topic_cluster_topics_table = source_table(source_name, "topic_cluster_topics")
+    created_at_expr = trade_board_created_at_sql_expr("p.created_at")
     sql = f"""
 {build_assertion_rollup_ctes(assertion_entities_table=assertion_entities_table, assertion_mentions_table=assertion_mentions_table, topic_cluster_topics_table=topic_cluster_topics_table)}
 SELECT {trade_board_select_expr()}
@@ -151,11 +195,17 @@ FROM {posts_table} p
 JOIN {assertions_table} a ON a.post_uid = p.post_uid
 {build_assertion_rollup_joins("a")}
 WHERE p.processed_at IS NOT NULL
-  AND p.created_at >= :cutoff
+  AND {created_at_expr} >= CAST(:start_time AS timestamptz)
+  AND {created_at_expr} < CAST(:end_time AS timestamptz)
   AND a.action LIKE 'trade.%'
+ORDER BY {created_at_expr} DESC, p.post_uid DESC, a.idx DESC
 """
     return _normalize_trade_board_assertion_rows(
-        read_sql_rows(conn, sql, params={"cutoff": cutoff}),
+        read_sql_rows(
+            conn,
+            sql,
+            params={"start_time": start_time, "end_time": end_time},
+        ),
         source_name=source_name,
     )
 
@@ -185,12 +235,14 @@ def load_trade_board_assertion_rows_cached(
 ) -> tuple[dict[str, object], ...]:
     lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     cutoff = trade_board_cutoff_from_utc_now(lookback_days=lookback)
+    now_text = _format_trade_board_query_datetime(datetime.now(UTC))
     del auth_token
     engine = ensure_postgres_engine(db_url, schema_name=source_name)
     with postgres_connect_autocommit(engine) as conn:
         rows = query_trade_board_assertion_rows(
             conn=conn,
-            cutoff=cutoff,
+            start_time=cutoff,
+            end_time=now_text,
             source_name=source_name,
         )
     return tuple(dict(row) for row in rows)
@@ -245,11 +297,10 @@ def load_homework_board_payload_rows_cached(
     db_url: str,
     auth_token: str,
     source_name: str,
-    lookback_days: int,
+    start_time: str,
+    end_time: str,
 ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
     start = time.perf_counter()
-    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
-    cutoff = trade_board_cutoff_from_utc_now(lookback_days=lookback)
     del auth_token
     engine = ensure_postgres_engine(db_url, schema_name=source_name)
     assertion_count = 0
@@ -257,7 +308,8 @@ def load_homework_board_payload_rows_cached(
     with postgres_connect_autocommit(engine) as conn:
         assertions = query_trade_board_assertion_rows(
             conn=conn,
-            cutoff=cutoff,
+            start_time=start_time,
+            end_time=end_time,
             source_name=source_name,
         )
         assertion_count = int(len(assertions))
@@ -275,9 +327,10 @@ def load_homework_board_payload_rows_cached(
             )
             raise RuntimeError(error_text) from err
     _logger.debug(
-        "homework_payload source_query source=%s lookback_days=%d assertions=%d relations=%d elapsed=%.3fs",
+        "homework_payload source_query source=%s start=%s end=%s assertions=%d relations=%d elapsed=%.3fs",
         source_name,
-        int(lookback),
+        start_time,
+        end_time,
         assertion_count,
         relation_count,
         time.perf_counter() - start,
@@ -290,13 +343,15 @@ def load_homework_board_payload_cached(
     db_url: str,
     auth_token: str,
     source_name: str,
-    lookback_days: int,
+    start_time: str,
+    end_time: str,
 ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
     return load_homework_board_payload_rows_cached(
         db_url,
         auth_token,
         source_name,
-        lookback_days,
+        start_time,
+        end_time,
     )
 
 
@@ -377,7 +432,8 @@ def load_trade_board_assertion_rows_from_env(
 
 
 def load_homework_board_payload_rows_from_env(
-    lookback_days: int,
+    start_time: str,
+    end_time: str,
     *,
     load_cached_fn=load_homework_board_payload_rows_cached,
     resolve_workers_fn=resolve_homework_source_workers,
@@ -388,7 +444,6 @@ def load_homework_board_payload_rows_from_env(
     if not sources:
         return [], [], MISSING_POSTGRES_DSN_ERROR
 
-    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     assertions_rows: list[dict[str, object]] = []
     relation_rows: list[dict[str, object]] = []
     source_errors: list[str] = []
@@ -402,7 +457,8 @@ def load_homework_board_payload_rows_from_env(
                     source.url,
                     source.token,
                     source.name,
-                    lookback,
+                    start_time,
+                    end_time,
                 )
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
@@ -438,7 +494,8 @@ def load_homework_board_payload_rows_from_env(
                         source.url,
                         source.token,
                         source.name,
-                        lookback,
+                        start_time,
+                        end_time,
                     )
                 ] = (source.name, time.perf_counter())
             for fut in as_completed(futures):
@@ -488,7 +545,8 @@ def load_homework_board_payload_rows_from_env(
 
 
 def load_homework_board_payload_from_env(
-    lookback_days: int,
+    start_time: str,
+    end_time: str,
     *,
     load_cached_fn=load_homework_board_payload_cached,
     resolve_workers_fn=resolve_homework_source_workers,
@@ -499,7 +557,6 @@ def load_homework_board_payload_from_env(
     if not sources:
         return [], [], MISSING_POSTGRES_DSN_ERROR
 
-    lookback = max(1, min(int(lookback_days or 1), TRADE_BOARD_MAX_WINDOW_DAYS))
     assertions_rows: list[dict[str, object]] = []
     relation_rows: list[dict[str, object]] = []
     source_errors: list[str] = []
@@ -513,7 +570,8 @@ def load_homework_board_payload_from_env(
                     source.url,
                     source.token,
                     source.name,
-                    lookback,
+                    start_time,
+                    end_time,
                 )
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
@@ -549,7 +607,8 @@ def load_homework_board_payload_from_env(
                         source.url,
                         source.token,
                         source.name,
-                        lookback,
+                        start_time,
+                        end_time,
                     )
                 ] = (source.name, time.perf_counter())
             for fut in as_completed(futures):

@@ -34,6 +34,9 @@ from alphavault_reflex.services.source_read import (
     MISSING_POSTGRES_DSN_ERROR,
     load_stock_alias_relations_from_env,
 )
+from alphavault_reflex.services.trade_board_loader import (
+    trade_board_created_at_sql_expr,
+)
 
 _SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
 _DEFAULT_SIGNAL_WINDOW_DAYS = 30
@@ -134,6 +137,7 @@ def _count_stock_signals(
     posts_table = _source_table(conn, "posts")
     assertions_table = _source_table(conn, "assertions")
     assertion_entities_table = _source_table(conn, "assertion_entities")
+    created_at_expr = trade_board_created_at_sql_expr("p.created_at")
     author_clause = ""
     author_filter = str(author or "").strip()
     if author_filter:
@@ -150,7 +154,7 @@ WHERE a.action LIKE 'trade.%'
   AND ae.entity_type = 'stock'
   AND {key_clause}
   AND p.processed_at IS NOT NULL
-  AND p.created_at >= ({_window_cutoff_str(signal_window_days)})
+  AND {created_at_expr} >= ({_window_cutoff_str(signal_window_days)})
   {author_clause}
 """
     rows = read_sql_rows(conn, query, params=params)
@@ -177,6 +181,7 @@ def _load_stock_signal_rows(
     posts_table = _source_table(conn, "posts")
     assertions_table = _source_table(conn, "assertions")
     assertion_entities_table = _source_table(conn, "assertion_entities")
+    created_at_expr = trade_board_created_at_sql_expr("p.created_at")
     author_clause = ""
     author_filter = str(author or "").strip()
     if author_filter:
@@ -191,6 +196,7 @@ WITH matched AS (
         a.action_strength,
         p.author,
         p.created_at,
+        {created_at_expr} AS created_at_sort,
         p.url
     FROM {assertions_table} a
     JOIN {posts_table} p
@@ -201,13 +207,13 @@ WITH matched AS (
       AND ae.entity_type = 'stock'
       AND {key_clause}
       AND p.processed_at IS NOT NULL
-      AND p.created_at >= ({_window_cutoff_str(signal_window_days)})
+      AND {created_at_expr} >= ({_window_cutoff_str(signal_window_days)})
       {author_clause}
-    ORDER BY a.post_uid, p.created_at DESC, a.assertion_id ASC
+    ORDER BY a.post_uid, created_at_sort DESC, a.assertion_id ASC
 )
 SELECT post_uid, summary, action, action_strength, author, created_at, url
 FROM matched
-ORDER BY created_at DESC, post_uid DESC
+ORDER BY created_at_sort DESC, post_uid DESC
 LIMIT :limit
 """
     rows = read_sql_rows(conn, query, params=params)
@@ -247,6 +253,7 @@ def _load_stock_related_sectors(
     assertions_table = _source_table(conn, "assertions")
     assertion_entities_table = _source_table(conn, "assertion_entities")
     topic_cluster_topics_table = _source_table(conn, "topic_cluster_topics")
+    created_at_expr = trade_board_created_at_sql_expr("p.created_at")
     query = f"""
 WITH matched_posts AS (
     SELECT DISTINCT a.post_uid
@@ -259,7 +266,7 @@ WITH matched_posts AS (
       AND ae.entity_type = 'stock'
       AND {key_clause}
       AND p.processed_at IS NOT NULL
-      AND p.created_at >= ({_window_cutoff_str(signal_window_days)})
+      AND {created_at_expr} >= ({_window_cutoff_str(signal_window_days)})
 ),
 post_sector_pairs AS (
     SELECT DISTINCT mp.post_uid, tct.cluster_key

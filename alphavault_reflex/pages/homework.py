@@ -13,6 +13,14 @@ from alphavault_reflex.services.analysis_feedback import (
     ANALYSIS_FEEDBACK_TAG_OPTIONS,
     ANALYSIS_FEEDBACK_TAG_PLACEHOLDER,
 )
+from alphavault_reflex.services.homework_time_range import (
+    HOMEWORK_TIME_SHORTCUT_RECENT_3_DAYS,
+    HOMEWORK_TIME_SHORTCUT_RECENT_7_DAYS,
+    HOMEWORK_TIME_SHORTCUT_RECENT_HALF_MONTH,
+    HOMEWORK_TIME_SHORTCUT_RECENT_ONE_MONTH,
+    HOMEWORK_TIME_SHORTCUT_RECENT_THREE_MONTHS,
+    HOMEWORK_TIME_SHORTCUT_TODAY,
+)
 
 
 def index_page() -> rx.Component:
@@ -30,42 +38,90 @@ def index_page() -> rx.Component:
 
 
 def _controls() -> rx.Component:
-    return rx.hstack(
-        rx.vstack(
-            rx.text("时间窗（天）", class_name="av-label"),
-            rx.slider(
-                default_value=HomeworkState.window_days,
-                min_=1,
-                max=HomeworkState.window_max_days,
-                on_value_commit=HomeworkState.set_window_days,
-                disabled=HomeworkState.show_table_loading,
+    return rx.vstack(
+        rx.hstack(
+            rx.vstack(
+                rx.text("开始时间（北京时间）", class_name="av-label"),
+                rx.input(
+                    value=HomeworkState.window_start_local,
+                    on_change=HomeworkState.set_window_start_local,
+                    type="datetime-local",
+                    step=60,
+                    max=HomeworkState.window_end_local,
+                    width="220px",
+                    disabled=HomeworkState.show_table_loading,
+                ),
+                spacing="2",
             ),
-            width="240px",
-            spacing="2",
+            rx.vstack(
+                rx.text("结束时间（北京时间）", class_name="av-label"),
+                rx.input(
+                    value=HomeworkState.window_end_local,
+                    on_change=HomeworkState.set_window_end_local,
+                    type="datetime-local",
+                    step=60,
+                    min=HomeworkState.window_start_local,
+                    width="220px",
+                    disabled=HomeworkState.show_table_loading,
+                ),
+                spacing="2",
+            ),
+            rx.vstack(
+                rx.text("trade 筛选", class_name="av-label"),
+                rx.select(
+                    HomeworkState.trade_filter_options,
+                    value=HomeworkState.trade_filter,
+                    on_change=HomeworkState.set_trade_filter,
+                    width="220px",
+                    disabled=HomeworkState.show_table_loading,
+                ),
+                spacing="2",
+            ),
+            rx.vstack(
+                rx.text("手动改完点刷新", class_name="av-label"),
+                rx.button(
+                    "刷新",
+                    on_click=HomeworkState.load_data,
+                    class_name="av-btn",
+                    loading=HomeworkState.show_table_loading,
+                    disabled=HomeworkState.show_table_loading,
+                ),
+                spacing="2",
+            ),
+            spacing="4",
+            align="end",
+            width="100%",
+            class_name="av-controls-row",
         ),
         rx.vstack(
-            rx.text("trade 筛选", class_name="av-label"),
-            rx.select(
-                HomeworkState.trade_filter_options,
-                value=HomeworkState.trade_filter,
-                on_change=HomeworkState.set_trade_filter,
-                width="240px",
-                disabled=HomeworkState.show_table_loading,
+            rx.text("快捷选择", class_name="av-label"),
+            rx.hstack(
+                _shortcut_button(HOMEWORK_TIME_SHORTCUT_TODAY),
+                _shortcut_button(HOMEWORK_TIME_SHORTCUT_RECENT_3_DAYS),
+                _shortcut_button(HOMEWORK_TIME_SHORTCUT_RECENT_7_DAYS),
+                _shortcut_button(HOMEWORK_TIME_SHORTCUT_RECENT_HALF_MONTH),
+                _shortcut_button(HOMEWORK_TIME_SHORTCUT_RECENT_ONE_MONTH),
+                _shortcut_button(HOMEWORK_TIME_SHORTCUT_RECENT_THREE_MONTHS),
+                spacing="2",
+                class_name="av-shortcuts",
             ),
             spacing="2",
+            width="100%",
         ),
-        rx.spacer(),
-        rx.button(
-            "刷新",
-            on_click=HomeworkState.load_data,
-            class_name="av-btn",
-            loading=HomeworkState.show_table_loading,
-            disabled=HomeworkState.show_table_loading,
-        ),
-        spacing="4",
-        align="end",
+        spacing="3",
         width="100%",
         class_name="av-controls",
+    )
+
+
+def _shortcut_button(label: str) -> rx.Component:
+    return rx.button(
+        label,
+        on_click=lambda: HomeworkState.apply_time_shortcut(label),
+        variant="soft",
+        color_scheme="gray",
+        class_name="av-btn-small",
+        disabled=HomeworkState.show_table_loading,
     )
 
 
@@ -193,7 +249,7 @@ def _board_table() -> rx.Component:
                 rx.el.div(
                     rx.text("没有数据", class_name="av-empty-title"),
                     rx.text(
-                        "试试：调大时间窗，或者点「刷新」。",
+                        "试试：改一下时间范围，或者点「刷新」。",
                         class_name="av-muted",
                     ),
                     class_name="av-empty",
