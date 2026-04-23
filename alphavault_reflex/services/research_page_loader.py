@@ -53,12 +53,14 @@ def _empty_stock_page_view(
 ) -> dict[str, object]:
     return {
         "entity_key": stock_key,
+        "requested_stock_key": stock_key,
         "page_title": stock_key.removeprefix("stock:"),
         "signals": [],
         "signal_total": 0,
         "signal_page": 1,
         "signal_page_size": normalize_signal_page_size(signal_page_size),
         "related_sectors": [],
+        "same_company_stocks": [],
         "load_error": str(load_error or "").strip(),
     }
 
@@ -77,6 +79,7 @@ def load_stock_page_cached_view(
     signal_page: int,
     signal_page_size: int,
     author: str = "",
+    related_filter: str = "all",
 ) -> dict[str, object]:
     stock_key = normalize_stock_key(stock_slug)
     author_filter = str(author or "").strip()
@@ -89,12 +92,14 @@ def load_stock_page_cached_view(
             signal_page=normalized_signal_page,
             signal_page_size=normalized_signal_page_size,
             author=author_filter,
+            related_filter=related_filter,
         )
     else:
         view = stock_hot_read.load_stock_cached_view_from_env(
             stock_key,
             signal_page=normalized_signal_page,
             signal_page_size=normalized_signal_page_size,
+            related_filter=related_filter,
         )
     if str(view.get("entity_key") or "").strip() == "":
         return _empty_stock_page_view(

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import importlib
 import sys
-from functools import cache
+from functools import cache, lru_cache
 from types import ModuleType
 from typing import TYPE_CHECKING
 
+from alphavault.domains.stock.keys import normalize_stock_key
+
 HOMEWORK_DEFAULT_VIEW_KEY = "default"
 MISSING_POSTGRES_DSN_ERROR = "Missing POSTGRES_DSN"
+_STANDARD_POSTGRES_ERROR_PREFIX = "postgres_connect_error:standard:"
 
 _SOURCE_LOADER_EXPORTS = frozenset(
     (
@@ -68,6 +71,13 @@ _CACHE_CLEAR_TARGETS = (
         "alphavault_reflex.services.stock_hot_read",
         ("clear_stock_hot_read_caches",),
     ),
+    (
+        "alphavault_reflex.services.source_read",
+        (
+            "load_stock_official_names_cached",
+            "load_stock_same_company_keys_cached",
+        ),
+    ),
 )
 
 if TYPE_CHECKING:
@@ -92,6 +102,11 @@ def _load_homework_trade_feed_module() -> ModuleType:
 @cache
 def _load_research_workbench_service_module() -> ModuleType:
     return importlib.import_module("alphavault.research_workbench.service")
+
+
+@cache
+def _load_research_workbench_module() -> ModuleType:
+    return importlib.import_module("alphavault.research_workbench")
 
 
 @cache
@@ -230,6 +245,13 @@ def clear_reflex_source_caches() -> None:
             _clear_module_target(module_name, attr_name)
 
 
+def _standard_postgres_error_text(err: BaseException) -> str:
+    text = str(err or "").strip()
+    if text.startswith(_STANDARD_POSTGRES_ERROR_PREFIX):
+        return text
+    return f"{_STANDARD_POSTGRES_ERROR_PREFIX}{type(err).__name__}"
+
+
 def load_homework_board_payload_from_env(
     start_time: str,
     end_time: str,
@@ -279,6 +301,99 @@ def load_stock_alias_relations_from_env(
     return trade_board_loader.load_stock_alias_relations_from_env(
         load_cached_fn=load_cached_fn
     )
+
+
+@lru_cache(maxsize=256)
+def load_stock_same_company_keys_cached(stock_key: str) -> tuple[str, ...]:
+    normalized = normalize_stock_key(stock_key)
+    if not normalized:
+        return ()
+    try:
+        engine = _load_research_workbench_service_module().get_research_workbench_engine_from_env()
+        rows = _load_research_workbench_module().list_stock_sibling_keys(
+            engine,
+            stock_key=normalized,
+        )
+    except BaseException as err:
+        raise RuntimeError(_standard_postgres_error_text(err)) from err
+    return tuple(
+        stock_key_text
+        for stock_key_text in (
+            normalize_stock_key(item) for item in rows if normalize_stock_key(item)
+        )
+        if stock_key_text and stock_key_text != normalized
+    )
+
+
+def load_stock_same_company_keys_from_env(
+    stock_key: str,
+    *,
+    load_cached_fn=None,
+) -> tuple[list[str], str]:
+    normalized = normalize_stock_key(stock_key)
+    if not normalized:
+        return [], ""
+    cached_fn = (
+        load_stock_same_company_keys_cached
+        if load_cached_fn is None
+        else load_cached_fn
+    )
+    try:
+        return [
+            str(row).strip() for row in cached_fn(normalized) if str(row).strip()
+        ], ""
+    except BaseException as err:
+        return [], _standard_postgres_error_text(err)
+
+
+@lru_cache(maxsize=128)
+def load_stock_official_names_cached(
+    stock_keys: tuple[str, ...],
+) -> tuple[tuple[str, str], ...]:
+    normalized_keys = tuple(
+        key for key in (normalize_stock_key(item) for item in stock_keys) if key
+    )
+    if not normalized_keys:
+        return ()
+    try:
+        engine = _load_research_workbench_service_module().get_research_workbench_engine_from_env()
+        rows = _load_research_workbench_module().get_official_names_by_stock_keys(
+            engine,
+            list(normalized_keys),
+        )
+    except BaseException as err:
+        raise RuntimeError(_standard_postgres_error_text(err)) from err
+    return tuple(
+        (stock_key_text, str(official_name).strip())
+        for stock_key_text, official_name in rows.items()
+        if stock_key_text and str(official_name).strip()
+    )
+
+
+def load_stock_official_names_from_env(
+    stock_keys: list[str],
+    *,
+    load_cached_fn=None,
+) -> tuple[dict[str, str], str]:
+    normalized_keys = tuple(
+        dict.fromkeys(
+            key for key in (normalize_stock_key(item) for item in stock_keys) if key
+        )
+    )
+    if not normalized_keys:
+        return {}, ""
+    cached_fn = (
+        load_stock_official_names_cached if load_cached_fn is None else load_cached_fn
+    )
+    try:
+        rows = cached_fn(normalized_keys)
+    except BaseException as err:
+        return {}, _standard_postgres_error_text(err)
+    return {
+        normalize_stock_key(stock_key_text): str(official_name).strip()
+        for stock_key_text, official_name in rows
+        if normalize_stock_key(stock_key_text) and str(official_name).strip()
+    }, ""
 
 
 def load_stock_sources_fast_from_env(
@@ -369,7 +484,9 @@ __all__ = [
     "load_source_engines_from_env",
     "load_single_post_for_tree_from_env",
     "load_stock_alias_candidates_from_env",
+    "load_stock_official_names_from_env",
     "load_sources_from_env",
+    "load_stock_same_company_keys_from_env",
     "save_homework_trade_feed_from_env",
     "load_stock_alias_relations_from_env",
     "load_stock_sources_fast_from_env",

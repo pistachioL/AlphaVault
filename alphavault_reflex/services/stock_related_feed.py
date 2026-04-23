@@ -425,6 +425,14 @@ def _ensure_created_at_line(row: Mapping[str, object], *, now) -> str:
     return filled or existing
 
 
+def _fallback_title_from_raw_text(raw_text: str) -> str:
+    for raw_line in str(raw_text or "").splitlines():
+        line = re.sub(r"\s+", " ", str(raw_line or "").strip())
+        if line:
+            return line[:80]
+    return ""
+
+
 def build_related_feed(
     *,
     signals: list[dict[str, str]] | list[object],
@@ -433,7 +441,7 @@ def build_related_feed(
     now: object | None = None,
 ) -> RelatedFeed:
     """
-    Build the stock feed from resolved signal rows only.
+    Build the stock feed from resolved stock post rows.
 
     This is UI-focused: keep it deterministic and cheap (no DB calls).
     """
@@ -452,6 +460,8 @@ def build_related_feed(
         seen.add(post_uid)
         action = str(row.get("action") or "").strip()
         badge = _signal_badge(action)
+        is_signal = str(row.get("is_signal") or "").strip() or ("1" if badge else "")
+        raw_text = str(row.get("raw_text") or "").strip()
         tree_text = _resolve_tree_text(row)
         tree_lines = build_tree_render_lines(tree_text)
         root_preview_line, root_expand_line, tree_tail_lines, root_can_expand = (
@@ -462,11 +472,12 @@ def build_related_feed(
         items.append(
             {
                 "post_uid": post_uid,
-                "is_signal": "1",
+                "is_signal": is_signal,
                 "signal_badge": badge,
                 "created_at_line": _ensure_created_at_line(row, now=reference_now),
                 "created_at_sort": _as_time_sort_text(row.get("created_at")),
-                "title": str(row.get("summary") or "").strip(),
+                "title": str(row.get("summary") or "").strip()
+                or _fallback_title_from_raw_text(raw_text),
                 "action": action,
                 "author": str(row.get("author") or "").strip(),
                 "author_href": "",
@@ -485,7 +496,7 @@ def build_related_feed(
                     TREE_ROOT_EXPAND_LABEL if root_can_expand else ""
                 ),
                 "url": str(row.get("url") or "").strip(),
-                "raw_text": str(row.get("raw_text") or "").strip(),
+                "raw_text": raw_text,
             }
         )
 

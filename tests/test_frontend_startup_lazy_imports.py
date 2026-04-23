@@ -45,6 +45,7 @@ APP_HEAVY_MODULES = (
 
 SOURCE_READ_HEAVY_MODULES = (
     "alphavault.homework_trade_feed",
+    "alphavault.research_workbench",
     "alphavault.research_workbench.service",
     "alphavault_reflex.services.stock_fast_loader",
     "alphavault_reflex.services.trade_board_loader",

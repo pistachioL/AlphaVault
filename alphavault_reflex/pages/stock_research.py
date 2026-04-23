@@ -37,6 +37,13 @@ DETAIL_BUTTON_TEXT = "详情"
 DETAIL_DIALOG_TITLE = "帖子详情"
 DETAIL_TREE_TITLE = "对话流"
 DETAIL_RAW_TITLE = "原文"
+SAME_COMPANY_TITLE = "已合并代码"
+SAME_COMPANY_HINT = "当前页已一起展示这些代码的帖子。"
+TREE_EXPAND_ALL_TEXT = "展开帖子树"
+TREE_COLLAPSE_ALL_TEXT = "收起帖子树"
+PAGE_PREV_TEXT = "上一页"
+PAGE_NEXT_TEXT = "下一页"
+PAGE_SIZE_LABEL = "每页"
 
 
 def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
@@ -96,6 +103,54 @@ def _author_filter_notice() -> rx.Component:
     )
 
 
+def _same_company_chip(row: rx.Var[dict[str, str]]) -> rx.Component:
+    return rx.el.span(
+        row["label"],
+        title=row["title"],
+        class_name=rx.cond(
+            row["is_current"] == "1",
+            "av-research-chip av-research-chip-current",
+            "av-research-chip",
+        ),
+    )
+
+
+def _same_company_notice() -> rx.Component:
+    return rx.cond(
+        ResearchState.has_same_company_items,
+        rx.vstack(
+            rx.text(SAME_COMPANY_TITLE, class_name="av-research-muted"),
+            rx.text(SAME_COMPANY_HINT, class_name="av-research-muted"),
+            rx.el.div(
+                rx.foreach(ResearchState.same_company_items, _same_company_chip),
+                class_name="av-research-chip-wrap",
+            ),
+            spacing="2",
+            align="stretch",
+            width="100%",
+        ),
+        rx.el.div(),
+    )
+
+
+def _related_post_tree(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
+    return rx.cond(
+        row["tree_text"] != "",
+        rx.cond(
+            ResearchState.related_tree_expanded,
+            rx.el.div(
+                rx.foreach(row["tree_lines"], tree_line_row),
+                class_name="av-tree-lines",
+            ),
+            rx.el.div(
+                rx.foreach(row["tree_preview_lines"], tree_line_row),
+                class_name="av-tree-lines",
+            ),
+        ),
+        rx.el.div(),
+    )
+
+
 def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
     return rx.el.div(
         rx.text(row["title"], class_name="av-research-signal-title"),
@@ -105,6 +160,7 @@ def _related_post_card(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
             rx.text(row["preview"], class_name="av-research-signal-body"),
             rx.el.div(),
         ),
+        _related_post_tree(row),
         rx.hstack(
             rx.cond(
                 row["post_uid"] != "",
@@ -407,11 +463,69 @@ def _stock_sidebar() -> rx.Component:
     )
 
 
+def _related_tree_toggle_button() -> rx.Component:
+    return rx.cond(
+        ResearchState.has_related_posts,
+        rx.cond(
+            ResearchState.related_tree_expanded,
+            rx.button(
+                TREE_COLLAPSE_ALL_TEXT,
+                on_click=ResearchState.collapse_related_tree,
+                variant="soft",
+                disabled=PAGE_LOADING,
+            ),
+            rx.button(
+                TREE_EXPAND_ALL_TEXT,
+                on_click=ResearchState.expand_related_tree,
+                variant="soft",
+                disabled=PAGE_LOADING,
+            ),
+        ),
+        rx.el.div(),
+    )
+
+
+def _related_pagination() -> rx.Component:
+    return rx.cond(
+        ResearchState.signal_total > 0,
+        rx.hstack(
+            rx.text(ResearchState.signal_page_caption, class_name="av-research-muted"),
+            rx.spacer(),
+            rx.text(PAGE_SIZE_LABEL, class_name="av-research-muted"),
+            rx.select(
+                ResearchState.signal_page_size_options,
+                value=ResearchState.signal_page_size_text,
+                on_change=ResearchState.set_signal_page_size,
+                width="88px",
+            ),
+            rx.button(
+                PAGE_PREV_TEXT,
+                on_click=ResearchState.prev_signal_page,
+                variant="soft",
+                disabled=PAGE_LOADING | (ResearchState.signal_page <= 1),
+            ),
+            rx.button(
+                PAGE_NEXT_TEXT,
+                on_click=ResearchState.next_signal_page,
+                variant="soft",
+                disabled=PAGE_LOADING
+                | (ResearchState.signal_page >= ResearchState.signal_total_pages),
+            ),
+            spacing="3",
+            align="center",
+            width="100%",
+            margin_top="12px",
+        ),
+        rx.el.div(),
+    )
+
+
 def stock_research_page() -> rx.Component:
     return rx.el.div(
         rx.el.div(
             rx.heading(PAGE_TITLE, size="6"),
             rx.text("相关帖子", class_name="av-research-muted"),
+            _same_company_notice(),
             class_name="av-research-head",
         ),
         rx.cond(
@@ -467,7 +581,7 @@ def stock_research_page() -> rx.Component:
                     rx.heading("相关帖子", size="4"),
                     rx.spacer(),
                     rx.button(
-                        "全部",
+                        "全部帖子",
                         on_click=lambda: ResearchState.set_related_filter("all"),
                         variant=rx.cond(
                             ResearchState.related_filter == "all",
@@ -477,7 +591,7 @@ def stock_research_page() -> rx.Component:
                         disabled=PAGE_LOADING,
                     ),
                     rx.button(
-                        "只看信号",
+                        "只看交易信号",
                         on_click=lambda: ResearchState.set_related_filter("signal"),
                         variant=rx.cond(
                             ResearchState.related_filter == "signal",
@@ -486,6 +600,7 @@ def stock_research_page() -> rx.Component:
                         ),
                         disabled=PAGE_LOADING,
                     ),
+                    _related_tree_toggle_button(),
                     rx.button(
                         SIDEBAR_TOGGLE_TEXT,
                         on_click=ResearchState.open_stock_sidebar,
@@ -519,17 +634,7 @@ def stock_research_page() -> rx.Component:
                         ),
                     ),
                 ),
-                rx.cond(
-                    ResearchState.related_has_more,
-                    rx.button(
-                        "加载更多",
-                        on_click=ResearchState.load_more_related,
-                        variant="soft",
-                        disabled=PAGE_LOADING,
-                        margin_top="12px",
-                    ),
-                    rx.el.div(),
-                ),
+                _related_pagination(),
                 class_name="av-research-main",
             ),
             class_name="av-research-layout av-stock-research-layout",
