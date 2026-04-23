@@ -19,7 +19,6 @@ AI_STATUS_RANKED = "ranked"
 AI_STATUS_ERROR = "error"
 
 _ALIAS_AI_BATCH_CAP = 10
-_ALIAS_AI_RETRY_CAP = 1
 AI_ERROR_REASON_PREFIX = "AI失败："
 INVALID_PREDICTIONS_REASON = "AI失败：返回格式不对"
 MISSING_PREDICTION_REASON = "AI失败：未返回这条简称的结果"
@@ -250,7 +249,7 @@ def _predict_alias_tasks_with_ai(
             base_url=config.base_url,
             api_key=config.api_key,
             timeout_seconds=float(config.timeout_seconds),
-            retry_count=min(int(config.retries), _ALIAS_AI_RETRY_CAP),
+            retry_count=max(0, int(config.retries)),
             temperature=float(config.temperature),
             reasoning_effort=str(config.reasoning_effort),
             trace_out=None,

@@ -303,31 +303,36 @@ def _alias_manual_batch_toolbar() -> rx.Component:
                 "AI重跑当前页",
                 on_click=OrganizerState.rerun_alias_manual_ai_current_page,
                 class_name="av-btn av-btn-small",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending,
             ),
             rx.button(
                 "再看10条",
                 on_click=OrganizerState.load_more_alias_tasks,
                 variant="soft",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending,
             ),
             rx.button(
                 "全选本页",
                 on_click=OrganizerState.select_all_alias_manual_tasks,
                 variant="soft",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending,
             ),
             rx.button(
                 "清空选择",
                 on_click=OrganizerState.clear_selected_alias_manual_tasks,
                 variant="soft",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending,
             ),
             rx.button(
                 "批量确认",
                 on_click=OrganizerState.batch_confirm_selected_alias_manual_tasks,
                 class_name="av-btn av-btn-small",
                 disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending
                 | (~OrganizerState.has_selected_alias_manual_tasks),
             ),
             rx.button(
@@ -335,6 +340,7 @@ def _alias_manual_batch_toolbar() -> rx.Component:
                 on_click=OrganizerState.batch_ignore_selected_alias_manual_tasks,
                 variant="soft",
                 disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending
                 | (~OrganizerState.has_selected_alias_manual_tasks),
             ),
             spacing="3",
@@ -374,6 +380,9 @@ def _stock_alias_grouped_display_list(
 
 
 def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
+    row_action_pending = (
+        OrganizerState.alias_manual_action_pending_key == row["alias_key"]
+    )
     return rx.el.div(
         rx.hstack(
             rx.checkbox(
@@ -382,7 +391,8 @@ def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
                     row["alias_key"],
                     checked,
                 ),
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending,
             ),
             rx.text(row["alias_key"], class_name="av-research-side-title"),
             align="center",
@@ -459,6 +469,20 @@ def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
                 rx.el.div(),
             ),
         ),
+        rx.cond(
+            row_action_pending,
+            rx.el.div(
+                rx.spinner(size="1"),
+                rx.text("处理中…", class_name="av-research-muted"),
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "8px",
+                    "marginTop": "8px",
+                },
+            ),
+            rx.el.div(),
+        ),
         rx.hstack(
             rx.button(
                 "手动处理",
@@ -467,7 +491,8 @@ def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
                     row["ai_stock_code"],
                 ),
                 class_name="av-btn av-btn-small",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending,
             ),
             spacing="2",
             margin_top="10px",
@@ -493,7 +518,8 @@ def _alias_manual_dialog() -> rx.Component:
                 on_change=OrganizerState.set_alias_manual_target_input,
                 placeholder="输入股票代码，比如 601899.SH",
                 width="320px",
-                disabled=OrganizerState.show_loading,
+                disabled=OrganizerState.show_loading
+                | OrganizerState.has_alias_manual_action_pending,
             ),
             rx.cond(
                 OrganizerState.alias_manual_error != "",
@@ -508,21 +534,24 @@ def _alias_manual_dialog() -> rx.Component:
                     "确认归并",
                     on_click=OrganizerState.confirm_alias_manual_merge,
                     class_name="av-btn av-btn-small",
-                    disabled=OrganizerState.show_loading,
+                    disabled=OrganizerState.show_loading
+                    | OrganizerState.has_alias_manual_action_pending,
                 ),
                 rx.button(
                     "拉黑",
                     on_click=OrganizerState.block_alias_manual,
                     variant="soft",
                     color_scheme="gray",
-                    disabled=OrganizerState.show_loading,
+                    disabled=OrganizerState.show_loading
+                    | OrganizerState.has_alias_manual_action_pending,
                 ),
                 rx.dialog.close(
                     rx.button(
                         "关",
                         variant="soft",
                         on_click=OrganizerState.close_alias_manual_dialog,
-                        disabled=OrganizerState.show_loading,
+                        disabled=OrganizerState.show_loading
+                        | OrganizerState.has_alias_manual_action_pending,
                     )
                 ),
                 spacing="2",

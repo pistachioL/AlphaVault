@@ -338,6 +338,21 @@ def _remove_candidate_row_by_id(
     ]
 
 
+def _remove_alias_manual_row_by_key(
+    rows: list[PendingRow],
+    *,
+    alias_key: str,
+) -> list[PendingRow]:
+    target = str(alias_key or "").strip()
+    if not target:
+        return [cast(PendingRow, dict(row)) for row in rows]
+    return [
+        cast(PendingRow, dict(row))
+        for row in rows
+        if str(row.get("alias_key") or "").strip() != target
+    ]
+
+
 def _visible_alias_task_keys(rows: list[PendingRow]) -> list[str]:
     out: list[str] = []
     for row in rows:
@@ -556,6 +571,7 @@ class OrganizerState(rx.State):
     active_section: str = SECTION_STOCK_ALIAS
     pending_rows: list[PendingRow] = []
     candidate_action_pending_id: str = ""
+    alias_manual_action_pending_key: str = ""
     selected_candidate_ids: list[str] = []
     selected_alias_keys: list[str] = []
     loading: bool = False
@@ -606,6 +622,10 @@ class OrganizerState(rx.State):
     @rx.var
     def has_candidate_action_pending(self) -> bool:
         return bool(str(self.candidate_action_pending_id or "").strip())
+
+    @rx.var
+    def has_alias_manual_action_pending(self) -> bool:
+        return bool(str(self.alias_manual_action_pending_key or "").strip())
 
     @rx.var
     def selected_stock_alias_candidate_count(self) -> int:
@@ -718,6 +738,7 @@ class OrganizerState(rx.State):
     def set_active_section(self, value: str):
         self.active_section = str(value or SECTION_STOCK_ALIAS)
         self.candidate_action_pending_id = ""
+        self.alias_manual_action_pending_key = ""
         self.selected_candidate_ids = []
         self.selected_alias_keys = []
         self.stock_alias_auto_merge_message = ""
@@ -840,14 +861,15 @@ class OrganizerState(rx.State):
         if value:
             self.alias_manual_dialog_open = True
             return
-        self.close_alias_manual_dialog()
+        if self.has_alias_manual_action_pending:
+            return
+        self._reset_alias_manual_dialog_state()
 
     @rx.event
     def close_alias_manual_dialog(self) -> None:
-        self.alias_manual_dialog_open = False
-        self.alias_manual_alias_key = ""
-        self.alias_manual_target_input = ""
-        self.alias_manual_error = ""
+        if self.has_alias_manual_action_pending:
+            return
+        self._reset_alias_manual_dialog_state()
 
     @rx.event
     def open_alias_manual_dialog(
@@ -876,7 +898,8 @@ class OrganizerState(rx.State):
         if not target_key:
             self.alias_manual_error = "请输入股票代码，比如 601899.SH"
             return
-        self._start_loading()
+        self.alias_manual_error = ""
+        self.alias_manual_action_pending_key = alias_key
         yield
         try:
             research_workbench = _load_research_workbench_module()
@@ -894,17 +917,19 @@ class OrganizerState(rx.State):
             self.alias_manual_error = f"失败：{err}"
             return
         finally:
-            self._finish_loading()
+            self.alias_manual_action_pending_key = ""
         _load_source_read_module().clear_reflex_source_caches()
-        self.close_alias_manual_dialog()
-        self._reload_pending_rows()
+        self._apply_alias_manual_action_success(alias_key)
+        self.load_error = self._reload_alias_manual_status_summary()
+        self._reset_alias_manual_dialog_state()
 
     @rx.event
     def block_alias_manual(self):
         alias_key = str(self.alias_manual_alias_key or "").strip()
         if not alias_key:
             return
-        self._start_loading()
+        self.alias_manual_error = ""
+        self.alias_manual_action_pending_key = alias_key
         yield
         try:
             research_workbench = _load_research_workbench_module()
@@ -920,10 +945,11 @@ class OrganizerState(rx.State):
             self.alias_manual_error = f"失败：{err}"
             return
         finally:
-            self._finish_loading()
+            self.alias_manual_action_pending_key = ""
         _load_source_read_module().clear_reflex_source_caches()
-        self.close_alias_manual_dialog()
-        self._reload_pending_rows()
+        self._apply_alias_manual_action_success(alias_key)
+        self.load_error = self._reload_alias_manual_status_summary()
+        self._reset_alias_manual_dialog_state()
 
     @rx.event(background=True)
     async def rerun_alias_manual_ai_current_page(self):
@@ -1305,10 +1331,8 @@ class OrganizerState(rx.State):
         selected_alias_keys = list(self.selected_alias_keys)
         if not selected_alias_keys:
             return
-        self._start_loading()
-        yield
-        succeeded = False
         first_error = ""
+        succeeded = False
         try:
             research_workbench = _load_research_workbench_module()
             engine = research_workbench.get_research_workbench_engine_from_env()
@@ -1318,6 +1342,9 @@ class OrganizerState(rx.State):
                 if str(row.get("alias_key") or "").strip()
             }
             for alias_key in selected_alias_keys:
+                alias_key = str(alias_key or "").strip()
+                self.alias_manual_action_pending_key = alias_key
+                yield
                 row = rows_by_alias_key.get(str(alias_key or "").strip())
                 if row is None:
                     continue
@@ -1354,13 +1381,33 @@ class OrganizerState(rx.State):
                         first_error = str(err)
                     continue
                 succeeded = True
+                self._apply_alias_manual_action_success(alias_key)
             if succeeded:
                 _load_source_read_module().clear_reflex_source_caches()
-            self._reload_pending_rows()
-            if first_error:
-                self.load_error = first_error
+            summary_load_error = self._reload_alias_manual_status_summary()
+            self.load_error = first_error or summary_load_error
         finally:
-            self._finish_loading()
+            self.alias_manual_action_pending_key = ""
+
+    def _reset_alias_manual_dialog_state(self) -> None:
+        self.alias_manual_dialog_open = False
+        self.alias_manual_alias_key = ""
+        self.alias_manual_target_input = ""
+        self.alias_manual_error = ""
+
+    def _apply_alias_manual_action_success(self, alias_key: str) -> None:
+        self.pending_rows = _remove_alias_manual_row_by_key(
+            self.pending_rows,
+            alias_key=alias_key,
+        )
+        self.selected_alias_keys = _sync_selected_alias_keys(
+            self.pending_rows,
+            self.selected_alias_keys,
+        )
+        self.pending_rows = _apply_selected_alias_flags(
+            self.pending_rows,
+            self.selected_alias_keys,
+        )
 
 
 def load_search_results(query: str) -> tuple[list[dict[str, str]], str]:
