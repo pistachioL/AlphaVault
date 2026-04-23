@@ -164,6 +164,10 @@ def _ai_stock_market(stock_key: str) -> str:
 
 def _decorate_alias_task_row(row: PendingRow) -> PendingRow:
     next_row = cast(PendingRow, dict(row))
+    next_row.setdefault("sample_post_uid", "")
+    next_row.setdefault("sample_post_url", "")
+    next_row.setdefault("sample_evidence", "")
+    next_row.setdefault("sample_raw_text_excerpt", "")
     next_row.setdefault("ai_status", "")
     next_row.setdefault("ai_stock_code", "")
     next_row.setdefault("ai_official_name", "")
@@ -176,6 +180,21 @@ def _decorate_alias_task_row(row: PendingRow) -> PendingRow:
         next_row.get("ai_validation_status")
     )
     return next_row
+
+
+def _load_sample_post_urls(rows: list[dict[str, object]]) -> dict[str, str]:
+    sample_post_uids: list[str] = []
+    seen_post_uids: set[str] = set()
+    for row in rows:
+        sample_post_uid = str(row.get("sample_post_uid") or "").strip()
+        if not sample_post_uid or sample_post_uid in seen_post_uids:
+            continue
+        seen_post_uids.add(sample_post_uid)
+        sample_post_uids.append(sample_post_uid)
+    if not sample_post_uids:
+        return {}
+    url_map, _ = _load_source_read_module().load_post_urls_from_env(sample_post_uids)
+    return url_map
 
 
 def _apply_alias_ai_validation(
@@ -1466,20 +1485,21 @@ def load_pending_rows(
             if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 raise
             return [], str(exc)
+        sample_post_urls = _load_sample_post_urls(task_rows)
         out: list[PendingRow] = []
         for row in task_rows:
             alias_key = str(row.get("alias_key") or "").strip()
             if not alias_key:
                 continue
+            sample_post_uid = str(row.get("sample_post_uid") or "").strip()
             out.append(
                 _decorate_alias_task_row(
                     {
                         "alias_key": alias_key,
                         "attempt_count": str(row.get("attempt_count") or "0").strip(),
                         "status": str(row.get("status") or "").strip(),
-                        "sample_post_uid": str(
-                            row.get("sample_post_uid") or ""
-                        ).strip(),
+                        "sample_post_uid": sample_post_uid,
+                        "sample_post_url": sample_post_urls.get(sample_post_uid, ""),
                         "sample_evidence": str(
                             row.get("sample_evidence") or ""
                         ).strip(),
