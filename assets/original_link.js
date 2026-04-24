@@ -5,8 +5,11 @@
   const POST_UID_ATTR = "data-av-post-uid";
   const MOBILE_USER_AGENT_RE = /android|iphone|ipad|ipod|mobile/i;
   const PHONE_DEVICE_MAX_DIMENSION_PX = 1024;
+  const WEIBO_HOST_SUFFIXES = ["weibo.com", "weibo.cn"];
   const WEIBO_DETAIL_PATH_HEADS = new Set(["detail", "status"]);
+  const XUEQIU_HOST_SUFFIX = "xueqiu.com";
   const XUEQIU_HTML_SUFFIX_RE = /\.html$/i;
+  const XUEQIU_STOCK_PATH_HEAD = "S";
 
   function cleanText(value) {
     return String(value || "").trim();
@@ -22,14 +25,17 @@
     }
   }
 
-  function isWeiboHost(hostname) {
+  function matchesHostSuffix(hostname, suffix) {
     const host = cleanText(hostname).toLowerCase();
-    return Boolean(host) && (host.endsWith("weibo.com") || host.endsWith("weibo.cn"));
+    return Boolean(host) && (host === suffix || host.endsWith(`.${suffix}`));
+  }
+
+  function isWeiboHost(hostname) {
+    return WEIBO_HOST_SUFFIXES.some((suffix) => matchesHostSuffix(hostname, suffix));
   }
 
   function isXueqiuHost(hostname) {
-    const host = cleanText(hostname).toLowerCase();
-    return Boolean(host) && host.endsWith("xueqiu.com");
+    return matchesHostSuffix(hostname, XUEQIU_HOST_SUFFIX);
   }
 
   function inferPlatformFromPostUid(postUid) {
@@ -89,6 +95,34 @@
     return extractPlatformPostId(postUid);
   }
 
+  function resolveXueqiuUserPostPath(segments) {
+    if (segments.length < 2) return "";
+    const userId = cleanText(segments[0]);
+    const postId = cleanText(segments[1]).replace(XUEQIU_HTML_SUFFIX_RE, "");
+    if (!userId || !/^\d+$/.test(postId)) return "";
+    return `${userId}/${postId}`;
+  }
+
+  function resolveXueqiuStockPostPath(segments) {
+    if (segments.length < 3) return "";
+    const stockSymbol = cleanText(segments[1]);
+    const postId = cleanText(segments[2]).replace(XUEQIU_HTML_SUFFIX_RE, "");
+    if (!stockSymbol || !/^\d+$/.test(postId)) return "";
+    return `${XUEQIU_STOCK_PATH_HEAD}/${stockSymbol}/${postId}`;
+  }
+
+  function resolveXueqiuDeepLinkPath(webUrl) {
+    const parsed = parseUrl(webUrl);
+    if (!parsed || !isXueqiuHost(parsed.hostname)) return "";
+
+    const segments = parsed.pathname.split("/").filter(Boolean);
+    if (!segments.length) return "";
+    if (cleanText(segments[0]).toUpperCase() === XUEQIU_STOCK_PATH_HEAD) {
+      return resolveXueqiuStockPostPath(segments);
+    }
+    return resolveXueqiuUserPostPath(segments);
+  }
+
   function buildDeepLink(webUrl, postUid) {
     const platform = resolvePlatform(webUrl, postUid);
     if (platform === "weibo") {
@@ -98,16 +132,8 @@
 
     if (platform !== "xueqiu") return "";
 
-    const parsed = parseUrl(webUrl);
-    if (!parsed || !isXueqiuHost(parsed.hostname)) return "";
-
-    const segments = parsed.pathname.split("/").filter(Boolean);
-    if (segments.length < 2) return "";
-
-    const userId = cleanText(segments[0]);
-    const postId = cleanText(segments[1]).replace(XUEQIU_HTML_SUFFIX_RE, "");
-    if (!userId || !/^\d+$/.test(postId)) return "";
-    return `xueqiu://${userId}/${postId}`;
+    const deepLinkPath = resolveXueqiuDeepLinkPath(webUrl);
+    return deepLinkPath ? `xueqiu://${deepLinkPath}` : "";
   }
 
   function hasCoarsePointer() {

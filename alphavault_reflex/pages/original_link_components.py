@@ -29,7 +29,7 @@ def original_post_link(
         ),
         label,
         href=url,
-        reload_document=True,
+        is_external=True,
         class_name=_merge_class_names(ORIGINAL_LINK_CLASS_NAME, class_name),
         custom_attrs={
             ORIGINAL_LINK_URL_ATTR: url,
