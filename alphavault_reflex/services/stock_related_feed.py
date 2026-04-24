@@ -17,6 +17,8 @@ from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 RELATED_FILTER_ALL = "all"
 RELATED_FILTER_SIGNAL = "signal"
 RELATED_FILTERS = {RELATED_FILTER_ALL, RELATED_FILTER_SIGNAL}
+MATCH_KIND_ASSERTION = "assertion"
+MATCH_KIND_CONTEXT = "context"
 
 DEFAULT_RELATED_LIMIT = 20
 RELATED_LIMIT_STEP = 20
@@ -42,6 +44,7 @@ _FORWARD_ORIGINAL_MARKER = "[转发原文]"
 
 class StockRelatedPostRow(TypedDict):
     post_uid: str
+    match_kind: str
     title: str
     is_signal: str
     signal_badge: str
@@ -458,6 +461,7 @@ def build_related_feed(
         if not post_uid or post_uid in seen:
             continue
         seen.add(post_uid)
+        match_kind = str(row.get("match_kind") or "").strip() or MATCH_KIND_ASSERTION
         action = str(row.get("action") or "").strip()
         badge = _signal_badge(action)
         is_signal = str(row.get("is_signal") or "").strip() or ("1" if badge else "")
@@ -472,6 +476,7 @@ def build_related_feed(
         items.append(
             {
                 "post_uid": post_uid,
+                "match_kind": match_kind,
                 "is_signal": is_signal,
                 "signal_badge": badge,
                 "created_at_line": _ensure_created_at_line(row, now=reference_now),
@@ -520,6 +525,8 @@ def build_related_feed(
 __all__ = [
     "DEFAULT_RELATED_LIMIT",
     "MAX_RELATED_LIMIT",
+    "MATCH_KIND_ASSERTION",
+    "MATCH_KIND_CONTEXT",
     "RELATED_FILTER_ALL",
     "RELATED_FILTER_SIGNAL",
     "RELATED_LIMIT_STEP",

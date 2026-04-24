@@ -18,6 +18,7 @@ from alphavault_reflex.services.analysis_feedback import (
     ANALYSIS_FEEDBACK_TAG_PLACEHOLDER,
 )
 from alphavault_reflex.services.stock_related_feed import StockRelatedPostRow
+from alphavault_reflex.services.stock_related_feed import MATCH_KIND_CONTEXT
 from alphavault_reflex.services.research_status_text import (
     BACKGROUND_PROCESSING_TEXT,
     BACKGROUND_PROCESSING_TOOLTIP,
@@ -45,10 +46,19 @@ TREE_COLLAPSE_ALL_TEXT = "收起帖子树"
 PAGE_PREV_TEXT = "上一页"
 PAGE_NEXT_TEXT = "下一页"
 PAGE_SIZE_LABEL = "每页"
+CONTEXT_MENTION_TEXT = "对话提及"
 
 
 def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
     return rx.el.div(
+        rx.cond(
+            row["match_kind"] == MATCH_KIND_CONTEXT,
+            rx.el.span(
+                CONTEXT_MENTION_TEXT,
+                class_name="av-research-chip",
+            ),
+            rx.el.span(""),
+        ),
         rx.cond(
             row["signal_badge"] != "",
             rx.el.span(
@@ -57,7 +67,11 @@ def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
             ),
             rx.el.span(""),
         ),
-        rx.text(row["action"], class_name="av-research-muted"),
+        rx.cond(
+            row["action"] != "",
+            rx.text(row["action"], class_name="av-research-muted"),
+            rx.el.span(""),
+        ),
         rx.cond(
             row["author_href"] != "",
             rx.link(

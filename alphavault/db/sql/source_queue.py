@@ -6,6 +6,9 @@ _POSTS_TABLE = "posts"
 _ASSERTIONS_TABLE = "assertions"
 _ASSERTION_MENTIONS_TABLE = "assertion_mentions"
 _ASSERTION_ENTITIES_TABLE = "assertion_entities"
+_POST_CONTEXT_RUNS_TABLE = "post_context_runs"
+_POST_CONTEXT_MENTIONS_TABLE = "post_context_mentions"
+_POST_CONTEXT_ENTITIES_TABLE = "post_context_entities"
 
 
 def select_post_count_all_sql(posts_table: str) -> str:
@@ -186,6 +189,34 @@ def delete_assertion_entities_all_sql(assertion_entities_table: str) -> str:
     return f"DELETE FROM {assertion_entities_table}"
 
 
+def delete_post_context_runs_by_post_uid_sql(post_context_runs_table: str) -> str:
+    return f"DELETE FROM {post_context_runs_table} WHERE post_uid = :post_uid"
+
+
+def delete_post_context_mentions_by_post_uid_sql(
+    post_context_mentions_table: str,
+) -> str:
+    return f"DELETE FROM {post_context_mentions_table} WHERE post_uid = :post_uid"
+
+
+def delete_post_context_entities_by_post_uid_sql(
+    post_context_entities_table: str,
+) -> str:
+    return f"DELETE FROM {post_context_entities_table} WHERE post_uid = :post_uid"
+
+
+def delete_post_context_runs_all_sql(post_context_runs_table: str) -> str:
+    return f"DELETE FROM {post_context_runs_table}"
+
+
+def delete_post_context_mentions_all_sql(post_context_mentions_table: str) -> str:
+    return f"DELETE FROM {post_context_mentions_table}"
+
+
+def delete_post_context_entities_all_sql(post_context_entities_table: str) -> str:
+    return f"DELETE FROM {post_context_entities_table}"
+
+
 def delete_assertions_by_post_uids_sql(
     assertions_table: str,
     placeholders: str,
@@ -223,6 +254,31 @@ WHERE assertion_id IN (
 """
 
 
+def delete_post_context_runs_by_post_uids_sql(
+    post_context_runs_table: str,
+    placeholders: str,
+) -> str:
+    return f"DELETE FROM {post_context_runs_table} WHERE post_uid IN ({placeholders})"
+
+
+def delete_post_context_mentions_by_post_uids_sql(
+    post_context_mentions_table: str,
+    placeholders: str,
+) -> str:
+    return (
+        f"DELETE FROM {post_context_mentions_table} WHERE post_uid IN ({placeholders})"
+    )
+
+
+def delete_post_context_entities_by_post_uids_sql(
+    post_context_entities_table: str,
+    placeholders: str,
+) -> str:
+    return (
+        f"DELETE FROM {post_context_entities_table} WHERE post_uid IN ({placeholders})"
+    )
+
+
 def insert_assertion_sql(assertions_table: str) -> str:
     return f"""
 INSERT INTO {assertions_table} (
@@ -251,6 +307,38 @@ INSERT INTO {assertion_entities_table} (
     assertion_id, entity_key, entity_type, match_source, is_primary
 ) VALUES (
     :assertion_id, :entity_key, :entity_type, :match_source, :is_primary
+)
+"""
+
+
+def insert_post_context_run_sql(post_context_runs_table: str) -> str:
+    return f"""
+INSERT INTO {post_context_runs_table} (
+    post_uid, model, prompt_version, processed_at
+) VALUES (
+    :post_uid, :model, :prompt_version, :processed_at
+)
+"""
+
+
+def insert_post_context_mention_sql(post_context_mentions_table: str) -> str:
+    return f"""
+INSERT INTO {post_context_mentions_table} (
+    post_uid, mention_seq, mention_text, mention_norm, mention_type, evidence,
+    confidence
+) VALUES (
+    :post_uid, :mention_seq, :mention_text, :mention_norm, :mention_type,
+    :evidence, :confidence
+)
+"""
+
+
+def insert_post_context_entity_sql(post_context_entities_table: str) -> str:
+    return f"""
+INSERT INTO {post_context_entities_table} (
+    post_uid, entity_key, entity_type, match_source, is_primary
+) VALUES (
+    :post_uid, :entity_key, :entity_type, :match_source, :is_primary
 )
 """
 

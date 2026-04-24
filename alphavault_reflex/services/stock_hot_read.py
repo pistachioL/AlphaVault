@@ -59,6 +59,8 @@ _DEFAULT_RELATED_FILTER = "all"
 _SIGNAL_ONLY_FILTER = "signal"
 _RELATED_SECTOR_LIMIT = 100
 _RELATED_SECTOR_WINDOW_DAYS = 30
+_MATCH_KIND_ASSERTION = "assertion"
+_MATCH_KIND_CONTEXT = "context"
 
 
 class StockQueryContext(TypedDict):
@@ -304,13 +306,14 @@ def _stock_key_clause(
     stock_keys: list[str],
     prefix: str,
     params: dict[str, object],
+    entity_alias: str = "ae",
 ) -> str:
     cleaned = [str(key or "").strip() for key in stock_keys if str(key or "").strip()]
     if not cleaned:
         return ""
     placeholders = make_in_placeholders(prefix=prefix, count=len(cleaned))
     params.update(make_in_params(prefix=prefix, values=cleaned))
-    return f"ae.entity_key IN ({placeholders})"
+    return f"{entity_alias}.entity_key IN ({placeholders})"
 
 
 def _count_stock_signals(
@@ -341,6 +344,54 @@ def _count_stock_signals(
         created_at_expr=created_at_expr,
         signal_window_days=signal_window_days,
     )
+    if not _is_signal_only_filter(related_filter):
+        context_key_clause = _stock_key_clause(
+            stock_keys=stock_keys,
+            prefix="ctx_k",
+            params=params,
+            entity_alias="pce",
+        )
+        post_context_entities_table = _source_table(conn, "post_context_entities")
+        query = f"""
+WITH assertion_posts AS (
+    SELECT DISTINCT a.post_uid
+    FROM {assertions_table} a
+    JOIN {posts_table} p
+      ON p.post_uid = a.post_uid
+    JOIN {assertion_entities_table} ae
+      ON ae.assertion_id = a.assertion_id
+    WHERE ae.entity_type = 'stock'
+      AND {key_clause}
+      AND p.processed_at IS NOT NULL
+      {window_clause}
+      {author_clause}
+),
+context_posts AS (
+    SELECT DISTINCT p.post_uid
+    FROM {post_context_entities_table} pce
+    JOIN {posts_table} p
+      ON p.post_uid = pce.post_uid
+    WHERE pce.entity_type = 'stock'
+      AND {context_key_clause}
+      AND p.processed_at IS NOT NULL
+      {window_clause}
+      {author_clause}
+),
+matched_posts AS (
+    SELECT post_uid FROM assertion_posts
+    UNION
+    SELECT post_uid FROM context_posts
+)
+SELECT COUNT(*) AS signal_total
+FROM matched_posts
+"""
+        rows = read_sql_rows(conn, query, params=params)
+        if not rows:
+            return 0
+        try:
+            return max(int(rows[0].get("signal_total") or 0), 0)
+        except (TypeError, ValueError):
+            return 0
     query = f"""
 SELECT COUNT(DISTINCT a.post_uid) AS signal_total
 FROM {assertions_table} a
@@ -455,6 +506,7 @@ LIMIT :limit
                 "action": str(row.get("action") or "").strip(),
                 "action_strength": str(row.get("action_strength") or "").strip(),
                 "author": str(row.get("author") or "").strip(),
+                "match_kind": _MATCH_KIND_ASSERTION,
                 "created_at": created_at,
                 "created_at_line": format_signal_created_at_line(
                     created_at,
@@ -464,6 +516,91 @@ LIMIT :limit
             }
         )
     return out
+
+
+def _load_stock_context_rows(
+    conn: PostgresConnection,
+    *,
+    stock_keys: list[str],
+    author: str,
+    signal_window_days: int,
+    fetch_limit: int,
+) -> list[dict[str, str]]:
+    params: dict[str, object] = {"limit": max(1, int(fetch_limit))}
+    key_clause = _stock_key_clause(
+        stock_keys=stock_keys,
+        prefix="k",
+        params=params,
+        entity_alias="pce",
+    )
+    if not key_clause:
+        return []
+    posts_table = _source_table(conn, "posts")
+    assertions_table = _source_table(conn, "assertions")
+    post_context_entities_table = _source_table(conn, "post_context_entities")
+    created_at_expr = trade_board_created_at_sql_expr("p.created_at")
+    author_clause = ""
+    author_filter = str(author or "").strip()
+    if author_filter:
+        params["author"] = author_filter
+        author_clause = "AND p.author = :author"
+    window_clause = _window_clause(
+        created_at_expr=created_at_expr,
+        signal_window_days=signal_window_days,
+    )
+    query = f"""
+WITH matched AS (
+    SELECT DISTINCT ON (p.post_uid)
+        p.post_uid,
+        COALESCE(rep.summary, '') AS summary,
+        p.author,
+        p.created_at,
+        {created_at_expr} AS created_at_sort,
+        p.url
+    FROM {post_context_entities_table} pce
+    JOIN {posts_table} p
+      ON p.post_uid = pce.post_uid
+    LEFT JOIN LATERAL (
+        SELECT a.summary
+        FROM {assertions_table} a
+        WHERE a.post_uid = p.post_uid
+        ORDER BY
+            CASE WHEN a.action LIKE 'trade.%' THEN 0 ELSE 1 END ASC,
+            a.idx ASC
+        LIMIT 1
+    ) rep ON TRUE
+    WHERE pce.entity_type = 'stock'
+      AND {key_clause}
+      AND p.processed_at IS NOT NULL
+      {window_clause}
+      {author_clause}
+    ORDER BY p.post_uid, created_at_sort DESC
+)
+SELECT post_uid, summary, author, created_at, url
+FROM matched
+ORDER BY created_at_sort DESC, post_uid DESC
+LIMIT :limit
+"""
+    rows = read_sql_rows(conn, query, params=params)
+    reference_now = default_signal_reference_time()
+    return [
+        {
+            "post_uid": str(row.get("post_uid") or "").strip(),
+            "summary": str(row.get("summary") or "").strip(),
+            "action": "",
+            "action_strength": "",
+            "author": str(row.get("author") or "").strip(),
+            "match_kind": _MATCH_KIND_CONTEXT,
+            "created_at": str(row.get("created_at") or "").strip(),
+            "created_at_line": format_signal_created_at_line(
+                str(row.get("created_at") or "").strip(),
+                now=reference_now,
+            ),
+            "url": str(row.get("url") or "").strip(),
+        }
+        for row in rows
+        if str(row.get("post_uid") or "").strip()
+    ]
 
 
 def _load_stock_related_sectors(
@@ -584,6 +721,7 @@ def _enrich_signal_rows_with_tree(
             {
                 "post_uid": post_uid,
                 "summary": str(row.get("summary") or "").strip(),
+                "match_kind": str(row.get("match_kind") or "").strip(),
                 "action": str(row.get("action") or "").strip(),
                 "action_strength": str(row.get("action_strength") or "").strip(),
                 "author": str(row.get("author") or "").strip(),
@@ -599,11 +737,14 @@ def _enrich_signal_rows_with_tree(
     return out
 
 
-def _signal_sort_key(row: dict[str, str]) -> tuple[int, float]:
+def _signal_sort_key(row: dict[str, str]) -> tuple[int, float, int, str]:
     ts = coerce_signal_timestamp(row.get("created_at"))
+    match_kind = str(row.get("match_kind") or "").strip()
+    match_rank = 1 if match_kind == _MATCH_KIND_CONTEXT else 0
+    post_uid = str(row.get("post_uid") or "").strip()
     if ts is None:
-        return (1, 0.0)
-    return (0, -ts.timestamp())
+        return (1, 0.0, match_rank, post_uid)
+    return (0, -ts.timestamp(), match_rank, post_uid)
 
 
 def _sort_signal_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -682,7 +823,7 @@ def _load_source_signal_page(
     engine = _build_source_engine(source.url, source_name=source.name)
     fetch_limit = max(1, int(signal_page or 1) * max(int(signal_page_size or 1), 1))
     with postgres_connect_autocommit(engine) as conn:
-        rows = _load_stock_signal_rows(
+        assertion_rows = _load_stock_signal_rows(
             conn,
             stock_keys=stock_keys,
             author=author,
@@ -690,6 +831,18 @@ def _load_source_signal_page(
             fetch_limit=fetch_limit,
             related_filter=related_filter,
         )
+        rows = list(assertion_rows)
+        if not _is_signal_only_filter(related_filter):
+            rows.extend(
+                _load_stock_context_rows(
+                    conn,
+                    stock_keys=stock_keys,
+                    author=author,
+                    signal_window_days=signal_window_days,
+                    fetch_limit=fetch_limit,
+                )
+            )
+            rows = _sort_signal_rows(rows)
         posts = _load_posts_for_signal_rows(
             conn,
             source_name=source.name,

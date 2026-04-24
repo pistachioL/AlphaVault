@@ -35,6 +35,9 @@ _POSTS_TABLE_NAME = "posts"
 _ASSERTIONS_TABLE_NAME = "assertions"
 _ASSERTION_MENTIONS_TABLE_NAME = "assertion_mentions"
 _ASSERTION_ENTITIES_TABLE_NAME = "assertion_entities"
+_POST_CONTEXT_RUNS_TABLE_NAME = "post_context_runs"
+_POST_CONTEXT_MENTIONS_TABLE_NAME = "post_context_mentions"
+_POST_CONTEXT_ENTITIES_TABLE_NAME = "post_context_entities"
 
 
 class SourceQueueWriteError(RuntimeError):
@@ -76,6 +79,18 @@ def _assertion_entities_table(engine_or_conn: object) -> str:
     return _source_table(engine_or_conn, _ASSERTION_ENTITIES_TABLE_NAME)
 
 
+def _post_context_runs_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _POST_CONTEXT_RUNS_TABLE_NAME)
+
+
+def _post_context_mentions_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _POST_CONTEXT_MENTIONS_TABLE_NAME)
+
+
+def _post_context_entities_table(engine_or_conn: object) -> str:
+    return _source_table(engine_or_conn, _POST_CONTEXT_ENTITIES_TABLE_NAME)
+
+
 @contextmanager
 def _use_conn(
     engine_or_conn: PostgresConnection | PostgresEngine,
@@ -112,6 +127,36 @@ def _chunk_post_uids(post_uids: Iterable[str], *, chunk_size: int) -> list[list[
     return [
         cleaned[idx : idx + batch_size] for idx in range(0, len(cleaned), batch_size)
     ]
+
+
+def _coerce_float(value: object, *, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return float(default)
+    try:
+        return float(text)
+    except Exception:
+        return float(default)
+
+
+def _coerce_int(value: object, *, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return int(default)
+    try:
+        return int(text)
+    except Exception:
+        return int(default)
 
 
 def persist_entity_match_followups(
@@ -249,7 +294,7 @@ def load_cloud_post(
             created_at=str(row.get("created_at") or ""),
             url=str(row.get("url") or ""),
             raw_text=str(row.get("raw_text") or ""),
-            ai_retry_count=int(row.get("ai_retry_count") or 0),
+            ai_retry_count=_coerce_int(row.get("ai_retry_count")),
         )
 
 
@@ -353,6 +398,180 @@ def _ensure_post_row_exists_for_done(
     )
 
 
+def _build_assertion_storage_payloads(
+    *,
+    post_uid: str,
+    assertions: Iterable[Dict[str, Any]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    assertion_payloads: list[dict[str, object]] = []
+    mention_payloads: list[dict[str, object]] = []
+    entity_payloads: list[dict[str, object]] = []
+    for idx, raw_assertion in enumerate(assertions, start=1):
+        assertion_id = _make_assertion_id(
+            post_uid=post_uid,
+            idx=idx,
+            raw_assertion=raw_assertion,
+        )
+        assertion_payloads.append(
+            {
+                "assertion_id": assertion_id,
+                "post_uid": post_uid,
+                "idx": int(idx),
+                "action": raw_assertion["action"],
+                "action_strength": int(raw_assertion["action_strength"]),
+                "summary": raw_assertion["summary"],
+                "evidence": raw_assertion["evidence"],
+            }
+        )
+        raw_mentions = raw_assertion.get("assertion_mentions")
+        mentions = raw_mentions if isinstance(raw_mentions, list) else []
+        for mention_seq, raw_mention in enumerate(mentions, start=1):
+            if not isinstance(raw_mention, dict):
+                continue
+            mention_payloads.append(
+                {
+                    "assertion_id": assertion_id,
+                    "mention_seq": int(mention_seq),
+                    "mention_text": str(raw_mention.get("mention_text") or "").strip(),
+                    "mention_norm": str(
+                        raw_mention.get("mention_norm")
+                        or raw_mention.get("mention_text")
+                        or ""
+                    ).strip(),
+                    "mention_type": str(raw_mention.get("mention_type") or "").strip(),
+                    "evidence": str(raw_mention.get("evidence") or "").strip(),
+                    "confidence": _coerce_float(raw_mention.get("confidence")),
+                }
+            )
+        raw_entities = raw_assertion.get("assertion_entities")
+        entities = raw_entities if isinstance(raw_entities, list) else []
+        for raw_entity in entities:
+            if not isinstance(raw_entity, dict):
+                continue
+            entity_payloads.append(
+                {
+                    "assertion_id": assertion_id,
+                    "entity_key": str(raw_entity.get("entity_key") or "").strip(),
+                    "entity_type": str(raw_entity.get("entity_type") or "").strip(),
+                    "match_source": str(
+                        raw_entity.get("match_source")
+                        or raw_entity.get("source_mention_type")
+                        or ""
+                    ).strip(),
+                    "is_primary": _coerce_int(raw_entity.get("is_primary")),
+                }
+            )
+    return assertion_payloads, mention_payloads, entity_payloads
+
+
+def _build_post_context_storage_payloads(
+    *,
+    post_uid: str,
+    mentions: Iterable[dict[str, object]],
+    entities: Iterable[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    mention_payloads: list[dict[str, object]] = []
+    entity_payloads: list[dict[str, object]] = []
+    for mention_seq, raw_mention in enumerate(mentions, start=1):
+        if not isinstance(raw_mention, dict):
+            continue
+        mention_payloads.append(
+            {
+                "post_uid": post_uid,
+                "mention_seq": int(mention_seq),
+                "mention_text": str(raw_mention.get("mention_text") or "").strip(),
+                "mention_norm": str(
+                    raw_mention.get("mention_norm")
+                    or raw_mention.get("mention_text")
+                    or ""
+                ).strip(),
+                "mention_type": str(raw_mention.get("mention_type") or "").strip(),
+                "evidence": str(raw_mention.get("evidence") or "").strip(),
+                "confidence": _coerce_float(raw_mention.get("confidence")),
+            }
+        )
+    for raw_entity in entities:
+        if not isinstance(raw_entity, dict):
+            continue
+        entity_payloads.append(
+            {
+                "post_uid": post_uid,
+                "entity_key": str(raw_entity.get("entity_key") or "").strip(),
+                "entity_type": str(raw_entity.get("entity_type") or "").strip(),
+                "match_source": str(
+                    raw_entity.get("match_source")
+                    or raw_entity.get("source_mention_type")
+                    or ""
+                ).strip(),
+                "is_primary": _coerce_int(raw_entity.get("is_primary")),
+            }
+        )
+    return mention_payloads, entity_payloads
+
+
+def _replace_post_context_rows(
+    conn: PostgresConnection,
+    *,
+    post_uid: str,
+    context_run: dict[str, object] | None,
+    context_mentions: Iterable[dict[str, object]] | None,
+    context_entities: Iterable[dict[str, object]] | None,
+) -> None:
+    post_context_runs_table = _post_context_runs_table(conn)
+    post_context_mentions_table = _post_context_mentions_table(conn)
+    post_context_entities_table = _post_context_entities_table(conn)
+    params = {"post_uid": str(post_uid or "").strip()}
+    conn.execute(
+        source_queue_sql.delete_post_context_entities_by_post_uid_sql(
+            post_context_entities_table
+        ),
+        params,
+    )
+    conn.execute(
+        source_queue_sql.delete_post_context_mentions_by_post_uid_sql(
+            post_context_mentions_table
+        ),
+        params,
+    )
+    conn.execute(
+        source_queue_sql.delete_post_context_runs_by_post_uid_sql(
+            post_context_runs_table
+        ),
+        params,
+    )
+    if not isinstance(context_run, dict):
+        return
+    run_payload = {
+        "post_uid": params["post_uid"],
+        "model": str(context_run.get("model") or "").strip(),
+        "prompt_version": str(context_run.get("prompt_version") or "").strip(),
+        "processed_at": str(context_run.get("processed_at") or "").strip(),
+    }
+    conn.execute(
+        source_queue_sql.insert_post_context_run_sql(post_context_runs_table),
+        run_payload,
+    )
+    mention_payloads, entity_payloads = _build_post_context_storage_payloads(
+        post_uid=params["post_uid"],
+        mentions=list(context_mentions or []),
+        entities=list(context_entities or []),
+    )
+    if mention_payloads:
+        conn.execute(
+            source_queue_sql.insert_post_context_mention_sql(
+                post_context_mentions_table
+            ),
+            mention_payloads,
+        )
+    if entity_payloads:
+        conn.execute(
+            source_queue_sql.insert_post_context_entity_sql(
+                post_context_entities_table
+            ),
+            entity_payloads,
+        )
+
+
 def reset_ai_results_all(
     engine: PostgresEngine,
     *,
@@ -383,6 +602,21 @@ def reset_ai_results_all(
                 _assertion_mentions_table(conn)
             )
         )
+        conn.execute(
+            source_queue_sql.delete_post_context_entities_all_sql(
+                _post_context_entities_table(conn)
+            )
+        )
+        conn.execute(
+            source_queue_sql.delete_post_context_mentions_all_sql(
+                _post_context_mentions_table(conn)
+            )
+        )
+        conn.execute(
+            source_queue_sql.delete_post_context_runs_all_sql(
+                _post_context_runs_table(conn)
+            )
+        )
         conn.execute(source_queue_sql.delete_assertions_all_sql(assertions_table))
         conn.execute(
             source_queue_sql.reset_all_posts_to_pending_sql(posts_table),
@@ -410,6 +644,9 @@ def reset_ai_results_for_post_uids(
         assertions_table = _assertions_table(conn)
         assertion_mentions_table = _assertion_mentions_table(conn)
         assertion_entities_table = _assertion_entities_table(conn)
+        post_context_runs_table = _post_context_runs_table(conn)
+        post_context_mentions_table = _post_context_mentions_table(conn)
+        post_context_entities_table = _post_context_entities_table(conn)
         deleted_total = 0
         updated_total = 0
         for chunk in chunks:
@@ -459,6 +696,27 @@ def reset_ai_results_for_post_uids(
                 params,
             )
             conn.execute(
+                source_queue_sql.delete_post_context_entities_by_post_uids_sql(
+                    post_context_entities_table,
+                    placeholders,
+                ),
+                params,
+            )
+            conn.execute(
+                source_queue_sql.delete_post_context_mentions_by_post_uids_sql(
+                    post_context_mentions_table,
+                    placeholders,
+                ),
+                params,
+            )
+            conn.execute(
+                source_queue_sql.delete_post_context_runs_by_post_uids_sql(
+                    post_context_runs_table,
+                    placeholders,
+                ),
+                params,
+            )
+            conn.execute(
                 source_queue_sql.reset_posts_to_pending_by_post_uids_sql(
                     posts_table,
                     placeholders,
@@ -473,6 +731,42 @@ def reset_ai_results_for_post_uids(
     return run_postgres_transaction(engine, _reset)
 
 
+def write_post_context_result(
+    engine: PostgresConnection | PostgresEngine,
+    *,
+    post_uid: str,
+    model: str,
+    prompt_version: str,
+    processed_at: str,
+    mentions: Iterable[dict[str, object]],
+    entities: Iterable[dict[str, object]],
+    entity_match_result: "EntityMatchResult" | None = None,
+) -> None:
+    resolved_entity_match_results = (
+        [entity_match_result] if entity_match_result is not None else []
+    )
+
+    def _write(conn: PostgresConnection) -> None:
+        _replace_post_context_rows(
+            conn,
+            post_uid=str(post_uid or "").strip(),
+            context_run={
+                "model": str(model or "").strip(),
+                "prompt_version": str(prompt_version or "").strip(),
+                "processed_at": str(processed_at or "").strip(),
+            },
+            context_mentions=list(mentions),
+            context_entities=list(entities),
+        )
+
+    run_postgres_transaction(engine, _write)
+    if resolved_entity_match_results:
+        persist_entity_match_followups_batch(
+            get_research_workbench_engine_from_env(),
+            resolved_entity_match_results,
+        )
+
+
 def write_assertions_and_mark_done(
     engine: PostgresConnection | PostgresEngine,
     *,
@@ -485,6 +779,9 @@ def write_assertions_and_mark_done(
     archived_at: str,
     assertions: Iterable[Dict[str, Any]],
     entity_match_results: Iterable["EntityMatchResult"] | None = None,
+    context_run: dict[str, object] | None = None,
+    context_mentions: Iterable[dict[str, object]] | None = None,
+    context_entities: Iterable[dict[str, object]] | None = None,
     prefetched_post: CloudPost | None = None,
     prefetched_ingested_at: int = 0,
 ) -> None:
@@ -501,6 +798,13 @@ def write_assertions_and_mark_done(
             archived_at=str(archived_at or "").strip(),
             prefetched_post=prefetched_post,
             prefetched_ingested_at=int(prefetched_ingested_at),
+        )
+        _replace_post_context_rows(
+            conn,
+            post_uid=str(post_uid or "").strip(),
+            context_run=context_run,
+            context_mentions=context_mentions,
+            context_entities=context_entities,
         )
         conn.execute(
             source_queue_sql.delete_assertion_entities_by_post_uid_sql(
@@ -520,68 +824,12 @@ def write_assertions_and_mark_done(
             source_queue_sql.delete_assertions_by_post_uid_sql(assertions_table),
             {"post_uid": post_uid},
         )
-        assertion_payloads: list[dict[str, object]] = []
-        mention_payloads: list[dict[str, object]] = []
-        entity_payloads: list[dict[str, object]] = []
-        for idx, raw_assertion in enumerate(assertions, start=1):
-            assertion_id = _make_assertion_id(
-                post_uid=post_uid,
-                idx=idx,
-                raw_assertion=raw_assertion,
+        assertion_payloads, mention_payloads, entity_payloads = (
+            _build_assertion_storage_payloads(
+                post_uid=str(post_uid or "").strip(),
+                assertions=assertions,
             )
-            assertion_payloads.append(
-                {
-                    "assertion_id": assertion_id,
-                    "post_uid": post_uid,
-                    "idx": int(idx),
-                    "action": raw_assertion["action"],
-                    "action_strength": int(raw_assertion["action_strength"]),
-                    "summary": raw_assertion["summary"],
-                    "evidence": raw_assertion["evidence"],
-                }
-            )
-            raw_mentions = raw_assertion.get("assertion_mentions")
-            mentions = raw_mentions if isinstance(raw_mentions, list) else []
-            for mention_seq, raw_mention in enumerate(mentions, start=1):
-                if not isinstance(raw_mention, dict):
-                    continue
-                mention_payloads.append(
-                    {
-                        "assertion_id": assertion_id,
-                        "mention_seq": int(mention_seq),
-                        "mention_text": str(
-                            raw_mention.get("mention_text") or ""
-                        ).strip(),
-                        "mention_norm": str(
-                            raw_mention.get("mention_norm")
-                            or raw_mention.get("mention_text")
-                            or ""
-                        ).strip(),
-                        "mention_type": str(
-                            raw_mention.get("mention_type") or ""
-                        ).strip(),
-                        "evidence": str(raw_mention.get("evidence") or "").strip(),
-                        "confidence": float(raw_mention.get("confidence") or 0.0),
-                    }
-                )
-            raw_entities = raw_assertion.get("assertion_entities")
-            entities = raw_entities if isinstance(raw_entities, list) else []
-            for raw_entity in entities:
-                if not isinstance(raw_entity, dict):
-                    continue
-                entity_payloads.append(
-                    {
-                        "assertion_id": assertion_id,
-                        "entity_key": str(raw_entity.get("entity_key") or "").strip(),
-                        "entity_type": str(raw_entity.get("entity_type") or "").strip(),
-                        "match_source": str(
-                            raw_entity.get("match_source")
-                            or raw_entity.get("source_mention_type")
-                            or ""
-                        ).strip(),
-                        "is_primary": int(raw_entity.get("is_primary") or 0),
-                    }
-                )
+        )
         if assertion_payloads:
             conn.execute(
                 source_queue_sql.insert_assertion_sql(assertions_table),
@@ -642,3 +890,23 @@ def mark_post_failed(
         prefetched_post=prefetched_post,
         prefetched_ingested_at=int(prefetched_ingested_at),
     )
+
+
+__all__ = [
+    "CloudPost",
+    "SourceQueueWriteError",
+    "get_research_workbench_engine_from_env",
+    "is_post_already_processed_success",
+    "load_cloud_post",
+    "load_failed_post_queue_rows",
+    "load_post_processed_at",
+    "load_unprocessed_post_queue_rows",
+    "mark_post_failed",
+    "persist_entity_match_followups",
+    "persist_entity_match_followups_batch",
+    "reset_ai_results_all",
+    "reset_ai_results_for_post_uids",
+    "upsert_pending_post",
+    "write_assertions_and_mark_done",
+    "write_post_context_result",
+]

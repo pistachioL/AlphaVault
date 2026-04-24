@@ -296,7 +296,7 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
 
     assert ok is True
     assert callable(seen_request_gate["value"])
-    assert wait_calls == ["wait"]
+    assert wait_calls == ["wait", "wait"]
     assert writes == ["write"]
     assert dirty_marks == ["dirty"]
 
