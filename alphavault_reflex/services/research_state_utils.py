@@ -173,6 +173,32 @@ def prepare_stock_links(value: object) -> list[dict[str, str]]:
     return out
 
 
+def prepare_same_company_stock_links(
+    value: object, *, current_stock_key: str
+) -> list[dict[str, str]]:
+    rows = coerce_rows(value)
+    normalized_current = normalize_stock_key(current_stock_key)
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        stock_key = normalize_stock_key(str(row.get("stock_key") or "").strip())
+        if not stock_key or stock_key in seen:
+            continue
+        seen.add(stock_key)
+        label = str(row.get("label") or stock_key.removeprefix("stock:")).strip()
+        official_name = str(row.get("official_name") or "").strip()
+        out.append(
+            {
+                **row,
+                "stock_key": stock_key,
+                "label": label,
+                "is_current": "1" if stock_key == normalized_current else "",
+                "title": official_name,
+            }
+        )
+    return out
+
+
 def is_stock_cache_preparing_warning(warning: str) -> bool:
     text = str(warning or "").strip()
     if not text:
@@ -191,6 +217,7 @@ __all__ = [
     "normalize_signal_page_size",
     "normalize_signal_total",
     "normalize_stock_key",
+    "prepare_same_company_stock_links",
     "prepare_sector_links",
     "prepare_stock_links",
     "resolve_query_value",

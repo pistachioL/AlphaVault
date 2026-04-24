@@ -13,6 +13,7 @@ from alphavault_reflex.organizer_state import (
 )
 
 LOADING_TEXT = "加载中…"
+SAMPLE_POST_LABEL = "样例帖子"
 
 
 def _checkbox_checked(value: object) -> bool | rx.Var[bool]:
@@ -379,6 +380,29 @@ def _stock_alias_grouped_display_list(
     )
 
 
+def _manual_alias_sample_post(row: rx.Var[PendingRow]) -> rx.Component:
+    sample_post_uid = row["sample_post_uid"].to(str)
+    sample_post_url = row["sample_post_url"].to(str)
+    return rx.cond(
+        sample_post_uid != "",
+        rx.cond(
+            sample_post_url != "",
+            rx.link(
+                SAMPLE_POST_LABEL + "：" + sample_post_uid,
+                href=sample_post_url,
+                is_external=True,
+                underline="always",
+                class_name="av-research-muted",
+            ),
+            rx.text(
+                SAMPLE_POST_LABEL + "：" + sample_post_uid,
+                class_name="av-research-muted",
+            ),
+        ),
+        rx.el.div(),
+    )
+
+
 def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
     row_action_pending = (
         OrganizerState.alias_manual_action_pending_key == row["alias_key"]
@@ -402,14 +426,7 @@ def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
             f"已尝试 {row['attempt_count']} 次",
             class_name="av-research-muted",
         ),
-        rx.cond(
-            row["sample_post_uid"] != "",
-            rx.text(
-                f"样例帖子：{row['sample_post_uid']}",
-                class_name="av-research-muted",
-            ),
-            rx.el.div(),
-        ),
+        _manual_alias_sample_post(row),
         rx.cond(
             row["sample_evidence"] != "",
             rx.text(row["sample_evidence"], class_name="av-research-muted"),

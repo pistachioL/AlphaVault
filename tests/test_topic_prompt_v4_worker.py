@@ -272,6 +272,26 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
     monkeypatch.setattr(topic_prompt_module, "_call_ai_with_litellm", _fake_call_ai)
     monkeypatch.setattr(
         topic_prompt_module,
+        "extract_post_context_result",
+        lambda *_args, request_gate=None, **_kwargs: (
+            request_gate() if callable(request_gate) else None
+        )
+        or topic_prompt_module.PostContextResult(
+            model="context-model",
+            prompt_version=topic_prompt_module.POST_CONTEXT_PROMPT_VERSION,
+            processed_at="2026-04-07 10:00:01",
+            mentions=[],
+            entities=[],
+            entity_match_result=EntityMatchResult(
+                entities=[],
+                relation_candidates=[],
+                alias_task_keys=[],
+                alias_task_samples=[],
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        topic_prompt_module,
         "resolve_rows_entity_matches",
         lambda _engine, _rows_by_post_uid: {"weibo:1": []},
     )
@@ -296,7 +316,7 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
 
     assert ok is True
     assert callable(seen_request_gate["value"])
-    assert wait_calls == ["wait"]
+    assert wait_calls == ["wait", "wait"]
     assert writes == ["write"]
     assert dirty_marks == ["dirty"]
 

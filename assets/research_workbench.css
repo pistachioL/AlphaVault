@@ -101,6 +101,11 @@
   font-weight: 600;
 }
 
+.av-research-chip-current {
+  background: rgba(194, 65, 12, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(194, 65, 12, 0.18);
+}
+
 .av-topic-link {
   color: #c2410c;
   text-decoration: none;

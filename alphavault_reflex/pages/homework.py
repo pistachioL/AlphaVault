@@ -3,6 +3,7 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault_reflex.homework_state import HomeworkState
+from alphavault_reflex.pages.original_link_components import original_post_link
 from alphavault_reflex.pages.thread_tree_components import tree_line_row
 from alphavault_reflex.services.analysis_feedback import (
     ANALYSIS_FEEDBACK_CANCEL_TEXT,
@@ -186,7 +187,11 @@ def _row_tr(row: rx.Var[dict[str, str]]) -> rx.Component:
         rx.el.td(
             rx.cond(
                 row["url"] != "",
-                rx.link("打开", href=row["url"], is_external=True),
+                original_post_link(
+                    "打开",
+                    row["url"],
+                    row["tree_post_uid"],
+                ),
                 rx.el.span("—", class_name="av-muted"),
             ),
             class_name="av-td av-link",

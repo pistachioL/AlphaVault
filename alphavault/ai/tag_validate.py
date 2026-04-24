@@ -203,6 +203,23 @@ def _validate_top_level_mention(
     }
 
 
+def validate_post_context_ai_result(parsed: Mapping[str, object]) -> None:
+    _validate_required_text(
+        parsed.get("topic_status_id"),
+        field="topic_status_id",
+        max_len=120,
+    )
+    mentions_raw = parsed.get("mentions")
+    if not isinstance(mentions_raw, list):
+        raise AiTagValidationError("mentions_not_list")
+    mention_texts: set[str] = set()
+    for idx, raw_mention in enumerate(mentions_raw):
+        mention = _validate_top_level_mention(raw_mention, mention_index=idx)
+        mention_text = str(mention["mention_text"])
+        _must(mention_text not in mention_texts, f"mentions[{idx}]_duplicate_text")
+        mention_texts.add(mention_text)
+
+
 def validate_topic_prompt_v4_ai_result(parsed: Mapping[str, object]) -> None:
     _validate_required_text(
         parsed.get("topic_status_id"), field="topic_status_id", max_len=120
@@ -310,6 +327,7 @@ def validate_many_assertion_rows(
 
 __all__ = [
     "AiTagValidationError",
+    "validate_post_context_ai_result",
     "validate_topic_prompt_v4_ai_result",
     "validate_topic_prompt_v4_assertion",
     "validate_assertion_row",

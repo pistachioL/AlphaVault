@@ -37,10 +37,20 @@ from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.research_workbench.service import (
     get_research_workbench_engine_from_env,
 )
-from alphavault.research_stock_cache import mark_entity_page_dirty_from_assertions
+from alphavault.research_stock_cache import (
+    mark_entity_page_dirty,
+    mark_entity_page_dirty_from_assertions,
+)
 from alphavault.weibo.topic_prompt_tree import (
     MAX_TOPIC_PROMPT_CHARS,
     thread_root_info_for_post,
+)
+from alphavault.worker.post_context_tags import (
+    POST_CONTEXT_PROMPT_VERSION,
+    PostContextResult,
+    extract_post_context_result,
+    extract_stock_entity_keys_from_entities,
+    post_context_ai_runtime_config_from_env,
 )
 from alphavault.worker.post_processor_utils import score_from_assertions
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
@@ -209,6 +219,7 @@ def _write_done_with_feedback_apply(
     archived_at: str,
     assertions: list[dict[str, object]],
     entity_match_results: list[EntityMatchResult],
+    context_result: PostContextResult | None,
     prefetched_post: CloudPost | None,
     prefetched_ingested_at: int,
     latest_pending_feedback: dict[str, str] | None,
@@ -225,6 +236,21 @@ def _write_done_with_feedback_apply(
             archived_at=archived_at,
             assertions=assertions,
             entity_match_results=entity_match_results,
+            context_run=(
+                {
+                    "model": str(context_result.model or "").strip(),
+                    "prompt_version": str(context_result.prompt_version or "").strip(),
+                    "processed_at": str(context_result.processed_at or "").strip(),
+                }
+                if context_result is not None
+                else None
+            ),
+            context_mentions=(
+                list(context_result.mentions) if context_result is not None else None
+            ),
+            context_entities=(
+                list(context_result.entities) if context_result is not None else None
+            ),
             prefetched_post=prefetched_post,
             prefetched_ingested_at=prefetched_ingested_at,
         )
@@ -255,6 +281,21 @@ def _write_done_with_feedback_apply(
             archived_at=archived_at,
             assertions=assertions,
             entity_match_results=entity_match_results,
+            context_run=(
+                {
+                    "model": str(context_result.model or "").strip(),
+                    "prompt_version": str(context_result.prompt_version or "").strip(),
+                    "processed_at": str(context_result.processed_at or "").strip(),
+                }
+                if context_result is not None
+                else None
+            ),
+            context_mentions=(
+                list(context_result.mentions) if context_result is not None else None
+            ),
+            context_entities=(
+                list(context_result.entities) if context_result is not None else None
+            ),
             prefetched_post=prefetched_post,
             prefetched_ingested_at=prefetched_ingested_at,
         )
@@ -610,14 +651,46 @@ def process_one_post_uid_topic_prompt_v4(
             engine,
             assertions_by_post_uid,
         )
+        context_result_by_post_uid: dict[str, PostContextResult] = {}
+        current_post_uid = str(post.post_uid or "").strip()
+        current_rows = assertions_by_post_uid.get(current_post_uid, [])
+        if current_rows:
+            context_runtime_config = post_context_ai_runtime_config_from_env(
+                timeout_seconds_default=float(config.ai_timeout_seconds),
+            )
+            try:
+                context_result_by_post_uid[current_post_uid] = (
+                    extract_post_context_result(
+                        engine,
+                        post=post,
+                        runtime_config=context_runtime_config,
+                        request_gate=limiter.wait,
+                        trace_out=config.trace_out,
+                    )
+                )
+            except Exception as context_err:
+                logger.warning(
+                    "[ai_context] failed post_uid=%s model=%s prompt_version=%s error=%s",
+                    current_post_uid,
+                    str(context_runtime_config.model or "").strip(),
+                    POST_CONTEXT_PROMPT_VERSION,
+                    format_llm_error_one_line(context_err, limit=300),
+                )
 
         for uid in locked_post_uids:
             rows = assertions_by_post_uid.get(uid, [])
+            context_result = context_result_by_post_uid.get(uid)
             is_relevant = bool(rows)
             final_status = "relevant" if is_relevant else "irrelevant"
             invest_score = score_from_assertions(rows)
             processed_at = now_str()
             archived_at = now_str()
+            followup_results = list(entity_match_results_by_post_uid.get(uid, []))
+            if context_result is not None and (
+                context_result.entity_match_result.relation_candidates
+                or context_result.entity_match_result.alias_task_keys
+            ):
+                followup_results.append(context_result.entity_match_result)
             if debug_enabled:
                 logger.debug(
                     _build_ai_topic_diag_log_line(
@@ -640,7 +713,8 @@ def process_one_post_uid_topic_prompt_v4(
                 prompt_version=config.prompt_version,
                 archived_at=archived_at,
                 assertions=rows,
-                entity_match_results=entity_match_results_by_post_uid.get(uid, []),
+                entity_match_results=followup_results,
+                context_result=context_result,
                 prefetched_post=(
                     prefetched_post
                     if prefetched_post is not None
@@ -671,6 +745,22 @@ def process_one_post_uid_topic_prompt_v4(
                     )
                 except BaseException:
                     logger.warning("[stock_hot] mark_dirty_failed post_uid=%s", uid)
+            if context_result is not None:
+                for stock_key in extract_stock_entity_keys_from_entities(
+                    context_result.entities
+                ):
+                    try:
+                        mark_entity_page_dirty(
+                            engine,
+                            stock_key=stock_key,
+                            reason="ai_done",
+                        )
+                    except BaseException:
+                        logger.warning(
+                            "[stock_hot] mark_dirty_failed post_uid=%s stock_key=%s",
+                            uid,
+                            stock_key,
+                        )
         return True
     except Exception as err:
         if isinstance(err, AiInvalidJsonError):

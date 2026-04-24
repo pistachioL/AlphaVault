@@ -51,6 +51,33 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.assertion_entities (
     PRIMARY KEY (assertion_id, entity_key)
 );
 
+CREATE TABLE IF NOT EXISTS {{schema_name}}.post_context_runs (
+    post_uid TEXT PRIMARY KEY,
+    model TEXT NOT NULL DEFAULT '',
+    prompt_version TEXT NOT NULL DEFAULT '',
+    processed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS {{schema_name}}.post_context_mentions (
+    post_uid TEXT NOT NULL,
+    mention_seq INTEGER NOT NULL CHECK (mention_seq >= 1),
+    mention_text TEXT NOT NULL,
+    mention_norm TEXT NOT NULL DEFAULT '',
+    mention_type TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL CHECK (confidence >= 0 AND confidence <= 1),
+    PRIMARY KEY (post_uid, mention_seq)
+);
+
+CREATE TABLE IF NOT EXISTS {{schema_name}}.post_context_entities (
+    post_uid TEXT NOT NULL,
+    entity_key TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    match_source TEXT NOT NULL DEFAULT '',
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (post_uid, entity_key)
+);
+
 CREATE TABLE IF NOT EXISTS {{schema_name}}.post_analysis_feedback (
     feedback_id TEXT PRIMARY KEY,
     post_uid TEXT NOT NULL,
@@ -153,6 +180,18 @@ CREATE INDEX IF NOT EXISTS idx_assertion_entities_key
 
 CREATE INDEX IF NOT EXISTS idx_assertion_entities_type_key
     ON {{schema_name}}.assertion_entities(entity_type, entity_key);
+
+CREATE INDEX IF NOT EXISTS idx_post_context_mentions_text
+    ON {{schema_name}}.post_context_mentions(mention_text);
+
+CREATE INDEX IF NOT EXISTS idx_post_context_mentions_type_norm
+    ON {{schema_name}}.post_context_mentions(mention_type, mention_norm);
+
+CREATE INDEX IF NOT EXISTS idx_post_context_entities_key
+    ON {{schema_name}}.post_context_entities(entity_key);
+
+CREATE INDEX IF NOT EXISTS idx_post_context_entities_type_key
+    ON {{schema_name}}.post_context_entities(entity_type, entity_key);
 
 CREATE INDEX IF NOT EXISTS idx_post_analysis_feedback_post_uid_submitted_at
     ON {{schema_name}}.post_analysis_feedback(post_uid, submitted_at);

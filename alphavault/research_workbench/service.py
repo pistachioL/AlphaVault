@@ -18,9 +18,9 @@ def _get_cached_research_workbench_engine(dsn: str) -> PostgresEngine:
     return ensure_postgres_engine(dsn)
 
 
-def get_research_workbench_engine_from_env() -> PostgresEngine:
+def _load_standard_source_from_env():
     load_dotenv_if_present()
-    standard_source = next(
+    return next(
         (
             source
             for source in require_configured_postgres_sources_from_env()
@@ -28,9 +28,27 @@ def get_research_workbench_engine_from_env() -> PostgresEngine:
         ),
         None,
     )
+
+
+def get_research_workbench_engine_from_env() -> PostgresEngine:
+    standard_source = _load_standard_source_from_env()
     if standard_source is None:
         raise RuntimeError("missing standard postgres source")
     return _get_cached_research_workbench_engine(standard_source.dsn)
 
 
-__all__ = ["get_research_workbench_engine_from_env"]
+def dispose_research_workbench_engine_from_env() -> None:
+    standard_source = _load_standard_source_from_env()
+    if standard_source is None:
+        return
+    engine = _get_cached_research_workbench_engine(standard_source.dsn)
+    try:
+        engine.dispose()
+    finally:
+        _get_cached_research_workbench_engine.cache_clear()
+
+
+__all__ = [
+    "dispose_research_workbench_engine_from_env",
+    "get_research_workbench_engine_from_env",
+]
