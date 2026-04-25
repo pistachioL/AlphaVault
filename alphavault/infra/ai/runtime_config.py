@@ -58,19 +58,27 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _env_optional_text(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    return str(raw).strip()
+
+
 def ai_runtime_config_from_env(*, timeout_seconds_default: float) -> AiRuntimeConfig:
     default_timeout = float(timeout_seconds_default)
+    reasoning_effort = _env_optional_text(ENV_AI_REASONING_EFFORT)
     return AiRuntimeConfig(
         api_key=os.getenv(ENV_AI_API_KEY, "").strip(),
         model=os.getenv(ENV_AI_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL,
         base_url=os.getenv(ENV_AI_BASE_URL, "").strip(),
         api_mode=os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip() or DEFAULT_AI_MODE,
         temperature=_env_float(ENV_AI_TEMPERATURE, DEFAULT_AI_TEMPERATURE),
-        reasoning_effort=os.getenv(
-            ENV_AI_REASONING_EFFORT,
-            DEFAULT_AI_REASONING_EFFORT,
-        ).strip()
-        or DEFAULT_AI_REASONING_EFFORT,
+        reasoning_effort=(
+            DEFAULT_AI_REASONING_EFFORT
+            if reasoning_effort is None
+            else reasoning_effort
+        ),
         timeout_seconds=max(1.0, _env_float(ENV_AI_TIMEOUT_SEC, default_timeout)),
         retries=max(0, _env_int(ENV_AI_RETRIES, DEFAULT_AI_RETRY_COUNT)),
         ai_rpm=max(0.0, _env_float(ENV_AI_RPM, 0.0)),

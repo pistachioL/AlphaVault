@@ -8,7 +8,6 @@ from pathlib import Path
 from alphavault.ai._client import _call_ai_with_litellm
 from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
     DEFAULT_AI_RETRY_COUNT,
     DEFAULT_AI_TEMPERATURE,
     DEFAULT_MODEL,
@@ -85,6 +84,13 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _env_optional_text(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    return str(raw).strip()
+
+
 def post_context_ai_runtime_config_from_env(
     *,
     timeout_seconds_default: float,
@@ -92,6 +98,7 @@ def post_context_ai_runtime_config_from_env(
     fallback = ai_runtime_config_from_env(
         timeout_seconds_default=timeout_seconds_default
     )
+    reasoning_effort = _env_optional_text(ENV_AI_CONTEXT_REASONING_EFFORT)
     return AiRuntimeConfig(
         api_key=os.getenv(ENV_AI_CONTEXT_API_KEY, "").strip() or fallback.api_key,
         model=os.getenv(ENV_AI_CONTEXT_MODEL, DEFAULT_MODEL).strip() or fallback.model,
@@ -102,12 +109,9 @@ def post_context_ai_runtime_config_from_env(
             ENV_AI_CONTEXT_TEMPERATURE,
             fallback.temperature or DEFAULT_AI_TEMPERATURE,
         ),
-        reasoning_effort=os.getenv(
-            ENV_AI_CONTEXT_REASONING_EFFORT,
-            fallback.reasoning_effort or DEFAULT_AI_REASONING_EFFORT,
-        ).strip()
-        or fallback.reasoning_effort
-        or DEFAULT_AI_REASONING_EFFORT,
+        reasoning_effort=(
+            fallback.reasoning_effort if reasoning_effort is None else reasoning_effort
+        ),
         timeout_seconds=max(
             1.0,
             _env_float(
@@ -176,6 +180,32 @@ def _normalize_mentions(parsed: dict[str, object]) -> list[dict[str, object]]:
             }
         )
     return mentions
+
+
+def _dedupe_parsed_mentions_in_place(parsed: dict[str, object]) -> None:
+    mentions_raw = parsed.get("mentions")
+    if not isinstance(mentions_raw, list):
+        return
+    deduped_mentions: list[object] = []
+    seen_mention_texts: set[str] = set()
+    for raw_mention in mentions_raw:
+        if not isinstance(raw_mention, dict):
+            deduped_mentions.append(raw_mention)
+            continue
+        mention_text = str(raw_mention.get("mention_text") or "").strip()
+        if not mention_text:
+            deduped_mentions.append(raw_mention)
+            continue
+        if mention_text in seen_mention_texts:
+            continue
+        seen_mention_texts.add(mention_text)
+        deduped_mentions.append(raw_mention)
+    parsed["mentions"] = deduped_mentions
+
+
+def _sanitize_and_validate_post_context_ai_result(parsed: dict[str, object]) -> None:
+    _dedupe_parsed_mentions_in_place(parsed)
+    validate_post_context_ai_result(parsed)
 
 
 def _resolve_context_entities(
@@ -289,12 +319,10 @@ def extract_post_context_result(
         timeout_seconds=float(runtime_config.timeout_seconds),
         retry_count=int(runtime_config.retries),
         temperature=float(runtime_config.temperature),
-        reasoning_effort=str(
-            runtime_config.reasoning_effort or DEFAULT_AI_REASONING_EFFORT
-        ),
+        reasoning_effort=str(runtime_config.reasoning_effort or "").strip(),
         trace_out=trace_out,
         trace_label=f"context:{root_key}",
-        validator=validate_post_context_ai_result,
+        validator=_sanitize_and_validate_post_context_ai_result,
         request_gate=request_gate,
     )
     if not isinstance(parsed, dict):

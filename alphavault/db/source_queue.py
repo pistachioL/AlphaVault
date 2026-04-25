@@ -56,6 +56,17 @@ class CloudPost:
     ai_retry_count: int
 
 
+@dataclass(frozen=True)
+class PostContextWriteRow:
+    post_uid: str
+    model: str
+    prompt_version: str
+    processed_at: str
+    mentions: list[dict[str, object]]
+    entities: list[dict[str, object]]
+    entity_match_result: EntityMatchResult | None = None
+
+
 def _source_table(engine_or_conn: object, table_name: str) -> str:
     return qualify_postgres_table(
         require_postgres_schema_name(engine_or_conn),
@@ -741,6 +752,7 @@ def write_post_context_result(
     mentions: Iterable[dict[str, object]],
     entities: Iterable[dict[str, object]],
     entity_match_result: "EntityMatchResult" | None = None,
+    persist_entity_match_followups: bool = True,
 ) -> None:
     resolved_entity_match_results = (
         [entity_match_result] if entity_match_result is not None else []
@@ -760,7 +772,56 @@ def write_post_context_result(
         )
 
     run_postgres_transaction(engine, _write)
-    if resolved_entity_match_results:
+    if persist_entity_match_followups and resolved_entity_match_results:
+        persist_entity_match_followups_batch(
+            get_research_workbench_engine_from_env(),
+            resolved_entity_match_results,
+        )
+
+
+def write_post_context_results_batch(
+    engine: PostgresConnection | PostgresEngine,
+    *,
+    rows: Iterable[PostContextWriteRow],
+    persist_entity_match_followups: bool = True,
+) -> None:
+    resolved_rows = [
+        PostContextWriteRow(
+            post_uid=str(row.post_uid or "").strip(),
+            model=str(row.model or "").strip(),
+            prompt_version=str(row.prompt_version or "").strip(),
+            processed_at=str(row.processed_at or "").strip(),
+            mentions=list(row.mentions),
+            entities=list(row.entities),
+            entity_match_result=row.entity_match_result,
+        )
+        for row in rows
+        if str(row.post_uid or "").strip()
+    ]
+    if not resolved_rows:
+        return
+    resolved_entity_match_results = [
+        row.entity_match_result
+        for row in resolved_rows
+        if row.entity_match_result is not None
+    ]
+
+    def _write(conn: PostgresConnection) -> None:
+        for row in resolved_rows:
+            _replace_post_context_rows(
+                conn,
+                post_uid=row.post_uid,
+                context_run={
+                    "model": row.model,
+                    "prompt_version": row.prompt_version,
+                    "processed_at": row.processed_at,
+                },
+                context_mentions=row.mentions,
+                context_entities=row.entities,
+            )
+
+    run_postgres_transaction(engine, _write)
+    if persist_entity_match_followups and resolved_entity_match_results:
         persist_entity_match_followups_batch(
             get_research_workbench_engine_from_env(),
             resolved_entity_match_results,
@@ -894,6 +955,7 @@ def mark_post_failed(
 
 __all__ = [
     "CloudPost",
+    "PostContextWriteRow",
     "SourceQueueWriteError",
     "get_research_workbench_engine_from_env",
     "is_post_already_processed_success",
@@ -909,4 +971,5 @@ __all__ = [
     "upsert_pending_post",
     "write_assertions_and_mark_done",
     "write_post_context_result",
+    "write_post_context_results_batch",
 ]

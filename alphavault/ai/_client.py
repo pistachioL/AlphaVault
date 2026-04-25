@@ -4,7 +4,12 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from alphavault.ai._errors import _append_trace, _mask_secret, extract_llm_error_details
+from alphavault.ai._errors import (
+    _append_trace,
+    _mask_secret,
+    extract_llm_error_details,
+    format_llm_error_one_line,
+)
 from alphavault.ai._extract import _collect_streamed_ai_text, _extract_ai_text
 from alphavault.ai._litellm import _import_litellm, _resolve_litellm_model_name
 from alphavault.ai._text import parse_json_text
@@ -13,6 +18,7 @@ from alphavault.logging_config import get_logger
 
 DEFAULT_AI_RETRY_BACKOFF_SEC = 2.0
 DEFAULT_AI_RETRY_MAX_BACKOFF_SEC = 32.0
+DEFAULT_AI_RETRY_LOG_ERROR_LIMIT = 300
 logger = get_logger(__name__)
 
 
@@ -69,6 +75,7 @@ def _call_ai_with_litellm(
     litellm = _import_litellm()
 
     request_model_name = _resolve_litellm_model_name(model_name, base_url)
+    clean_reasoning_effort = str(reasoning_effort or "").strip()
     last_error: Optional[Exception] = None
     retries = max(0, int(retry_count))
     backoff_sec = DEFAULT_AI_RETRY_BACKOFF_SEC
@@ -89,9 +96,10 @@ def _call_ai_with_litellm(
                     "temperature": float(temperature),
                     "timeout": float(timeout_seconds),
                     "api_key": api_key,
-                    "reasoning_effort": str(reasoning_effort),
                     "stream": bool(ai_stream),
                 }
+                if clean_reasoning_effort:
+                    call_kwargs["reasoning_effort"] = clean_reasoning_effort
                 if base_url:
                     call_kwargs["api_base"] = base_url
                 response = responses_fn(**call_kwargs)
@@ -105,9 +113,10 @@ def _call_ai_with_litellm(
                     "temperature": float(temperature),
                     "timeout": float(timeout_seconds),
                     "api_key": api_key,
-                    "reasoning_effort": str(reasoning_effort),
                     "stream": bool(ai_stream),
                 }
+                if clean_reasoning_effort:
+                    call_kwargs["reasoning_effort"] = clean_reasoning_effort
                 if base_url:
                     call_kwargs["api_base"] = base_url
                     call_kwargs["base_url"] = base_url
@@ -144,7 +153,7 @@ def _call_ai_with_litellm(
                     "base_url": base_url,
                     "stream": bool(ai_stream),
                     "temperature": float(temperature),
-                    "reasoning_effort": str(reasoning_effort),
+                    "reasoning_effort": clean_reasoning_effort,
                     "timeout_seconds": float(timeout_seconds),
                     "api_key": _mask_secret(api_key),
                     "prompt_chars": len(prompt),
@@ -179,7 +188,7 @@ def _call_ai_with_litellm(
                     "base_url": base_url,
                     "stream": bool(ai_stream),
                     "temperature": float(temperature),
-                    "reasoning_effort": str(reasoning_effort),
+                    "reasoning_effort": clean_reasoning_effort,
                     "timeout_seconds": float(timeout_seconds),
                     "api_key": _mask_secret(api_key),
                     "prompt_chars": len(prompt),
@@ -189,8 +198,29 @@ def _call_ai_with_litellm(
                 },
             )
             if attempt >= retries:
+                logger.warning(
+                    "[llm] request_failed label=%s attempts=%s error=%s",
+                    trace_label,
+                    attempt + 1,
+                    format_llm_error_one_line(
+                        exc,
+                        limit=DEFAULT_AI_RETRY_LOG_ERROR_LIMIT,
+                    ),
+                )
                 break
-            time.sleep(min(backoff_sec, DEFAULT_AI_RETRY_MAX_BACKOFF_SEC))
+            wait_seconds = min(backoff_sec, DEFAULT_AI_RETRY_MAX_BACKOFF_SEC)
+            logger.warning(
+                "[llm] request_retry label=%s attempt=%s next_attempt=%s wait_seconds=%s error=%s",
+                trace_label,
+                attempt + 1,
+                attempt + 2,
+                wait_seconds,
+                format_llm_error_one_line(
+                    exc,
+                    limit=DEFAULT_AI_RETRY_LOG_ERROR_LIMIT,
+                ),
+            )
+            time.sleep(wait_seconds)
             backoff_sec = min(backoff_sec * 2, DEFAULT_AI_RETRY_MAX_BACKOFF_SEC)
 
     assert last_error is not None

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, replace
+from collections.abc import Iterator
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
+from dataclasses import asdict, dataclass, replace
 import json
 from pathlib import Path
 import sys
@@ -21,8 +28,9 @@ from alphavault.db.postgres_db import (  # noqa: E402
 from alphavault.db.postgres_env import require_postgres_source_from_env  # noqa: E402
 from alphavault.db.source_queue import (  # noqa: E402
     CloudPost,
+    PostContextWriteRow,
     load_cloud_post,
-    write_post_context_result,
+    write_post_context_results_batch,
 )
 from alphavault.db.sql.common import make_in_params, make_in_placeholders  # noqa: E402
 from alphavault.db.sql_rows import read_sql_rows  # noqa: E402
@@ -58,6 +66,20 @@ class _PostContextExtractError(RuntimeError):
     def __init__(self, *, post: CloudPost) -> None:
         super().__init__(f"post_context_extract_failed:{post.post_uid}")
         self.post = post
+
+
+@dataclass(frozen=True)
+class _CompletedPostContextRow:
+    post: CloudPost
+    write_row: PostContextWriteRow
+    stock_keys: list[str]
+
+
+@dataclass(frozen=True)
+class _ScheduledPostContextTask:
+    sequence_id: int
+    post: CloudPost
+    future: Future[PostContextResult]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -309,30 +331,249 @@ def _extract_results_for_posts(
     runtime_config: AiRuntimeConfig,
     limiter: RateLimiter,
 ) -> list[PostContextResult]:
+    return [
+        result
+        for _post, result in _iter_extracted_results_for_posts_in_order(
+            source_engine=source_engine,
+            posts=posts,
+            runtime_config=runtime_config,
+            limiter=limiter,
+        )
+    ]
+
+
+def _iter_extracted_results_for_posts_in_order(
+    *,
+    source_engine,
+    posts: list[CloudPost],
+    runtime_config: AiRuntimeConfig,
+    limiter: RateLimiter,
+) -> Iterator[tuple[CloudPost, PostContextResult]]:
     if not posts:
-        return []
-    futures: list[tuple[CloudPost, Future[PostContextResult]]] = []
+        return
+    future_to_index: dict[Future[PostContextResult], int] = {}
+    completed_results: dict[int, PostContextResult] = {}
+    next_index = 0
     with ThreadPoolExecutor(max_workers=runtime_config.ai_max_inflight) as executor:
-        for post in posts:
-            futures.append(
-                (
-                    post,
-                    executor.submit(
-                        extract_post_context_result,
-                        source_engine,
-                        post=post,
-                        runtime_config=runtime_config,
-                        request_gate=limiter.wait,
-                    ),
-                )
+        for index, post in enumerate(posts):
+            future = executor.submit(
+                extract_post_context_result,
+                source_engine,
+                post=post,
+                runtime_config=runtime_config,
+                request_gate=limiter.wait,
             )
-        results: list[PostContextResult] = []
-        for post, future in futures:
+            future_to_index[future] = index
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            post = posts[index]
             try:
-                results.append(future.result())
+                completed_results[index] = future.result()
             except Exception as err:
                 raise _PostContextExtractError(post=post) from err
-    return results
+            while next_index in completed_results:
+                yield posts[next_index], completed_results.pop(next_index)
+                next_index += 1
+
+
+def _build_completed_post_context_row(
+    *,
+    post: CloudPost,
+    result: PostContextResult,
+) -> _CompletedPostContextRow:
+    return _CompletedPostContextRow(
+        post=post,
+        write_row=PostContextWriteRow(
+            post_uid=post.post_uid,
+            model=result.model,
+            prompt_version=result.prompt_version,
+            processed_at=result.processed_at,
+            mentions=list(result.mentions),
+            entities=list(result.entities),
+            entity_match_result=result.entity_match_result,
+        ),
+        stock_keys=extract_stock_entity_keys_from_entities(result.entities),
+    )
+
+
+def _write_completed_post_context_rows(
+    *,
+    source_engine,
+    rows: list[_CompletedPostContextRow],
+) -> None:
+    if not rows:
+        return
+    write_rows = [row.write_row for row in rows]
+    seen_stock_keys: set[str] = set()
+    stock_keys: list[str] = []
+    for row in rows:
+        for stock_key in row.stock_keys:
+            if stock_key in seen_stock_keys:
+                continue
+            seen_stock_keys.add(stock_key)
+            stock_keys.append(stock_key)
+    with postgres_connect_autocommit(source_engine) as conn:
+        write_post_context_results_batch(
+            conn,
+            rows=write_rows,
+            persist_entity_match_followups=False,
+        )
+        for stock_key in stock_keys:
+            try:
+                mark_entity_page_dirty(
+                    conn,
+                    stock_key=stock_key,
+                    reason="ai_done",
+                )
+            except BaseException:
+                logger.warning(
+                    "[post_context_backfill] mark_dirty_failed stock_key=%s",
+                    stock_key,
+                )
+
+
+def _flush_completed_rows(
+    *,
+    source_engine,
+    rows: list[_CompletedPostContextRow],
+    processed_this_run: int,
+    scan_created_at: str,
+    scan_post_uid: str,
+    use_cursor: bool,
+    cursor_file: Path,
+    source_name: str,
+    cursor_processed_count: int,
+) -> tuple[int, str, str, int]:
+    if not rows:
+        return (
+            processed_this_run,
+            scan_created_at,
+            scan_post_uid,
+            cursor_processed_count,
+        )
+    _write_completed_post_context_rows(source_engine=source_engine, rows=rows)
+    for row in rows:
+        processed_this_run += 1
+        scan_created_at = row.post.created_at
+        scan_post_uid = row.post.post_uid
+        if use_cursor:
+            cursor_processed_count += 1
+            _write_cursor_state(
+                cursor_file,
+                source=source_name,
+                last_created_at=scan_created_at,
+                last_post_uid=scan_post_uid,
+                processed_count=cursor_processed_count,
+            )
+        logger.info(
+            "[post_context_backfill] done post_uid=%s created_at=%s mentions=%s entities=%s processed=%s",
+            row.post.post_uid,
+            row.post.created_at,
+            len(row.write_row.mentions),
+            len(row.write_row.entities),
+            processed_this_run,
+        )
+    return processed_this_run, scan_created_at, scan_post_uid, cursor_processed_count
+
+
+def _resolve_write_batch_size(*, fetch_limit: int, ai_max_inflight: int) -> int:
+    return max(1, min(int(fetch_limit), int(ai_max_inflight)))
+
+
+def _resolve_prefetch_post_limit(*, batch_size: int, ai_max_inflight: int) -> int:
+    return max(
+        int(batch_size) + int(ai_max_inflight),
+        int(ai_max_inflight),
+    )
+
+
+def _submit_post_context_tasks(
+    *,
+    executor: ThreadPoolExecutor,
+    source_engine,
+    posts: list[CloudPost],
+    runtime_config: AiRuntimeConfig,
+    limiter: RateLimiter,
+    sequence_start: int,
+) -> list[_ScheduledPostContextTask]:
+    tasks: list[_ScheduledPostContextTask] = []
+    for offset, post in enumerate(posts):
+        future = executor.submit(
+            extract_post_context_result,
+            source_engine,
+            post=post,
+            runtime_config=runtime_config,
+            request_gate=limiter.wait,
+        )
+        tasks.append(
+            _ScheduledPostContextTask(
+                sequence_id=sequence_start + offset,
+                post=post,
+                future=future,
+            )
+        )
+    return tasks
+
+
+def _fill_prefetch_window(
+    *,
+    executor: ThreadPoolExecutor,
+    source_engine,
+    post_uids: list[str],
+    from_created_at: str,
+    runtime_config: AiRuntimeConfig,
+    limiter: RateLimiter,
+    batch_size: int,
+    limit: int,
+    processed_this_run: int,
+    scheduled_this_run: int,
+    fetch_created_at: str,
+    fetch_post_uid: str,
+    next_sequence_id: int,
+    prefetch_post_limit: int,
+    future_to_task: dict[Future[PostContextResult], _ScheduledPostContextTask],
+) -> tuple[int, int, str, str, bool]:
+    fetch_exhausted = False
+    while (scheduled_this_run - processed_this_run) < prefetch_post_limit:
+        remaining_limit = (
+            max(0, int(limit) - int(scheduled_this_run)) if limit > 0 else 0
+        )
+        if limit > 0 and remaining_limit <= 0:
+            break
+        fetch_limit = min(batch_size, remaining_limit) if limit > 0 else batch_size
+        with postgres_connect_autocommit(source_engine) as conn:
+            posts = _load_target_posts(
+                conn,
+                fetch_limit=fetch_limit,
+                post_uids=post_uids,
+                from_created_at=from_created_at,
+                last_created_at=fetch_created_at,
+                last_post_uid=fetch_post_uid,
+            )
+        if not posts:
+            fetch_exhausted = True
+            break
+        tasks = _submit_post_context_tasks(
+            executor=executor,
+            source_engine=source_engine,
+            posts=posts,
+            runtime_config=runtime_config,
+            limiter=limiter,
+            sequence_start=next_sequence_id,
+        )
+        for task in tasks:
+            future_to_task[task.future] = task
+        next_sequence_id += len(tasks)
+        scheduled_this_run += len(tasks)
+        fetch_created_at = posts[-1].created_at
+        fetch_post_uid = posts[-1].post_uid
+    return (
+        scheduled_this_run,
+        next_sequence_id,
+        fetch_created_at,
+        fetch_post_uid,
+        fetch_exhausted,
+    )
 
 
 def _result_payload(
@@ -540,85 +781,118 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         processed_this_run = 0
-        while True:
-            if limit > 0 and processed_this_run >= limit:
-                break
-            fetch_limit = (
-                min(batch_size, limit - processed_this_run) if limit > 0 else batch_size
-            )
-            with postgres_connect_autocommit(source_engine) as conn:
-                posts = _load_target_posts(
-                    conn,
-                    fetch_limit=fetch_limit,
-                    post_uids=cleaned_post_uids,
-                    from_created_at=from_created_at,
-                    last_created_at=scan_created_at if use_cursor else "",
-                    last_post_uid=scan_post_uid if use_cursor else "",
-                )
-            if not posts:
-                break
-            try:
-                results = _extract_results_for_posts(
-                    source_engine=source_engine,
-                    posts=posts,
-                    runtime_config=runtime_config,
-                    limiter=limiter,
-                )
-            except _PostContextExtractError as err:
-                logger.exception(
-                    "[post_context_backfill] failed post_uid=%s created_at=%s",
-                    err.post.post_uid,
-                    err.post.created_at,
-                )
-                return 1
-            for post, result in zip(posts, results, strict=True):
-                write_post_context_result(
-                    source_engine,
-                    post_uid=post.post_uid,
-                    model=result.model,
-                    prompt_version=result.prompt_version,
-                    processed_at=result.processed_at,
-                    mentions=result.mentions,
-                    entities=result.entities,
-                    entity_match_result=result.entity_match_result,
-                )
-                stock_keys = extract_stock_entity_keys_from_entities(result.entities)
-                for stock_key in stock_keys:
-                    try:
-                        mark_entity_page_dirty(
-                            source_engine,
-                            stock_key=stock_key,
-                            reason="ai_done",
+        scheduled_this_run = 0
+        fetch_created_at = scan_created_at
+        fetch_post_uid = scan_post_uid
+        next_sequence_id = 0
+        next_ready_sequence = 0
+        completed_by_sequence: dict[int, _CompletedPostContextRow] = {}
+        completed_rows: list[_CompletedPostContextRow] = []
+        future_to_task: dict[Future[PostContextResult], _ScheduledPostContextTask] = {}
+        initial_fetch_limit = min(batch_size, limit) if limit > 0 else batch_size
+        write_batch_size = _resolve_write_batch_size(
+            fetch_limit=initial_fetch_limit,
+            ai_max_inflight=runtime_config.ai_max_inflight,
+        )
+        prefetch_post_limit = _resolve_prefetch_post_limit(
+            batch_size=batch_size,
+            ai_max_inflight=runtime_config.ai_max_inflight,
+        )
+        fetch_exhausted = False
+        try:
+            with ThreadPoolExecutor(
+                max_workers=runtime_config.ai_max_inflight
+            ) as executor:
+                while True:
+                    while next_ready_sequence in completed_by_sequence:
+                        completed_rows.append(
+                            completed_by_sequence.pop(next_ready_sequence)
                         )
-                    except BaseException:
-                        logger.warning(
-                            "[post_context_backfill] mark_dirty_failed post_uid=%s stock_key=%s",
-                            post.post_uid,
-                            stock_key,
+                        next_ready_sequence += 1
+                        if len(completed_rows) < write_batch_size:
+                            continue
+                        (
+                            processed_this_run,
+                            scan_created_at,
+                            scan_post_uid,
+                            cursor_processed_count,
+                        ) = _flush_completed_rows(
+                            source_engine=source_engine,
+                            rows=completed_rows,
+                            processed_this_run=processed_this_run,
+                            scan_created_at=scan_created_at,
+                            scan_post_uid=scan_post_uid,
+                            use_cursor=use_cursor,
+                            cursor_file=cursor_file,
+                            source_name=source.name,
+                            cursor_processed_count=cursor_processed_count,
                         )
-
-                processed_this_run += 1
-                scan_created_at = post.created_at
-                scan_post_uid = post.post_uid
-                if use_cursor:
-                    cursor_processed_count += 1
-                    _write_cursor_state(
-                        cursor_file,
-                        source=source.name,
-                        last_created_at=scan_created_at,
-                        last_post_uid=scan_post_uid,
-                        processed_count=cursor_processed_count,
+                        completed_rows = []
+                    if not fetch_exhausted:
+                        (
+                            scheduled_this_run,
+                            next_sequence_id,
+                            fetch_created_at,
+                            fetch_post_uid,
+                            fetch_exhausted,
+                        ) = _fill_prefetch_window(
+                            executor=executor,
+                            source_engine=source_engine,
+                            post_uids=cleaned_post_uids,
+                            from_created_at=from_created_at,
+                            runtime_config=runtime_config,
+                            limiter=limiter,
+                            batch_size=batch_size,
+                            limit=limit,
+                            processed_this_run=processed_this_run,
+                            scheduled_this_run=scheduled_this_run,
+                            fetch_created_at=fetch_created_at,
+                            fetch_post_uid=fetch_post_uid,
+                            next_sequence_id=next_sequence_id,
+                            prefetch_post_limit=prefetch_post_limit,
+                            future_to_task=future_to_task,
+                        )
+                    if not future_to_task:
+                        break
+                    done, _pending = wait(
+                        tuple(future_to_task),
+                        return_when=FIRST_COMPLETED,
                     )
-                logger.info(
-                    "[post_context_backfill] done post_uid=%s created_at=%s mentions=%s entities=%s processed=%s",
-                    post.post_uid,
-                    post.created_at,
-                    len(result.mentions),
-                    len(result.entities),
-                    processed_this_run,
-                )
-                if limit > 0 and processed_this_run >= limit:
-                    break
+                    for future in done:
+                        task = future_to_task.pop(future)
+                        try:
+                            result = future.result()
+                        except Exception as err:
+                            raise _PostContextExtractError(post=task.post) from err
+                        completed_by_sequence[task.sequence_id] = (
+                            _build_completed_post_context_row(
+                                post=task.post,
+                                result=result,
+                            )
+                        )
+        except _PostContextExtractError as err:
+            logger.exception(
+                "[post_context_backfill] failed post_uid=%s created_at=%s",
+                err.post.post_uid,
+                err.post.created_at,
+            )
+            return 1
+        (
+            processed_this_run,
+            scan_created_at,
+            scan_post_uid,
+            cursor_processed_count,
+        ) = _flush_completed_rows(
+            source_engine=source_engine,
+            rows=completed_rows,
+            processed_this_run=processed_this_run,
+            scan_created_at=scan_created_at,
+            scan_post_uid=scan_post_uid,
+            use_cursor=use_cursor,
+            cursor_file=cursor_file,
+            source_name=source.name,
+            cursor_processed_count=cursor_processed_count,
+        )
         logger.info(
             "[post_context_backfill] finish source=%s processed=%s last_created_at=%s last_post_uid=%s",
             source.name,
