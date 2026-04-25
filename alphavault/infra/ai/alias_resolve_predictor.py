@@ -11,6 +11,7 @@ from alphavault.domains.stock.key_match import (
     normalize_stock_code,
 )
 
+from .alias_history_context import AliasHistoryHit, load_alias_history_hits
 from .runtime_config import AiRuntimeConfig, ai_runtime_config_from_env
 
 
@@ -19,9 +20,12 @@ AI_STATUS_RANKED = "ranked"
 AI_STATUS_ERROR = "error"
 
 _ALIAS_AI_BATCH_CAP = 10
+_ALIAS_KEY_PREFIX = "stock:"
+_ALIAS_HISTORY_HITS_FIELD = "history_hits"
 AI_ERROR_REASON_PREFIX = "AI失败："
 INVALID_PREDICTIONS_REASON = "AI失败：返回格式不对"
 MISSING_PREDICTION_REASON = "AI失败：未返回这条简称的结果"
+_EMPTY_HISTORY_HITS_TEXT = "(none)"
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +75,24 @@ def _log_ai_error(
     )
 
 
+def _log_history_context_error(
+    *,
+    alias_key: str,
+    sample_post_uid: str,
+    err: BaseException,
+) -> None:
+    logger.warning(
+        " ".join(
+            [
+                "[organizer_ai] alias_history_context_error",
+                f"alias_key={alias_key or '(empty)'}",
+                f"sample_post_uid={sample_post_uid or '(empty)'}",
+                f"error={format_llm_error_one_line(err, limit=240)}",
+            ]
+        )
+    )
+
+
 def _normalize_bool_flag(value: object) -> str:
     if isinstance(value, bool):
         return "true" if value else ""
@@ -81,6 +103,98 @@ def _normalize_bool_flag(value: object) -> str:
 def _normalize_stock_code_or_empty(value: object) -> str:
     code = normalize_stock_code(value=str(value or ""))
     return code if is_stock_code_value(code) else ""
+
+
+def _alias_text_from_key(value: object) -> str:
+    alias_key = _clean_text(value)
+    if alias_key.startswith(_ALIAS_KEY_PREFIX):
+        return alias_key[len(_ALIAS_KEY_PREFIX) :]
+    return alias_key
+
+
+def _clean_history_hits(value: object) -> list[AliasHistoryHit]:
+    if not isinstance(value, list):
+        return []
+    out: list[AliasHistoryHit] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        post_uid = _clean_text(item.get("post_uid"))
+        dialogue_text = _clean_text(item.get("dialogue_text"))
+        if not post_uid or not dialogue_text:
+            continue
+        out.append(
+            {
+                "post_uid": post_uid,
+                "created_at": _clean_text(item.get("created_at")),
+                "author": _clean_text(item.get("author")),
+                "dialogue_text": dialogue_text,
+            }
+        )
+    return out
+
+
+def _load_history_hits_or_empty(
+    *,
+    alias_key: str,
+    sample_post_uid: str,
+) -> list[AliasHistoryHit]:
+    alias_text = _alias_text_from_key(alias_key)
+    if not alias_text or not sample_post_uid:
+        return []
+    try:
+        return load_alias_history_hits(
+            keyword_text=alias_text,
+            sample_post_uid=sample_post_uid,
+        )
+    except Exception as err:
+        _log_history_context_error(
+            alias_key=alias_key,
+            sample_post_uid=sample_post_uid,
+            err=err,
+        )
+        return []
+
+
+def _attach_history_hits(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    cache: dict[tuple[str, str], list[AliasHistoryHit]] = {}
+    out: list[dict[str, Any]] = []
+    for item in tasks:
+        row = dict(item)
+        alias_key = _clean_text(row.get("alias_key"))
+        sample_post_uid = _clean_text(row.get("sample_post_uid"))
+        alias_text = _alias_text_from_key(alias_key)
+        if not alias_text or not sample_post_uid:
+            out.append(row)
+            continue
+        cache_key = (sample_post_uid, alias_text)
+        history_hits = cache.get(cache_key)
+        if history_hits is None:
+            history_hits = _load_history_hits_or_empty(
+                alias_key=alias_key,
+                sample_post_uid=sample_post_uid,
+            )
+            cache[cache_key] = history_hits
+        if history_hits:
+            row[_ALIAS_HISTORY_HITS_FIELD] = [dict(hit) for hit in history_hits]
+        out.append(row)
+    return out
+
+
+def _format_history_hits_prompt_lines(item: dict[str, Any]) -> list[str]:
+    history_hits = _clean_history_hits(item.get(_ALIAS_HISTORY_HITS_FIELD))
+    if not history_hits:
+        return [f"  blogger_history_hits={_EMPTY_HISTORY_HITS_TEXT}"]
+    lines = ["  blogger_history_hits="]
+    for idx, hit in enumerate(history_hits, start=1):
+        lines.extend(
+            [
+                f"    {idx}. created_at={hit['created_at']}",
+                f"       post_uid={hit['post_uid']}",
+                f"       dialogue_text={hit['dialogue_text']}",
+            ]
+        )
+    return lines
 
 
 def _with_ai_fields(
@@ -171,6 +285,7 @@ def enrich_alias_tasks_with_ai(
             _with_ai_fields(item, status=AI_STATUS_SKIPPED) for item in attempted
         ] + untouched
 
+    attempted = _attach_history_hits(attempted)
     try:
         ranked = _predict_alias_tasks_with_ai(
             attempted,
@@ -196,9 +311,7 @@ def _predict_alias_tasks_with_ai(
     task_lines: list[str] = []
     for item in tasks:
         alias_key = _clean_text(item.get("alias_key"))
-        alias_text = (
-            alias_key[len("stock:") :] if alias_key.startswith("stock:") else alias_key
-        )
+        alias_text = _alias_text_from_key(alias_key)
         task_lines.append(
             "\n".join(
                 [
@@ -208,12 +321,13 @@ def _predict_alias_tasks_with_ai(
                     f"  sample_evidence={_clean_text(item.get('sample_evidence'))}",
                     "  sample_raw_text_excerpt="
                     f"{_clean_text(item.get('sample_raw_text_excerpt'))}",
+                    *_format_history_hits_prompt_lines(item),
                 ]
             )
         )
 
     prompt = f"""
-你是股票简称预判助手。请根据每个简称的样例上下文，保守判断它最可能对应的股票代码和正式简称，并输出严格 JSON。
+你是股票简称预判助手。请根据每个简称的样例上下文和同博主历史命中对话，保守判断它最可能对应的股票代码和正式简称，并输出严格 JSON。
 
 输入列表：
 {chr(10).join(task_lines)}
@@ -236,6 +350,7 @@ def _predict_alias_tasks_with_ai(
 - alias_key 只能从输入列表里选，禁止编造。
 - 每个输入最多返回 1 条 prediction。
 - 没把握就保守：stock_code 和 official_name 可以留空，并把 is_uncertain 设成 true。
+- 同博主历史命中对话只用于简称消歧，证据不稳时继续返回 is_uncertain=true。
 - stock_code 必须是标准格式，比如 600519.SH、0005.HK、AAPL.US。
 - 不要输出 Markdown。
 """.strip()
