@@ -76,6 +76,11 @@ class _CompletedPostContextRow:
 
 
 @dataclass(frozen=True)
+class _FailedPostContextRow:
+    post: CloudPost
+
+
+@dataclass(frozen=True)
 class _ScheduledPostContextTask:
     sequence_id: int
     post: CloudPost
@@ -437,16 +442,18 @@ def _flush_completed_rows(
     source_engine,
     rows: list[_CompletedPostContextRow],
     processed_this_run: int,
+    advanced_this_run: int,
     scan_created_at: str,
     scan_post_uid: str,
     use_cursor: bool,
     cursor_file: Path,
     source_name: str,
     cursor_processed_count: int,
-) -> tuple[int, str, str, int]:
+) -> tuple[int, int, str, str, int]:
     if not rows:
         return (
             processed_this_run,
+            advanced_this_run,
             scan_created_at,
             scan_post_uid,
             cursor_processed_count,
@@ -454,6 +461,7 @@ def _flush_completed_rows(
     _write_completed_post_context_rows(source_engine=source_engine, rows=rows)
     for row in rows:
         processed_this_run += 1
+        advanced_this_run += 1
         scan_created_at = row.post.created_at
         scan_post_uid = row.post.post_uid
         if use_cursor:
@@ -473,7 +481,53 @@ def _flush_completed_rows(
             len(row.write_row.entities),
             processed_this_run,
         )
-    return processed_this_run, scan_created_at, scan_post_uid, cursor_processed_count
+    return (
+        processed_this_run,
+        advanced_this_run,
+        scan_created_at,
+        scan_post_uid,
+        cursor_processed_count,
+    )
+
+
+def _advance_failed_post(
+    *,
+    post: CloudPost,
+    failed_this_run: int,
+    advanced_this_run: int,
+    scan_created_at: str,
+    scan_post_uid: str,
+    use_cursor: bool,
+    cursor_file: Path,
+    source_name: str,
+    cursor_processed_count: int,
+) -> tuple[int, int, str, str, int]:
+    failed_this_run += 1
+    advanced_this_run += 1
+    scan_created_at = post.created_at
+    scan_post_uid = post.post_uid
+    if use_cursor:
+        cursor_processed_count += 1
+        _write_cursor_state(
+            cursor_file,
+            source=source_name,
+            last_created_at=scan_created_at,
+            last_post_uid=scan_post_uid,
+            processed_count=cursor_processed_count,
+        )
+    logger.warning(
+        "[post_context_backfill] skip_failed post_uid=%s created_at=%s failed=%s",
+        post.post_uid,
+        post.created_at,
+        failed_this_run,
+    )
+    return (
+        failed_this_run,
+        advanced_this_run,
+        scan_created_at,
+        scan_post_uid,
+        cursor_processed_count,
+    )
 
 
 def _resolve_write_batch_size(*, fetch_limit: int, ai_max_inflight: int) -> int:
@@ -525,7 +579,7 @@ def _fill_prefetch_window(
     limiter: RateLimiter,
     batch_size: int,
     limit: int,
-    processed_this_run: int,
+    advanced_this_run: int,
     scheduled_this_run: int,
     fetch_created_at: str,
     fetch_post_uid: str,
@@ -534,7 +588,7 @@ def _fill_prefetch_window(
     future_to_task: dict[Future[PostContextResult], _ScheduledPostContextTask],
 ) -> tuple[int, int, str, str, bool]:
     fetch_exhausted = False
-    while (scheduled_this_run - processed_this_run) < prefetch_post_limit:
+    while (scheduled_this_run - advanced_this_run) < prefetch_post_limit:
         remaining_limit = (
             max(0, int(limit) - int(scheduled_this_run)) if limit > 0 else 0
         )
@@ -781,12 +835,16 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         processed_this_run = 0
+        advanced_this_run = 0
+        failed_this_run = 0
         scheduled_this_run = 0
         fetch_created_at = scan_created_at
         fetch_post_uid = scan_post_uid
         next_sequence_id = 0
         next_ready_sequence = 0
-        completed_by_sequence: dict[int, _CompletedPostContextRow] = {}
+        completed_by_sequence: dict[
+            int, _CompletedPostContextRow | _FailedPostContextRow
+        ] = {}
         completed_rows: list[_CompletedPostContextRow] = []
         future_to_task: dict[Future[PostContextResult], _ScheduledPostContextTask] = {}
         initial_fetch_limit = min(batch_size, limit) if limit > 0 else batch_size
@@ -799,27 +857,42 @@ def main(argv: list[str] | None = None) -> int:
             ai_max_inflight=runtime_config.ai_max_inflight,
         )
         fetch_exhausted = False
-        try:
-            with ThreadPoolExecutor(
-                max_workers=runtime_config.ai_max_inflight
-            ) as executor:
-                while True:
-                    while next_ready_sequence in completed_by_sequence:
-                        completed_rows.append(
-                            completed_by_sequence.pop(next_ready_sequence)
-                        )
-                        next_ready_sequence += 1
-                        if len(completed_rows) < write_batch_size:
-                            continue
+        with ThreadPoolExecutor(max_workers=runtime_config.ai_max_inflight) as executor:
+            while True:
+                while next_ready_sequence in completed_by_sequence:
+                    completed_item = completed_by_sequence.pop(next_ready_sequence)
+                    next_ready_sequence += 1
+                    if isinstance(completed_item, _FailedPostContextRow):
+                        if completed_rows:
+                            (
+                                processed_this_run,
+                                advanced_this_run,
+                                scan_created_at,
+                                scan_post_uid,
+                                cursor_processed_count,
+                            ) = _flush_completed_rows(
+                                source_engine=source_engine,
+                                rows=completed_rows,
+                                processed_this_run=processed_this_run,
+                                advanced_this_run=advanced_this_run,
+                                scan_created_at=scan_created_at,
+                                scan_post_uid=scan_post_uid,
+                                use_cursor=use_cursor,
+                                cursor_file=cursor_file,
+                                source_name=source.name,
+                                cursor_processed_count=cursor_processed_count,
+                            )
+                            completed_rows = []
                         (
-                            processed_this_run,
+                            failed_this_run,
+                            advanced_this_run,
                             scan_created_at,
                             scan_post_uid,
                             cursor_processed_count,
-                        ) = _flush_completed_rows(
-                            source_engine=source_engine,
-                            rows=completed_rows,
-                            processed_this_run=processed_this_run,
+                        ) = _advance_failed_post(
+                            post=completed_item.post,
+                            failed_this_run=failed_this_run,
+                            advanced_this_run=advanced_this_run,
                             scan_created_at=scan_created_at,
                             scan_post_uid=scan_post_uid,
                             use_cursor=use_cursor,
@@ -827,58 +900,82 @@ def main(argv: list[str] | None = None) -> int:
                             source_name=source.name,
                             cursor_processed_count=cursor_processed_count,
                         )
-                        completed_rows = []
-                    if not fetch_exhausted:
-                        (
-                            scheduled_this_run,
-                            next_sequence_id,
-                            fetch_created_at,
-                            fetch_post_uid,
-                            fetch_exhausted,
-                        ) = _fill_prefetch_window(
-                            executor=executor,
-                            source_engine=source_engine,
-                            post_uids=cleaned_post_uids,
-                            from_created_at=from_created_at,
-                            runtime_config=runtime_config,
-                            limiter=limiter,
-                            batch_size=batch_size,
-                            limit=limit,
-                            processed_this_run=processed_this_run,
-                            scheduled_this_run=scheduled_this_run,
-                            fetch_created_at=fetch_created_at,
-                            fetch_post_uid=fetch_post_uid,
-                            next_sequence_id=next_sequence_id,
-                            prefetch_post_limit=prefetch_post_limit,
-                            future_to_task=future_to_task,
-                        )
-                    if not future_to_task:
-                        break
-                    done, _pending = wait(
-                        tuple(future_to_task),
-                        return_when=FIRST_COMPLETED,
+                        continue
+                    completed_rows.append(completed_item)
+                    if len(completed_rows) < write_batch_size:
+                        continue
+                    (
+                        processed_this_run,
+                        advanced_this_run,
+                        scan_created_at,
+                        scan_post_uid,
+                        cursor_processed_count,
+                    ) = _flush_completed_rows(
+                        source_engine=source_engine,
+                        rows=completed_rows,
+                        processed_this_run=processed_this_run,
+                        advanced_this_run=advanced_this_run,
+                        scan_created_at=scan_created_at,
+                        scan_post_uid=scan_post_uid,
+                        use_cursor=use_cursor,
+                        cursor_file=cursor_file,
+                        source_name=source.name,
+                        cursor_processed_count=cursor_processed_count,
                     )
-                    for future in done:
-                        task = future_to_task.pop(future)
-                        try:
-                            result = future.result()
-                        except Exception as err:
-                            raise _PostContextExtractError(post=task.post) from err
-                        completed_by_sequence[task.sequence_id] = (
-                            _build_completed_post_context_row(
-                                post=task.post,
-                                result=result,
-                            )
+                    completed_rows = []
+                if not fetch_exhausted:
+                    (
+                        scheduled_this_run,
+                        next_sequence_id,
+                        fetch_created_at,
+                        fetch_post_uid,
+                        fetch_exhausted,
+                    ) = _fill_prefetch_window(
+                        executor=executor,
+                        source_engine=source_engine,
+                        post_uids=cleaned_post_uids,
+                        from_created_at=from_created_at,
+                        runtime_config=runtime_config,
+                        limiter=limiter,
+                        batch_size=batch_size,
+                        limit=limit,
+                        advanced_this_run=advanced_this_run,
+                        scheduled_this_run=scheduled_this_run,
+                        fetch_created_at=fetch_created_at,
+                        fetch_post_uid=fetch_post_uid,
+                        next_sequence_id=next_sequence_id,
+                        prefetch_post_limit=prefetch_post_limit,
+                        future_to_task=future_to_task,
+                    )
+                if not future_to_task:
+                    break
+                done, _pending = wait(
+                    tuple(future_to_task),
+                    return_when=FIRST_COMPLETED,
+                )
+                for future in done:
+                    task = future_to_task.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception:
+                        logger.exception(
+                            "[post_context_backfill] failed post_uid=%s created_at=%s",
+                            task.post.post_uid,
+                            task.post.created_at,
                         )
-        except _PostContextExtractError as err:
-            logger.exception(
-                "[post_context_backfill] failed post_uid=%s created_at=%s",
-                err.post.post_uid,
-                err.post.created_at,
-            )
-            return 1
+                        completed_by_sequence[task.sequence_id] = _FailedPostContextRow(
+                            post=task.post
+                        )
+                        continue
+                    completed_by_sequence[task.sequence_id] = (
+                        _build_completed_post_context_row(
+                            post=task.post,
+                            result=result,
+                        )
+                    )
         (
             processed_this_run,
+            advanced_this_run,
             scan_created_at,
             scan_post_uid,
             cursor_processed_count,
@@ -886,6 +983,7 @@ def main(argv: list[str] | None = None) -> int:
             source_engine=source_engine,
             rows=completed_rows,
             processed_this_run=processed_this_run,
+            advanced_this_run=advanced_this_run,
             scan_created_at=scan_created_at,
             scan_post_uid=scan_post_uid,
             use_cursor=use_cursor,
@@ -894,13 +992,14 @@ def main(argv: list[str] | None = None) -> int:
             cursor_processed_count=cursor_processed_count,
         )
         logger.info(
-            "[post_context_backfill] finish source=%s processed=%s last_created_at=%s last_post_uid=%s",
+            "[post_context_backfill] finish source=%s processed=%s failed=%s last_created_at=%s last_post_uid=%s",
             source.name,
             processed_this_run,
+            failed_this_run,
             scan_created_at or "(empty)",
             scan_post_uid or "(empty)",
         )
-        return 0
+        return 1 if failed_this_run > 0 else 0
     finally:
         dispose_research_workbench_engine_from_env()
         source_engine.dispose()

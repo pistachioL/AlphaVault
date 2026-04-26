@@ -41,6 +41,32 @@ def _extract_text_from_response_content(content: Any) -> str:
     return "\n".join(parts).strip()
 
 
+def _extract_reasoning_text(message: Any) -> str:
+    reasoning_content = _response_attr(message, "reasoning_content")
+    if isinstance(reasoning_content, str):
+        text = reasoning_content.strip()
+        if text:
+            return text
+
+    provider_specific_fields = _response_attr(message, "provider_specific_fields")
+    provider_reasoning = _response_attr(provider_specific_fields, "reasoning_content")
+    if isinstance(provider_reasoning, str):
+        text = provider_reasoning.strip()
+        if text:
+            return text
+
+    thinking_blocks = _response_attr(message, "thinking_blocks")
+    return _extract_text_from_response_content(thinking_blocks)
+
+
+def _extract_text_from_message(message: Any) -> str:
+    content = _response_attr(message, "content")
+    extracted_content = _extract_text_from_response_content(content)
+    if extracted_content:
+        return extracted_content
+    return _extract_reasoning_text(message)
+
+
 def _extract_ai_text(response: Any, *, _seen_ids: Optional[set[int]] = None) -> str:
     if _seen_ids is None:
         _seen_ids = set()
@@ -69,23 +95,9 @@ def _extract_ai_text(response: Any, *, _seen_ids: Optional[set[int]] = None) -> 
         first_choice = choices[0]
         message = _response_attr(first_choice, "message")
         if message is not None:
-            content = _response_attr(message, "content")
-            extracted_choice_text = _extract_text_from_response_content(content)
+            extracted_choice_text = _extract_text_from_message(message)
             if extracted_choice_text:
                 return extracted_choice_text
-
-    if isinstance(response, dict):
-        raw_choices = response.get("choices")
-        if isinstance(raw_choices, list) and raw_choices:
-            first_choice = raw_choices[0]
-            if isinstance(first_choice, dict):
-                message = first_choice.get("message")
-                if isinstance(message, dict):
-                    extracted_choice_text = _extract_text_from_response_content(
-                        message.get("content")
-                    )
-                    if extracted_choice_text:
-                        return extracted_choice_text
     return ""
 
 
