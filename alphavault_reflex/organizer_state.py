@@ -11,6 +11,7 @@ from alphavault.domains.stock.key_match import (
     is_stock_code_value,
     normalize_stock_code,
 )
+from alphavault.domains.stock.keys import stock_value
 
 
 SECTION_STOCK_ALIAS = "stock_alias"
@@ -41,7 +42,43 @@ ALIAS_AI_PREVIEW_KEYS = (
 AI_VALIDATION_MARKETS = frozenset(("SH", "SZ", "BJ", "HK"))
 
 
-PendingRow = dict[str, str | bool]
+class AliasHistoryHitRow(TypedDict):
+    created_at: str
+    post_uid: str
+    dialogue_text: str
+
+
+class PendingRow(TypedDict, total=False):
+    alias_key: str
+    attempt_count: str
+    status: str
+    sample_post_uid: str
+    sample_post_url: str
+    sample_evidence: str
+    sample_raw_text_excerpt: str
+    history_hits: list[AliasHistoryHitRow]
+    history_hits_count: str
+    updated_at: str
+    ai_status: str
+    ai_stock_code: str
+    ai_official_name: str
+    ai_confidence: str
+    ai_reason: str
+    ai_uncertain: str
+    ai_validation_status: str
+    ai_status_display: str
+    ai_validation_label: str
+    selected: bool
+    candidate_id: str
+    relation_type: str
+    left_key: str
+    candidate_key: str
+    suggestion_reason: str
+    evidence_summary: str
+    ai_display_title: str
+    ai_display_label: str
+    row_kind: str
+    group_label: str
 
 
 class StockAliasPendingGroup(TypedDict):
@@ -68,6 +105,11 @@ def _load_alias_resolve_predictor_module() -> ModuleType:
 @cache
 def _load_research_workbench_module() -> ModuleType:
     return importlib.import_module("alphavault.research_workbench")
+
+
+@cache
+def _load_alias_history_context_module() -> ModuleType:
+    return importlib.import_module("alphavault.infra.ai.alias_history_context")
 
 
 @cache
@@ -168,6 +210,8 @@ def _decorate_alias_task_row(row: PendingRow) -> PendingRow:
     next_row.setdefault("sample_post_url", "")
     next_row.setdefault("sample_evidence", "")
     next_row.setdefault("sample_raw_text_excerpt", "")
+    next_row.setdefault("history_hits", [])
+    next_row.setdefault("history_hits_count", "0")
     next_row.setdefault("ai_status", "")
     next_row.setdefault("ai_stock_code", "")
     next_row.setdefault("ai_official_name", "")
@@ -195,6 +239,59 @@ def _load_sample_post_urls(rows: list[dict[str, object]]) -> dict[str, str]:
         return {}
     url_map, _ = _load_source_read_module().load_post_urls_from_env(sample_post_uids)
     return url_map
+
+
+def _normalize_alias_history_hits(value: object) -> list[AliasHistoryHitRow]:
+    if not isinstance(value, list):
+        return []
+    out: list[AliasHistoryHitRow] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        post_uid = str(item.get("post_uid") or "").strip()
+        dialogue_text = str(item.get("dialogue_text") or "").strip()
+        if not post_uid or not dialogue_text:
+            continue
+        out.append(
+            {
+                "created_at": str(item.get("created_at") or "").strip(),
+                "post_uid": post_uid,
+                "dialogue_text": dialogue_text,
+            }
+        )
+    return out
+
+
+def _load_alias_history_hits_by_key(
+    rows: list[dict[str, object]],
+) -> dict[str, list[AliasHistoryHitRow]]:
+    try:
+        history_context = _load_alias_history_context_module()
+    except BaseException:
+        return {}
+    cache_by_query: dict[tuple[str, str], list[AliasHistoryHitRow]] = {}
+    out: dict[str, list[AliasHistoryHitRow]] = {}
+    for row in rows:
+        alias_key = str(row.get("alias_key") or "").strip()
+        sample_post_uid = str(row.get("sample_post_uid") or "").strip()
+        alias_text = stock_value(alias_key).strip()
+        if not alias_key or not sample_post_uid or not alias_text:
+            continue
+        cache_key = (sample_post_uid, alias_text)
+        history_hits = cache_by_query.get(cache_key)
+        if history_hits is None:
+            try:
+                history_hits = _normalize_alias_history_hits(
+                    history_context.load_alias_history_hits(
+                        keyword_text=alias_text,
+                        sample_post_uid=sample_post_uid,
+                    )
+                )
+            except BaseException:
+                history_hits = []
+            cache_by_query[cache_key] = history_hits
+        out[alias_key] = list(history_hits)
+    return out
 
 
 def _apply_alias_ai_validation(
@@ -332,12 +429,13 @@ def _merge_alias_ai_preview_rows(
     merged_rows: list[PendingRow] = []
     for row in new_rows:
         merged_row = cast(PendingRow, dict(row))
+        merged_row_dict = cast(dict[str, object], merged_row)
         alias_key = str(merged_row.get("alias_key") or "").strip()
         matched_preview_fields = preview_by_alias_key.get(alias_key)
         if matched_preview_fields:
             for key, value in matched_preview_fields.items():
                 if not str(merged_row.get(key) or "").strip():
-                    merged_row[key] = value
+                    merged_row_dict[key] = value
         merged_rows.append(merged_row)
     return merged_rows
 
@@ -1486,12 +1584,14 @@ def load_pending_rows(
                 raise
             return [], str(exc)
         sample_post_urls = _load_sample_post_urls(task_rows)
+        history_hits_by_key = _load_alias_history_hits_by_key(task_rows)
         out: list[PendingRow] = []
         for row in task_rows:
             alias_key = str(row.get("alias_key") or "").strip()
             if not alias_key:
                 continue
             sample_post_uid = str(row.get("sample_post_uid") or "").strip()
+            history_hits = history_hits_by_key.get(alias_key, [])
             out.append(
                 _decorate_alias_task_row(
                     {
@@ -1506,6 +1606,8 @@ def load_pending_rows(
                         "sample_raw_text_excerpt": str(
                             row.get("sample_raw_text_excerpt") or ""
                         ).strip(),
+                        "history_hits": history_hits,
+                        "history_hits_count": str(len(history_hits)),
                         "updated_at": str(row.get("updated_at") or "").strip(),
                         "ai_status": str(row.get("ai_status") or "").strip(),
                         "ai_stock_code": str(row.get("ai_stock_code") or "").strip(),
@@ -1536,30 +1638,30 @@ def load_pending_rows(
         for row in pending_candidate_rows:
             if str(row.get("relation_type") or "").strip() != SECTION_STOCK_ALIAS:
                 continue
-            stock_alias_rows.append(
-                _decorate_stock_alias_row(
-                    {
-                        key: str(row.get(key) or "").strip()
-                        for key in [
-                            "candidate_id",
-                            "relation_type",
-                            "left_key",
-                            "right_key",
-                            "candidate_key",
-                            "relation_label",
-                            "suggestion_reason",
-                            "evidence_summary",
-                            "score",
-                            "ai_status",
-                            "ai_reason",
-                            "ai_confidence",
-                            "sample_post_uid",
-                            "sample_evidence",
-                            "sample_raw_text_excerpt",
-                        ]
-                    }
-                )
+            stock_alias_row = cast(
+                PendingRow,
+                {
+                    key: str(row.get(key) or "").strip()
+                    for key in [
+                        "candidate_id",
+                        "relation_type",
+                        "left_key",
+                        "right_key",
+                        "candidate_key",
+                        "relation_label",
+                        "suggestion_reason",
+                        "evidence_summary",
+                        "score",
+                        "ai_status",
+                        "ai_reason",
+                        "ai_confidence",
+                        "sample_post_uid",
+                        "sample_evidence",
+                        "sample_raw_text_excerpt",
+                    ]
+                },
             )
+            stock_alias_rows.append(_decorate_stock_alias_row(stock_alias_row))
         return stock_alias_rows[: max(1, int(stock_alias_limit))], ""
 
     posts, assertions, err = _load_source_read_module().load_sources_from_env()

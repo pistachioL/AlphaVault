@@ -4,6 +4,7 @@ import reflex as rx
 from reflex.vars.base import Var
 
 from alphavault_reflex.organizer_state import (
+    AliasHistoryHitRow,
     OrganizerState,
     PendingRow,
     SECTION_ALIAS_MANUAL,
@@ -14,6 +15,7 @@ from alphavault_reflex.organizer_state import (
 
 LOADING_TEXT = "加载中…"
 SAMPLE_POST_LABEL = "样例帖子"
+ALIAS_HISTORY_CONTEXT_TITLE = "AI 上下文：同博主历史命中（最多 5 条）"
 
 
 def _checkbox_checked(value: object) -> bool | rx.Var[bool]:
@@ -403,6 +405,61 @@ def _manual_alias_sample_post(row: rx.Var[PendingRow]) -> rx.Component:
     )
 
 
+def _manual_alias_history_hit(hit: rx.Var[AliasHistoryHitRow]) -> rx.Component:
+    return rx.el.div(
+        rx.cond(
+            hit["created_at"] != "",
+            rx.text(hit["created_at"], class_name="av-research-muted"),
+            rx.el.div(),
+        ),
+        rx.text(
+            "帖子：" + hit["post_uid"],
+            class_name="av-research-muted",
+        ),
+        rx.text(
+            hit["dialogue_text"],
+            class_name="av-research-muted",
+            style={"whiteSpace": "pre-wrap"},
+        ),
+        style={
+            "display": "flex",
+            "flexDirection": "column",
+            "gap": "6px",
+            "padding": "10px 12px",
+            "border": "1px solid rgba(15, 23, 42, 0.10)",
+            "borderRadius": "10px",
+            "background": "rgba(248, 250, 252, 0.65)",
+        },
+    )
+
+
+def _manual_alias_history_context(row: rx.Var[PendingRow]) -> rx.Component:
+    return rx.cond(
+        row["history_hits_count"] != "0",
+        rx.vstack(
+            rx.text(
+                ALIAS_HISTORY_CONTEXT_TITLE
+                + "（"
+                + row["history_hits_count"]
+                + " 条）",
+                class_name="av-research-muted",
+            ),
+            rx.el.div(
+                rx.foreach(row["history_hits"], _manual_alias_history_hit),
+                style={
+                    "display": "flex",
+                    "flexDirection": "column",
+                    "gap": "10px",
+                },
+            ),
+            spacing="2",
+            align="stretch",
+            width="100%",
+        ),
+        rx.el.div(),
+    )
+
+
 def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
     row_action_pending = (
         OrganizerState.alias_manual_action_pending_key == row["alias_key"]
@@ -440,6 +497,7 @@ def _manual_alias_card(row: rx.Var[PendingRow]) -> rx.Component:
             ),
             rx.el.div(),
         ),
+        _manual_alias_history_context(row),
         rx.el.div(
             rx.text(
                 f"AI 状态：{row['ai_status_display']}",

@@ -66,7 +66,9 @@ def test_normalized_stock_alias_limit_handles_invalid_value() -> None:
 def test_load_pending_rows_for_alias_manual_adds_sample_post_url() -> None:
     original_research_loader = organizer_state._load_research_workbench_module
     original_source_loader = organizer_state._load_source_read_module
+    original_history_loader = organizer_state._load_alias_history_context_module
     seen_post_uids: list[str] = []
+    seen_history_queries: list[tuple[str, str]] = []
 
     class _FakeResearchWorkbenchModule:
         @staticmethod
@@ -83,7 +85,7 @@ def test_load_pending_rows_for_alias_manual_adds_sample_post_url() -> None:
             assert limit == 3
             return [
                 {
-                    "alias_key": "stock_alias:紫金",
+                    "alias_key": "stock:紫金",
                     "attempt_count": "2",
                     "sample_post_uid": "xueqiu:status:373998047",
                     "sample_evidence": "提到紫金",
@@ -97,7 +99,7 @@ def test_load_pending_rows_for_alias_manual_adds_sample_post_url() -> None:
             alias_keys: list[str],
         ) -> list[str]:
             assert engine == "engine"
-            assert alias_keys == ["stock_alias:紫金"]
+            assert alias_keys == ["stock:紫金"]
             return []
 
     class _FakeSourceReadModule:
@@ -110,14 +112,36 @@ def test_load_pending_rows_for_alias_manual_adds_sample_post_url() -> None:
                 "xueqiu:status:373998047": "https://xueqiu.com/S/SH601899/373998047"
             }, ""
 
+    class _FakeAliasHistoryContextModule:
+        @staticmethod
+        def load_alias_history_hits(
+            *,
+            keyword_text: str,
+            sample_post_uid: str,
+            limit: int = 5,
+        ) -> list[dict[str, str]]:
+            seen_history_queries.append((keyword_text, sample_post_uid))
+            assert limit == 5
+            return [
+                {
+                    "created_at": "2026-04-27 09:30:00",
+                    "post_uid": "xueqiu:status:old-1",
+                    "dialogue_text": "紫金今天还是强。",
+                }
+            ]
+
     def _fake_research_loader() -> _FakeResearchWorkbenchModule:
         return _FakeResearchWorkbenchModule()
 
     def _fake_source_loader() -> _FakeSourceReadModule:
         return _FakeSourceReadModule()
 
+    def _fake_history_loader() -> _FakeAliasHistoryContextModule:
+        return _FakeAliasHistoryContextModule()
+
     organizer_state._load_research_workbench_module = _fake_research_loader  # type: ignore[assignment]
     organizer_state._load_source_read_module = _fake_source_loader  # type: ignore[assignment]
+    organizer_state._load_alias_history_context_module = _fake_history_loader  # type: ignore[assignment]
     try:
         rows, err = organizer_state.load_pending_rows(
             organizer_state.SECTION_ALIAS_MANUAL,
@@ -126,18 +150,29 @@ def test_load_pending_rows_for_alias_manual_adds_sample_post_url() -> None:
     finally:
         organizer_state._load_research_workbench_module = original_research_loader
         organizer_state._load_source_read_module = original_source_loader
+        organizer_state._load_alias_history_context_module = original_history_loader
 
     assert err == ""
     assert seen_post_uids == ["xueqiu:status:373998047"]
+    assert seen_history_queries == [("紫金", "xueqiu:status:373998047")]
     assert len(rows) == 1
     assert rows[0]["sample_post_uid"] == "xueqiu:status:373998047"
     assert rows[0]["sample_post_url"] == "https://xueqiu.com/S/SH601899/373998047"
+    assert rows[0]["history_hits_count"] == "1"
+    assert rows[0]["history_hits"] == [
+        {
+            "created_at": "2026-04-27 09:30:00",
+            "post_uid": "xueqiu:status:old-1",
+            "dialogue_text": "紫金今天还是强。",
+        }
+    ]
     assert rows[0]["ai_status_display"] == "未跑"
 
 
 def test_load_pending_rows_for_alias_manual_ignores_post_url_lookup_error() -> None:
     original_research_loader = organizer_state._load_research_workbench_module
     original_source_loader = organizer_state._load_source_read_module
+    original_history_loader = organizer_state._load_alias_history_context_module
 
     class _FakeResearchWorkbenchModule:
         @staticmethod
@@ -154,7 +189,7 @@ def test_load_pending_rows_for_alias_manual_ignores_post_url_lookup_error() -> N
             assert limit == 1
             return [
                 {
-                    "alias_key": "stock_alias:中芯",
+                    "alias_key": "stock:中芯",
                     "sample_post_uid": "xueqiu:status:123",
                 }
             ]
@@ -165,7 +200,7 @@ def test_load_pending_rows_for_alias_manual_ignores_post_url_lookup_error() -> N
             alias_keys: list[str],
         ) -> list[str]:
             assert engine == "engine"
-            assert alias_keys == ["stock_alias:中芯"]
+            assert alias_keys == ["stock:中芯"]
             return []
 
     class _FakeSourceReadModule:
@@ -176,14 +211,28 @@ def test_load_pending_rows_for_alias_manual_ignores_post_url_lookup_error() -> N
             assert post_uids == ["xueqiu:status:123"]
             return {}, "postgres_connect_error:RuntimeError"
 
+    class _FakeAliasHistoryContextModule:
+        @staticmethod
+        def load_alias_history_hits(
+            *,
+            keyword_text: str,
+            sample_post_uid: str,
+            limit: int = 5,
+        ) -> list[dict[str, str]]:
+            raise RuntimeError("history_lookup_failed")
+
     def _fake_research_loader() -> _FakeResearchWorkbenchModule:
         return _FakeResearchWorkbenchModule()
 
     def _fake_source_loader() -> _FakeSourceReadModule:
         return _FakeSourceReadModule()
 
+    def _fake_history_loader() -> _FakeAliasHistoryContextModule:
+        return _FakeAliasHistoryContextModule()
+
     organizer_state._load_research_workbench_module = _fake_research_loader  # type: ignore[assignment]
     organizer_state._load_source_read_module = _fake_source_loader  # type: ignore[assignment]
+    organizer_state._load_alias_history_context_module = _fake_history_loader  # type: ignore[assignment]
     try:
         rows, err = organizer_state.load_pending_rows(
             organizer_state.SECTION_ALIAS_MANUAL,
@@ -192,8 +241,11 @@ def test_load_pending_rows_for_alias_manual_ignores_post_url_lookup_error() -> N
     finally:
         organizer_state._load_research_workbench_module = original_research_loader
         organizer_state._load_source_read_module = original_source_loader
+        organizer_state._load_alias_history_context_module = original_history_loader
 
     assert err == ""
     assert len(rows) == 1
     assert rows[0]["sample_post_uid"] == "xueqiu:status:123"
     assert rows[0]["sample_post_url"] == ""
+    assert rows[0]["history_hits_count"] == "0"
+    assert rows[0]["history_hits"] == []
