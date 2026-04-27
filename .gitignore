@@ -1,4 +1,5 @@
 .states
+.script_state
 .web
 *.db
 assets/external/

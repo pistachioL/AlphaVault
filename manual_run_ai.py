@@ -15,25 +15,11 @@ from alphavault.logging_config import (
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
-    DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
-    DEFAULT_AI_RETRY_COUNT,
-    DEFAULT_AI_TEMPERATURE,
-    DEFAULT_MODEL,
     DEFAULT_PROMPT_VERSION,
 )
 from alphavault.constants import (
-    ENV_AI_API_KEY,
-    ENV_AI_API_MODE,
-    ENV_AI_BASE_URL,
-    ENV_AI_MODEL,
     ENV_AI_PROMPT_VERSION,
-    ENV_AI_REASONING_EFFORT,
-    ENV_AI_RETRIES,
-    ENV_AI_RPM,
     ENV_AI_STREAM,
-    ENV_AI_TEMPERATURE,
-    ENV_AI_TIMEOUT_SEC,
     ENV_AI_TRACE_OUT,
 )
 from alphavault.db.postgres_db import PostgresEngine, ensure_postgres_engine
@@ -41,7 +27,13 @@ from alphavault.db.postgres_env import (
     require_postgres_source_platform,
     require_postgres_source_from_env,
 )
-from alphavault.rss.utils import RateLimiter, env_bool, env_float, env_int
+from alphavault.infra.ai.runtime_config import (
+    AI_REASONING_EFFORT_CHOICES,
+    AI_TASK_POST_ANALYSIS,
+    ai_task_runtime_config_from_env,
+    apply_ai_runtime_config_overrides,
+)
+from alphavault.rss.utils import RateLimiter, env_bool
 from alphavault.worker.post_processor import process_one_post_uid
 from alphavault.worker.runtime_models import LLMConfig
 
@@ -51,9 +43,10 @@ logger = get_logger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    ai_retries_env = env_int(ENV_AI_RETRIES)
-    ai_rpm_env = env_float(ENV_AI_RPM)
-    ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_POST_ANALYSIS,
+        timeout_seconds_default=1000.0,
+    )
 
     parser = argparse.ArgumentParser(
         description="Manual run AI for specific post_uid(s)"
@@ -66,10 +59,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     # AI config (same meaning as worker)
-    parser.add_argument("--model", default=os.getenv(ENV_AI_MODEL, DEFAULT_MODEL))
+    parser.add_argument("--model", default=env_config.model)
     parser.add_argument(
         "--base-url",
-        default=os.getenv(ENV_AI_BASE_URL, "").strip(),
+        default=env_config.base_url,
         help="可选：OpenAI 兼容接口 base_url（也可用 AI_BASE_URL）",
     )
     parser.add_argument(
@@ -77,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--api-mode",
-        default=os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE),
+        default=env_config.api_mode,
         choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
     )
     parser.add_argument(
@@ -90,30 +83,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ai-retries",
         type=int,
-        default=ai_retries_env
-        if ai_retries_env is not None
-        else DEFAULT_AI_RETRY_COUNT,
+        default=int(env_config.retries),
     )
     parser.add_argument(
         "--ai-temperature",
         type=float,
-        default=float(os.getenv(ENV_AI_TEMPERATURE, str(DEFAULT_AI_TEMPERATURE))),
+        default=float(env_config.temperature),
     )
     parser.add_argument(
         "--ai-reasoning-effort",
-        default=os.getenv(ENV_AI_REASONING_EFFORT, DEFAULT_AI_REASONING_EFFORT),
-        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        default=env_config.reasoning_effort,
+        choices=AI_REASONING_EFFORT_CHOICES,
     )
     parser.add_argument(
         "--ai-rpm",
         type=float,
-        default=ai_rpm_env if ai_rpm_env is not None else 0.0,
+        default=float(env_config.ai_rpm),
         help="每分钟最多多少次（0=不等）",
     )
     parser.add_argument(
         "--ai-timeout-sec",
         type=float,
-        default=ai_timeout_env if ai_timeout_env is not None else 1000.0,
+        default=float(env_config.timeout_seconds),
     )
     parser.add_argument("--trace-out", type=Path, default=None)
     parser.add_argument(
@@ -143,6 +134,10 @@ def _parse_post_uids(value: str) -> list[str]:
 
 
 def _build_config(args: argparse.Namespace) -> LLMConfig:
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_POST_ANALYSIS,
+        timeout_seconds_default=1000.0,
+    )
     ai_stream_env = env_bool(ENV_AI_STREAM)
     ai_stream = True
     if ai_stream_env is not None:
@@ -155,29 +150,35 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
     if trace_out_env and trace_out is None:
         trace_out = Path(trace_out_env)
 
-    api_key = ""
-    if args.api_key:
-        api_key = str(args.api_key).strip()
-    else:
-        api_key = os.getenv(ENV_AI_API_KEY, "").strip()
+    runtime_config = apply_ai_runtime_config_overrides(
+        env_config,
+        api_key=args.api_key,
+        model=args.model,
+        base_url=args.base_url,
+        api_mode=args.api_mode,
+        temperature=args.ai_temperature,
+        reasoning_effort=args.ai_reasoning_effort,
+        timeout_seconds=args.ai_timeout_sec,
+        retries=args.ai_retries,
+        ai_rpm=args.ai_rpm,
+    )
+    api_key = str(runtime_config.api_key or "").strip()
     if not api_key:
-        raise RuntimeError(f"Missing {ENV_AI_API_KEY}. Set {ENV_AI_API_KEY}.")
+        raise RuntimeError("Missing AI task runtime api_key.")
 
     return LLMConfig(
         api_key=api_key,
-        model=str(args.model or DEFAULT_MODEL),
+        model=str(runtime_config.model or ""),
         prompt_version=str(args.prompt_version or DEFAULT_PROMPT_VERSION),
         relevant_threshold=max(0.0, min(1.0, float(args.relevant_threshold))),
-        base_url=str(args.base_url or ""),
-        api_mode=str(args.api_mode or DEFAULT_AI_MODE),
+        base_url=str(runtime_config.base_url or ""),
+        api_mode=str(runtime_config.api_mode or ""),
         ai_stream=ai_stream,
-        ai_retries=max(0, int(args.ai_retries)),
-        ai_temperature=float(args.ai_temperature),
-        ai_reasoning_effort=str(
-            args.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT
-        ),
-        ai_rpm=max(0.0, float(args.ai_rpm or 0.0)),
-        ai_timeout_seconds=max(1.0, float(args.ai_timeout_sec)),
+        ai_retries=max(0, int(runtime_config.retries)),
+        ai_temperature=float(runtime_config.temperature),
+        ai_reasoning_effort=str(runtime_config.reasoning_effort or ""),
+        ai_rpm=max(0.0, float(runtime_config.ai_rpm)),
+        ai_timeout_seconds=max(1.0, float(runtime_config.timeout_seconds)),
         trace_out=trace_out,
     )
 

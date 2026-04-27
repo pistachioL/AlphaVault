@@ -2,30 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-import os
 from pathlib import Path
 
 from alphavault.ai._client import _call_ai_with_litellm
-from alphavault.ai.analyze import (
-    DEFAULT_AI_MODE,
-    DEFAULT_AI_RETRY_COUNT,
-    DEFAULT_AI_TEMPERATURE,
-    DEFAULT_MODEL,
-)
+from alphavault.ai.analyze import DEFAULT_AI_MODE, DEFAULT_MODEL
 from alphavault.ai.post_context_prompt import POST_CONTEXT_PROMPT_VERSION
 from alphavault.ai.tag_validate import validate_post_context_ai_result
-from alphavault.constants import (
-    ENV_AI_CONTEXT_API_KEY,
-    ENV_AI_CONTEXT_API_MODE,
-    ENV_AI_CONTEXT_BASE_URL,
-    ENV_AI_CONTEXT_MAX_INFLIGHT,
-    ENV_AI_CONTEXT_MODEL,
-    ENV_AI_CONTEXT_REASONING_EFFORT,
-    ENV_AI_CONTEXT_RETRIES,
-    ENV_AI_CONTEXT_RPM,
-    ENV_AI_CONTEXT_TEMPERATURE,
-    ENV_AI_CONTEXT_TIMEOUT_SEC,
-)
 from alphavault.db.source_queue import CloudPost
 from alphavault.domains.common.assertion_entities import (
     ASSERTION_ENTITY_TYPE_STOCK,
@@ -37,8 +19,9 @@ from alphavault.domains.entity_match import (
     resolve_assertion_mentions,
 )
 from alphavault.infra.ai.runtime_config import (
+    AI_TASK_POST_CONTEXT,
     AiRuntimeConfig,
-    ai_runtime_config_from_env,
+    ai_task_runtime_config_from_env,
 )
 from alphavault.logging_config import get_logger
 from alphavault.rss.utils import now_str
@@ -62,79 +45,6 @@ class PostContextResult:
     mentions: list[dict[str, object]]
     entities: list[dict[str, object]]
     entity_match_result: EntityMatchResult
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return float(default)
-    try:
-        return float(str(raw).strip())
-    except Exception:
-        return float(default)
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return int(default)
-    try:
-        return int(str(raw).strip())
-    except Exception:
-        return int(default)
-
-
-def _env_optional_text(name: str) -> str | None:
-    raw = os.getenv(name)
-    if raw is None:
-        return None
-    return str(raw).strip()
-
-
-def post_context_ai_runtime_config_from_env(
-    *,
-    timeout_seconds_default: float,
-) -> AiRuntimeConfig:
-    fallback = ai_runtime_config_from_env(
-        timeout_seconds_default=timeout_seconds_default
-    )
-    reasoning_effort = _env_optional_text(ENV_AI_CONTEXT_REASONING_EFFORT)
-    return AiRuntimeConfig(
-        api_key=os.getenv(ENV_AI_CONTEXT_API_KEY, "").strip() or fallback.api_key,
-        model=os.getenv(ENV_AI_CONTEXT_MODEL, DEFAULT_MODEL).strip() or fallback.model,
-        base_url=os.getenv(ENV_AI_CONTEXT_BASE_URL, "").strip() or fallback.base_url,
-        api_mode=os.getenv(ENV_AI_CONTEXT_API_MODE, DEFAULT_AI_MODE).strip()
-        or fallback.api_mode,
-        temperature=_env_float(
-            ENV_AI_CONTEXT_TEMPERATURE,
-            fallback.temperature or DEFAULT_AI_TEMPERATURE,
-        ),
-        reasoning_effort=(
-            fallback.reasoning_effort if reasoning_effort is None else reasoning_effort
-        ),
-        timeout_seconds=max(
-            1.0,
-            _env_float(
-                ENV_AI_CONTEXT_TIMEOUT_SEC,
-                fallback.timeout_seconds or timeout_seconds_default,
-            ),
-        ),
-        retries=max(
-            0,
-            _env_int(
-                ENV_AI_CONTEXT_RETRIES,
-                fallback.retries or DEFAULT_AI_RETRY_COUNT,
-            ),
-        ),
-        ai_rpm=max(0.0, _env_float(ENV_AI_CONTEXT_RPM, fallback.ai_rpm)),
-        ai_max_inflight=max(
-            1,
-            _env_int(
-                ENV_AI_CONTEXT_MAX_INFLIGHT,
-                fallback.ai_max_inflight or 1,
-            ),
-        ),
-    )
 
 
 def _clip_text(value: object, *, limit: int) -> str:
@@ -360,9 +270,10 @@ def extract_post_context_result(
 
 
 __all__ = [
+    "AI_TASK_POST_CONTEXT",
     "POST_CONTEXT_PROMPT_VERSION",
     "PostContextResult",
+    "ai_task_runtime_config_from_env",
     "extract_post_context_result",
     "extract_stock_entity_keys_from_entities",
-    "post_context_ai_runtime_config_from_env",
 ]

@@ -17,10 +17,6 @@ from typing import Any, Dict, List, Optional
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
-    DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
-    DEFAULT_AI_TEMPERATURE,
-    DEFAULT_MODEL as DEFAULT_ANALYZE_MODEL,
     DEFAULT_PROMPT_VERSION,
     AnalyzeResult,
     analyze_with_litellm,
@@ -29,10 +25,14 @@ from alphavault.ai.analyze import (
 )
 from alphavault.constants import (
     ENV_AI_API_KEY,
-    ENV_AI_API_MODE,
-    ENV_AI_BASE_URL,
-    ENV_AI_MODEL,
     ENV_AI_PROMPT_VERSION,
+)
+from alphavault.env import load_dotenv_if_present
+from alphavault.infra.ai.runtime_config import (
+    AI_REASONING_EFFORT_CHOICES,
+    AI_TASK_POST_ANALYSIS,
+    ai_task_runtime_config_from_env,
+    apply_ai_runtime_config_overrides,
 )
 from alphavault.logging_config import (
     add_log_level_argument,
@@ -41,28 +41,10 @@ from alphavault.logging_config import (
 )
 
 
-def _env_first(*keys: str, default: str = "") -> str:
-    for key in keys:
-        value = str(os.getenv(key, "") or "").strip()
-        if value:
-            return value
-    return default
-
-
 DEFAULT_CSV_PATH = Path("weibo/挖地瓜的超级鹿鼎公/3962719063_new.csv")
 DEFAULT_DB_PATH = Path("workdb.sqlite")
 DEFAULT_AUTHOR = "挖地瓜的超级鹿鼎公"
 DEFAULT_USER_ID = "3962719063"
-
-DEFAULT_MODEL = _env_first(ENV_AI_MODEL, "GEMINI_MODEL", default=DEFAULT_ANALYZE_MODEL)
-DEFAULT_BASE_URL = _env_first(ENV_AI_BASE_URL, "GEMINI_BASE_URL", default="")
-DEFAULT_API_MODE = _env_first(ENV_AI_API_MODE, default=DEFAULT_AI_MODE)
-DEFAULT_PROMPT_VERSION_LOCAL = _env_first(
-    ENV_AI_PROMPT_VERSION,
-    default=DEFAULT_PROMPT_VERSION,
-)
-DEFAULT_AI_MAX_INFLIGHT = int(os.getenv("AI_MAX_INFLIGHT", "32"))
-DEFAULT_INGEST_AI_RETRIES = int(os.getenv("INGEST_AI_RETRIES", "1"))
 DEFAULT_HEARTBEAT_SECONDS = float(os.getenv("INGEST_HEARTBEAT_SECONDS", "15"))
 logger = get_logger(__name__)
 
@@ -1131,6 +1113,11 @@ def process_db_status(
 
 
 def main() -> None:
+    load_dotenv_if_present()
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_POST_ANALYSIS,
+        timeout_seconds_default=1000.0,
+    )
     parser = argparse.ArgumentParser(
         description="Parse Weibo CSV, call shared AI tagging logic, write posts/assertions into SQLite workdb."
     )
@@ -1138,35 +1125,47 @@ def main() -> None:
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--author", default=DEFAULT_AUTHOR)
     parser.add_argument("--user-id", default=DEFAULT_USER_ID)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    parser.add_argument("--model", default=env_config.model)
+    parser.add_argument("--base-url", default=env_config.base_url)
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--api-key-env", default=None)
     parser.add_argument(
         "--api-mode",
-        default=DEFAULT_API_MODE,
+        default=env_config.api_mode,
         choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
     )
     parser.add_argument("--ai-stream", action="store_true")
-    parser.add_argument("--prompt-version", default=DEFAULT_PROMPT_VERSION_LOCAL)
+    parser.add_argument(
+        "--prompt-version",
+        default=os.getenv(ENV_AI_PROMPT_VERSION, DEFAULT_PROMPT_VERSION).strip()
+        or DEFAULT_PROMPT_VERSION,
+    )
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sleep-seconds", type=float, default=0.2)
     parser.add_argument("--relevant-threshold", type=float, default=0.35)
     parser.add_argument("--reprocess", action="store_true")
     parser.add_argument("--timeout-seconds", type=float, default=60.0)
     parser.add_argument("--ai-timeout-sec", type=float, default=None)
-    parser.add_argument("--ai-retries", type=int, default=DEFAULT_INGEST_AI_RETRIES)
-    parser.add_argument("--ai-temperature", type=float, default=DEFAULT_AI_TEMPERATURE)
+    parser.add_argument("--ai-retries", type=int, default=int(env_config.retries))
+    parser.add_argument(
+        "--ai-temperature",
+        type=float,
+        default=float(env_config.temperature),
+    )
     parser.add_argument(
         "--ai-reasoning-effort",
-        default=DEFAULT_AI_REASONING_EFFORT,
-        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        default=env_config.reasoning_effort,
+        choices=AI_REASONING_EFFORT_CHOICES,
     )
-    parser.add_argument("--ai-rpm", type=float, default=0.0)
+    parser.add_argument("--ai-rpm", type=float, default=float(env_config.ai_rpm))
     parser.add_argument(
         "--heartbeat-seconds", type=float, default=DEFAULT_HEARTBEAT_SECONDS
     )
-    parser.add_argument("--ai-max-inflight", type=int, default=DEFAULT_AI_MAX_INFLIGHT)
+    parser.add_argument(
+        "--ai-max-inflight",
+        type=int,
+        default=int(env_config.ai_max_inflight),
+    )
     parser.add_argument("--trace-out", type=Path, default=None)
     parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument(
@@ -1186,45 +1185,57 @@ def main() -> None:
     args = parser.parse_args()
     configure_logging(level=args.log_level)
 
-    api_key = ""
+    api_key_override: str | None = None
     if args.api_key:
-        api_key = str(args.api_key).strip()
-    else:
+        api_key_override = str(args.api_key).strip()
+    elif args.api_key_env:
         key_env = str(args.api_key_env or ENV_AI_API_KEY).strip()
         if key_env:
-            api_key = os.getenv(key_env, "").strip()
-        if not api_key and key_env != "GEMINI_API_KEY":
-            api_key = os.getenv("GEMINI_API_KEY", "").strip()
-
+            api_key_override = os.getenv(key_env, "").strip()
+    runtime_config = apply_ai_runtime_config_overrides(
+        env_config,
+        api_key=api_key_override,
+        model=args.model,
+        base_url=args.base_url,
+        api_mode=args.api_mode,
+        temperature=args.ai_temperature,
+        reasoning_effort=args.ai_reasoning_effort,
+        timeout_seconds=(
+            args.ai_timeout_sec
+            if args.ai_timeout_sec is not None
+            else args.timeout_seconds
+        ),
+        retries=args.ai_retries,
+        ai_rpm=args.ai_rpm,
+        ai_max_inflight=args.ai_max_inflight,
+    )
+    api_key = str(runtime_config.api_key or "").strip()
     if not api_key:
         raise RuntimeError(
-            f"Missing API key. Provide --api-key or set {ENV_AI_API_KEY} (fallback GEMINI_API_KEY)."
+            f"Missing API key. Provide --api-key or set {ENV_AI_API_KEY}."
         )
-    timeout_seconds = (
-        args.ai_timeout_sec if args.ai_timeout_sec is not None else args.timeout_seconds
-    )
 
     if args.only_status:
         process_db_status(
             db_path=args.db,
             api_key=api_key,
-            model=args.model,
+            model=runtime_config.model,
             prompt_version=args.prompt_version,
             limit=args.limit,
             sleep_seconds=args.sleep_seconds,
             only_status=str(args.only_status),
             relevant_threshold=max(0.0, min(1.0, args.relevant_threshold)),
-            base_url=args.base_url,
-            api_mode=args.api_mode,
+            base_url=runtime_config.base_url,
+            api_mode=runtime_config.api_mode,
             ai_stream=args.ai_stream,
-            ai_retries=max(0, args.ai_retries),
-            ai_temperature=args.ai_temperature,
-            ai_reasoning_effort=args.ai_reasoning_effort,
-            ai_rpm=max(0.0, args.ai_rpm),
-            ai_max_inflight=max(1, args.ai_max_inflight),
+            ai_retries=max(0, int(runtime_config.retries)),
+            ai_temperature=float(runtime_config.temperature),
+            ai_reasoning_effort=runtime_config.reasoning_effort,
+            ai_rpm=max(0.0, float(runtime_config.ai_rpm)),
+            ai_max_inflight=max(1, int(runtime_config.ai_max_inflight)),
             heartbeat_seconds=max(0.0, args.heartbeat_seconds),
             trace_out=args.trace_out,
-            timeout_seconds=max(1.0, timeout_seconds),
+            timeout_seconds=max(1.0, float(runtime_config.timeout_seconds)),
             progress_every=max(0, args.progress_every),
         )
         return
@@ -1236,7 +1247,7 @@ def main() -> None:
         csv_path=args.csv,
         db_path=args.db,
         api_key=api_key,
-        model=args.model,
+        model=runtime_config.model,
         prompt_version=args.prompt_version,
         author=args.author,
         user_id=args.user_id,
@@ -1244,17 +1255,17 @@ def main() -> None:
         sleep_seconds=args.sleep_seconds,
         reprocess=args.reprocess,
         relevant_threshold=max(0.0, min(1.0, args.relevant_threshold)),
-        base_url=args.base_url,
-        api_mode=args.api_mode,
+        base_url=runtime_config.base_url,
+        api_mode=runtime_config.api_mode,
         ai_stream=args.ai_stream,
-        ai_retries=max(0, args.ai_retries),
-        ai_temperature=args.ai_temperature,
-        ai_reasoning_effort=args.ai_reasoning_effort,
-        ai_rpm=max(0.0, args.ai_rpm),
-        ai_max_inflight=max(1, args.ai_max_inflight),
+        ai_retries=max(0, int(runtime_config.retries)),
+        ai_temperature=float(runtime_config.temperature),
+        ai_reasoning_effort=runtime_config.reasoning_effort,
+        ai_rpm=max(0.0, float(runtime_config.ai_rpm)),
+        ai_max_inflight=max(1, int(runtime_config.ai_max_inflight)),
         heartbeat_seconds=max(0.0, args.heartbeat_seconds),
         trace_out=args.trace_out,
-        timeout_seconds=max(1.0, timeout_seconds),
+        timeout_seconds=max(1.0, float(runtime_config.timeout_seconds)),
         progress_every=max(0, args.progress_every),
     )
 

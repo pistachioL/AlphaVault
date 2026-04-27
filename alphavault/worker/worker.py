@@ -58,7 +58,7 @@ def main() -> None:
 
     config = _build_config(args)
     limiter = RateLimiter(config.ai_rpm)
-    ai_cap = max(1, int(getattr(args, "ai_max_inflight", 1) or 1))
+    ai_cap = max(1, int(getattr(config, "ai_max_inflight", 1) or 1))
 
     rss_active_hours = _resolve_rss_active_hours_from_env()
     rss_interval_seconds = _resolve_rss_interval_seconds()

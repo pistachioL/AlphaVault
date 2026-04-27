@@ -66,6 +66,11 @@ export AI_REASONING_EFFORT="xhigh"
 export AI_RPM="12"
 export AI_RETRIES="11"
 export AI_MAX_INFLIGHT="30"
+export AI_TASK_POST_CONTEXT_PROFILE="context"
+export AI_PROFILE_CONTEXT_MODEL="openai/gpt-5.4"
+export AI_PROFILE_CONTEXT_LIMIT_GROUP="context_lane"
+export AI_LIMIT_GROUP_CONTEXT_LANE_RPM="12"
+export AI_LIMIT_GROUP_CONTEXT_LANE_MAX_INFLIGHT="50"
 export AI_QUEUE_ACK_TIMEOUT_SEC="3600"
 export AI_TRACE_OUT="trace.txt"
 
@@ -79,6 +84,7 @@ uv run python weibo_rss_worker.py --log-level info
 - RSS 抓取网络参数：`RSS_TIMEOUT_SECONDS`（默认 60 秒）和 `RSS_RETRIES`（默认失败后再试 5 次）。
 - RSS 抓取节奏参数：`RSS_FEED_SLEEP_SECONDS`（默认 10 秒，表示每个 feed 抓完后 sleep；设 `0` 可关闭）。
 - `WEIBO_AUTHOR/WEIBO_USER_ID`、`XUEQIU_AUTHOR/XUEQIU_USER_ID` 都是可选的：为空时会尽量从 RSS/URL 自动推断。
+- `AI_RPM` / `AI_MAX_INFLIGHT` 是默认限流组；如果某个任务要独立限流，给它绑定 profile，再给 profile 设 `AI_PROFILE_<PROFILE>_LIMIT_GROUP`，最后补 `AI_LIMIT_GROUP_<GROUP>_RPM` 和 `AI_LIMIT_GROUP_<GROUP>_MAX_INFLIGHT`。
 - Worker 会先直接推 Redis；只有 Redis 写失败时才写本地 `spool`，AI 完成后再写 Postgres。
 - Redis 打开后，作者线程上下文优先读 Redis 缓存；缓存 miss 才回源 Postgres。
 - Reflex 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
@@ -442,6 +448,11 @@ docker run -d --name alphavault \
 	  -e AI_RPM="12" \
 	  -e AI_RETRIES="11" \
 	  -e AI_MAX_INFLIGHT="30" \
+	  -e AI_TASK_POST_CONTEXT_PROFILE="context" \
+	  -e AI_PROFILE_CONTEXT_MODEL="openai/gpt-5.4" \
+	  -e AI_PROFILE_CONTEXT_LIMIT_GROUP="context_lane" \
+	  -e AI_LIMIT_GROUP_CONTEXT_LANE_RPM="12" \
+	  -e AI_LIMIT_GROUP_CONTEXT_LANE_MAX_INFLIGHT="50" \
 	  -e AI_QUEUE_ACK_TIMEOUT_SEC="3600" \
 	  -e AI_TRACE_OUT="/data/trace.txt" \
 	  -e AI_BASE_URL="http://xxx/v1" \

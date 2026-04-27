@@ -37,6 +37,10 @@ from alphavault.rss.utils import RateLimiter, now_str
 from alphavault.research_workbench.service import (
     get_research_workbench_engine_from_env,
 )
+from alphavault.infra.ai.runtime_config import (
+    AI_TASK_POST_CONTEXT,
+    ai_task_runtime_config_from_env,
+)
 from alphavault.research_stock_cache import (
     mark_entity_page_dirty,
     mark_entity_page_dirty_from_assertions,
@@ -50,7 +54,6 @@ from alphavault.worker.post_context_tags import (
     PostContextResult,
     extract_post_context_result,
     extract_stock_entity_keys_from_entities,
-    post_context_ai_runtime_config_from_env,
 )
 from alphavault.worker.post_processor_utils import score_from_assertions
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
@@ -655,7 +658,8 @@ def process_one_post_uid_topic_prompt_v4(
         current_post_uid = str(post.post_uid or "").strip()
         current_rows = assertions_by_post_uid.get(current_post_uid, [])
         if current_rows:
-            context_runtime_config = post_context_ai_runtime_config_from_env(
+            context_runtime_config = ai_task_runtime_config_from_env(
+                task_key=AI_TASK_POST_CONTEXT,
                 timeout_seconds_default=float(config.ai_timeout_seconds),
             )
             try:

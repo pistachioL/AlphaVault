@@ -14,8 +14,11 @@ from alphavault.ai.analyze import AI_MODE_COMPLETION, AI_MODE_RESPONSES  # noqa:
 from alphavault.env import load_dotenv_if_present  # noqa: E402
 from alphavault.infra.ai import relation_candidate_ranker  # noqa: E402
 from alphavault.infra.ai.runtime_config import (  # noqa: E402
+    AI_REASONING_EFFORT_CHOICES,
+    AI_TASK_RELATION_CANDIDATE_RANK,
     AiRuntimeConfig,
-    ai_runtime_config_from_env,
+    ai_task_runtime_config_from_env,
+    apply_ai_runtime_config_overrides,
 )
 from alphavault.logging_config import (  # noqa: E402
     add_log_level_argument,
@@ -35,12 +38,14 @@ from alphavault.rss.utils import RateLimiter  # noqa: E402
 
 DEFAULT_AI_BATCH_SIZE = int(relation_candidate_ranker.AI_RANK_BATCH_CAP)
 DEFAULT_MAX_ROUNDS = 0
-AI_REASONING_EFFORT_CHOICES = ["none", "minimal", "low", "medium", "high", "xhigh"]
 logger = get_logger(__name__)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    env_config = ai_runtime_config_from_env(timeout_seconds_default=1000.0)
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_RELATION_CANDIDATE_RANK,
+        timeout_seconds_default=1000.0,
+    )
     parser = argparse.ArgumentParser(
         description="循环重跑 stock_alias 的 AI 排序和自动合并"
     )
@@ -50,56 +55,62 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_AI_BATCH_SIZE,
         help=f"一次 AI 请求放多少条，默认 {DEFAULT_AI_BATCH_SIZE}",
     )
-    parser.add_argument("--model", default=env_config.model, help="默认读 AI_MODEL")
+    parser.add_argument(
+        "--model",
+        default=env_config.model,
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
+    )
     parser.add_argument(
         "--base-url",
         default=env_config.base_url,
-        help="默认读 AI_BASE_URL",
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
     )
     parser.add_argument(
-        "--api-key", default=env_config.api_key, help="默认读 AI_API_KEY"
+        "--api-key",
+        default=env_config.api_key,
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--api-mode",
         default=env_config.api_mode,
         choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
-        help="默认读 AI_API_MODE",
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-timeout-sec",
         type=float,
         default=env_config.timeout_seconds,
-        help="默认读 AI_TIMEOUT_SEC",
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-retries",
         type=int,
         default=env_config.retries,
-        help="默认读 AI_RETRIES",
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-temperature",
         type=float,
         default=env_config.temperature,
-        help="默认读 AI_TEMPERATURE",
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-reasoning-effort",
         default=env_config.reasoning_effort,
         choices=AI_REASONING_EFFORT_CHOICES,
-        help="默认读 AI_REASONING_EFFORT",
+        help="默认读 relation_candidate_rank 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-rpm",
         type=float,
         default=env_config.ai_rpm,
-        help="每分钟最多发多少次 AI 请求；默认读 AI_RPM",
+        help="每分钟最多发多少次 AI 请求；默认读默认限流组或 relation_candidate_rank 绑定的限流组",
     )
     parser.add_argument(
         "--ai-max-inflight",
         type=int,
         default=env_config.ai_max_inflight,
-        help="同时最多跑多少个 AI 请求；默认读 AI_MAX_INFLIGHT",
+        help="同时最多跑多少个 AI 请求；默认读默认限流组或 relation_candidate_rank 绑定的限流组",
     )
     parser.add_argument(
         "--max-rounds",
@@ -168,22 +179,24 @@ def _normalize_max_rounds(value: object) -> int:
 
 
 def _build_ai_runtime_config(args: argparse.Namespace) -> AiRuntimeConfig:
-    env_config = ai_runtime_config_from_env(timeout_seconds_default=1000.0)
-    return AiRuntimeConfig(
-        api_key=_clean_text(args.api_key),
-        model=_clean_text(args.model) or env_config.model,
-        base_url=_clean_text(args.base_url),
-        api_mode=_clean_text(args.api_mode) or AI_MODE_RESPONSES,
-        temperature=float(args.ai_temperature),
-        reasoning_effort=_clean_text(args.ai_reasoning_effort)
-        or env_config.reasoning_effort,
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_RELATION_CANDIDATE_RANK,
+        timeout_seconds_default=1000.0,
+    )
+    return apply_ai_runtime_config_overrides(
+        env_config,
+        api_key=args.api_key,
+        model=args.model,
+        base_url=args.base_url,
+        api_mode=args.api_mode or AI_MODE_RESPONSES,
+        temperature=args.ai_temperature,
+        reasoning_effort=args.ai_reasoning_effort,
         timeout_seconds=_normalize_positive_float(
             args.ai_timeout_sec,
             default=env_config.timeout_seconds,
         ),
         retries=_normalize_non_negative_int(
-            args.ai_retries,
-            default=env_config.retries,
+            args.ai_retries, default=env_config.retries
         ),
         ai_rpm=_normalize_non_negative_float(args.ai_rpm, default=env_config.ai_rpm),
         ai_max_inflight=_normalize_positive_int(
@@ -379,8 +392,6 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv_if_present()
     args = parse_args(argv)
     configure_logging(level=args.log_level)
-
-    env_config = ai_runtime_config_from_env(timeout_seconds_default=1000.0)
     ai_batch_size = _normalize_positive_int(
         args.ai_batch_size,
         default=DEFAULT_AI_BATCH_SIZE,
@@ -400,7 +411,7 @@ def main(argv: list[str] | None = None) -> int:
         max_rounds,
         int(apply),
         int(ai_enabled),
-        runtime_config.model or env_config.model,
+        runtime_config.model,
         runtime_config.api_mode,
     )
 

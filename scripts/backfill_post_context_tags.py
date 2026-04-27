@@ -9,7 +9,7 @@ from concurrent.futures import (
     as_completed,
     wait,
 )
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import sys
@@ -35,7 +35,13 @@ from alphavault.db.source_queue import (  # noqa: E402
 from alphavault.db.sql.common import make_in_params, make_in_placeholders  # noqa: E402
 from alphavault.db.sql_rows import read_sql_rows  # noqa: E402
 from alphavault.env import load_dotenv_if_present  # noqa: E402
-from alphavault.infra.ai.runtime_config import AiRuntimeConfig  # noqa: E402
+from alphavault.infra.ai.runtime_config import (  # noqa: E402
+    AI_REASONING_EFFORT_CHOICES,
+    AI_TASK_POST_CONTEXT,
+    AiRuntimeConfig,
+    ai_task_runtime_config_from_env,
+    apply_ai_runtime_config_overrides,
+)
 from alphavault.logging_config import (  # noqa: E402
     add_log_level_argument,
     configure_logging,
@@ -50,15 +56,14 @@ from alphavault.worker.post_context_tags import (  # noqa: E402
     PostContextResult,
     extract_post_context_result,
     extract_stock_entity_keys_from_entities,
-    post_context_ai_runtime_config_from_env,
 )
 
 DEFAULT_BATCH_SIZE = 100
 DEFAULT_LIMIT = 0
 DEFAULT_SOURCE = PLATFORM_WEIBO
 DEFAULT_TIMEOUT_SECONDS = 1000.0
-AI_REASONING_EFFORT_CHOICES = ["none", "minimal", "low", "medium", "high", "xhigh"]
-STATE_DIR = ROOT_DIR / ".states" / "backfill_post_context_tags"
+LEGACY_STATE_DIR = ROOT_DIR / ".states" / "backfill_post_context_tags"
+STATE_DIR = ROOT_DIR / ".script_state" / "backfill_post_context_tags"
 logger = get_logger(__name__)
 
 
@@ -88,8 +93,8 @@ class _ScheduledPostContextTask:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    env_config = post_context_ai_runtime_config_from_env(
-        timeout_seconds_default=DEFAULT_TIMEOUT_SECONDS
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_POST_CONTEXT, timeout_seconds_default=DEFAULT_TIMEOUT_SECONDS
     )
     parser = argparse.ArgumentParser(description="回补帖子级上下文标签")
     parser.add_argument(
@@ -100,59 +105,59 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=env_config.model,
-        help="默认读 AI_CONTEXT_MODEL，再回退到 AI_MODEL",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--base-url",
         default=env_config.base_url,
-        help="默认读 AI_CONTEXT_BASE_URL，再回退到 AI_BASE_URL",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--api-key",
         default=env_config.api_key,
-        help="默认读 AI_CONTEXT_API_KEY，再回退到 AI_API_KEY",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--api-mode",
         default=env_config.api_mode,
         choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
-        help="默认读 AI_CONTEXT_API_MODE，再回退到 AI_API_MODE",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-timeout-sec",
         type=float,
         default=env_config.timeout_seconds,
-        help="默认读 AI_CONTEXT_TIMEOUT_SEC，再回退到 AI_TIMEOUT_SEC",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-retries",
         type=int,
         default=env_config.retries,
-        help="默认读 AI_CONTEXT_RETRIES，再回退到 AI_RETRIES",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-rpm",
         type=float,
         default=env_config.ai_rpm,
-        help="默认读 AI_CONTEXT_RPM，再回退到 AI_RPM",
+        help="默认读默认限流组或 post_context 绑定的限流组",
     )
     parser.add_argument(
         "--ai-max-inflight",
         type=int,
         default=env_config.ai_max_inflight,
-        help="默认读 AI_CONTEXT_MAX_INFLIGHT，再回退到 AI_MAX_INFLIGHT",
+        help="默认读默认限流组或 post_context 绑定的限流组",
     )
     parser.add_argument(
         "--ai-reasoning-effort",
         default=env_config.reasoning_effort,
         choices=AI_REASONING_EFFORT_CHOICES,
-        help="默认读 AI_CONTEXT_REASONING_EFFORT，再回退到 AI_REASONING_EFFORT",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--ai-temperature",
         type=float,
         default=env_config.temperature,
-        help="默认读 AI_CONTEXT_TEMPERATURE，再回退到 AI_TEMPERATURE",
+        help="默认读 post_context 任务绑定的 AI 配置档",
     )
     parser.add_argument(
         "--batch-size",
@@ -175,7 +180,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cursor-file",
         default="",
-        help="本地游标文件路径，默认 .states/backfill_post_context_tags/<source>.json",
+        help="本地游标文件路径，默认 .script_state/backfill_post_context_tags/<source>.json",
     )
     parser.add_argument(
         "--limit",
@@ -261,7 +266,15 @@ def _resolve_cursor_file(args: argparse.Namespace) -> Path:
         cursor_file = Path(raw_path)
         return cursor_file if cursor_file.is_absolute() else ROOT_DIR / cursor_file
     source_name = _clean_text(args.source) or DEFAULT_SOURCE
+    _migrate_legacy_state_dir_if_needed()
     return STATE_DIR / f"{source_name}.json"
+
+
+def _migrate_legacy_state_dir_if_needed() -> None:
+    if STATE_DIR.exists() or not LEGACY_STATE_DIR.exists():
+        return
+    STATE_DIR.parent.mkdir(parents=True, exist_ok=True)
+    LEGACY_STATE_DIR.replace(STATE_DIR)
 
 
 def _load_cursor_state(path: Path) -> dict[str, object]:
@@ -301,10 +314,10 @@ def _write_cursor_state(
 
 
 def _build_runtime_config(args: argparse.Namespace) -> AiRuntimeConfig:
-    env_config = post_context_ai_runtime_config_from_env(
-        timeout_seconds_default=DEFAULT_TIMEOUT_SECONDS
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_POST_CONTEXT, timeout_seconds_default=DEFAULT_TIMEOUT_SECONDS
     )
-    return replace(
+    return apply_ai_runtime_config_overrides(
         env_config,
         api_key=_clean_text(args.api_key),
         model=_clean_text(args.model) or env_config.model,

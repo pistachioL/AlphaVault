@@ -11,27 +11,13 @@ from alphavault.logging_config import add_log_level_argument, get_logger
 from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
-    DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
-    DEFAULT_AI_RETRY_COUNT,
-    DEFAULT_AI_TEMPERATURE,
-    DEFAULT_MODEL,
     DEFAULT_PROMPT_VERSION,
 )
 from alphavault.constants import (
     DEFAULT_RSS_RETRIES,
     DEFAULT_RSS_TIMEOUT_SECONDS,
-    ENV_AI_API_MODE,
-    ENV_AI_BASE_URL,
-    ENV_AI_MAX_INFLIGHT,
-    ENV_AI_MODEL,
     ENV_AI_PROMPT_VERSION,
     ENV_AI_QUEUE_ACK_TIMEOUT_SEC,
-    ENV_AI_REASONING_EFFORT,
-    ENV_AI_RETRIES,
-    ENV_AI_RPM,
-    ENV_AI_TEMPERATURE,
-    ENV_AI_TIMEOUT_SEC,
     ENV_POSTGRES_DSN,
     ENV_RSS_RETRIES,
     ENV_RSS_TIMEOUT_SECONDS,
@@ -45,6 +31,11 @@ from alphavault.constants import (
     ENV_XUEQIU_RSS_URL,
     ENV_XUEQIU_RSS_URLS,
     ENV_XUEQIU_USER_ID,
+)
+from alphavault.infra.ai.runtime_config import (
+    AI_REASONING_EFFORT_CHOICES,
+    AI_TASK_POST_ANALYSIS,
+    ai_task_runtime_config_from_env,
 )
 from alphavault.rss.utils import env_float, env_int, parse_active_hours
 
@@ -118,10 +109,10 @@ def _build_platform_source_config(
 
 
 def parse_args() -> argparse.Namespace:
-    ai_retries_env = env_int(ENV_AI_RETRIES)
-    ai_rpm_env = env_float(ENV_AI_RPM)
-    ai_timeout_env = env_float(ENV_AI_TIMEOUT_SEC)
-    ai_max_inflight_env = env_int(ENV_AI_MAX_INFLIGHT)
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_POST_ANALYSIS,
+        timeout_seconds_default=1000.0,
+    )
     ai_queue_ack_timeout_env = env_int(ENV_AI_QUEUE_ACK_TIMEOUT_SEC)
     rss_timeout_env = env_float(ENV_RSS_TIMEOUT_SECONDS)
     rss_retries_env = env_int(ENV_RSS_RETRIES)
@@ -173,10 +164,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     # AI config (litellm only; mostly via env)
-    parser.add_argument("--model", default=os.getenv(ENV_AI_MODEL, DEFAULT_MODEL))
+    parser.add_argument("--model", default=env_config.model)
     parser.add_argument(
         "--base-url",
-        default=os.getenv(ENV_AI_BASE_URL, "").strip(),
+        default=env_config.base_url,
         help="可选：OpenAI 兼容接口 base_url（也可用 AI_BASE_URL）",
     )
     parser.add_argument(
@@ -184,7 +175,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--api-mode",
-        default=os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE),
+        default=env_config.api_mode,
         choices=[AI_MODE_COMPLETION, AI_MODE_RESPONSES],
     )
     parser.add_argument("--ai-stream", action="store_true")
@@ -195,34 +186,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ai-retries",
         type=int,
-        default=ai_retries_env
-        if ai_retries_env is not None
-        else DEFAULT_AI_RETRY_COUNT,
+        default=int(env_config.retries),
     )
     parser.add_argument(
         "--ai-temperature",
         type=float,
-        default=float(os.getenv(ENV_AI_TEMPERATURE, str(DEFAULT_AI_TEMPERATURE))),
+        default=float(env_config.temperature),
     )
     parser.add_argument(
         "--ai-reasoning-effort",
-        default=os.getenv(ENV_AI_REASONING_EFFORT, DEFAULT_AI_REASONING_EFFORT),
-        choices=["none", "minimal", "low", "medium", "high", "xhigh"],
+        default=env_config.reasoning_effort,
+        choices=AI_REASONING_EFFORT_CHOICES,
     )
     parser.add_argument(
         "--ai-rpm",
         type=float,
-        default=ai_rpm_env if ai_rpm_env is not None else 12.0,
+        default=float(env_config.ai_rpm),
     )
     parser.add_argument(
         "--ai-timeout-sec",
         type=float,
-        default=ai_timeout_env if ai_timeout_env is not None else 1000.0,
+        default=float(env_config.timeout_seconds),
     )
     parser.add_argument(
         "--ai-max-inflight",
         type=int,
-        default=ai_max_inflight_env if ai_max_inflight_env is not None else 12,
+        default=int(env_config.ai_max_inflight),
     )
     parser.add_argument("--trace-out", type=Path, default=None)
     parser.add_argument(

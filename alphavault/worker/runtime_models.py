@@ -7,19 +7,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from alphavault.ai.analyze import (
-    DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
-    DEFAULT_MODEL,
-    DEFAULT_PROMPT_VERSION,
-)
-from alphavault.logging_config import get_logger
-from alphavault.db.postgres_db import PostgresEngine
+from alphavault.ai.analyze import DEFAULT_PROMPT_VERSION
 from alphavault.constants import (
-    ENV_AI_API_KEY,
     ENV_AI_STREAM,
     ENV_AI_TRACE_OUT,
 )
+from alphavault.db.postgres_db import PostgresEngine
+from alphavault.infra.ai.runtime_config import (
+    AI_TASK_POST_ANALYSIS,
+    ai_task_runtime_config_from_env,
+    apply_ai_runtime_config_overrides,
+)
+from alphavault.logging_config import get_logger
 from alphavault.rss.utils import env_bool
 
 logger = get_logger(__name__)
@@ -67,7 +66,8 @@ class LLMConfig:
     ai_reasoning_effort: str
     ai_rpm: float
     ai_timeout_seconds: float
-    trace_out: Optional[Path]
+    trace_out: Optional[Path] = None
+    ai_max_inflight: int = 1
 
 
 def _clamp_float(value: object, low: float, high: float, default: float) -> float:
@@ -103,6 +103,10 @@ def _parse_int_or_default(value: object, default: int) -> int:
 
 
 def _build_config(args: argparse.Namespace) -> LLMConfig:
+    env_config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_POST_ANALYSIS,
+        timeout_seconds_default=1000.0,
+    )
     ai_stream_env = env_bool(ENV_AI_STREAM)
     ai_stream = True
     if ai_stream_env is not None:
@@ -119,29 +123,37 @@ def _build_config(args: argparse.Namespace) -> LLMConfig:
     if base_url and not base_url.rstrip("/").endswith("/v1"):
         logger.warning("[ai] warn base_url_maybe_missing_v1 base_url=%s", base_url)
 
-    api_key = ""
-    if args.api_key:
-        api_key = str(args.api_key).strip()
-    else:
-        api_key = os.getenv(ENV_AI_API_KEY, "").strip()
+    runtime_config = apply_ai_runtime_config_overrides(
+        env_config,
+        api_key=args.api_key,
+        model=args.model,
+        base_url=args.base_url,
+        api_mode=args.api_mode,
+        temperature=args.ai_temperature,
+        reasoning_effort=args.ai_reasoning_effort,
+        timeout_seconds=args.ai_timeout_sec,
+        retries=args.ai_retries,
+        ai_rpm=args.ai_rpm,
+        ai_max_inflight=getattr(args, "ai_max_inflight", env_config.ai_max_inflight),
+    )
+    api_key = str(runtime_config.api_key or "").strip()
     if not api_key:
-        raise RuntimeError(f"Missing {ENV_AI_API_KEY}. Set {ENV_AI_API_KEY}.")
+        raise RuntimeError("Missing AI task runtime api_key.")
 
     return LLMConfig(
         api_key=api_key,
-        model=str(args.model or DEFAULT_MODEL),
+        model=str(runtime_config.model or ""),
         prompt_version=str(args.prompt_version or DEFAULT_PROMPT_VERSION),
         relevant_threshold=max(0.0, min(1.0, float(args.relevant_threshold))),
         base_url=str(base_url or ""),
-        api_mode=str(args.api_mode or DEFAULT_AI_MODE),
+        api_mode=str(runtime_config.api_mode or ""),
         ai_stream=ai_stream,
-        ai_retries=max(0, int(args.ai_retries)),
-        ai_temperature=float(args.ai_temperature),
-        ai_reasoning_effort=str(
-            args.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT
-        ),
-        ai_rpm=max(0.0, float(args.ai_rpm or 0.0)),
-        ai_timeout_seconds=max(1.0, float(args.ai_timeout_sec)),
+        ai_retries=max(0, int(runtime_config.retries)),
+        ai_temperature=float(runtime_config.temperature),
+        ai_reasoning_effort=str(runtime_config.reasoning_effort or ""),
+        ai_rpm=max(0.0, float(runtime_config.ai_rpm)),
+        ai_timeout_seconds=max(1.0, float(runtime_config.timeout_seconds)),
+        ai_max_inflight=max(1, int(runtime_config.ai_max_inflight)),
         trace_out=trace_out,
     )
 

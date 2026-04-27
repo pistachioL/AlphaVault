@@ -1,122 +1,27 @@
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List
 
-from alphavault.constants import (
-    ENV_AI_API_KEY,
-    ENV_AI_API_MODE,
-    ENV_AI_BASE_URL,
-    ENV_AI_MODEL,
-    ENV_AI_REASONING_EFFORT,
-    ENV_AI_RETRIES,
-    ENV_AI_TEMPERATURE,
-    ENV_AI_TIMEOUT_SEC,
+from alphavault.ai.analyze import _call_ai_with_litellm, clean_text
+from alphavault.infra.ai.runtime_config import (
+    AI_TASK_TOPIC_CLUSTER_SUGGEST,
+    ai_task_runtime_config_from_env,
+    ai_task_runtime_config_is_configured,
+    ai_task_runtime_config_summary,
 )
-from alphavault.ai.analyze import (
-    AI_MODE_COMPLETION,
-    AI_MODE_RESPONSES,
-    DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
-    DEFAULT_AI_RETRY_COUNT,
-    DEFAULT_AI_TEMPERATURE,
-    DEFAULT_MODEL,
-    _call_ai_with_litellm,
-    clean_text,
-)
-
-
-@dataclass(frozen=True)
-class AiConfig:
-    api_key: str
-    model: str
-    base_url: str
-    api_mode: str
-    temperature: float
-    reasoning_effort: str
-    timeout_seconds: float
-    retries: int
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return float(str(raw).strip())
-    except Exception:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return int(str(raw).strip())
-    except Exception:
-        return default
-
-
-def _get_ai_config_from_env() -> tuple[Optional[AiConfig], str]:
-    api_key = os.getenv(ENV_AI_API_KEY, "").strip()
-    if not api_key:
-        return None, f"Missing {ENV_AI_API_KEY}"
-
-    model = os.getenv(ENV_AI_MODEL, DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    base_url = os.getenv(ENV_AI_BASE_URL, "").strip()
-    api_mode = (
-        os.getenv(ENV_AI_API_MODE, DEFAULT_AI_MODE).strip().lower() or DEFAULT_AI_MODE
-    )
-    if api_mode not in {AI_MODE_COMPLETION, AI_MODE_RESPONSES}:
-        api_mode = DEFAULT_AI_MODE
-
-    temperature = _env_float(ENV_AI_TEMPERATURE, DEFAULT_AI_TEMPERATURE)
-    timeout_seconds = _env_float(ENV_AI_TIMEOUT_SEC, 1000.0)
-    retries = _env_int(ENV_AI_RETRIES, DEFAULT_AI_RETRY_COUNT)
-    reasoning_effort = (
-        os.getenv(ENV_AI_REASONING_EFFORT, DEFAULT_AI_REASONING_EFFORT).strip()
-        or DEFAULT_AI_REASONING_EFFORT
-    )
-
-    return (
-        AiConfig(
-            api_key=api_key,
-            model=model,
-            base_url=base_url,
-            api_mode=api_mode,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            timeout_seconds=timeout_seconds,
-            retries=retries,
-        ),
-        "",
-    )
 
 
 def ai_is_configured() -> tuple[bool, str]:
-    config, err = _get_ai_config_from_env()
-    if config is None:
-        return False, err
-    return True, ""
+    return ai_task_runtime_config_is_configured(
+        task_key=AI_TASK_TOPIC_CLUSTER_SUGGEST,
+        timeout_seconds_default=1000.0,
+    )
 
 
 def get_ai_config_summary() -> tuple[Dict[str, Any], str]:
-    config, err = _get_ai_config_from_env()
-    if config is None:
-        return {}, err
-    return (
-        {
-            "model": config.model,
-            "base_url": config.base_url,
-            "api_mode": config.api_mode,
-            "timeout_seconds": float(config.timeout_seconds),
-            "retries": int(config.retries),
-            "temperature": float(config.temperature),
-            "reasoning_effort": str(config.reasoning_effort),
-        },
-        "",
+    return ai_task_runtime_config_summary(
+        task_key=AI_TASK_TOPIC_CLUSTER_SUGGEST,
+        timeout_seconds_default=1000.0,
     )
 
 
@@ -151,9 +56,12 @@ def suggest_keys_for_cluster(
     candidates: list of {key, count}
     Returns a parsed JSON dict from the model.
     """
-    config, err = _get_ai_config_from_env()
-    if config is None:
-        raise RuntimeError(err or "ai_not_configured")
+    config = ai_task_runtime_config_from_env(
+        task_key=AI_TASK_TOPIC_CLUSTER_SUGGEST,
+        timeout_seconds_default=1000.0,
+    )
+    if not str(config.api_key or "").strip():
+        raise RuntimeError("ai_not_configured")
 
     effective_timeout_seconds = (
         float(timeout_seconds)

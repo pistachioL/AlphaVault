@@ -5,14 +5,18 @@ from typing import Any, Callable
 
 from alphavault.ai._errors import format_llm_error_one_line
 from alphavault.ai.analyze import _call_ai_with_litellm
-from alphavault.ai.topic_cluster_suggest import ai_is_configured
 from alphavault.domains.stock.key_match import (
     is_stock_code_value,
     normalize_stock_code,
 )
 
 from .alias_history_context import AliasHistoryHit, load_alias_history_hits
-from .runtime_config import AiRuntimeConfig, ai_runtime_config_from_env
+from .runtime_config import (
+    AI_TASK_ALIAS_RESOLVE,
+    AiRuntimeConfig,
+    ai_task_runtime_config_from_env,
+    ai_task_runtime_config_is_configured,
+)
 
 
 AI_STATUS_SKIPPED = "skipped"
@@ -234,12 +238,18 @@ def _ensure_ai_fields(item: dict[str, Any]) -> dict[str, Any]:
 def _resolve_runtime_config(runtime_config: AiRuntimeConfig | None) -> AiRuntimeConfig:
     if runtime_config is not None:
         return runtime_config
-    return ai_runtime_config_from_env(timeout_seconds_default=1000.0)
+    return ai_task_runtime_config_from_env(
+        task_key=AI_TASK_ALIAS_RESOLVE,
+        timeout_seconds_default=1000.0,
+    )
 
 
 def _has_runtime_config(runtime_config: AiRuntimeConfig | None) -> bool:
     if runtime_config is None:
-        ok, _err = ai_is_configured()
+        ok, _err = ai_task_runtime_config_is_configured(
+            task_key=AI_TASK_ALIAS_RESOLVE,
+            timeout_seconds_default=1000.0,
+        )
         return bool(ok)
     return bool(_clean_text(runtime_config.api_key))
 
