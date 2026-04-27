@@ -19,7 +19,6 @@ from alphavault.env import load_dotenv_if_present
 
 _POSTS_TABLE_NAME = "posts"
 DEFAULT_ALIAS_HISTORY_HIT_LIMIT = 5
-ALIAS_HISTORY_DIALOGUE_CHARS = 500
 
 
 class AliasHistoryHit(TypedDict):
@@ -31,13 +30,6 @@ class AliasHistoryHit(TypedDict):
 
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
-
-
-def _clip_text(value: object, *, limit: int) -> str:
-    text = _clean_text(value)
-    if not text or limit <= 0 or len(text) <= limit:
-        return text
-    return text[:limit]
 
 
 def _escape_ilike_pattern(text: str) -> str:
@@ -106,10 +98,7 @@ LIMIT :limit
             post_uid=_clean_text(row.get("post_uid")),
             created_at=_clean_text(row.get("created_at")),
             author=_clean_text(row.get("author")),
-            dialogue_text=_clip_text(
-                row.get("raw_text"),
-                limit=ALIAS_HISTORY_DIALOGUE_CHARS,
-            ),
+            dialogue_text=_clean_text(row.get("raw_text")),
         )
         for row in rows
         if _clean_text(row.get("post_uid")) and _clean_text(row.get("raw_text"))
@@ -117,7 +106,6 @@ LIMIT :limit
 
 
 __all__ = [
-    "ALIAS_HISTORY_DIALOGUE_CHARS",
     "DEFAULT_ALIAS_HISTORY_HIT_LIMIT",
     "AliasHistoryHit",
     "load_alias_history_hits",

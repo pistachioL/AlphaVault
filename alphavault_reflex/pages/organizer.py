@@ -416,10 +416,13 @@ def _manual_alias_history_hit(hit: rx.Var[AliasHistoryHitRow]) -> rx.Component:
             "帖子：" + hit["post_uid"],
             class_name="av-research-muted",
         ),
-        rx.text(
-            hit["dialogue_text"],
-            class_name="av-research-muted",
-            style={"whiteSpace": "pre-wrap"},
+        rx.el.div(
+            rx.text(
+                hit["dialogue_text"],
+                class_name="av-research-muted",
+                style={"whiteSpace": "pre-wrap"},
+            ),
+            class_name="av-research-scroll-text",
         ),
         style={
             "display": "flex",
