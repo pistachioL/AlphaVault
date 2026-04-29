@@ -10,7 +10,11 @@ from typing import Any, Callable, TypedDict
 import psycopg
 
 from alphavault.db.postgres_db import PostgresConnection, PostgresEngine
-from alphavault.domains.stock.key_match import is_stock_code_value, normalize_stock_code
+from alphavault.domains.stock.key_match import (
+    extract_explicit_stock_code,
+    is_stock_code_value,
+    normalize_stock_code,
+)
 from alphavault.infra.ai.runtime_config import AiRuntimeConfig
 from alphavault.logging_config import get_logger
 from alphavault.rss.utils import RateLimiter
@@ -21,12 +25,16 @@ from .alias_task_repo import (
     set_alias_resolve_task_status,
     should_auto_confirm_alias_resolve_task,
 )
+from .sample_post_raw_text import load_sample_post_raw_text_map
 from .security_master_repo import get_official_names_by_stock_keys
 
-DEFAULT_ALIAS_AI_BATCH_SIZE = 10
+DEFAULT_ALIAS_AI_BATCH_SIZE = 2
 AUTO_CONFIRM_DB_RETRY_MAX_ATTEMPTS = 3
 AUTO_CONFIRM_DB_RETRY_BASE_SLEEP_SECONDS = 0.5
 AI_VALIDATION_MARKETS = frozenset(("SH", "SZ", "BJ", "HK"))
+ALIAS_KEY_PREFIX = "stock:"
+DIRECT_ALIAS_CODE_REASON = "规则命中：别名文本自带股票代码"
+DIRECT_ALIAS_CODE_CONFIDENCE = "1"
 logger = get_logger(__name__)
 
 
@@ -91,6 +99,25 @@ def _chunk_rows(
     ]
 
 
+def _refresh_sample_raw_text_rows(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    raw_text_by_post_uid = load_sample_post_raw_text_map(
+        [_clean_text(row.get("sample_post_uid")) for row in rows]
+    )
+    if not raw_text_by_post_uid:
+        return [dict(row) for row in rows]
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        next_row = dict(row)
+        sample_post_uid = _clean_text(next_row.get("sample_post_uid"))
+        sample_raw_text = _clean_text(raw_text_by_post_uid.get(sample_post_uid))
+        if sample_raw_text:
+            next_row["sample_raw_text_excerpt"] = sample_raw_text
+        out.append(next_row)
+    return out
+
+
 def stock_key_from_ai_stock_code(value: object) -> str:
     code = normalize_stock_code(str(value or "").strip())
     if not is_stock_code_value(code):
@@ -103,6 +130,34 @@ def stock_market_from_key(stock_key: str) -> str:
     if "." not in text:
         return ""
     return _clean_text(text.rsplit(".", 1)[1]).upper()
+
+
+def _alias_text_from_key(value: object) -> str:
+    alias_key = _clean_text(value)
+    if alias_key.startswith(ALIAS_KEY_PREFIX):
+        return alias_key[len(ALIAS_KEY_PREFIX) :]
+    return alias_key
+
+
+def _apply_direct_alias_stock_codes(
+    rows: list[dict[str, Any]] | list[Mapping[str, object]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        next_row = dict(row)
+        stock_code = extract_explicit_stock_code(
+            _alias_text_from_key(next_row.get("alias_key"))
+        )
+        if stock_code:
+            next_row["ai_status"] = "ranked"
+            next_row["ai_stock_code"] = stock_code
+            next_row["ai_official_name"] = ""
+            next_row["ai_confidence"] = DIRECT_ALIAS_CODE_CONFIDENCE
+            next_row["ai_reason"] = DIRECT_ALIAS_CODE_REASON
+            next_row["ai_uncertain"] = ""
+            next_row["ai_validation_status"] = ""
+        out.append(next_row)
+    return out
 
 
 def _runtime_ai_max_inflight(runtime_config: AiRuntimeConfig | None) -> int:
@@ -302,15 +357,11 @@ def _persist_alias_ai_row(
     return False
 
 
-def run_alias_manual_ai_rows(
+def apply_alias_ai_rows(
     engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     target_rows: list[dict[str, Any]] | list[Mapping[str, object]],
-    predictor_module: ModuleType | None = None,
-    ai_enabled: bool,
     apply: bool,
-    ai_batch_size: int = DEFAULT_ALIAS_AI_BATCH_SIZE,
-    runtime_config: AiRuntimeConfig | None = None,
 ) -> AliasAiBatchSummary:
     cleaned_rows = [
         dict(row) for row in target_rows if _clean_text(dict(row).get("alias_key"))
@@ -321,24 +372,18 @@ def run_alias_manual_ai_rows(
             "enriched": 0,
             "auto_confirmed": 0,
         }
-    enriched_rows = enrich_alias_task_rows_with_ai(
-        cleaned_rows,
-        predictor_module=predictor_module,
-        ai_enabled=ai_enabled,
-        ai_batch_size=ai_batch_size,
-        runtime_config=runtime_config,
-    )
+    direct_code_rows = _apply_direct_alias_stock_codes(cleaned_rows)
     official_names_by_stock_key = get_official_names_by_stock_keys(
         engine_or_conn,
         [
             stock_key
-            for row in enriched_rows
+            for row in direct_code_rows
             if (stock_key := stock_key_from_ai_stock_code(row.get("ai_stock_code")))
             and stock_market_from_key(stock_key) in AI_VALIDATION_MARKETS
         ],
     )
     validated_rows = apply_alias_ai_validation(
-        enriched_rows,
+        direct_code_rows,
         official_names_by_stock_key=official_names_by_stock_key,
     )
     auto_confirmed = 0
@@ -352,6 +397,39 @@ def run_alias_manual_ai_rows(
     }
 
 
+def run_alias_manual_ai_rows(
+    engine_or_conn: PostgresEngine | PostgresConnection,
+    *,
+    target_rows: list[dict[str, Any]] | list[Mapping[str, object]],
+    predictor_module: ModuleType | None = None,
+    ai_enabled: bool,
+    apply: bool,
+    ai_batch_size: int = DEFAULT_ALIAS_AI_BATCH_SIZE,
+    runtime_config: AiRuntimeConfig | None = None,
+) -> AliasAiBatchSummary:
+    cleaned_rows = _refresh_sample_raw_text_rows(
+        [dict(row) for row in target_rows if _clean_text(dict(row).get("alias_key"))]
+    )
+    if not cleaned_rows:
+        return {
+            "fetched": 0,
+            "enriched": 0,
+            "auto_confirmed": 0,
+        }
+    enriched_rows = enrich_alias_task_rows_with_ai(
+        cleaned_rows,
+        predictor_module=predictor_module,
+        ai_enabled=ai_enabled,
+        ai_batch_size=ai_batch_size,
+        runtime_config=runtime_config,
+    )
+    return apply_alias_ai_rows(
+        engine_or_conn,
+        target_rows=enriched_rows,
+        apply=apply,
+    )
+
+
 def run_alias_manual_pending_round(
     engine_or_conn: PostgresEngine | PostgresConnection,
     *,
@@ -361,6 +439,7 @@ def run_alias_manual_pending_round(
     apply: bool,
     ai_batch_size: int = DEFAULT_ALIAS_AI_BATCH_SIZE,
     runtime_config: AiRuntimeConfig | None = None,
+    reuse_stored_ai: bool = False,
 ) -> AliasAiRoundSummary:
     resolved_fetch_limit = _round_fetch_limit(
         limit=limit,
@@ -378,15 +457,22 @@ def run_alias_manual_pending_round(
             "auto_confirmed": 0,
             "remaining_sample": 0,
         }
-    batch_summary = run_alias_manual_ai_rows(
-        engine_or_conn,
-        target_rows=target_rows,
-        predictor_module=predictor_module,
-        ai_enabled=ai_enabled,
-        apply=apply,
-        ai_batch_size=ai_batch_size,
-        runtime_config=runtime_config,
-    )
+    if reuse_stored_ai:
+        batch_summary = apply_alias_ai_rows(
+            engine_or_conn,
+            target_rows=target_rows,
+            apply=apply,
+        )
+    else:
+        batch_summary = run_alias_manual_ai_rows(
+            engine_or_conn,
+            target_rows=target_rows,
+            predictor_module=predictor_module,
+            ai_enabled=ai_enabled,
+            apply=apply,
+            ai_batch_size=ai_batch_size,
+            runtime_config=runtime_config,
+        )
     remaining_sample = len(
         list_pending_alias_resolve_tasks(engine_or_conn, limit=resolved_fetch_limit)
     )
@@ -400,6 +486,7 @@ __all__ = [
     "AI_VALIDATION_MARKETS",
     "AliasAiBatchSummary",
     "AliasAiRoundSummary",
+    "apply_alias_ai_rows",
     "DEFAULT_ALIAS_AI_BATCH_SIZE",
     "apply_alias_ai_validation",
     "enrich_alias_task_rows_with_ai",

@@ -17,6 +17,21 @@ _PREFIXED_CN_STOCK_CODE_RE = re.compile(
     r"^(SH|SZ|BJ)(\d{6})(?:\.US)?$",
     re.IGNORECASE,
 )
+_SUFFIXED_HK_STOCK_CODE_RE = re.compile(r"^(\d{1,5})\.HK$", re.IGNORECASE)
+_INLINE_PREFIXED_CN_STOCK_CODE_RE = re.compile(
+    r"(?<![A-Z0-9])((?:SH|SZ|BJ)\d{6})(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+_INLINE_SUFFIXED_HK_STOCK_CODE_RE = re.compile(
+    r"(?<![A-Z0-9])(\d{1,5}\.HK)(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+_INLINE_SUFFIXED_US_STOCK_CODE_RE = re.compile(
+    r"(?<![A-Z0-9])([A-Z][A-Z0-9]{0,9}\.US)(?![A-Z0-9])",
+    re.IGNORECASE,
+)
+_PAREN_HK_STOCK_CODE_RE = re.compile(r"[（(]\s*(\d{4,5})\s*[)）]", re.IGNORECASE)
+_HK_STOCK_CODE_WIDTH = 5
 
 
 def has_bad_stock_separator(value: str) -> bool:
@@ -38,10 +53,36 @@ def normalize_stock_code(value: str) -> str:
     if not text:
         return ""
     matched = _PREFIXED_CN_STOCK_CODE_RE.match(text)
-    if matched is None:
-        return text
-    market, code = matched.groups()
-    return f"{code}.{market}"
+    if matched is not None:
+        market, code = matched.groups()
+        return f"{code}.{market}"
+    hk_matched = _SUFFIXED_HK_STOCK_CODE_RE.match(text)
+    if hk_matched is not None:
+        return f"{hk_matched.group(1).zfill(_HK_STOCK_CODE_WIDTH)}.HK"
+    return text
+
+
+def extract_explicit_stock_code(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    candidates: set[str] = set()
+    for pattern in (
+        _INLINE_PREFIXED_CN_STOCK_CODE_RE,
+        _INLINE_SUFFIXED_HK_STOCK_CODE_RE,
+        _INLINE_SUFFIXED_US_STOCK_CODE_RE,
+    ):
+        for matched in pattern.findall(text):
+            code = normalize_stock_code(matched)
+            if is_stock_code_value(code):
+                candidates.add(code)
+    for digits in _PAREN_HK_STOCK_CODE_RE.findall(text):
+        code = normalize_stock_code(f"{digits}.HK")
+        if is_stock_code_value(code):
+            candidates.add(code)
+    if len(candidates) != 1:
+        return ""
+    return sorted(candidates)[0]
 
 
 def split_stock_value_tokens(value: str) -> list[str]:

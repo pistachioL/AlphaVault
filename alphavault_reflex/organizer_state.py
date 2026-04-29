@@ -29,7 +29,7 @@ STOCK_ALIAS_RESULT_GROUPS = (
 )
 ALIAS_TASK_PAGE_LIMIT = 10
 ALIAS_TASK_PAGE_STEP = 10
-ALIAS_TASK_AI_BATCH_LIMIT = 10
+ALIAS_TASK_AI_BATCH_LIMIT = 2
 ALIAS_AI_PREVIEW_KEYS = (
     "ai_status",
     "ai_stock_code",
@@ -130,6 +130,11 @@ def _load_research_data_module() -> ModuleType:
 @cache
 def _load_source_read_module() -> ModuleType:
     return importlib.import_module("alphavault_reflex.services.source_read")
+
+
+@cache
+def _load_alias_manual_rows_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.alias_manual_rows")
 
 
 @cache
@@ -1562,68 +1567,14 @@ def load_pending_rows(
 ) -> tuple[list[PendingRow], str]:
     section_key = str(section or SECTION_ALIAS_MANUAL).strip()
     if section_key == SECTION_ALIAS_MANUAL:
-        try:
-            research_workbench = _load_research_workbench_module()
-            engine = research_workbench.get_research_workbench_engine_from_env()
-            limit_value = max(1, int(alias_task_limit))
-            while True:
-                task_rows = research_workbench.list_pending_alias_resolve_tasks(
-                    engine,
-                    limit=limit_value,
-                )
-                resolved_alias_keys = (
-                    research_workbench.cleanup_known_pending_alias_resolve_tasks(
-                        engine,
-                        [str(row.get("alias_key") or "").strip() for row in task_rows],
-                    )
-                )
-                if not resolved_alias_keys:
-                    break
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit)):
-                raise
-            return [], str(exc)
-        sample_post_urls = _load_sample_post_urls(task_rows)
-        history_hits_by_key = _load_alias_history_hits_by_key(task_rows)
-        out: list[PendingRow] = []
-        for row in task_rows:
-            alias_key = str(row.get("alias_key") or "").strip()
-            if not alias_key:
-                continue
-            sample_post_uid = str(row.get("sample_post_uid") or "").strip()
-            history_hits = history_hits_by_key.get(alias_key, [])
-            out.append(
-                _decorate_alias_task_row(
-                    {
-                        "alias_key": alias_key,
-                        "attempt_count": str(row.get("attempt_count") or "0").strip(),
-                        "status": str(row.get("status") or "").strip(),
-                        "sample_post_uid": sample_post_uid,
-                        "sample_post_url": sample_post_urls.get(sample_post_uid, ""),
-                        "sample_evidence": str(
-                            row.get("sample_evidence") or ""
-                        ).strip(),
-                        "sample_raw_text_excerpt": str(
-                            row.get("sample_raw_text_excerpt") or ""
-                        ).strip(),
-                        "history_hits": history_hits,
-                        "history_hits_count": str(len(history_hits)),
-                        "updated_at": str(row.get("updated_at") or "").strip(),
-                        "ai_status": str(row.get("ai_status") or "").strip(),
-                        "ai_stock_code": str(row.get("ai_stock_code") or "").strip(),
-                        "ai_official_name": str(
-                            row.get("ai_official_name") or ""
-                        ).strip(),
-                        "ai_confidence": str(row.get("ai_confidence") or "").strip(),
-                        "ai_reason": str(row.get("ai_reason") or "").strip(),
-                        "ai_uncertain": str(row.get("ai_uncertain") or "").strip(),
-                        "ai_validation_status": str(
-                            row.get("ai_validation_status") or ""
-                        ).strip(),
-                    }
-                )
-            )
-        return out, ""
+        alias_manual_rows = _load_alias_manual_rows_module()
+        rows, load_error = alias_manual_rows.load_alias_manual_pending_rows(
+            limit=max(1, int(alias_task_limit)),
+            research_workbench_loader=_load_research_workbench_module,
+            source_read_loader=_load_source_read_module,
+            alias_history_context_loader=_load_alias_history_context_module,
+        )
+        return [cast(PendingRow, dict(row)) for row in rows], load_error
 
     if section_key == SECTION_STOCK_ALIAS:
         try:

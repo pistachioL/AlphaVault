@@ -75,10 +75,7 @@ def _clean_alias_task_sample(
     return {
         "sample_post_uid": _clean_text(raw.get("sample_post_uid")),
         "sample_evidence": _clip_text(raw.get("sample_evidence"), limit=120),
-        "sample_raw_text_excerpt": _clip_text(
-            raw.get("sample_raw_text_excerpt"),
-            limit=220,
-        ),
+        "sample_raw_text_excerpt": _clean_text(raw.get("sample_raw_text_excerpt")),
     }
 
 
@@ -129,11 +126,10 @@ def _alias_task_sample_for_mention(
         mention_evidence or base_sample.get("sample_evidence"),
         limit=120,
     )
-    sample_raw_text_excerpt = _clip_text(
-        mention_evidence
-        or base_sample.get("sample_raw_text_excerpt")
-        or base_sample.get("sample_evidence"),
-        limit=220,
+    sample_raw_text_excerpt = (
+        _clean_text(base_sample.get("sample_raw_text_excerpt"))
+        or mention_evidence
+        or _clean_text(base_sample.get("sample_evidence"))
     )
     return {
         "sample_post_uid": _clean_text(base_sample.get("sample_post_uid")),

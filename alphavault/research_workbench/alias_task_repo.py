@@ -26,7 +26,8 @@ ALIAS_TASK_STATUS_MANUAL = "manual"
 ALIAS_TASK_STATUS_BLOCKED = "blocked"
 ALIAS_TASK_STATUS_RESOLVED = "resolved"
 ALIAS_TASK_AUTO_CONFIRM_SOURCE = "ai_auto"
-ALIAS_TASK_AUTO_CONFIRM_CONFIDENCE_THRESHOLD = 0.9
+ALIAS_TASK_AUTO_CONFIRM_CONFIDENCE_THRESHOLD = 0.8
+ALIAS_TASK_AI_VALIDATION_STATUS_VALIDATED = "validated"
 
 
 class AliasResolveTaskInfo(TypedDict):
@@ -238,6 +239,11 @@ def should_auto_confirm_alias_resolve_task(
     ):
         return False
     if _normalize_bool_flag(task_row.get("ai_uncertain")) == "true":
+        return False
+    if (
+        _clean_text(task_row.get("ai_validation_status"))
+        != ALIAS_TASK_AI_VALIDATION_STATUS_VALIDATED
+    ):
         return False
     if not _stock_key_from_ai_stock_code(task_row.get("ai_stock_code")):
         return False

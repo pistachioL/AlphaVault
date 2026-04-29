@@ -243,7 +243,7 @@ def extract_post_context_result(
         engine_or_conn,
         post_uid=str(post.post_uid or "").strip(),
         mentions=mentions,
-        source_text_excerpt=_clip_text(post.raw_text, limit=_TEXT_EXCERPT_LIMIT),
+        source_text_excerpt=str(post.raw_text or "").strip(),
     )
     entities = match_result.entities or base_entities
     processed_at = now_str()

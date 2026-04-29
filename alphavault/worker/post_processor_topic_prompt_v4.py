@@ -34,6 +34,9 @@ from alphavault.domains.entity_match import (
     resolve_assertion_mentions,
 )
 from alphavault.rss.utils import RateLimiter, now_str
+from alphavault.research_workbench.sample_post_raw_text import (
+    load_sample_post_raw_text_map,
+)
 from alphavault.research_workbench.service import (
     get_research_workbench_engine_from_env,
 )
@@ -398,6 +401,7 @@ def resolve_rows_entity_matches(
     engine_or_conn,
     rows_by_post_uid: dict[str, list[dict[str, object]]],
 ) -> dict[str, list[EntityMatchResult]]:
+    sample_raw_text_by_post_uid = load_sample_post_raw_text_map(rows_by_post_uid.keys())
     stock_name_texts: list[str] = []
     stock_alias_texts: list[str] = []
     seen_stock_names: set[str] = set()
@@ -441,6 +445,12 @@ def resolve_rows_entity_matches(
         for row in rows:
             raw_mentions = row.get("assertion_mentions")
             assertion_mentions = raw_mentions if isinstance(raw_mentions, list) else []
+            sample_raw_text = str(
+                sample_raw_text_by_post_uid.get(post_uid)
+                or row.get("source_text_excerpt")
+                or row.get("evidence")
+                or ""
+            ).strip()
             match_result = resolve_assertion_mentions(
                 engine_or_conn,
                 assertion_mentions=assertion_mentions,
@@ -449,9 +459,7 @@ def resolve_rows_entity_matches(
                 alias_task_sample={
                     "sample_post_uid": post_uid,
                     "sample_evidence": str(row.get("evidence") or "").strip(),
-                    "sample_raw_text_excerpt": str(
-                        row.get("source_text_excerpt") or row.get("evidence") or ""
-                    ).strip(),
+                    "sample_raw_text_excerpt": sample_raw_text,
                 },
             )
             row["assertion_entities"] = match_result.entities
