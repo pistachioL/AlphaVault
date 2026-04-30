@@ -8,7 +8,7 @@ import re
 import sys
 import threading
 import time
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import requests
 
@@ -48,11 +48,20 @@ _KEY_VALUE_PATTERNS = (
     re.compile(r"\b(post_uid|message_id|trace_id|consumer|queue|source)=[^\s]+"),
     re.compile(r"\b(author|root_key|base_url|url|path|alias_key)=[^\s]+"),
 )
+_EXCEPTION_SIGNATURE_PATTERN = re.compile(
+    r"(?P<exc>[A-Za-z_][\w.]*(?:Error|Exception)):\s*"
+    r"(?P<msg>.+?)(?:\s+[A-Za-z_][A-Za-z0-9_]*=[^\s]+|$)"
+)
+_SOURCE_SCOPE_PATTERNS = (
+    re.compile(r"\b(?:owner|source)=([^\s]+)"),
+    re.compile(r"^\[[^:\]]+:([^\]]+)\]"),
+)
 _EXCEPTION_FORMATTER = logging.Formatter()
 
 
 @dataclass(frozen=True)
 class NtfyAlertConfig:
+    publish_url: str
     service_name: str
     server_url: str
     topic: str
@@ -65,17 +74,20 @@ class NtfyAlertConfig:
 class _AlertEvent:
     dedup_key: str
     fingerprint_id: str
+    group_label: str
     logger_name: str
     level_name: str
     levelno: int
     first_title: str
     first_body: str
+    source_scope: str
     summary_message: str
 
 
 @dataclass
 class _AlertWindowState:
     fingerprint_id: str
+    group_label: str
     logger_name: str
     level_name: str
     count: int
@@ -83,6 +95,7 @@ class _AlertWindowState:
     last_seen_at: float
     first_message: str
     last_message: str
+    source_scope: str
 
 
 def _limit_text(value: str, max_chars: int) -> str:
@@ -112,12 +125,22 @@ def _parse_positive_float(value: str, default: float) -> float:
     return float(parsed)
 
 
+def _mask_long_token(match: re.Match[str]) -> str:
+    value = str(match.group(0) or "")
+    if any(char.isdigit() for char in value):
+        return "<token>"
+    return value
+
+
 def _load_ntfy_alert_config(*, service_name: str) -> NtfyAlertConfig | None:
-    topic = str(os.getenv(ENV_NTFY_TOPIC, "") or "").strip()
-    if not topic:
+    raw_topic = str(os.getenv(ENV_NTFY_TOPIC, "") or "").strip()
+    if not raw_topic:
         return None
-    server_url = str(os.getenv(ENV_NTFY_URL, "") or "").strip() or DEFAULT_NTFY_URL
-    server_url = server_url.rstrip("/")
+    raw_server_url = str(os.getenv(ENV_NTFY_URL, "") or "").strip() or DEFAULT_NTFY_URL
+    server_url, topic, publish_url = _resolve_ntfy_target(
+        raw_server_url=raw_server_url,
+        raw_topic=raw_topic,
+    )
     token = str(os.getenv(ENV_NTFY_TOKEN, "") or "").strip()
     dedup_window_seconds = _parse_positive_int(
         os.getenv(ENV_NTFY_ALERT_DEDUP_WINDOW_SECONDS, ""),
@@ -129,6 +152,7 @@ def _load_ntfy_alert_config(*, service_name: str) -> NtfyAlertConfig | None:
     )
     resolved_service_name = str(service_name or "").strip() or "backend"
     return NtfyAlertConfig(
+        publish_url=publish_url,
         service_name=resolved_service_name,
         server_url=server_url,
         topic=topic,
@@ -136,6 +160,38 @@ def _load_ntfy_alert_config(*, service_name: str) -> NtfyAlertConfig | None:
         dedup_window_seconds=dedup_window_seconds,
         timeout_seconds=timeout_seconds,
     )
+
+
+def _resolve_ntfy_target(
+    *,
+    raw_server_url: str,
+    raw_topic: str,
+) -> tuple[str, str, str]:
+    server_url = str(raw_server_url or "").strip() or DEFAULT_NTFY_URL
+    server_url = server_url.rstrip("/")
+    topic = str(raw_topic or "").strip().strip("/")
+    if topic.startswith(("http://", "https://")):
+        parsed = urlsplit(topic)
+        resolved_server_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+        resolved_topic = parsed.path.strip("/") or parsed.netloc
+        return resolved_server_url, resolved_topic, topic
+
+    parsed_server = urlsplit(server_url)
+    server_scheme = parsed_server.scheme or "https"
+    server_host = parsed_server.netloc or parsed_server.path
+    topic_head, slash, topic_tail = topic.partition("/")
+    if slash and "." in topic_head and topic_tail:
+        resolved_server_url = f"{server_scheme}://{topic_head}".rstrip("/")
+        resolved_topic = topic_tail.strip("/")
+        publish_url = f"{resolved_server_url}/{quote(resolved_topic, safe='/')}"
+        return resolved_server_url, resolved_topic, publish_url
+
+    publish_url = f"{server_url}/{quote(topic, safe='/')}"
+    if slash and server_host and topic_head == server_host and topic_tail:
+        resolved_topic = topic_tail.strip("/")
+        publish_url = f"{server_url}/{quote(resolved_topic, safe='/')}"
+        return server_url, resolved_topic, publish_url
+    return server_url, topic, publish_url
 
 
 def _should_alert_for_record(record: logging.LogRecord) -> bool:
@@ -160,7 +216,7 @@ def _normalize_message_for_fingerprint(message: str) -> str:
     normalized = _UUID_PATTERN.sub("<uuid>", normalized)
     normalized = _DATETIME_PATTERN.sub("<time>", normalized)
     normalized = _LONG_NUMBER_PATTERN.sub("<number>", normalized)
-    normalized = _LONG_TOKEN_PATTERN.sub("<token>", normalized)
+    normalized = _LONG_TOKEN_PATTERN.sub(_mask_long_token, normalized)
     return _limit_text(normalized, 500)
 
 
@@ -182,24 +238,76 @@ def _format_exception_stack(record: logging.LogRecord) -> str:
         return ""
 
 
+def _extract_exception_signature(
+    *,
+    message: str,
+    record: logging.LogRecord,
+    exception_name: str,
+) -> str:
+    if record.exc_info and len(record.exc_info) >= 2 and record.exc_info[1] is not None:
+        exc_message = _limit_text(
+            _normalize_message_for_fingerprint(str(record.exc_info[1])),
+            240,
+        )
+        if exception_name and exc_message:
+            return f"{exception_name}: {exc_message}"
+        if exception_name:
+            return exception_name
+
+    matches = list(_EXCEPTION_SIGNATURE_PATTERN.finditer(message))
+    if not matches:
+        return exception_name
+    matched = matches[-1]
+    matched_name = str(matched.group("exc") or "").strip()
+    matched_message = _limit_text(
+        _normalize_message_for_fingerprint(str(matched.group("msg") or "")),
+        240,
+    )
+    if matched_name and matched_message:
+        return f"{matched_name}: {matched_message}"
+    return matched_name or exception_name
+
+
+def _extract_source_scope(message: str) -> str:
+    for pattern in _SOURCE_SCOPE_PATTERNS:
+        matched = pattern.search(message)
+        if matched is None:
+            continue
+        value = _limit_text(str(matched.group(1) or "").strip(), 80)
+        if value:
+            return value
+    return ""
+
+
 def _build_fingerprint(
     *,
     config: NtfyAlertConfig,
     record: logging.LogRecord,
     message: str,
     exception_name: str,
-) -> tuple[str, str]:
-    raw = "\n".join(
-        [
+) -> tuple[str, str, str, str]:
+    root_signature = _extract_exception_signature(
+        message=message,
+        record=record,
+        exception_name=exception_name,
+    )
+    source_scope = _extract_source_scope(message)
+    if root_signature:
+        raw_parts = [config.service_name, source_scope, root_signature]
+        group_label = root_signature
+    else:
+        raw_parts = [
             config.service_name,
             record.name,
             str(record.lineno),
             _normalize_message_for_fingerprint(message),
+            source_scope,
             exception_name,
         ]
-    )
+        group_label = record.name
+    raw = "\n".join(raw_parts)
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
-    return raw, digest
+    return raw, digest, group_label, source_scope
 
 
 def _format_local_time(ts: float) -> str:
@@ -213,22 +321,24 @@ def _build_alert_event(
 ) -> _AlertEvent:
     message = _limit_text(record.getMessage(), _MAX_BODY_MESSAGE_CHARS)
     exception_name = _format_exception_name(record)
-    fingerprint_raw, fingerprint_id = _build_fingerprint(
+    fingerprint_raw, fingerprint_id, group_label, source_scope = _build_fingerprint(
         config=config,
         record=record,
         message=message,
         exception_name=exception_name,
     )
     title = (
-        f"{_ALERT_TITLE_PREFIX}/{config.service_name} {record.levelname} {record.name}"
+        f"{_ALERT_TITLE_PREFIX}/{config.service_name} {record.levelname} {group_label}"
     )
-    if exception_name:
-        title = f"{title} {exception_name}"
+    if source_scope:
+        title = f"{title} ({source_scope})"
     body_lines = [
         f"service={config.service_name}",
         f"logger={record.name}",
         f"level={record.levelname}",
         f"fingerprint={fingerprint_id}",
+        f"group={group_label}",
+        f"source_scope={source_scope or '(empty)'}",
         f"time={_format_local_time(time.time())}",
         "",
         message,
@@ -239,11 +349,13 @@ def _build_alert_event(
     return _AlertEvent(
         dedup_key=fingerprint_raw,
         fingerprint_id=fingerprint_id,
+        group_label=group_label,
         logger_name=record.name,
         level_name=record.levelname,
         levelno=record.levelno,
         first_title=title,
         first_body="\n".join(body_lines),
+        source_scope=source_scope,
         summary_message=_limit_text(message, _MAX_SUMMARY_MESSAGE_CHARS),
     )
 
@@ -270,9 +382,8 @@ def _publish_alert(
     }
     if config.token:
         headers["Authorization"] = f"Bearer {config.token}"
-    url = f"{config.server_url}/{quote(config.topic, safe='')}"
     response = requests.post(
-        url,
+        config.publish_url,
         data=body.encode("utf-8"),
         headers=headers,
         timeout=float(config.timeout_seconds),
@@ -311,6 +422,7 @@ class NtfyErrorAlertHandler(logging.Handler):
                 timer.daemon = True
                 self._windows[event.dedup_key] = _AlertWindowState(
                     fingerprint_id=event.fingerprint_id,
+                    group_label=event.group_label,
                     logger_name=event.logger_name,
                     level_name=event.level_name,
                     count=1,
@@ -318,6 +430,7 @@ class NtfyErrorAlertHandler(logging.Handler):
                     last_seen_at=now,
                     first_message=event.summary_message,
                     last_message=event.summary_message,
+                    source_scope=event.source_scope,
                 )
                 timer_to_start = timer
                 should_publish_first = True
@@ -344,16 +457,17 @@ class NtfyErrorAlertHandler(logging.Handler):
             state = self._windows.pop(dedup_key, None)
         if state is None or state.count <= 1:
             return
-        title = (
-            f"{_ALERT_TITLE_PREFIX}/{self.config.service_name} repeated "
-            f"{state.level_name} {state.logger_name} x{state.count}"
-        )
+        title = f"{_ALERT_TITLE_PREFIX}/{self.config.service_name} repeated {state.group_label} x{state.count}"
+        if state.source_scope:
+            title = f"{title} ({state.source_scope})"
         body = "\n".join(
             [
                 f"service={self.config.service_name}",
                 f"logger={state.logger_name}",
                 f"level={state.level_name}",
                 f"fingerprint={state.fingerprint_id}",
+                f"group={state.group_label}",
+                f"source_scope={state.source_scope or '(empty)'}",
                 f"count={state.count}",
                 f"window_seconds={self.config.dedup_window_seconds}",
                 f"first_seen={_format_local_time(state.first_seen_at)}",
