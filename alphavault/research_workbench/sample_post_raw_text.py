@@ -15,12 +15,6 @@ def _clean_text(value: object) -> str:
     return str(value or "").strip()
 
 
-def _dispose_engine_if_needed(engine: PostgresEngine) -> None:
-    dispose = getattr(engine, "dispose", None)
-    if callable(dispose):
-        dispose()
-
-
 def load_sample_post_raw_text_map(post_uids: Iterable[str]) -> dict[str, str]:
     unique_post_uids = [
         post_uid
@@ -33,26 +27,22 @@ def load_sample_post_raw_text_map(post_uids: Iterable[str]) -> dict[str, str]:
     load_dotenv_if_present()
     engines_by_platform: dict[str, PostgresEngine] = {}
     out: dict[str, str] = {}
-    try:
-        for post_uid in unique_post_uids:
-            platform = _clean_text(infer_platform_from_post_uid(post_uid))
-            if not platform:
-                continue
-            engine = engines_by_platform.get(platform)
-            if engine is None:
-                source = require_postgres_source_from_env(platform)
-                engine = ensure_postgres_engine(source.dsn, schema_name=source.schema)
-                engines_by_platform[platform] = engine
-            try:
-                post = load_cloud_post(engine, post_uid)
-            except Exception:
-                continue
-            raw_text = _clean_text(post.raw_text)
-            if raw_text:
-                out[post_uid] = raw_text
-    finally:
-        for engine in engines_by_platform.values():
-            _dispose_engine_if_needed(engine)
+    for post_uid in unique_post_uids:
+        platform = _clean_text(infer_platform_from_post_uid(post_uid))
+        if not platform:
+            continue
+        engine = engines_by_platform.get(platform)
+        if engine is None:
+            source = require_postgres_source_from_env(platform)
+            engine = ensure_postgres_engine(source.dsn, schema_name=source.schema)
+            engines_by_platform[platform] = engine
+        try:
+            post = load_cloud_post(engine, post_uid)
+        except Exception:
+            continue
+        raw_text = _clean_text(post.raw_text)
+        if raw_text:
+            out[post_uid] = raw_text
     return out
 
 
