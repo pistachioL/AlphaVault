@@ -15,8 +15,9 @@ from alphavault.constants import (
     ENV_RSS_FEED_SLEEP_SECONDS,
     ENV_RSS_INTERVAL_SECONDS,
 )
+from alphavault.error_alerts import install_ntfy_error_alerting
+from alphavault.logging_config import configure_logging, get_logger
 from alphavault.rss.utils import RateLimiter, env_float, parse_active_hours
-from alphavault.logging_config import configure_logging
 from alphavault.worker import worker_loop
 from alphavault.worker.cli import (
     _parse_worker_active_hours_from_args,
@@ -25,6 +26,9 @@ from alphavault.worker.cli import (
     resolve_rss_source_configs,
 )
 from alphavault.worker.runtime_models import _build_config
+
+_FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+logger = get_logger(__name__)
 
 
 def _resolve_rss_active_hours_from_env() -> Optional[tuple[int, int]]:
@@ -51,35 +55,44 @@ def _resolve_rss_feed_sleep_seconds() -> float:
 def main() -> None:
     args = parse_args()
     configure_logging(level=getattr(args, "log_level", ""))
-    source_configs = list(resolve_rss_source_configs(args))
+    install_ntfy_error_alerting(service_name="worker")
+    try:
+        source_configs = list(resolve_rss_source_configs(args))
 
-    worker_active_hours = _parse_worker_active_hours_from_args(args)
-    worker_interval_seconds = _resolve_worker_interval_seconds(args)
+        worker_active_hours = _parse_worker_active_hours_from_args(args)
+        worker_interval_seconds = _resolve_worker_interval_seconds(args)
 
-    config = _build_config(args)
-    limiter = RateLimiter(config.ai_rpm)
-    ai_cap = max(1, int(getattr(config, "ai_max_inflight", 1) or 1))
+        config = _build_config(args)
+        limiter = RateLimiter(config.ai_rpm)
+        ai_cap = max(1, int(getattr(config, "ai_max_inflight", 1) or 1))
 
-    rss_active_hours = _resolve_rss_active_hours_from_env()
-    rss_interval_seconds = _resolve_rss_interval_seconds()
-    rss_feed_sleep_seconds = _resolve_rss_feed_sleep_seconds()
+        rss_active_hours = _resolve_rss_active_hours_from_env()
+        rss_interval_seconds = _resolve_rss_interval_seconds()
+        rss_feed_sleep_seconds = _resolve_rss_feed_sleep_seconds()
 
-    sources, redis_client, _base_redis_queue_key = worker_loop.build_source_runtimes(
-        source_configs=source_configs,
-    )
-    worker_loop.run_worker_forever(
-        args=args,
-        sources=sources,
-        config=config,
-        limiter=limiter,
-        ai_cap=ai_cap,
-        redis_client=redis_client,
-        rss_active_hours=rss_active_hours,
-        rss_interval_seconds=rss_interval_seconds,
-        rss_feed_sleep_seconds=rss_feed_sleep_seconds,
-        worker_active_hours=worker_active_hours,
-        worker_interval_seconds=worker_interval_seconds,
-    )
+        sources, redis_client, _base_redis_queue_key = (
+            worker_loop.build_source_runtimes(
+                source_configs=source_configs,
+            )
+        )
+        worker_loop.run_worker_forever(
+            args=args,
+            sources=sources,
+            config=config,
+            limiter=limiter,
+            ai_cap=ai_cap,
+            redis_client=redis_client,
+            rss_active_hours=rss_active_hours,
+            rss_interval_seconds=rss_interval_seconds,
+            rss_feed_sleep_seconds=rss_feed_sleep_seconds,
+            worker_active_hours=worker_active_hours,
+            worker_interval_seconds=worker_interval_seconds,
+        )
+    except BaseException as err:
+        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
+            raise
+        logger.exception("worker_main_crash")
+        raise
 
 
 __all__ = [
