@@ -140,6 +140,7 @@ def test_apply_cloud_schema_posts_table_has_no_ai_runtime_columns(pg_conn) -> No
         "created_at",
         "url",
         "raw_text",
+        "raw_text_search_norm",
         "final_status",
         "invest_score",
         "processed_at",

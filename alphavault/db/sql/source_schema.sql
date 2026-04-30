@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.posts (
     created_at TEXT NOT NULL,
     url TEXT NOT NULL,
     raw_text TEXT NOT NULL,
+    raw_text_search_norm TEXT NOT NULL DEFAULT '',
     final_status TEXT NOT NULL CHECK (final_status IN ('relevant', 'irrelevant', 'failed')),
     invest_score REAL,
     processed_at TEXT,
@@ -162,6 +163,23 @@ CREATE INDEX IF NOT EXISTS idx_posts_created_at_post_uid
 
 CREATE INDEX IF NOT EXISTS idx_posts_platform_post_id
     ON {{schema_name}}.posts(platform_post_id);
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_extension
+        WHERE extname = 'pgroonga'
+    ) THEN
+        EXECUTE $sql$
+CREATE INDEX IF NOT EXISTS idx_posts_search_body_pgroonga
+    ON {{schema_name}}.posts
+    USING pgroonga ((COALESCE(NULLIF(raw_text_search_norm, ''), raw_text)))
+    WHERE processed_at IS NOT NULL
+$sql$;
+    END IF;
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS idx_assertions_post_uid
     ON {{schema_name}}.assertions(post_uid);

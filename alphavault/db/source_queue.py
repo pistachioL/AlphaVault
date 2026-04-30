@@ -23,6 +23,7 @@ from alphavault.db.postgres_db import (
 from alphavault.db.sql import source_queue as source_queue_sql
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.rss.utils import now_str
+from alphavault.search_text import build_sparse_search_text
 
 if TYPE_CHECKING:
     from alphavault.domains.entity_match.resolve import EntityMatchResult
@@ -217,6 +218,7 @@ def _execute_upsert_pending_post(
     archived_at: str,
     ingested_at: int,
 ) -> None:
+    raw_text_search_norm = build_sparse_search_text(raw_text)
     conn.execute(
         source_queue_sql.upsert_pending_post_sql(_posts_table(conn)),
         {
@@ -227,6 +229,7 @@ def _execute_upsert_pending_post(
             "created_at": created_at,
             "url": url,
             "raw_text": raw_text,
+            "raw_text_search_norm": raw_text_search_norm,
             "final_status": "irrelevant",
             "archived_at": archived_at,
             "ingested_at": int(ingested_at),
