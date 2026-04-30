@@ -8,6 +8,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from alphavault.env import load_dotenv_if_present
+from alphavault.error_alerts import install_ntfy_error_alerting
 from alphavault.logging_config import get_logger
 from alphavault_reflex.organizer_state import OrganizerState
 from alphavault_reflex.homework_state import HomeworkState
@@ -30,6 +31,7 @@ MANUAL_PROCESS_METRICS_API_PATH = "/api/admin/processes"
 logger = get_logger(__name__)
 
 load_dotenv_if_present()
+install_ntfy_error_alerting(service_name="web")
 
 app = rx.App(
     theme=rx.theme(appearance="light"),
@@ -93,6 +95,7 @@ async def _manual_rss_trigger_get(request: Request) -> JSONResponse:
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
+        logger.exception("manual_rss_trigger_failed")
         return JSONResponse(
             {"ok": False, "error": "manual_rss_trigger_failed"},
             status_code=500,
@@ -153,6 +156,7 @@ async def _manual_db_requeue_get(request: Request) -> JSONResponse:
     except BaseException as err:
         if isinstance(err, _FATAL_BASE_EXCEPTIONS):
             raise
+        logger.exception("manual_db_requeue_failed")
         return JSONResponse(
             {"ok": False, "error": "manual_db_requeue_failed"},
             status_code=500,
