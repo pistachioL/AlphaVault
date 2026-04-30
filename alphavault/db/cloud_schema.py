@@ -3,7 +3,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 import re
-import sqlite3
 from typing import Any, Iterator
 
 from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO, SCHEMA_XUEQIU
@@ -19,6 +18,7 @@ _SCHEMA_TARGET_STANDARD = "standard"
 _SCHEMA_TARGET_ALL = "all"
 _SCHEMA_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SCHEMA_TEMPLATE_NAME = "{{schema_name}}"
+_DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
 _SCHEMA_PATHS = {
     _SCHEMA_TARGET_SOURCE: _SQL_DIR / "source_schema.sql",
     _SCHEMA_TARGET_STANDARD: _SQL_DIR / "standard_schema.sql",
@@ -54,17 +54,120 @@ def _normalize_statement(statement: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _match_dollar_quote(sql_text: str, start: int) -> str:
+    matched = _DOLLAR_QUOTE_RE.match(sql_text, start)
+    if matched is None:
+        return ""
+    return matched.group(0)
+
+
 def iter_cloud_schema_statements(sql_text: str) -> Iterator[str]:
-    buffer = ""
-    for line in str(sql_text or "").splitlines():
-        buffer = f"{buffer}\n{line}" if buffer else line
-        if not sqlite3.complete_statement(buffer):
+    sql = str(sql_text or "")
+    buffer: list[str] = []
+    idx = 0
+    size = len(sql)
+    single_quote = False
+    double_quote = False
+    line_comment = False
+    block_comment = False
+    dollar_quote = ""
+
+    while idx < size:
+        if line_comment:
+            char = sql[idx]
+            buffer.append(char)
+            idx += 1
+            if char == "\n":
+                line_comment = False
             continue
-        statement = _normalize_statement(buffer)
-        buffer = ""
-        if statement:
-            yield statement
-    tail = _normalize_statement(buffer)
+
+        if block_comment:
+            if sql.startswith("*/", idx):
+                buffer.append("*/")
+                idx += 2
+                block_comment = False
+                continue
+            buffer.append(sql[idx])
+            idx += 1
+            continue
+
+        if dollar_quote:
+            if sql.startswith(dollar_quote, idx):
+                buffer.append(dollar_quote)
+                idx += len(dollar_quote)
+                dollar_quote = ""
+                continue
+            buffer.append(sql[idx])
+            idx += 1
+            continue
+
+        if single_quote:
+            if sql.startswith("''", idx):
+                buffer.append("''")
+                idx += 2
+                continue
+            char = sql[idx]
+            buffer.append(char)
+            idx += 1
+            if char == "'":
+                single_quote = False
+            continue
+
+        if double_quote:
+            if sql.startswith('""', idx):
+                buffer.append('""')
+                idx += 2
+                continue
+            char = sql[idx]
+            buffer.append(char)
+            idx += 1
+            if char == '"':
+                double_quote = False
+            continue
+
+        if sql.startswith("--", idx):
+            buffer.append("--")
+            idx += 2
+            line_comment = True
+            continue
+
+        if sql.startswith("/*", idx):
+            buffer.append("/*")
+            idx += 2
+            block_comment = True
+            continue
+
+        dollar_quote = _match_dollar_quote(sql, idx)
+        if dollar_quote:
+            buffer.append(dollar_quote)
+            idx += len(dollar_quote)
+            continue
+
+        char = sql[idx]
+        if char == "'":
+            single_quote = True
+            buffer.append(char)
+            idx += 1
+            continue
+        if char == '"':
+            double_quote = True
+            buffer.append(char)
+            idx += 1
+            continue
+        if char == ";":
+            statement = _normalize_statement("".join(buffer))
+            buffer = []
+            idx += 1
+            if statement:
+                yield statement
+            continue
+
+        buffer.append(char)
+        idx += 1
+
+    if single_quote or double_quote or line_comment or block_comment or dollar_quote:
+        raise ValueError("incomplete_cloud_schema_sql")
+    tail = _normalize_statement("".join(buffer))
     if tail:
         raise ValueError("incomplete_cloud_schema_sql")
 

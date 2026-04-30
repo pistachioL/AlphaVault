@@ -34,10 +34,12 @@ def upsert_pending_post_sql(posts_table: str) -> str:
     return f"""
 INSERT INTO {posts_table} (
     post_uid, platform, platform_post_id, author, created_at, url, raw_text,
+    raw_text_search_norm,
     final_status, invest_score, processed_at, model, prompt_version, archived_at,
     ingested_at
 ) VALUES (
     :post_uid, :platform, :platform_post_id, :author, :created_at, :url, :raw_text,
+    :raw_text_search_norm,
     :final_status, NULL, NULL, NULL, NULL, :archived_at,
     :ingested_at
 )
@@ -69,6 +71,12 @@ ON CONFLICT(post_uid) DO UPDATE SET
              OR LOWER(COALESCE(excluded.platform, {posts_table}.platform, '')) = 'xueqiu'
         THEN excluded.raw_text
         ELSE {posts_table}.raw_text
+    END,
+    raw_text_search_norm=CASE
+        WHEN {posts_table}.processed_at IS NULL
+             OR LOWER(COALESCE(excluded.platform, {posts_table}.platform, '')) = 'xueqiu'
+        THEN excluded.raw_text_search_norm
+        ELSE {posts_table}.raw_text_search_norm
     END,
     archived_at=CASE
         WHEN {posts_table}.processed_at IS NULL

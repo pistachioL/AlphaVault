@@ -14,8 +14,10 @@ from alphavault_reflex.homework_state import HomeworkState
 from alphavault_reflex.pages.homework import homework_page
 from alphavault_reflex.pages.index import index_page
 from alphavault_reflex.pages.organizer import organizer_page
+from alphavault_reflex.pages.search_posts import search_posts_page
 from alphavault_reflex.pages.sector_research import sector_research_page
 from alphavault_reflex.pages.stock_research import stock_research_page
+from alphavault_reflex.post_search_state import PostSearchState
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import sector_browser_title_var
 from alphavault_reflex.research_state import stock_browser_title_var
@@ -44,6 +46,12 @@ app = rx.App(
 )
 
 app.add_page(index_page, route="/", title="AlphaVault")
+app.add_page(
+    search_posts_page,
+    route="/search/posts",
+    title="全文搜索",
+    on_load=PostSearchState.load_search_if_needed,
+)
 app.add_page(
     homework_page,
     route="/homework",
