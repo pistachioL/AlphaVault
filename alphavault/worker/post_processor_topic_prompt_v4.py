@@ -90,6 +90,7 @@ def _build_manual_feedback_hint(
 
 
 _TOPIC_PROMPT_TRACE_CONTEXT = threading.local()
+_TOPIC_PROMPT_FAILURE_CONTEXT = threading.local()
 logger = get_logger(__name__)
 
 
@@ -123,6 +124,22 @@ def set_topic_prompt_trace_context(
 def clear_topic_prompt_trace_context() -> None:
     if hasattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value"):
         delattr(_TOPIC_PROMPT_TRACE_CONTEXT, "value")
+
+
+def set_topic_prompt_failure_context(**kwargs: object) -> None:
+    _TOPIC_PROMPT_FAILURE_CONTEXT.value = dict(kwargs)
+
+
+def get_topic_prompt_failure_context() -> dict[str, object] | None:
+    raw_context = getattr(_TOPIC_PROMPT_FAILURE_CONTEXT, "value", None)
+    if not isinstance(raw_context, dict):
+        return None
+    return dict(raw_context)
+
+
+def clear_topic_prompt_failure_context() -> None:
+    if hasattr(_TOPIC_PROMPT_FAILURE_CONTEXT, "value"):
+        delattr(_TOPIC_PROMPT_FAILURE_CONTEXT, "value")
 
 
 def _topic_prompt_trace_suffix() -> str:
@@ -479,6 +496,7 @@ def process_one_post_uid_topic_prompt_v4(
     prefetched_recent: list[dict[str, object]] | None = None,
     source_name: str = "",
 ) -> bool:
+    clear_topic_prompt_failure_context()
     debug_enabled = logger.isEnabledFor(logging.DEBUG)
     if debug_enabled:
         logger.debug(
@@ -773,10 +791,19 @@ def process_one_post_uid_topic_prompt_v4(
                             uid,
                             stock_key,
                         )
+        clear_topic_prompt_failure_context()
         return True
     except Exception as err:
         if isinstance(err, AiInvalidJsonError):
             raw_tail = to_one_line_tail(getattr(err, "raw_ai_text", ""), max_chars=240)
+            set_topic_prompt_failure_context(
+                kind="invalid_json",
+                error=format_llm_error_one_line(err, limit=700),
+                prompt_version=str(config.prompt_version or "").strip(),
+                raw_ai_len=len(getattr(err, "raw_ai_text", "") or ""),
+                raw_ai_tail=raw_tail,
+                root_key=str(root_key or "").strip(),
+            )
             logger.info(
                 " ".join(
                     [
@@ -821,9 +848,12 @@ def process_one_post_uid_topic_prompt_v4(
 
 
 __all__ = [
+    "clear_topic_prompt_failure_context",
     "clear_topic_prompt_trace_context",
+    "get_topic_prompt_failure_context",
     "map_topic_prompt_assertions_to_rows",
     "process_one_post_uid_topic_prompt_v4",
     "resolve_rows_entity_matches",
+    "set_topic_prompt_failure_context",
     "set_topic_prompt_trace_context",
 ]

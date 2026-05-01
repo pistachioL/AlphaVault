@@ -33,6 +33,14 @@ _WARNING_ALERT_MARKERS = (
     "exception",
 )
 _INTERNAL_LOGGER_PREFIXES = ("urllib3", "requests")
+_SUPPRESSED_NTFY_MESSAGE_PREFIXES = (
+    "[llm] request_retry label=topic:",
+    "[llm] request_failed label=topic:",
+)
+_SUPPRESSED_NTFY_MESSAGE_MARKERS = (
+    "AiInvalidJsonError",
+    "ai_invalid_json",
+)
 _MAX_BODY_MESSAGE_CHARS = 1200
 _MAX_STACK_CHARS = 1800
 _MAX_SUMMARY_MESSAGE_CHARS = 500
@@ -197,11 +205,20 @@ def _resolve_ntfy_target(
 def _should_alert_for_record(record: logging.LogRecord) -> bool:
     if record.name.startswith(_INTERNAL_LOGGER_PREFIXES):
         return False
+    message = record.getMessage()
+    if (
+        record.name == "alphavault.ai._client"
+        and any(
+            message.startswith(prefix) for prefix in _SUPPRESSED_NTFY_MESSAGE_PREFIXES
+        )
+        and any(marker in message for marker in _SUPPRESSED_NTFY_MESSAGE_MARKERS)
+    ):
+        return False
     if record.levelno >= logging.ERROR:
         return True
     if record.levelno < logging.WARNING:
         return False
-    lowered = f"{record.name} {record.getMessage()}".lower()
+    lowered = f"{record.name} {message}".lower()
     return any(marker in lowered for marker in _WARNING_ALERT_MARKERS)
 
 

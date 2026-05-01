@@ -60,6 +60,8 @@ def process_one_redis_payload(
     redis_ai_ack_and_clear_dedup_fn: Callable[..., object],
     redis_ai_ack_and_push_retry_fn: Callable[..., object],
     payload_retry_count_fn: Callable[[dict[str, object]], int],
+    load_last_failure_context_fn: Callable[[], dict[str, object] | None] | None = None,
+    on_final_failure_fn: Callable[..., None] | None = None,
     is_post_already_processed_success_fn: Callable[..., bool] = _always_false,
     backoff_seconds_fn: Callable[[int], int],
     now_epoch_fn: Callable[[], int],
@@ -103,8 +105,32 @@ def process_one_redis_payload(
         redis_ai_ack_fn(redis_client, redis_queue_key, message_id)
         return
 
+    failure_context = (
+        load_last_failure_context_fn()
+        if load_last_failure_context_fn is not None
+        else None
+    )
     retry_count = max(1, int(payload_retry_count_fn(payload)) + 1)
     if retry_count > max(0, int(max_retry_count)):
+        if on_final_failure_fn is not None:
+            try:
+                on_final_failure_fn(
+                    post_uid=resolved_post_uid,
+                    retry_count=int(retry_count),
+                    max_retry_count=max(0, int(max_retry_count)),
+                    payload=dict(payload),
+                    config=config,
+                    failure_context=failure_context,
+                )
+            except BaseException as err:
+                if isinstance(err, fatal_exceptions):
+                    raise
+                logger.warning(
+                    "[ai] final_failure_hook_error post_uid=%s %s: %s",
+                    resolved_post_uid,
+                    type(err).__name__,
+                    err,
+                )
         try:
             mark_post_failed_fn(
                 engine=engine,

@@ -16,6 +16,7 @@ from alphavault.worker import ai_processor
 from alphavault.worker.backoff import backoff_seconds
 from alphavault.worker.post_processor import process_one_post_uid
 from alphavault.worker.post_processor_topic_prompt_v4 import (
+    get_topic_prompt_failure_context,
     clear_topic_prompt_trace_context,
     set_topic_prompt_trace_context,
 )
@@ -106,6 +107,46 @@ def _build_ai_trace_log_line(
         _append_trace_field(parts, "retry_added", int(retry_added))
     if elapsed_seconds is not None:
         _append_trace_field(parts, "elapsed_seconds", int(elapsed_seconds))
+    return " ".join(parts)
+
+
+def _build_final_invalid_json_log_line(
+    *,
+    post_uid: str,
+    retry_count: int,
+    max_retry_count: int,
+    prompt_version: str,
+    root_key: str,
+    raw_ai_len: int,
+    raw_ai_tail: str,
+    error: str,
+    trace_id: str,
+    consumer: str,
+    queue: str,
+    source: str,
+    message_id: str,
+) -> str:
+    parts = [
+        "[ai] final_invalid_json_failed",
+        f"post_uid={_trace_log_value(post_uid)}",
+        f"attempt={max(0, int(retry_count))}",
+        f"max_retries={max(0, int(max_retry_count))}",
+        f"prompt_version={_trace_log_value(prompt_version)}",
+        f"root_key={_trace_log_value(root_key)}",
+        f"raw_ai_len={max(0, int(raw_ai_len))}",
+        f"raw_ai_tail={_trace_log_value(raw_ai_tail)}",
+        f"error={_trace_log_value(error)}",
+    ]
+    for key, value in (
+        ("trace_id", trace_id),
+        ("consumer", consumer),
+        ("queue", queue),
+        ("source", source),
+        ("message_id", message_id),
+    ):
+        text = _trace_log_value(value)
+        if text:
+            parts.append(f"{key}={text}")
     return " ".join(parts)
 
 
@@ -354,6 +395,32 @@ def process_one_redis_payload(
         )
         return bool(success)
 
+    def _on_final_failure(**kwargs) -> None:  # type: ignore[no-untyped-def]
+        failure_context = kwargs.get("failure_context")
+        if not isinstance(failure_context, dict):
+            return
+        if str(failure_context.get("kind") or "").strip() != "invalid_json":
+            return
+        logger.error(
+            _build_final_invalid_json_log_line(
+                post_uid=str(
+                    kwargs.get("post_uid") or trace_state.get("post_uid") or ""
+                ).strip(),
+                retry_count=int(kwargs.get("retry_count") or 0),
+                max_retry_count=int(kwargs.get("max_retry_count") or 0),
+                prompt_version=str(failure_context.get("prompt_version") or "").strip(),
+                root_key=str(failure_context.get("root_key") or "").strip(),
+                raw_ai_len=int(failure_context.get("raw_ai_len") or 0),
+                raw_ai_tail=str(failure_context.get("raw_ai_tail") or "").strip(),
+                error=str(failure_context.get("error") or "").strip(),
+                trace_id=resolved_trace_id,
+                consumer=resolved_consumer_name,
+                queue=resolved_queue_key,
+                source=resolved_source_name,
+                message_id=resolved_message_id,
+            )
+        )
+
     try:
         ai_processor.process_one_redis_payload(
             engine=engine,
@@ -372,6 +439,8 @@ def process_one_redis_payload(
             redis_ai_ack_and_clear_dedup_fn=_redis_ai_ack_and_clear_dedup_with_trace,
             redis_ai_ack_and_push_retry_fn=_redis_ai_ack_and_push_retry_with_trace,
             payload_retry_count_fn=_payload_retry_count,
+            load_last_failure_context_fn=get_topic_prompt_failure_context,
+            on_final_failure_fn=_on_final_failure,
             is_post_already_processed_success_fn=_is_post_already_processed_success,
             backoff_seconds_fn=backoff_seconds,
             now_epoch_fn=lambda: int(time.time()),
