@@ -4,7 +4,7 @@ import logging
 from typing import Any, Callable
 
 from alphavault.ai._errors import format_llm_error_one_line
-from alphavault.ai.analyze import _call_ai_with_litellm
+from alphavault.ai.analyze import _call_ai_with_openai
 from alphavault.domains.stock.key_match import (
     is_stock_code_value,
     normalize_stock_code,
@@ -366,7 +366,7 @@ def _predict_alias_tasks_with_ai(
 """.strip()
 
     try:
-        parsed = _call_ai_with_litellm(
+        parsed = _call_ai_with_openai(
             prompt=prompt,
             api_mode=config.api_mode,
             ai_stream=False,

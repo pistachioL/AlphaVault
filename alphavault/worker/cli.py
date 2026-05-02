@@ -163,7 +163,7 @@ def parse_args() -> argparse.Namespace:
         help="队列任务拿走后，多久没完成就算卡住（秒，可用 AI_QUEUE_ACK_TIMEOUT_SEC）",
     )
 
-    # AI config (litellm only; mostly via env)
+    # AI config (OpenAI SDK; mostly via env)
     parser.add_argument("--model", default=env_config.model)
     parser.add_argument(
         "--base-url",

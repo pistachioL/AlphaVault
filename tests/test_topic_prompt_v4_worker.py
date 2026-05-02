@@ -269,7 +269,7 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
             ],
         }
 
-    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_litellm", _fake_call_ai)
+    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_openai", _fake_call_ai)
     monkeypatch.setattr(
         topic_prompt_module,
         "extract_post_context_result",
@@ -343,7 +343,7 @@ def test_process_one_post_uid_topic_prompt_v4_passes_prefetched_post_to_final_wr
     def _fake_write(*_args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         writes.append(dict(kwargs))
 
-    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_litellm", _fake_call_ai)
+    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_openai", _fake_call_ai)
     monkeypatch.setattr(
         topic_prompt_module,
         "load_latest_pending_feedback",
@@ -446,7 +446,7 @@ def test_process_one_post_uid_topic_prompt_v4_passes_manual_feedback_hint_to_pro
     )
     monkeypatch.setattr(
         topic_prompt_module,
-        "_call_ai_with_litellm",
+        "_call_ai_with_openai",
         lambda **_kwargs: {"assertions": [], "mentions": []},
     )
     monkeypatch.setattr(
@@ -548,7 +548,7 @@ def test_process_one_post_uid_topic_prompt_v4_marks_feedback_applied_after_succe
     )
     monkeypatch.setattr(
         topic_prompt_module,
-        "_call_ai_with_litellm",
+        "_call_ai_with_openai",
         lambda **_kwargs: {"assertions": [], "mentions": []},
     )
     monkeypatch.setattr(
@@ -661,7 +661,7 @@ def test_process_one_post_uid_topic_prompt_v4_wraps_done_write_and_feedback_appl
     )
     monkeypatch.setattr(
         topic_prompt_module,
-        "_call_ai_with_litellm",
+        "_call_ai_with_openai",
         lambda **_kwargs: {"assertions": [], "mentions": []},
     )
     monkeypatch.setattr(
@@ -780,7 +780,7 @@ def test_process_one_post_uid_topic_prompt_v4_clips_manual_feedback_note_for_pro
     )
     monkeypatch.setattr(
         topic_prompt_module,
-        "_call_ai_with_litellm",
+        "_call_ai_with_openai",
         lambda **_kwargs: {"assertions": [], "mentions": []},
     )
     monkeypatch.setattr(
@@ -883,7 +883,7 @@ def test_process_one_post_uid_topic_prompt_v4_does_not_mark_feedback_applied_on_
     def _fail_ai(**_kwargs):  # type: ignore[no-untyped-def]
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_litellm", _fail_ai)
+    monkeypatch.setattr(topic_prompt_module, "_call_ai_with_openai", _fail_ai)
 
     def _fake_mark_feedback_applied(_engine, **kwargs) -> int:  # type: ignore[no-untyped-def]
         applied_calls.append(dict(kwargs))
@@ -955,7 +955,7 @@ def test_process_one_post_uid_topic_prompt_v4_rolls_back_done_write_when_feedbac
     )
     monkeypatch.setattr(
         topic_prompt_module,
-        "_call_ai_with_litellm",
+        "_call_ai_with_openai",
         lambda **_kwargs: {"assertions": [], "mentions": []},
     )
     monkeypatch.setattr(

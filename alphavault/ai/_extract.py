@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from alphavault.ai._litellm import _import_litellm
-
 
 def _response_attr(obj: Any, key: str) -> Any:
     if isinstance(obj, dict):
@@ -137,16 +135,6 @@ def _collect_streamed_ai_text(stream_response: Any, *, api_mode: str) -> str:
     streamed_text = "".join(text_parts).strip()
     if streamed_text:
         return streamed_text
-
-    if api_mode == "completion" and chunks:
-        try:
-            litellm = _import_litellm()
-            rebuilt = litellm.stream_chunk_builder(chunks)
-            rebuilt_text = _extract_ai_text(rebuilt)
-            if rebuilt_text:
-                return rebuilt_text
-        except Exception:
-            pass
 
     for chunk in reversed(chunks):
         chunk_text = _extract_ai_text(chunk)

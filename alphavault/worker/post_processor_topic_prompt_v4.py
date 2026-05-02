@@ -8,7 +8,7 @@ from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
     DEFAULT_AI_REASONING_EFFORT,
     DEFAULT_MODEL,
-    _call_ai_with_litellm,
+    _call_ai_with_openai,
     format_llm_error_one_line,
     normalize_action,
 )
@@ -626,7 +626,7 @@ def process_one_post_uid_topic_prompt_v4(
 
     try:
         start_ts = time.time()
-        parsed = _call_ai_with_litellm(
+        parsed = _call_ai_with_openai(
             prompt=prompt,
             api_mode=str(config.api_mode or DEFAULT_AI_MODE),
             ai_stream=bool(config.ai_stream),

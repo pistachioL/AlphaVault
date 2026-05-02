@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from alphavault.ai._client import _call_ai_with_litellm
+from alphavault.ai._client import _call_ai_with_openai
 from alphavault.ai.analyze import DEFAULT_AI_MODE, DEFAULT_MODEL
 from alphavault.ai.post_context_prompt import POST_CONTEXT_PROMPT_VERSION
 from alphavault.ai.tag_validate import validate_post_context_ai_result
@@ -219,7 +219,7 @@ def extract_post_context_result(
         posts=[current_row],
         max_prompt_chars=MAX_TOPIC_PROMPT_CHARS,
     )
-    parsed = _call_ai_with_litellm(
+    parsed = _call_ai_with_openai(
         prompt=prompt,
         api_mode=str(runtime_config.api_mode or DEFAULT_AI_MODE),
         ai_stream=False,

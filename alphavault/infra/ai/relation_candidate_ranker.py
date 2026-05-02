@@ -4,7 +4,7 @@ import logging
 from typing import Any, Callable
 
 from alphavault.ai._errors import format_llm_error_one_line
-from alphavault.ai.analyze import _call_ai_with_litellm
+from alphavault.ai.analyze import _call_ai_with_openai
 from alphavault.domains.relation.relation_candidates import (
     RELATION_LABEL_PARENT_CHILD,
     RELATION_LABEL_RELATED,
@@ -284,7 +284,7 @@ relation_type: {relation_type}
 """.strip()
 
     try:
-        parsed = _call_ai_with_litellm(
+        parsed = _call_ai_with_openai(
             prompt=prompt,
             api_mode=config.api_mode,
             ai_stream=False,
@@ -455,7 +455,7 @@ def _judge_stock_alias_candidate_batch_with_ai(
     if not candidates:
         return []
     try:
-        parsed = _call_ai_with_litellm(
+        parsed = _call_ai_with_openai(
             prompt=_build_stock_alias_prompt(candidates),
             api_mode=config.api_mode,
             ai_stream=False,

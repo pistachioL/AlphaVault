@@ -126,7 +126,7 @@ def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
 def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
     """
     One-line error for log + DB. Example:
-    APIError status_code=401 provider=openai model=openai/gpt-5.2 message=...
+    APIError status_code=401 provider=openai model=gpt-5.2 message=...
     """
     try:
         details = extract_llm_error_details(exc)

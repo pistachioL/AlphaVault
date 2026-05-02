@@ -11,7 +11,7 @@ from alphavault.ai._errors import (
     format_llm_error_one_line,
 )
 from alphavault.ai._extract import _collect_streamed_ai_text, _extract_ai_text
-from alphavault.ai._litellm import _import_litellm, _resolve_litellm_model_name
+from alphavault.ai._openai import _build_openai_client, _resolve_openai_model_name
 from alphavault.ai._text import parse_json_text
 from alphavault.logging_config import get_logger
 
@@ -55,7 +55,22 @@ def _to_one_line_tail(text: str, *, max_chars: int) -> str:
     return s[-int(max_chars) :]
 
 
-def _call_ai_with_litellm(
+def _close_if_possible(resource: Any) -> None:
+    close_fn = getattr(resource, "close", None)
+    if callable(close_fn):
+        close_fn()
+
+
+def _load_raw_ai_text(response: Any, *, ai_stream: bool, api_mode: str) -> str:
+    if not ai_stream:
+        return _extract_ai_text(response)
+    try:
+        return _collect_streamed_ai_text(response, api_mode=api_mode)
+    finally:
+        _close_if_possible(response)
+
+
+def _call_ai_with_openai(
     *,
     prompt: str,
     api_mode: str,
@@ -72,9 +87,7 @@ def _call_ai_with_litellm(
     validator: Optional[Callable[[Dict[str, Any]], None]] = None,
     request_gate: Optional[Callable[[], None]] = None,
 ) -> Dict[str, Any]:
-    litellm = _import_litellm()
-
-    request_model_name = _resolve_litellm_model_name(model_name, base_url)
+    request_model_name = _resolve_openai_model_name(model_name)
     clean_reasoning_effort = str(reasoning_effort or "").strip()
     last_error: Optional[Exception] = None
     retries = max(0, int(retry_count))
@@ -85,47 +98,40 @@ def _call_ai_with_litellm(
         try:
             if request_gate is not None:
                 request_gate()
-            response: Any
-            if api_mode == "responses":
-                responses_fn = getattr(litellm, "responses", None)
-                if not callable(responses_fn):
-                    raise RuntimeError("litellm_responses_not_supported")
-                call_kwargs: Dict[str, Any] = {
-                    "model": request_model_name,
-                    "input": prompt,
-                    "temperature": float(temperature),
-                    "timeout": float(timeout_seconds),
-                    "api_key": api_key,
-                    "stream": bool(ai_stream),
-                }
-                if clean_reasoning_effort:
-                    call_kwargs["reasoning_effort"] = clean_reasoning_effort
-                if base_url:
-                    call_kwargs["api_base"] = base_url
-                response = responses_fn(**call_kwargs)
-            else:
-                completion_fn = getattr(litellm, "completion", None)
-                if not callable(completion_fn):
-                    raise RuntimeError("litellm_completion_not_supported")
-                call_kwargs = {
-                    "model": request_model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": float(temperature),
-                    "timeout": float(timeout_seconds),
-                    "api_key": api_key,
-                    "stream": bool(ai_stream),
-                }
-                if clean_reasoning_effort:
-                    call_kwargs["reasoning_effort"] = clean_reasoning_effort
-                if base_url:
-                    call_kwargs["api_base"] = base_url
-                    call_kwargs["base_url"] = base_url
-                response = completion_fn(**call_kwargs)
-
-            if ai_stream:
-                raw_text = _collect_streamed_ai_text(response, api_mode=api_mode)
-            else:
-                raw_text = _extract_ai_text(response)
+            client = _build_openai_client(
+                api_key=api_key,
+                base_url=base_url,
+                timeout_seconds=float(timeout_seconds),
+            )
+            try:
+                response: Any
+                if api_mode == "responses":
+                    call_kwargs: Dict[str, Any] = {
+                        "model": request_model_name,
+                        "input": prompt,
+                        "temperature": float(temperature),
+                        "stream": bool(ai_stream),
+                    }
+                    if clean_reasoning_effort:
+                        call_kwargs["reasoning"] = {"effort": clean_reasoning_effort}
+                    response = client.responses.create(**call_kwargs)
+                else:
+                    call_kwargs = {
+                        "model": request_model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": float(temperature),
+                        "stream": bool(ai_stream),
+                    }
+                    if clean_reasoning_effort:
+                        call_kwargs["reasoning_effort"] = clean_reasoning_effort
+                    response = client.chat.completions.create(**call_kwargs)
+                raw_text = _load_raw_ai_text(
+                    response,
+                    ai_stream=bool(ai_stream),
+                    api_mode=api_mode,
+                )
+            finally:
+                _close_if_possible(client)
 
             try:
                 parsed = parse_json_text(raw_text)

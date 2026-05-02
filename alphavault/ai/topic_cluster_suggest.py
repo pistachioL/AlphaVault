@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 
-from alphavault.ai.analyze import _call_ai_with_litellm, clean_text
+from alphavault.ai.analyze import _call_ai_with_openai, clean_text
 from alphavault.infra.ai.runtime_config import (
     AI_TASK_TOPIC_CLUSTER_SUGGEST,
     ai_task_runtime_config_from_env,
@@ -101,7 +101,7 @@ def suggest_keys_for_cluster(
 {candidates_text}
 """.strip()
 
-    parsed = _call_ai_with_litellm(
+    parsed = _call_ai_with_openai(
         prompt=prompt,
         api_mode=config.api_mode,
         ai_stream=False,

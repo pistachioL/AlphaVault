@@ -14,7 +14,7 @@ from alphavault.constants import (
     ENV_AI_RETRIES,
     ENV_AI_TEMPERATURE,
 )
-from alphavault.ai._client import _call_ai_with_litellm
+from alphavault.ai._client import _call_ai_with_openai
 from alphavault.ai._errors import extract_llm_error_details, format_llm_error_one_line
 from alphavault.ai._text import clean_text, clamp_float, clamp_int, parse_json_text
 from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
@@ -26,7 +26,7 @@ from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
 AI_MODE_COMPLETION = "completion"
 AI_MODE_RESPONSES = "responses"
 
-DEFAULT_MODEL = os.getenv(ENV_AI_MODEL, "openai/gpt-5.2")
+DEFAULT_MODEL = os.getenv(ENV_AI_MODEL, "gpt-5.2")
 DEFAULT_PROMPT_VERSION = os.getenv(ENV_AI_PROMPT_VERSION, TOPIC_PROMPT_VERSION)
 
 DEFAULT_AI_MODE = os.getenv(ENV_AI_API_MODE, AI_MODE_RESPONSES)
@@ -90,7 +90,7 @@ def normalize_action(action: str) -> str:
     return "view.bullish"
 
 
-def analyze_with_litellm(
+def analyze_with_openai(
     api_key: str,
     model: str,
     analysis_context: dict[str, str],
@@ -156,7 +156,7 @@ quoted_text（转发/引用上下文）:
     trace_label = (
         clean_text(row.get("id", "")) or clean_text(row.get("bid", "")) or "weibo"
     )
-    parsed = _call_ai_with_litellm(
+    parsed = _call_ai_with_openai(
         prompt=prompt,
         api_mode=resolved_api_mode,
         ai_stream=ai_stream,
@@ -293,10 +293,10 @@ __all__ = [
     "ALLOWED_ACTIONS",
     "LEGACY_ACTION_MAP",
     "AnalyzeResult",
-    "analyze_with_litellm",
+    "analyze_with_openai",
     "validate_and_adjust_assertions",
     "normalize_action",
-    "_call_ai_with_litellm",
+    "_call_ai_with_openai",
     "clean_text",
     "clamp_float",
     "clamp_int",
