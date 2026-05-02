@@ -40,6 +40,39 @@ ALIAS_AI_PREVIEW_KEYS = (
     "ai_validation_status",
 )
 AI_VALIDATION_MARKETS = frozenset(("SH", "SZ", "BJ", "HK"))
+ACTION_ACCEPT = "accept"
+ACTION_IGNORE = "ignore"
+ACTION_BLOCK = "block"
+ACTION_MERGE = "merge"
+PAGE_ACTION_LOAD_PENDING = "load_pending"
+PAGE_ACTION_SECTION_STOCK_ALIAS = "section_stock_alias"
+PAGE_ACTION_SECTION_ALIAS_MANUAL = "section_alias_manual"
+PAGE_ACTION_SECTION_STOCK_SECTOR = "section_stock_sector"
+PAGE_ACTION_SECTION_SECTOR_SECTOR = "section_sector_sector"
+PAGE_ACTION_STOCK_ALIAS_LOAD_MORE = "stock_alias_load_more"
+PAGE_ACTION_ALIAS_MANUAL_LOAD_MORE = "alias_manual_load_more"
+PAGE_ACTION_STOCK_ALIAS_RERUN = "stock_alias_rerun"
+PAGE_ACTION_ALIAS_MANUAL_RERUN = "alias_manual_rerun"
+PAGE_ACTION_STOCK_ALIAS_BATCH_ACCEPT = "stock_alias_batch_accept"
+PAGE_ACTION_STOCK_ALIAS_BATCH_IGNORE = "stock_alias_batch_ignore"
+PAGE_ACTION_STOCK_ALIAS_BATCH_BLOCK = "stock_alias_batch_block"
+PAGE_ACTION_ALIAS_MANUAL_BATCH_MERGE = "alias_manual_batch_merge"
+PAGE_ACTION_ALIAS_MANUAL_BATCH_BLOCK = "alias_manual_batch_block"
+SECTION_PAGE_ACTION_KINDS = {
+    SECTION_STOCK_ALIAS: PAGE_ACTION_SECTION_STOCK_ALIAS,
+    SECTION_ALIAS_MANUAL: PAGE_ACTION_SECTION_ALIAS_MANUAL,
+    SECTION_STOCK_SECTOR: PAGE_ACTION_SECTION_STOCK_SECTOR,
+    SECTION_SECTOR_SECTOR: PAGE_ACTION_SECTION_SECTOR_SECTOR,
+}
+CANDIDATE_BATCH_ACTION_KINDS = {
+    ACTION_ACCEPT: PAGE_ACTION_STOCK_ALIAS_BATCH_ACCEPT,
+    ACTION_IGNORE: PAGE_ACTION_STOCK_ALIAS_BATCH_IGNORE,
+    ACTION_BLOCK: PAGE_ACTION_STOCK_ALIAS_BATCH_BLOCK,
+}
+ALIAS_MANUAL_BATCH_ACTION_KINDS = {
+    ACTION_MERGE: PAGE_ACTION_ALIAS_MANUAL_BATCH_MERGE,
+    ACTION_BLOCK: PAGE_ACTION_ALIAS_MANUAL_BATCH_BLOCK,
+}
 
 
 class AliasHistoryHitRow(TypedDict):
@@ -693,7 +726,10 @@ class OrganizerState(rx.State):
     active_section: str = SECTION_STOCK_ALIAS
     pending_rows: list[PendingRow] = []
     candidate_action_pending_id: str = ""
+    candidate_action_pending_kind: str = ""
     alias_manual_action_pending_key: str = ""
+    alias_manual_action_pending_kind: str = ""
+    page_action_loading_kind: str = ""
     selected_candidate_ids: list[str] = []
     selected_alias_keys: list[str] = []
     loading: bool = False
@@ -854,13 +890,18 @@ class OrganizerState(rx.State):
 
     @rx.event
     def load_pending(self):
-        yield from self._reload_pending_rows_with_loading()
+        yield from self._reload_pending_rows_with_loading(
+            action_kind=PAGE_ACTION_LOAD_PENDING
+        )
 
     @rx.event
     def set_active_section(self, value: str):
         self.active_section = str(value or SECTION_STOCK_ALIAS)
         self.candidate_action_pending_id = ""
+        self.candidate_action_pending_kind = ""
         self.alias_manual_action_pending_key = ""
+        self.alias_manual_action_pending_kind = ""
+        self.page_action_loading_kind = ""
         self.selected_candidate_ids = []
         self.selected_alias_keys = []
         self.stock_alias_auto_merge_message = ""
@@ -868,19 +909,30 @@ class OrganizerState(rx.State):
             self.stock_alias_limit = 0
         if self.active_section == SECTION_ALIAS_MANUAL:
             self.alias_task_limit = ALIAS_TASK_PAGE_LIMIT
-        yield from self._reload_pending_rows_with_loading()
+        yield from self._reload_pending_rows_with_loading(
+            action_kind=SECTION_PAGE_ACTION_KINDS.get(self.active_section, "")
+        )
 
     @rx.event
     def accept_candidate(self, candidate_id: str):
-        yield from self._mutate_candidate_with_loading(candidate_id, action="accept")
+        yield from self._mutate_candidate_with_loading(
+            candidate_id,
+            action=ACTION_ACCEPT,
+        )
 
     @rx.event
     def ignore_candidate(self, candidate_id: str):
-        yield from self._mutate_candidate_with_loading(candidate_id, action="ignore")
+        yield from self._mutate_candidate_with_loading(
+            candidate_id,
+            action=ACTION_IGNORE,
+        )
 
     @rx.event
     def block_candidate(self, candidate_id: str):
-        yield from self._mutate_candidate_with_loading(candidate_id, action="block")
+        yield from self._mutate_candidate_with_loading(
+            candidate_id,
+            action=ACTION_BLOCK,
+        )
 
     @rx.event
     def toggle_stock_alias_candidate(self, candidate_id: str, checked: bool) -> None:
@@ -923,15 +975,15 @@ class OrganizerState(rx.State):
 
     @rx.event
     def batch_accept_selected_candidates(self):
-        yield from self._mutate_selected_candidates_with_loading(action="accept")
+        yield from self._mutate_selected_candidates_with_loading(action=ACTION_ACCEPT)
 
     @rx.event
     def batch_ignore_selected_candidates(self):
-        yield from self._mutate_selected_candidates_with_loading(action="ignore")
+        yield from self._mutate_selected_candidates_with_loading(action=ACTION_IGNORE)
 
     @rx.event
     def batch_block_selected_candidates(self):
-        yield from self._mutate_selected_candidates_with_loading(action="block")
+        yield from self._mutate_selected_candidates_with_loading(action=ACTION_BLOCK)
 
     @rx.event
     def toggle_alias_manual_task(self, alias_key: str, checked: bool) -> None:
@@ -972,11 +1024,11 @@ class OrganizerState(rx.State):
 
     @rx.event
     def batch_confirm_selected_alias_manual_tasks(self):
-        yield from self._mutate_selected_alias_tasks_with_loading(action="merge")
+        yield from self._mutate_selected_alias_tasks_with_loading(action=ACTION_MERGE)
 
     @rx.event
     def batch_ignore_selected_alias_manual_tasks(self):
-        yield from self._mutate_selected_alias_tasks_with_loading(action="block")
+        yield from self._mutate_selected_alias_tasks_with_loading(action=ACTION_BLOCK)
 
     @rx.event
     def set_alias_manual_dialog_open(self, value: bool) -> None:
@@ -1022,6 +1074,7 @@ class OrganizerState(rx.State):
             return
         self.alias_manual_error = ""
         self.alias_manual_action_pending_key = alias_key
+        self.alias_manual_action_pending_kind = ACTION_MERGE
         yield
         try:
             research_workbench = _load_research_workbench_module()
@@ -1040,6 +1093,7 @@ class OrganizerState(rx.State):
             return
         finally:
             self.alias_manual_action_pending_key = ""
+            self.alias_manual_action_pending_kind = ""
         _load_source_read_module().clear_reflex_source_caches()
         self._apply_alias_manual_action_success(alias_key)
         self.load_error = self._reload_alias_manual_status_summary()
@@ -1052,6 +1106,7 @@ class OrganizerState(rx.State):
             return
         self.alias_manual_error = ""
         self.alias_manual_action_pending_key = alias_key
+        self.alias_manual_action_pending_kind = ACTION_BLOCK
         yield
         try:
             research_workbench = _load_research_workbench_module()
@@ -1068,6 +1123,7 @@ class OrganizerState(rx.State):
             return
         finally:
             self.alias_manual_action_pending_key = ""
+            self.alias_manual_action_pending_kind = ""
         _load_source_read_module().clear_reflex_source_caches()
         self._apply_alias_manual_action_success(alias_key)
         self.load_error = self._reload_alias_manual_status_summary()
@@ -1086,7 +1142,7 @@ class OrganizerState(rx.State):
             if not target_rows:
                 return
             alias_task_limit = int(self.alias_task_limit)
-            self._start_loading()
+            self._start_loading(action_kind=PAGE_ACTION_ALIAS_MANUAL_RERUN)
         try:
 
             def _run_job() -> tuple[list[PendingRow], str]:
@@ -1127,7 +1183,9 @@ class OrganizerState(rx.State):
         if self.active_section != SECTION_ALIAS_MANUAL:
             return
         self.alias_task_limit = _next_alias_task_limit(self.alias_task_limit)
-        yield from self._reload_pending_rows_with_loading()
+        yield from self._reload_pending_rows_with_loading(
+            action_kind=PAGE_ACTION_ALIAS_MANUAL_LOAD_MORE
+        )
 
     @rx.event
     def load_more_stock_alias_candidates(self):
@@ -1137,7 +1195,9 @@ class OrganizerState(rx.State):
             _normalized_stock_alias_limit(self.stock_alias_limit)
             + _stock_alias_batch_cap()
         )
-        yield from self._reload_pending_rows_with_loading()
+        yield from self._reload_pending_rows_with_loading(
+            action_kind=PAGE_ACTION_STOCK_ALIAS_LOAD_MORE
+        )
 
     @rx.event
     def rerun_stock_alias_ai_current_page(self):
@@ -1151,7 +1211,7 @@ class OrganizerState(rx.State):
         ]
         if not target_rows:
             return
-        self._start_loading()
+        self._start_loading(action_kind=PAGE_ACTION_STOCK_ALIAS_RERUN)
         yield
         try:
             research_workbench = _load_research_workbench_module()
@@ -1343,16 +1403,18 @@ class OrganizerState(rx.State):
         self.pending_rows = pending_rows
         self.load_error = load_error or summary_load_error
 
-    def _start_loading(self) -> None:
+    def _start_loading(self, *, action_kind: str = "") -> None:
         self.loading = True
+        self.page_action_loading_kind = str(action_kind or "")
         self.load_error = ""
 
     def _finish_loading(self) -> None:
         self.loaded_once = True
         self.loading = False
+        self.page_action_loading_kind = ""
 
-    def _reload_pending_rows_with_loading(self):
-        self._start_loading()
+    def _reload_pending_rows_with_loading(self, *, action_kind: str = ""):
+        self._start_loading(action_kind=action_kind)
         yield
         try:
             self._reload_pending_rows()
@@ -1360,14 +1422,18 @@ class OrganizerState(rx.State):
             self._finish_loading()
 
     def _mutate_candidate_with_loading(self, candidate_id: str, *, action: str):
+        normalized_action = str(action or "").strip()
+        if not normalized_action:
+            return
+        self.candidate_action_pending_id = str(candidate_id or "").strip()
+        self.candidate_action_pending_kind = normalized_action
         if self.active_section == SECTION_STOCK_ALIAS:
-            self.candidate_action_pending_id = str(candidate_id or "").strip()
             yield
             try:
                 applied = _load_relation_actions_module().apply_candidate_action_by_id(
                     rows=self.pending_rows,
                     candidate_id=candidate_id,
-                    action=action,
+                    action=normalized_action,
                 )
                 if not applied:
                     return
@@ -1387,6 +1453,7 @@ class OrganizerState(rx.State):
                 self.load_error = self._reload_stock_alias_status_summary()
             finally:
                 self.candidate_action_pending_id = ""
+                self.candidate_action_pending_kind = ""
             return
         self._start_loading()
         yield
@@ -1394,67 +1461,90 @@ class OrganizerState(rx.State):
             applied = _load_relation_actions_module().apply_candidate_action_by_id(
                 rows=self.pending_rows,
                 candidate_id=candidate_id,
-                action=action,
+                action=normalized_action,
             )
             if not applied:
                 return
             _load_source_read_module().clear_reflex_source_caches()
             self.pending_rows, self.load_error = load_pending_rows(self.active_section)
         finally:
+            self.candidate_action_pending_id = ""
+            self.candidate_action_pending_kind = ""
             self._finish_loading()
 
     def _mutate_selected_candidates_with_loading(self, *, action: str):
         if self.active_section != SECTION_STOCK_ALIAS:
             return
+        normalized_action = str(action or "").strip()
+        if not normalized_action:
+            return
         selected_candidate_ids = list(self.selected_candidate_ids)
         if not selected_candidate_ids:
             return
-        succeeded_candidate_ids: list[str] = []
-        first_error = ""
-        for candidate_id in selected_candidate_ids:
-            self.candidate_action_pending_id = str(candidate_id or "").strip()
-            yield
-            try:
-                applied = _load_relation_actions_module().apply_candidate_action_by_id(
-                    rows=self.pending_rows,
+        self.page_action_loading_kind = CANDIDATE_BATCH_ACTION_KINDS.get(
+            normalized_action,
+            "",
+        )
+        try:
+            succeeded_candidate_ids: list[str] = []
+            first_error = ""
+            self.candidate_action_pending_kind = normalized_action
+            for candidate_id in selected_candidate_ids:
+                self.candidate_action_pending_id = str(candidate_id or "").strip()
+                yield
+                try:
+                    applied = (
+                        _load_relation_actions_module().apply_candidate_action_by_id(
+                            rows=self.pending_rows,
+                            candidate_id=candidate_id,
+                            action=normalized_action,
+                        )
+                    )
+                except BaseException as err:
+                    if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
+                        raise
+                    if not first_error:
+                        first_error = str(err)
+                    continue
+                if not applied:
+                    continue
+                succeeded_candidate_ids.append(str(candidate_id or "").strip())
+                self.pending_rows = _remove_candidate_row_by_id(
+                    self.pending_rows,
                     candidate_id=candidate_id,
-                    action=action,
                 )
-            except BaseException as err:
-                if isinstance(err, (KeyboardInterrupt, SystemExit, GeneratorExit)):
-                    raise
-                if not first_error:
-                    first_error = str(err)
-                continue
-            if not applied:
-                continue
-            succeeded_candidate_ids.append(str(candidate_id or "").strip())
-            self.pending_rows = _remove_candidate_row_by_id(
+            if succeeded_candidate_ids:
+                _load_source_read_module().clear_reflex_source_caches()
+            self.selected_candidate_ids = _sync_selected_candidate_ids(
                 self.pending_rows,
-                candidate_id=candidate_id,
+                self.selected_candidate_ids,
             )
-        if succeeded_candidate_ids:
-            _load_source_read_module().clear_reflex_source_caches()
-        self.selected_candidate_ids = _sync_selected_candidate_ids(
-            self.pending_rows,
-            self.selected_candidate_ids,
-        )
-        self.pending_rows = _apply_selected_candidate_flags(
-            self.pending_rows,
-            self.selected_candidate_ids,
-        )
-        summary_load_error = self._reload_stock_alias_status_summary()
-        self.load_error = first_error or summary_load_error
-        self.candidate_action_pending_id = ""
+            self.pending_rows = _apply_selected_candidate_flags(
+                self.pending_rows,
+                self.selected_candidate_ids,
+            )
+            summary_load_error = self._reload_stock_alias_status_summary()
+            self.load_error = first_error or summary_load_error
+        finally:
+            self.candidate_action_pending_id = ""
+            self.candidate_action_pending_kind = ""
+            self.page_action_loading_kind = ""
 
     def _mutate_selected_alias_tasks_with_loading(self, *, action: str):
         if self.active_section != SECTION_ALIAS_MANUAL:
+            return
+        normalized_action = str(action or "").strip()
+        if not normalized_action:
             return
         selected_alias_keys = list(self.selected_alias_keys)
         if not selected_alias_keys:
             return
         first_error = ""
         succeeded = False
+        self.page_action_loading_kind = ALIAS_MANUAL_BATCH_ACTION_KINDS.get(
+            normalized_action,
+            "",
+        )
         try:
             research_workbench = _load_research_workbench_module()
             engine = research_workbench.get_research_workbench_engine_from_env()
@@ -1466,12 +1556,13 @@ class OrganizerState(rx.State):
             for alias_key in selected_alias_keys:
                 alias_key = str(alias_key or "").strip()
                 self.alias_manual_action_pending_key = alias_key
+                self.alias_manual_action_pending_kind = normalized_action
                 yield
                 row = rows_by_alias_key.get(str(alias_key or "").strip())
                 if row is None:
                     continue
                 try:
-                    if action == "merge":
+                    if normalized_action == ACTION_MERGE:
                         target_key = _parse_manual_alias_target_stock_key(
                             str(row.get("ai_stock_code") or "")
                         )
@@ -1488,7 +1579,7 @@ class OrganizerState(rx.State):
                             target_key=target_key,
                             source="manual",
                         )
-                    elif action == "block":
+                    elif normalized_action == ACTION_BLOCK:
                         _block_alias_manual_target(
                             research_workbench=research_workbench,
                             engine=engine,
@@ -1510,12 +1601,15 @@ class OrganizerState(rx.State):
             self.load_error = first_error or summary_load_error
         finally:
             self.alias_manual_action_pending_key = ""
+            self.alias_manual_action_pending_kind = ""
+            self.page_action_loading_kind = ""
 
     def _reset_alias_manual_dialog_state(self) -> None:
         self.alias_manual_dialog_open = False
         self.alias_manual_alias_key = ""
         self.alias_manual_target_input = ""
         self.alias_manual_error = ""
+        self.alias_manual_action_pending_kind = ""
 
     def _apply_alias_manual_action_success(self, alias_key: str) -> None:
         self.pending_rows = _remove_alias_manual_row_by_key(

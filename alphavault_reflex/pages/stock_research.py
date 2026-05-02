@@ -27,6 +27,8 @@ from alphavault_reflex.services.research_status_text import (
 EMPTY_TEXT = "暂无。"
 LOADING_TEXT = "加载中…"
 PAGE_LOADING = research_page_loading_var()
+PAGE_ACTION_LOADING = ResearchState.loading
+SIDEBAR_ACTION_LOADING = ResearchState.extras_loading
 PAGE_TITLE = stock_page_title_var()
 HELP_MARK_TEXT = "?"
 SIDEBAR_TOGGLE_TEXT = "关系"
@@ -512,17 +514,20 @@ def _related_pagination() -> rx.Component:
                 value=ResearchState.signal_page_size_text,
                 on_change=ResearchState.set_signal_page_size,
                 width="88px",
+                disabled=PAGE_LOADING,
             ),
             rx.button(
                 PAGE_PREV_TEXT,
                 on_click=ResearchState.prev_signal_page,
                 variant="soft",
+                loading=PAGE_ACTION_LOADING,
                 disabled=PAGE_LOADING | (ResearchState.signal_page <= 1),
             ),
             rx.button(
                 PAGE_NEXT_TEXT,
                 on_click=ResearchState.next_signal_page,
                 variant="soft",
+                loading=PAGE_ACTION_LOADING,
                 disabled=PAGE_LOADING
                 | (ResearchState.signal_page >= ResearchState.signal_total_pages),
             ),
@@ -603,6 +608,7 @@ def stock_research_page() -> rx.Component:
                             "solid",
                             "soft",
                         ),
+                        loading=PAGE_ACTION_LOADING,
                         disabled=PAGE_LOADING,
                     ),
                     rx.button(
@@ -613,6 +619,7 @@ def stock_research_page() -> rx.Component:
                             "solid",
                             "soft",
                         ),
+                        loading=PAGE_ACTION_LOADING,
                         disabled=PAGE_LOADING,
                     ),
                     _related_tree_toggle_button(),
@@ -620,13 +627,15 @@ def stock_research_page() -> rx.Component:
                         SIDEBAR_TOGGLE_TEXT,
                         on_click=ResearchState.open_stock_sidebar,
                         variant="soft",
-                        disabled=PAGE_LOADING,
+                        loading=SIDEBAR_ACTION_LOADING,
+                        disabled=PAGE_LOADING | SIDEBAR_ACTION_LOADING,
                         class_name="av-stock-sidebar-toggle",
                     ),
                     rx.button(
                         "刷新",
                         on_click=ResearchState.refresh_stock_related,
                         variant="soft",
+                        loading=PAGE_ACTION_LOADING,
                         disabled=PAGE_LOADING,
                     ),
                     spacing="2",

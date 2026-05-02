@@ -160,6 +160,8 @@ class PostSearchState(rx.State):
 
     @rx.event
     def submit_search(self):
+        if self.loading or self.loading_more:
+            return
         post_search = _load_post_search_module()
         query_error = post_search.validate_post_search_query(self.search_query)
         if query_error:
@@ -174,10 +176,15 @@ class PostSearchState(rx.State):
             query_key="q",
         )
         if str(current_query or "").strip() != str(self.search_query or "").strip():
-            return rx.redirect(
+            self.loading = True
+            self.load_error = ""
+            yield
+            self.loading = False
+            yield rx.redirect(
                 post_search.build_post_search_route(self.search_query),
                 replace=True,
             )
+            return
         return self.load_search(self.search_query)
 
     @rx.event

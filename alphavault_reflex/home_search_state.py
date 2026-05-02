@@ -21,8 +21,10 @@ class HomeSearchState(rx.State):
     stock_query: str = ""
     stock_results: list[dict[str, str]] = []
     stock_error: str = ""
+    stock_loading: bool = False
     fulltext_query: str = ""
     fulltext_error: str = ""
+    fulltext_loading: bool = False
 
     @rx.var
     def has_stock_results(self) -> bool:
@@ -40,26 +42,45 @@ class HomeSearchState(rx.State):
 
     @rx.event
     def run_stock_search(self):
+        if self.stock_loading:
+            return
+        self.stock_loading = True
         self.stock_error = ""
         self.stock_results = []
-        result = _load_home_search_module().search_stocks(self.stock_query)
-        self.stock_error = str(result.get("error") or "").strip()
-        self.stock_results = result.get("rows") or []
-        exact_href = str(result.get("exact_href") or "").strip()
+        yield
+        exact_href = ""
+        try:
+            result = _load_home_search_module().search_stocks(self.stock_query)
+            self.stock_error = str(result.get("error") or "").strip()
+            self.stock_results = result.get("rows") or []
+            exact_href = str(result.get("exact_href") or "").strip()
+        finally:
+            self.stock_loading = False
         if self.stock_error or not exact_href:
             return
-        return rx.redirect(exact_href)
+        yield rx.redirect(exact_href)
 
     @rx.event
     def run_fulltext_search(self):
-        self.fulltext_error = ""
-        post_search = _load_post_search_module()
-        error = post_search.validate_post_search_query(self.fulltext_query)
-        if error:
-            self.fulltext_error = error
+        if self.fulltext_loading:
             return
-        return rx.redirect(
-            post_search.build_post_search_route(self.fulltext_query),
+        self.fulltext_loading = True
+        self.fulltext_error = ""
+        yield
+        target_route = ""
+        try:
+            post_search = _load_post_search_module()
+            error = post_search.validate_post_search_query(self.fulltext_query)
+            if error:
+                self.fulltext_error = error
+                return
+            target_route = post_search.build_post_search_route(self.fulltext_query)
+        finally:
+            self.fulltext_loading = False
+        if not target_route:
+            return
+        yield rx.redirect(
+            target_route,
             replace=True,
         )
 

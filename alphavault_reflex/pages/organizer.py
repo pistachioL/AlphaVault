@@ -4,8 +4,25 @@ import reflex as rx
 from reflex.vars.base import Var
 
 from alphavault_reflex.organizer_state import (
+    ACTION_ACCEPT,
+    ACTION_BLOCK,
+    ACTION_IGNORE,
+    ACTION_MERGE,
     AliasHistoryHitRow,
     OrganizerState,
+    PAGE_ACTION_ALIAS_MANUAL_BATCH_BLOCK,
+    PAGE_ACTION_ALIAS_MANUAL_BATCH_MERGE,
+    PAGE_ACTION_ALIAS_MANUAL_LOAD_MORE,
+    PAGE_ACTION_ALIAS_MANUAL_RERUN,
+    PAGE_ACTION_SECTION_ALIAS_MANUAL,
+    PAGE_ACTION_SECTION_SECTOR_SECTOR,
+    PAGE_ACTION_SECTION_STOCK_ALIAS,
+    PAGE_ACTION_SECTION_STOCK_SECTOR,
+    PAGE_ACTION_STOCK_ALIAS_BATCH_ACCEPT,
+    PAGE_ACTION_STOCK_ALIAS_BATCH_BLOCK,
+    PAGE_ACTION_STOCK_ALIAS_BATCH_IGNORE,
+    PAGE_ACTION_STOCK_ALIAS_LOAD_MORE,
+    PAGE_ACTION_STOCK_ALIAS_RERUN,
     PendingRow,
     SECTION_ALIAS_MANUAL,
     SECTION_SECTOR_SECTOR,
@@ -22,6 +39,22 @@ def _checkbox_checked(value: object) -> bool | rx.Var[bool]:
     if isinstance(value, Var):
         return value.bool()
     return bool(value)
+
+
+def _page_action_loading(action_kind: str) -> rx.Var[bool]:
+    return OrganizerState.page_action_loading_kind == action_kind
+
+
+def _candidate_action_loading(
+    row: rx.Var[PendingRow], action_kind: str
+) -> rx.Var[bool]:
+    return (OrganizerState.candidate_action_pending_id == row["candidate_id"]) & (
+        OrganizerState.candidate_action_pending_kind == action_kind
+    )
+
+
+def _alias_manual_action_loading(action_kind: str) -> rx.Var[bool]:
+    return OrganizerState.alias_manual_action_pending_kind == action_kind
 
 
 def _section_loading() -> rx.Component:
@@ -149,6 +182,7 @@ def _candidate_card(row: rx.Var[PendingRow]) -> rx.Component:
                 "确认",
                 on_click=lambda: OrganizerState.accept_candidate(row["candidate_id"]),
                 class_name="av-btn av-btn-small",
+                loading=_candidate_action_loading(row, ACTION_ACCEPT),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending,
             ),
@@ -156,6 +190,7 @@ def _candidate_card(row: rx.Var[PendingRow]) -> rx.Component:
                 "忽略",
                 on_click=lambda: OrganizerState.ignore_candidate(row["candidate_id"]),
                 variant="soft",
+                loading=_candidate_action_loading(row, ACTION_IGNORE),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending,
             ),
@@ -164,6 +199,7 @@ def _candidate_card(row: rx.Var[PendingRow]) -> rx.Component:
                 on_click=lambda: OrganizerState.block_candidate(row["candidate_id"]),
                 variant="soft",
                 color_scheme="gray",
+                loading=_candidate_action_loading(row, ACTION_BLOCK),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending,
             ),
@@ -227,6 +263,7 @@ def _stock_alias_batch_toolbar() -> rx.Component:
                 "AI重跑当前页",
                 on_click=OrganizerState.rerun_stock_alias_ai_current_page,
                 class_name="av-btn av-btn-small",
+                loading=_page_action_loading(PAGE_ACTION_STOCK_ALIAS_RERUN),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending,
             ),
@@ -234,6 +271,7 @@ def _stock_alias_batch_toolbar() -> rx.Component:
                 "再看10条",
                 on_click=OrganizerState.load_more_stock_alias_candidates,
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_STOCK_ALIAS_LOAD_MORE),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending,
             ),
@@ -255,6 +293,7 @@ def _stock_alias_batch_toolbar() -> rx.Component:
                 "批量确认",
                 on_click=OrganizerState.batch_accept_selected_candidates,
                 class_name="av-btn av-btn-small",
+                loading=_page_action_loading(PAGE_ACTION_STOCK_ALIAS_BATCH_ACCEPT),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending
                 | (~OrganizerState.has_selected_stock_alias_candidates),
@@ -263,6 +302,7 @@ def _stock_alias_batch_toolbar() -> rx.Component:
                 "批量忽略",
                 on_click=OrganizerState.batch_ignore_selected_candidates,
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_STOCK_ALIAS_BATCH_IGNORE),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending
                 | (~OrganizerState.has_selected_stock_alias_candidates),
@@ -272,6 +312,7 @@ def _stock_alias_batch_toolbar() -> rx.Component:
                 on_click=OrganizerState.batch_block_selected_candidates,
                 variant="soft",
                 color_scheme="gray",
+                loading=_page_action_loading(PAGE_ACTION_STOCK_ALIAS_BATCH_BLOCK),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_candidate_action_pending
                 | (~OrganizerState.has_selected_stock_alias_candidates),
@@ -306,6 +347,7 @@ def _alias_manual_batch_toolbar() -> rx.Component:
                 "AI重跑当前页",
                 on_click=OrganizerState.rerun_alias_manual_ai_current_page,
                 class_name="av-btn av-btn-small",
+                loading=_page_action_loading(PAGE_ACTION_ALIAS_MANUAL_RERUN),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_alias_manual_action_pending,
             ),
@@ -313,6 +355,7 @@ def _alias_manual_batch_toolbar() -> rx.Component:
                 "再看10条",
                 on_click=OrganizerState.load_more_alias_tasks,
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_ALIAS_MANUAL_LOAD_MORE),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_alias_manual_action_pending,
             ),
@@ -334,6 +377,7 @@ def _alias_manual_batch_toolbar() -> rx.Component:
                 "批量确认",
                 on_click=OrganizerState.batch_confirm_selected_alias_manual_tasks,
                 class_name="av-btn av-btn-small",
+                loading=_page_action_loading(PAGE_ACTION_ALIAS_MANUAL_BATCH_MERGE),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_alias_manual_action_pending
                 | (~OrganizerState.has_selected_alias_manual_tasks),
@@ -342,6 +386,7 @@ def _alias_manual_batch_toolbar() -> rx.Component:
                 "批量忽略",
                 on_click=OrganizerState.batch_ignore_selected_alias_manual_tasks,
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_ALIAS_MANUAL_BATCH_BLOCK),
                 disabled=OrganizerState.show_loading
                 | OrganizerState.has_alias_manual_action_pending
                 | (~OrganizerState.has_selected_alias_manual_tasks),
@@ -612,6 +657,7 @@ def _alias_manual_dialog() -> rx.Component:
                     "确认归并",
                     on_click=OrganizerState.confirm_alias_manual_merge,
                     class_name="av-btn av-btn-small",
+                    loading=_alias_manual_action_loading(ACTION_MERGE),
                     disabled=OrganizerState.show_loading
                     | OrganizerState.has_alias_manual_action_pending,
                 ),
@@ -620,6 +666,7 @@ def _alias_manual_dialog() -> rx.Component:
                     on_click=OrganizerState.block_alias_manual,
                     variant="soft",
                     color_scheme="gray",
+                    loading=_alias_manual_action_loading(ACTION_BLOCK),
                     disabled=OrganizerState.show_loading
                     | OrganizerState.has_alias_manual_action_pending,
                 ),
@@ -658,6 +705,7 @@ def organizer_page() -> rx.Component:
                 "个股归并",
                 on_click=lambda: OrganizerState.set_active_section(SECTION_STOCK_ALIAS),
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_SECTION_STOCK_ALIAS),
                 disabled=OrganizerState.show_loading,
             ),
             rx.button(
@@ -666,6 +714,7 @@ def organizer_page() -> rx.Component:
                     SECTION_ALIAS_MANUAL
                 ),
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_SECTION_ALIAS_MANUAL),
                 disabled=OrganizerState.show_loading,
             ),
             rx.button(
@@ -674,6 +723,7 @@ def organizer_page() -> rx.Component:
                     SECTION_STOCK_SECTOR
                 ),
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_SECTION_STOCK_SECTOR),
                 disabled=OrganizerState.show_loading,
             ),
             rx.button(
@@ -682,6 +732,7 @@ def organizer_page() -> rx.Component:
                     SECTION_SECTOR_SECTOR
                 ),
                 variant="soft",
+                loading=_page_action_loading(PAGE_ACTION_SECTION_SECTOR_SECTOR),
                 disabled=OrganizerState.show_loading,
             ),
             spacing="3",

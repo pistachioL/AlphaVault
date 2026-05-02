@@ -184,10 +184,13 @@ def search_posts_page() -> rx.Component:
                     on_change=PostSearchState.set_search_query,
                     placeholder="搜主题、行业、宏观词、事件词",
                     width="100%",
+                    disabled=PostSearchState.loading,
                 ),
                 rx.button(
                     "搜索",
                     on_click=PostSearchState.submit_search,
+                    loading=PostSearchState.loading,
+                    disabled=PostSearchState.loading | PostSearchState.loading_more,
                     class_name="av-btn",
                 ),
                 spacing="3",
@@ -236,6 +239,8 @@ def search_posts_page() -> rx.Component:
                     rx.button(
                         LOAD_MORE_TEXT,
                         on_click=PostSearchState.load_more,
+                        loading=PostSearchState.loading_more,
+                        disabled=PostSearchState.loading_more,
                         class_name="av-btn",
                     ),
                     rx.cond(
