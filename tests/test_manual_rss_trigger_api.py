@@ -207,7 +207,7 @@ def test_manual_process_metrics_returns_result_when_key_valid(monkeypatch) -> No
                 "pid": 11,
                 "rss_mb": 64.1,
                 "cpu_percent": 0.0,
-                "cmdline": "python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()",
+                "cmdline": "python3 -m uvicorn --factory alphavault_reflex.alphavault_reflex:app",
             },
         ]
 
@@ -301,7 +301,7 @@ def test_load_process_metrics_parses_ps_output(monkeypatch) -> None:
         return SimpleNamespace(
             returncode=0,
             stdout=(
-                "  11 65536 0.0 python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()\n"
+                "  11 65536 0.0 python3 -m uvicorn --factory alphavault_reflex.alphavault_reflex:app\n"
                 "  22 98304 1.2 python3 -u weibo_rss_worker.py --log-level info\n"
             ),
             stderr="",
@@ -322,7 +322,7 @@ def test_load_process_metrics_parses_ps_output(monkeypatch) -> None:
             "pid": 11,
             "rss_mb": 64.0,
             "cpu_percent": 0.0,
-            "cmdline": "python3 -m gunicorn alphavault_reflex.alphavault_reflex:app()",
+            "cmdline": "python3 -m uvicorn --factory alphavault_reflex.alphavault_reflex:app",
         },
     ]
 
