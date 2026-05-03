@@ -45,6 +45,9 @@ from alphavault_reflex.services.stock_related_feed import (
 )
 from alphavault_reflex.services.thread_tree_lines import build_tree_render_lines
 
+PAGINATION_LOADING_DIRECTION_PREV = "prev"
+PAGINATION_LOADING_DIRECTION_NEXT = "next"
+
 
 @cache
 def _load_source_read_module() -> ModuleType:
@@ -87,6 +90,7 @@ class ResearchState(rx.State):
     related_limit: int = DEFAULT_RELATED_LIMIT
     related_tree_expanded: bool = True
     author_filter: str = ""
+    signal_pagination_loading_direction: str = ""
     signal_detail_open: bool = False
     signal_detail_loading: bool = False
     signal_detail_post_uid: str = ""
@@ -179,6 +183,24 @@ class ResearchState(rx.State):
         return bool(str(self.author_filter or "").strip())
 
     @rx.var
+    def show_signal_pagination_loading(self) -> bool:
+        return bool(str(self.signal_pagination_loading_direction or "").strip())
+
+    @rx.var
+    def prev_signal_page_loading(self) -> bool:
+        return (
+            self.signal_pagination_loading_direction
+            == PAGINATION_LOADING_DIRECTION_PREV
+        )
+
+    @rx.var
+    def next_signal_page_loading(self) -> bool:
+        return (
+            self.signal_pagination_loading_direction
+            == PAGINATION_LOADING_DIRECTION_NEXT
+        )
+
+    @rx.var
     def author_filter_clear_href(self) -> str:
         if not str(self.entity_key or "").startswith("stock:"):
             return ""
@@ -223,9 +245,84 @@ class ResearchState(rx.State):
         self.signal_detail_tree_text = ""
         self.signal_detail_message = ""
 
+    def _load_stock_page_view(
+        self,
+        stock_slug: str,
+        *,
+        author_filter: str,
+        signal_page: int | None = None,
+    ) -> tuple[dict[str, object], str]:
+        stock_key = _normalize_stock_key(stock_slug)
+        normalized_signal_page = _normalize_signal_page(
+            self.signal_page if signal_page is None else signal_page
+        )
+        normalized_signal_page_size = _normalize_signal_page_size(self.signal_page_size)
+        normalized_related_filter = normalize_related_filter(self.related_filter)
+        if author_filter:
+            view = load_stock_page_cached_view(
+                stock_slug,
+                signal_page=normalized_signal_page,
+                signal_page_size=normalized_signal_page_size,
+                author=author_filter,
+                related_filter=normalized_related_filter,
+            )
+        else:
+            view = load_stock_page_cached_view(
+                stock_slug,
+                signal_page=normalized_signal_page,
+                signal_page_size=normalized_signal_page_size,
+                related_filter=normalized_related_filter,
+            )
+        return view, stock_key
+
+    def _apply_stock_page_view(
+        self, view: dict[str, object], *, fallback_stock_key: str
+    ) -> None:
+        self._apply_stock_primary_view(view, fallback_stock_key=fallback_stock_key)
+        self._refresh_related_posts()
+        self.worker_status_text = str(view.get("worker_status_text") or "").strip()
+        self.worker_next_run_at = str(view.get("worker_next_run_at") or "").strip()
+        self.worker_cycle_updated_at = str(
+            view.get("worker_cycle_updated_at") or ""
+        ).strip()
+        self.worker_running = bool(view.get("worker_running"))
+        self.loaded_once = True
+        cache_preparing = _is_stock_cache_preparing_warning(self.stock_load_warning)
+        self.signals_ready = bool(
+            str(self.load_error or "").strip() == ""
+            and self.loaded_once
+            and (not cache_preparing)
+        )
+        self.extras_ready = bool(
+            self.entity_type != "stock"
+            or (self.stock_sidebar_loaded and (not self.extras_loading))
+        )
+
+    def _load_stock_page_with_pagination_loading(
+        self,
+        *,
+        stock_slug: str,
+        author_filter: str,
+        target_page: int,
+        direction: str,
+    ):
+        self.signal_pagination_loading_direction = direction
+        self.load_error = ""
+        yield
+        try:
+            view, stock_key = self._load_stock_page_view(
+                stock_slug,
+                author_filter=author_filter,
+                signal_page=target_page,
+            )
+            self._apply_stock_page_view(view, fallback_stock_key=stock_key)
+        finally:
+            self.signal_pagination_loading_direction = ""
+
     @rx.event
     def load_stock_page(self, stock_slug: str | None = None, author: str | None = None):
         self.loading = True
+        self.signal_pagination_loading_direction = ""
         slug = _resolve_route_slug(
             self, explicit_slug=stock_slug, route_key="stock_slug"
         )
@@ -259,45 +356,17 @@ class ResearchState(rx.State):
         self.worker_running = False
         self.related_posts = []
         self.related_total = 0
-
-        normalized_signal_page = _normalize_signal_page(self.signal_page)
-        normalized_signal_page_size = _normalize_signal_page_size(self.signal_page_size)
-        normalized_related_filter = normalize_related_filter(self.related_filter)
-        if author_filter:
-            view = load_stock_page_cached_view(
+        try:
+            view, fallback_stock_key = self._load_stock_page_view(
                 slug,
-                signal_page=normalized_signal_page,
-                signal_page_size=normalized_signal_page_size,
-                author=author_filter,
-                related_filter=normalized_related_filter,
+                author_filter=author_filter,
             )
-        else:
-            view = load_stock_page_cached_view(
-                slug,
-                signal_page=normalized_signal_page,
-                signal_page_size=normalized_signal_page_size,
-                related_filter=normalized_related_filter,
+            self._apply_stock_page_view(
+                view,
+                fallback_stock_key=fallback_stock_key,
             )
-        self._apply_stock_primary_view(view, fallback_stock_key=stock_key)
-        self._refresh_related_posts()
-        self.worker_status_text = str(view.get("worker_status_text") or "").strip()
-        self.worker_next_run_at = str(view.get("worker_next_run_at") or "").strip()
-        self.worker_cycle_updated_at = str(
-            view.get("worker_cycle_updated_at") or ""
-        ).strip()
-        self.worker_running = bool(view.get("worker_running"))
-        self.loaded_once = True
-        self.loading = False
-        cache_preparing = _is_stock_cache_preparing_warning(self.stock_load_warning)
-        self.signals_ready = bool(
-            str(self.load_error or "").strip() == ""
-            and self.loaded_once
-            and (not cache_preparing)
-        )
-        self.extras_ready = bool(
-            self.entity_type != "stock"
-            or (self.stock_sidebar_loaded and (not self.extras_loading))
-        )
+        finally:
+            self.loading = False
 
     @rx.event
     def load_stock_page_if_needed(self, stock_slug: str | None = None):
@@ -496,6 +565,7 @@ class ResearchState(rx.State):
         self.signal_page_size = _normalize_signal_page_size(
             view.get("signal_page_size") or self.signal_page_size
         )
+        self.stock_load_warning = ""
         warning = str(view.get("load_warning") or "").strip()
         if warning:
             self.stock_load_warning = warning
@@ -511,24 +581,35 @@ class ResearchState(rx.State):
 
     @rx.event
     def prev_signal_page(self):
-        if int(self.signal_page or 1) <= 1:
+        if self.loading or str(self.signal_pagination_loading_direction or "").strip():
             return
-        self.signal_page = max(int(self.signal_page) - 1, 1)
-        return self.load_stock_page(
-            self.entity_key.removeprefix("stock:"),
-            author=self.author_filter or None,
+        page = max(int(self.signal_page or 1), 1)
+        if page <= 1:
+            return
+        if not self.entity_key.startswith("stock:"):
+            return
+        yield from self._load_stock_page_with_pagination_loading(
+            stock_slug=self.entity_key.removeprefix("stock:"),
+            author_filter=_normalize_author_filter(self.author_filter),
+            target_page=page - 1,
+            direction=PAGINATION_LOADING_DIRECTION_PREV,
         )
 
     @rx.event
     def next_signal_page(self):
+        if self.loading or str(self.signal_pagination_loading_direction or "").strip():
+            return
         page = max(int(self.signal_page or 1), 1)
         total_pages = max(int(self.signal_total_pages or 1), 1)
         if page >= total_pages:
             return
-        self.signal_page = page + 1
-        return self.load_stock_page(
-            self.entity_key.removeprefix("stock:"),
-            author=self.author_filter or None,
+        if not self.entity_key.startswith("stock:"):
+            return
+        yield from self._load_stock_page_with_pagination_loading(
+            stock_slug=self.entity_key.removeprefix("stock:"),
+            author_filter=_normalize_author_filter(self.author_filter),
+            target_page=page + 1,
+            direction=PAGINATION_LOADING_DIRECTION_NEXT,
         )
 
     @rx.event
