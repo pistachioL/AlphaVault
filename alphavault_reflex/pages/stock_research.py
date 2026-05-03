@@ -28,6 +28,8 @@ EMPTY_TEXT = "暂无。"
 LOADING_TEXT = "加载中…"
 PAGE_LOADING = research_page_loading_var()
 PAGE_ACTION_LOADING = ResearchState.loading
+PAGINATION_ACTION_LOADING = ResearchState.show_signal_pagination_loading
+PAGE_CONTROL_DISABLED = PAGE_LOADING | PAGINATION_ACTION_LOADING
 SIDEBAR_ACTION_LOADING = ResearchState.extras_loading
 PAGE_TITLE = stock_page_title_var()
 HELP_MARK_TEXT = "?"
@@ -514,21 +516,21 @@ def _related_pagination() -> rx.Component:
                 value=ResearchState.signal_page_size_text,
                 on_change=ResearchState.set_signal_page_size,
                 width="88px",
-                disabled=PAGE_LOADING,
+                disabled=PAGE_CONTROL_DISABLED,
             ),
             rx.button(
                 PAGE_PREV_TEXT,
                 on_click=ResearchState.prev_signal_page,
                 variant="soft",
-                loading=PAGE_ACTION_LOADING,
-                disabled=PAGE_LOADING | (ResearchState.signal_page <= 1),
+                loading=ResearchState.prev_signal_page_loading,
+                disabled=PAGE_CONTROL_DISABLED | (ResearchState.signal_page <= 1),
             ),
             rx.button(
                 PAGE_NEXT_TEXT,
                 on_click=ResearchState.next_signal_page,
                 variant="soft",
-                loading=PAGE_ACTION_LOADING,
-                disabled=PAGE_LOADING
+                loading=ResearchState.next_signal_page_loading,
+                disabled=PAGE_CONTROL_DISABLED
                 | (ResearchState.signal_page >= ResearchState.signal_total_pages),
             ),
             spacing="3",
@@ -609,7 +611,7 @@ def stock_research_page() -> rx.Component:
                             "soft",
                         ),
                         loading=PAGE_ACTION_LOADING,
-                        disabled=PAGE_LOADING,
+                        disabled=PAGE_CONTROL_DISABLED,
                     ),
                     rx.button(
                         "只看交易信号",
@@ -620,7 +622,7 @@ def stock_research_page() -> rx.Component:
                             "soft",
                         ),
                         loading=PAGE_ACTION_LOADING,
-                        disabled=PAGE_LOADING,
+                        disabled=PAGE_CONTROL_DISABLED,
                     ),
                     _related_tree_toggle_button(),
                     rx.button(
@@ -628,7 +630,7 @@ def stock_research_page() -> rx.Component:
                         on_click=ResearchState.open_stock_sidebar,
                         variant="soft",
                         loading=SIDEBAR_ACTION_LOADING,
-                        disabled=PAGE_LOADING | SIDEBAR_ACTION_LOADING,
+                        disabled=PAGE_CONTROL_DISABLED | SIDEBAR_ACTION_LOADING,
                         class_name="av-stock-sidebar-toggle",
                     ),
                     rx.button(
@@ -636,7 +638,7 @@ def stock_research_page() -> rx.Component:
                         on_click=ResearchState.refresh_stock_related,
                         variant="soft",
                         loading=PAGE_ACTION_LOADING,
-                        disabled=PAGE_LOADING,
+                        disabled=PAGE_CONTROL_DISABLED,
                     ),
                     spacing="2",
                     align="center",
