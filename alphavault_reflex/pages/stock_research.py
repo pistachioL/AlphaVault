@@ -3,8 +3,9 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault_reflex.pages.original_link_components import original_post_link
+from alphavault_reflex.pages.stock_link_components import stock_route_link
 from alphavault_reflex.research_state import ResearchState
-from alphavault_reflex.research_state import research_page_loading_var
+from alphavault_reflex.research_state import stock_page_loading_var
 from alphavault_reflex.research_state import stock_page_title_var
 from alphavault_reflex.pages.thread_tree_components import tree_line_row
 from alphavault_reflex.services.analysis_feedback import (
@@ -26,7 +27,7 @@ from alphavault_reflex.services.research_status_text import (
 
 EMPTY_TEXT = "暂无。"
 LOADING_TEXT = "加载中…"
-PAGE_LOADING = research_page_loading_var()
+PAGE_LOADING = stock_page_loading_var()
 PAGE_ACTION_LOADING = ResearchState.loading
 SIDEBAR_ACTION_LOADING = ResearchState.extras_loading
 PAGE_TITLE = stock_page_title_var()
@@ -76,7 +77,7 @@ def _signal_meta_row(row: rx.Var[StockRelatedPostRow]) -> rx.Component:
         ),
         rx.cond(
             row["author_href"] != "",
-            rx.link(
+            stock_route_link(
                 row["author"],
                 href=row["author_href"],
                 class_name="av-research-muted",
@@ -108,7 +109,7 @@ def _author_filter_notice() -> rx.Component:
                 "当前作者：" + ResearchState.author_filter,
                 class_name="av-research-muted",
             ),
-            rx.link(
+            stock_route_link(
                 "清空作者",
                 href=ResearchState.author_filter_clear_href,
                 class_name="av-research-chip",

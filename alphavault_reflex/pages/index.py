@@ -3,10 +3,11 @@ from __future__ import annotations
 import reflex as rx
 
 from alphavault_reflex.home_search_state import HomeSearchState
+from alphavault_reflex.pages.stock_link_components import stock_route_link
 
 
 def _stock_search_result(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.link(
+    return stock_route_link(
         rx.vstack(
             rx.hstack(
                 rx.text(row["label"], class_name="av-research-signal-title"),

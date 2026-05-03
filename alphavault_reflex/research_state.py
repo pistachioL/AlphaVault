@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 from functools import cache
+from urllib.parse import parse_qs
+from urllib.parse import urlparse
 import reflex as rx
 from reflex import constants as rx_constants
 from types import ModuleType
@@ -16,6 +18,7 @@ from alphavault_reflex.services.analysis_feedback import (
     ENTRYPOINT_STOCK_RESEARCH,
     submit_post_analysis_feedback,
 )
+from alphavault_reflex.services.research_models import RESEARCH_STOCK_ROUTE_PREFIX
 from alphavault_reflex.services.research_models import build_stock_route
 from alphavault_reflex.services.research_state_utils import (
     DEFAULT_SIGNAL_PAGE_SIZE,
@@ -54,6 +57,20 @@ def _load_source_read_module() -> ModuleType:
 @cache
 def _load_stock_hot_read_module() -> ModuleType:
     return importlib.import_module("alphavault_reflex.services.stock_hot_read")
+
+
+def _extract_stock_navigation_target(href: str) -> tuple[str, str]:
+    target_href = str(href or "").strip()
+    if not target_href:
+        return "", ""
+    parsed = urlparse(target_href)
+    path = str(parsed.path or "").strip()
+    route_prefix = f"{RESEARCH_STOCK_ROUTE_PREFIX}/"
+    if not path.startswith(route_prefix):
+        return "", ""
+    stock_slug = path.removeprefix(route_prefix).split("/", 1)[0]
+    author_values = parse_qs(parsed.query).get("author") or [""]
+    return stock_slug, _normalize_author_filter(author_values[0])
 
 
 class ResearchState(rx.State):
@@ -223,6 +240,20 @@ class ResearchState(rx.State):
         self.signal_detail_tree_text = ""
         self.signal_detail_message = ""
 
+    def _stock_route_matches_loaded_state(
+        self,
+        *,
+        stock_slug: str,
+        author: str,
+    ) -> bool:
+        return bool(
+            self.loaded_once
+            and self.entity_type == "stock"
+            and _normalize_stock_key(stock_slug) == self.entity_key
+            and _normalize_author_filter(author)
+            == _normalize_author_filter(self.author_filter)
+        )
+
     @rx.event
     def load_stock_page(self, stock_slug: str | None = None, author: str | None = None):
         self.loading = True
@@ -320,6 +351,18 @@ class ResearchState(rx.State):
         if author_filter:
             return self.load_stock_page(slug, author=author_filter)
         return self.load_stock_page(slug)
+
+    @rx.event
+    def prepare_stock_href_navigation(self, href: str) -> None:
+        target_href = str(href or "").strip()
+        if not target_href:
+            return
+        stock_slug, author_filter = _extract_stock_navigation_target(target_href)
+        if stock_slug and not self._stock_route_matches_loaded_state(
+            stock_slug=stock_slug,
+            author=author_filter,
+        ):
+            self.loading = True
 
     @rx.event
     def close_stock_sidebar(self) -> None:
@@ -634,8 +677,14 @@ def research_page_loading_var() -> rx.Var[bool]:
     return ResearchState.show_loading | (~rx.State.is_hydrated)
 
 
+def stock_page_loading_var() -> rx.Var[bool]:
+    return ResearchState.show_loading | (
+        (~rx.State.is_hydrated) & ResearchState.loading
+    )
+
+
 def stock_page_title_var() -> rx.Var[str]:
-    loading = research_page_loading_var()
+    loading = stock_page_loading_var()
     return rx.cond(
         loading & (ResearchState.stock_slug != ""),
         ResearchState.stock_slug,

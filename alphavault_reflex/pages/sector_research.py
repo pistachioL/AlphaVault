@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from alphavault_reflex.pages.stock_link_components import stock_route_link
 from alphavault_reflex.research_state import ResearchState
 from alphavault_reflex.research_state import research_page_loading_var
 from alphavault_reflex.research_state import sector_page_title_var
@@ -28,7 +29,7 @@ def _signal_card(row: rx.Var[dict[str, str]]) -> rx.Component:
 
 
 def _related_link(row: rx.Var[dict[str, str]]) -> rx.Component:
-    return rx.link(
+    return stock_route_link(
         row["label"],
         href=row["href"],
         class_name="av-research-chip",

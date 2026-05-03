@@ -4,6 +4,7 @@ import reflex as rx
 
 from alphavault_reflex.homework_state import HomeworkState
 from alphavault_reflex.pages.original_link_components import original_post_link
+from alphavault_reflex.pages.stock_link_components import stock_route_link
 from alphavault_reflex.pages.thread_tree_components import tree_line_row
 from alphavault_reflex.services.analysis_feedback import (
     ANALYSIS_FEEDBACK_CANCEL_TEXT,
@@ -145,7 +146,7 @@ def _topic_cell(row: rx.Var[dict[str, str]]) -> rx.Component:
     return rx.el.td(
         rx.cond(
             row["stock_route"] != "",
-            rx.link(
+            stock_route_link(
                 row["topic_label"],
                 href=row["stock_route"],
                 class_name="av-topic-link",
