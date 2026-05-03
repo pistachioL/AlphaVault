@@ -47,8 +47,6 @@ class WorkerSourceRuntime:
     rss_ingest_future: Future | None = None
     source_db_ready: bool = False
     source_db_next_ready_check_at: float = 0.0
-    stock_hot_cache_future: Future | None = None
-    stock_hot_cache_next_at: float = 0.0
     progress_state_cache: dict[str, dict] = field(default_factory=dict)
 
 

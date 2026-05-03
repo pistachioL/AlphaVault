@@ -19,7 +19,7 @@ from alphavault.ai.analyze import (
     AI_MODE_RESPONSES,
     DEFAULT_PROMPT_VERSION,
     AnalyzeResult,
-    analyze_with_litellm,
+    analyze_with_openai,
     clean_text,
     validate_and_adjust_assertions,
 )
@@ -271,7 +271,7 @@ def analyze_with_heartbeat(
     trace_out: Optional[Path],
 ) -> AnalyzeResult:
     if heartbeat_seconds <= 0:
-        return analyze_with_litellm(
+        return analyze_with_openai(
             api_key=api_key,
             model=model,
             analysis_context=analysis_context,
@@ -290,7 +290,7 @@ def analyze_with_heartbeat(
 
     def _run() -> None:
         try:
-            result_holder["result"] = analyze_with_litellm(
+            result_holder["result"] = analyze_with_openai(
                 api_key=api_key,
                 model=model,
                 analysis_context=analysis_context,

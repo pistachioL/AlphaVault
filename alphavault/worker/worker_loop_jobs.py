@@ -133,37 +133,6 @@ def _collect_redis_enqueue(
     return bool(has_error)
 
 
-def _collect_periodic_job(
-    *,
-    job_name: str,
-    source,
-    future_attr: str,
-    next_at_attr: str,
-    now: float,
-    attempted_key: str,
-) -> bool:
-    future = getattr(source, future_attr, None)
-    next_future, stats, finished, has_error = cycle_runner.collect_periodic_job_result(
-        job_name=job_name,
-        future=future,
-        engine=source.engine,
-        maybe_dispose_source_db_engine_on_transient_error_fn=maybe_dispose_source_db_engine_on_transient_error,
-        fatal_exceptions=_FATAL_BASE_EXCEPTIONS,
-    )
-    setattr(source, future_attr, next_future)
-    if not finished:
-        return bool(has_error)
-
-    has_more = bool(stats.get("has_more", False))
-    attempted = stats.get(attempted_key, 0)
-    if cycle_runner.should_fast_retry_for_periodic_job(
-        has_more=has_more,
-        attempted=attempted,
-    ):
-        setattr(source, next_at_attr, float(now))
-    return bool(has_error)
-
-
 def collect_finished_jobs(
     *,
     source,
@@ -176,7 +145,6 @@ def collect_finished_jobs(
         "redis_enqueue_error": False,
         "spool_flush_error": False,
         "schedule_error": False,
-        "stock_hot_error": False,
     }
 
     rss_enqueue_error = _collect_rss_ingest(
@@ -194,14 +162,6 @@ def collect_finished_jobs(
         source=source,
         source_name=source_name,
         now=float(now),
-    )
-    errors["stock_hot_error"] = _collect_periodic_job(
-        job_name=f"stock_hot_cache:{source_name}",
-        source=source,
-        future_attr="stock_hot_cache_future",
-        next_at_attr="stock_hot_cache_next_at",
-        now=float(now),
-        attempted_key="processed",
     )
 
     return errors, bool(rss_enqueue_error)

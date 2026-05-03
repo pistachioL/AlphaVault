@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from typing import Any
 
 from alphavault.logging_config import get_logger
@@ -10,9 +9,6 @@ from alphavault.rss.utils import now_str
 from alphavault.worker.job_state import (
     save_worker_job_cursor,
     worker_progress_state_key,
-)
-from alphavault.worker.redis_stream_queue import (
-    redis_ai_due_count,
 )
 from alphavault.worker.source_db_runtime import (
     maybe_dispose_source_db_engine_on_transient_error,
@@ -69,32 +65,6 @@ def save_worker_progress_state(
         )
 
 
-def has_due_ai_posts(
-    *,
-    engine: PostgresEngine | None,
-    platform: str,
-    redis_client=None,
-    redis_queue_key: str = "",
-) -> bool:
-    del engine, platform
-    if not redis_client or not str(redis_queue_key or "").strip():
-        return False
-    try:
-        return bool(
-            redis_ai_due_count(
-                redis_client,
-                str(redis_queue_key),
-                now_epoch=int(time.time()),
-            )
-        )
-    except BaseException as err:
-        if isinstance(err, _FATAL_BASE_EXCEPTIONS):
-            raise
-        logger.warning("[ai] redis_due_check_error %s: %s", type(err).__name__, err)
-        return False
-
-
 __all__ = [
-    "has_due_ai_posts",
     "save_worker_progress_state",
 ]

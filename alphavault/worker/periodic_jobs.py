@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 from alphavault.logging_config import get_logger
 
@@ -67,36 +67,6 @@ def mark_spool_flush_retry(*, source: Any, has_more: bool, has_error: bool) -> N
         return
     with source.spool_state_lock:
         source.spool_need_retry = True
-
-
-def maybe_start_periodic_job(
-    *,
-    executor: Any,
-    future: Future | None,
-    active_engine: Any,
-    trigger: bool,
-    now: float,
-    next_run_at: float,
-    interval_seconds: float,
-    wakeup_event: Any,
-    submit_fn: Callable[..., dict[str, int | bool]],
-    submit_kwargs: dict[str, Any] | None = None,
-) -> tuple[Future | None, float, bool]:
-    engine_for_job = active_engine
-    if (
-        not trigger
-        or engine_for_job is None
-        or future is not None
-        or now < float(next_run_at)
-    ):
-        return future, next_run_at, False
-    new_future = executor.submit(submit_fn, engine_for_job, **(submit_kwargs or {}))
-    new_future.add_done_callback(lambda _f: wakeup_event.set())
-    if bool(interval_seconds) and float(interval_seconds) > 0:
-        next_at = now + float(interval_seconds)
-    else:
-        next_at = now
-    return new_future, next_at, True
 
 
 def prune_inflight_futures(

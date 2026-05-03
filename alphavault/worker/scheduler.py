@@ -114,34 +114,6 @@ def compute_rss_available_slots(
     return max(0, remaining)
 
 
-def build_low_priority_should_continue(
-    *,
-    ai_cap: int,
-    rss_inflight_now_get: Callable[[], int],
-    low_inflight_now_get: Callable[[], int] | None = None,
-    has_due_ai_pending_get: Callable[[], bool] | None = None,
-) -> Callable[[], bool]:
-    def _should_continue() -> bool:
-        rss_now = max(0, int(rss_inflight_now_get()))
-        low_now = (
-            max(0, int(low_inflight_now_get()))
-            if low_inflight_now_get is not None
-            else 0
-        )
-        available = compute_rss_available_slots(
-            ai_cap=int(ai_cap),
-            rss_inflight_now=int(rss_now),
-            low_inflight_now=int(low_now),
-        )
-        if available > 0:
-            return True
-        if has_due_ai_pending_get is None:
-            return False
-        return not bool(has_due_ai_pending_get())
-
-    return _should_continue
-
-
 def dedup_post_uids(post_uids: Sequence[object]) -> list[str]:
     seen: set[str] = set()
     deduped: list[str] = []
@@ -581,7 +553,6 @@ def schedule_ai(
 
 
 __all__ = [
-    "build_low_priority_should_continue",
     "compute_low_priority_budget",
     "compute_rss_available_slots",
     "dedup_post_uids",

@@ -31,11 +31,6 @@ def _load_research_data_module() -> ModuleType:
 
 
 @cache
-def _load_sector_hot_read_module() -> ModuleType:
-    return importlib.import_module("alphavault_reflex.services.sector_hot_read")
-
-
-@cache
 def _load_source_read_module() -> ModuleType:
     return importlib.import_module("alphavault_reflex.services.source_read")
 
@@ -186,24 +181,6 @@ def load_stock_signal_detail_view(post_uid: str) -> dict[str, object]:
 
 def load_sector_page_view(sector_slug: str) -> dict[str, object]:
     sector_key = str(sector_slug or "").strip()
-    cached_view = _load_sector_hot_read_module().load_sector_cached_view_from_env(
-        sector_key
-    )
-    if bool(cached_view.get("snapshot_hit")):
-        return {
-            "page_title": str(cached_view.get("page_title") or "").strip(),
-            "signals": cached_view.get("signals") or [],
-            "related_stocks": cached_view.get("related_stocks") or [],
-            "load_error": str(cached_view.get("load_error") or "").strip(),
-        }
-    cached_error = str(cached_view.get("load_error") or "").strip()
-    if cached_error:
-        return {
-            "page_title": str(cached_view.get("page_title") or sector_key).strip(),
-            "signals": [],
-            "related_stocks": [],
-            "load_error": cached_error,
-        }
     posts, assertions, err = _load_source_read_module().load_sources_from_env()
     if err:
         return {

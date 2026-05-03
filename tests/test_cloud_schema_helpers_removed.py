@@ -12,7 +12,6 @@ import pytest
         ("alphavault.db.cloud_schema", "init_cloud_schema"),
         ("alphavault.research_workbench", "ensure_research_workbench_schema"),
         ("alphavault.research_workbench.schema", "ensure_research_workbench_schema"),
-        ("alphavault.research_stock_cache", "ensure_research_stock_cache_schema"),
         ("alphavault.homework_trade_feed", "ensure_homework_trade_feed_schema"),
         ("alphavault.follow_pages", "ensure_follow_pages_schema"),
         ("alphavault.follow_pages", "init_follow_pages_schema"),

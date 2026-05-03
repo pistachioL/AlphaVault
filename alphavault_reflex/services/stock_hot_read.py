@@ -23,17 +23,11 @@ from alphavault.domains.stock.keys import (
     stock_value,
 )
 from alphavault.env import load_dotenv_if_present
-from alphavault.research_stock_cache import (
-    load_entity_page_signal_snapshot as _legacy_load_entity_page_signal_snapshot,
-)
 from alphavault.research_signal_view import (
     coerce_signal_timestamp,
     default_signal_reference_time,
     format_signal_created_at_line,
     merge_post_fields,
-)
-from alphavault.worker.job_state import (
-    load_worker_job_cursor as _legacy_load_worker_job_cursor,
 )
 from alphavault_reflex.services.source_read import (
     MISSING_POSTGRES_DSN_ERROR,
@@ -69,14 +63,6 @@ class StockQueryContext(TypedDict):
     same_company_stocks: list[dict[str, str]]
     official_names: dict[str, str]
     page_title: str
-
-
-def load_entity_page_signal_snapshot(*args, **kwargs):
-    return _legacy_load_entity_page_signal_snapshot(*args, **kwargs)
-
-
-def load_worker_job_cursor(*args, **kwargs):
-    return _legacy_load_worker_job_cursor(*args, **kwargs)
 
 
 def _load_source_schemas_from_env() -> list[PostgresSource]:

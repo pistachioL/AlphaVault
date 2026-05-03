@@ -194,7 +194,6 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
     wait_calls: list[str] = []
     seen_request_gate: dict[str, object] = {}
     writes: list[str] = []
-    dirty_marks: list[str] = []
     limiter = RateLimiter(0)
     monkeypatch.setattr(limiter, "wait", lambda: wait_calls.append("wait"))
 
@@ -301,11 +300,6 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
         "write_assertions_and_mark_done",
         lambda *_args, **_kwargs: writes.append("write"),
     )
-    monkeypatch.setattr(
-        topic_prompt_module,
-        "mark_entity_page_dirty_from_assertions",
-        lambda *_args, **_kwargs: dirty_marks.append("dirty"),
-    )
 
     ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
         engine=cast(Any, object()),
@@ -318,7 +312,6 @@ def test_process_one_post_uid_topic_prompt_v4_passes_limiter_wait_as_request_gat
     assert callable(seen_request_gate["value"])
     assert wait_calls == ["wait", "wait"]
     assert writes == ["write"]
-    assert dirty_marks == ["dirty"]
 
 
 def test_process_one_post_uid_topic_prompt_v4_passes_prefetched_post_to_final_write(
@@ -366,11 +359,6 @@ def test_process_one_post_uid_topic_prompt_v4_passes_prefetched_post_to_final_wr
         topic_prompt_module,
         "write_assertions_and_mark_done",
         _fake_write,
-    )
-    monkeypatch.setattr(
-        topic_prompt_module,
-        "mark_entity_page_dirty_from_assertions",
-        lambda *_args, **_kwargs: None,
     )
 
     topic_prompt_module.process_one_post_uid_topic_prompt_v4(
@@ -464,11 +452,6 @@ def test_process_one_post_uid_topic_prompt_v4_passes_manual_feedback_hint_to_pro
     monkeypatch.setattr(
         topic_prompt_module,
         "write_assertions_and_mark_done",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        topic_prompt_module,
-        "mark_entity_page_dirty_from_assertions",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -567,11 +550,6 @@ def test_process_one_post_uid_topic_prompt_v4_marks_feedback_applied_after_succe
     monkeypatch.setattr(
         topic_prompt_module,
         "write_assertions_and_mark_done",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        topic_prompt_module,
-        "mark_entity_page_dirty_from_assertions",
         lambda *_args, **_kwargs: None,
     )
 
@@ -700,12 +678,6 @@ def test_process_one_post_uid_topic_prompt_v4_wraps_done_write_and_feedback_appl
         _fake_mark_feedback_applied,
         raising=False,
     )
-    monkeypatch.setattr(
-        topic_prompt_module,
-        "mark_entity_page_dirty_from_assertions",
-        lambda *_args, **_kwargs: None,
-    )
-
     ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
         engine=engine,
         post_uid="weibo:1",
@@ -798,11 +770,6 @@ def test_process_one_post_uid_topic_prompt_v4_clips_manual_feedback_note_for_pro
     monkeypatch.setattr(
         topic_prompt_module,
         "write_assertions_and_mark_done",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        topic_prompt_module,
-        "mark_entity_page_dirty_from_assertions",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -965,12 +932,6 @@ def test_process_one_post_uid_topic_prompt_v4_rolls_back_done_write_when_feedbac
     )
     monkeypatch.setattr(topic_prompt_module, "score_from_assertions", lambda _rows: 0.0)
     monkeypatch.setattr(topic_prompt_module, "now_str", lambda: "2026-04-09 11:05:00")
-    monkeypatch.setattr(
-        topic_prompt_module,
-        "mark_entity_page_dirty_from_assertions",
-        lambda *_args, **_kwargs: None,
-    )
-
     ok = topic_prompt_module.process_one_post_uid_topic_prompt_v4(
         engine=cast(Any, conn),
         post_uid=post_uid,

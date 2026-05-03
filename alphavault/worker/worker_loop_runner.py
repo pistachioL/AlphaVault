@@ -6,17 +6,14 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from alphavault.rss.utils import RateLimiter, sleep_until_active
 from alphavault.logging_config import get_logger
 from alphavault.worker import periodic_jobs
-from alphavault.worker.progress_state import has_due_ai_posts
-from alphavault.worker.runtime_cache import memoize_bool_with_ttl
 from alphavault.worker.runtime_models import LLMConfig, WorkerSourceRuntime
 from alphavault.worker.redis_stream_queue import redis_ai_reset_consumer_group
 from alphavault.worker.source_runtime import log_source_runtime
-from alphavault.worker.worker_constants import DUE_AI_CHECK_CACHE_TTL_SECONDS
 from alphavault.worker.worker_loop_models import (
     SourceTickContext,
     SourceTickExecutors,
@@ -52,7 +49,6 @@ class WorkerLoopContext:
     rss_feed_sleep_seconds: float
     worker_active_hours: Optional[tuple[int, int]]
     worker_interval_seconds: float
-    due_ai_cached_by_source: dict[str, Callable[[], bool]]
 
 
 @contextmanager
@@ -60,45 +56,13 @@ def _open_executors(*, ai_cap: int, source_count: int) -> Iterator[SourceTickExe
     max_source_workers = max(1, int(source_count))
     with ExitStack() as stack:
         ai_executor = stack.enter_context(ThreadPoolExecutor(max_workers=int(ai_cap)))
-        stock_hot_executor = stack.enter_context(
-            ThreadPoolExecutor(max_workers=int(max_source_workers))
-        )
         rss_executor = stack.enter_context(
             ThreadPoolExecutor(max_workers=int(max_source_workers))
         )
         yield SourceTickExecutors(
             ai_executor=ai_executor,
-            stock_hot_executor=stock_hot_executor,
             rss_executor=rss_executor,
         )
-
-
-def _build_due_ai_cached_by_source(
-    *,
-    sources: list[WorkerSourceRuntime],
-    redis_client,
-) -> dict[str, Callable[[], bool]]:
-    cached: dict[str, Callable[[], bool]] = {}
-    for src in sources:
-        source_name = str(src.config.name or "").strip()
-
-        def _resolver(source: WorkerSourceRuntime = src) -> bool:
-            return has_due_ai_posts(
-                engine=(
-                    source.engine
-                    if bool(getattr(source, "source_db_ready", False))
-                    else None
-                ),
-                platform=str(source.config.platform or ""),
-                redis_client=redis_client,
-                redis_queue_key=str(source.redis_queue_key or ""),
-            )
-
-        cached[source_name] = memoize_bool_with_ttl(
-            resolver=_resolver,
-            ttl_seconds=float(DUE_AI_CHECK_CACHE_TTL_SECONDS),
-        )
-    return cached
 
 
 def _build_settings(args) -> WorkerLoopSettings:
@@ -159,7 +123,6 @@ def _build_tick_ctx(
     now: float,
     do_maintenance: bool,
 ) -> SourceTickContext:
-    source_name = str(source.config.name or "").strip()
     return SourceTickContext(
         args=loop_ctx.args,
         config=loop_ctx.config,
@@ -175,7 +138,6 @@ def _build_tick_ctx(
         maintenance_next_at=float(maintenance_next_at),
         now=float(now),
         do_maintenance=bool(do_maintenance),
-        due_ai_pending_get=loop_ctx.due_ai_cached_by_source.get(source_name),
     )
 
 
@@ -350,10 +312,6 @@ def run_worker_forever(
             rss_feed_sleep_seconds=float(rss_feed_sleep_seconds),
         )
 
-    due_ai_cached_by_source = _build_due_ai_cached_by_source(
-        sources=sources,
-        redis_client=redis_client,
-    )
     loop_ctx = WorkerLoopContext(
         args=args,
         sources=sources,
@@ -367,7 +325,6 @@ def run_worker_forever(
         rss_feed_sleep_seconds=float(rss_feed_sleep_seconds),
         worker_active_hours=worker_active_hours,
         worker_interval_seconds=float(worker_interval_seconds),
-        due_ai_cached_by_source=due_ai_cached_by_source,
     )
     _run_worker_loop_forever(
         loop_ctx=loop_ctx,

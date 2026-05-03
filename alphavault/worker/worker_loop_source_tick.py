@@ -9,7 +9,6 @@ from alphavault.worker.job_state import WORKER_PROGRESS_STAGE_CYCLE
 from alphavault.worker.progress_state import save_worker_progress_state
 from alphavault.worker.worker_loop_ai import schedule_ai_for_source
 from alphavault.worker.worker_loop_jobs import collect_finished_jobs
-from alphavault.worker.worker_loop_low_priority import schedule_low_priority_jobs
 from alphavault.worker.worker_loop_maintenance import run_maintenance_if_due
 from alphavault.worker.worker_loop_models import (
     SourceTickContext,
@@ -125,31 +124,10 @@ def _run_source_ai_schedule(
     )
 
 
-def _run_source_low_priority(
-    *,
-    source,
-    active_engine,
-    ctx: SourceTickContext,
-    execs: SourceTickExecutors,
-    state: SourceTickState,
-) -> None:
-    schedule_low_priority_jobs(
-        source=source,
-        active_engine=active_engine,
-        ctx=ctx,
-        execs=execs,
-        wakeup_event=state.wakeup_event,
-        inflight_futures=state.inflight_futures,
-    )
-
-
 def _any_inflight(*, source, state: SourceTickState) -> bool:
     return bool(
         cycle_runner.should_wait_with_event(
             ai_inflight=bool(state.inflight_futures),
-            any_stock_hot_inflight=bool(
-                getattr(source, "stock_hot_cache_future", None) is not None
-            ),
             any_redis_enqueue_inflight=False,
             any_rss_inflight=bool(
                 getattr(source, "rss_ingest_future", None) is not None
@@ -175,7 +153,6 @@ def _save_cycle_progress(
         maintenance_error=bool(errors["maintenance_error"]),
         spool_flush_error=bool(errors.get("spool_flush_error", False)),
         schedule_error=bool(errors["schedule_error"]),
-        stock_hot_error=bool(errors["stock_hot_error"]),
     )
     save_worker_progress_state(
         source=source,
@@ -254,13 +231,6 @@ def finalize_source_tick(
 ) -> bool:
     errors = dict(prepared.errors)
     errors["schedule_error"] = _run_source_ai_schedule(
-        source=source,
-        active_engine=prepared.active_engine,
-        ctx=ctx,
-        execs=execs,
-        state=state,
-    )
-    _run_source_low_priority(
         source=source,
         active_engine=prepared.active_engine,
         ctx=ctx,

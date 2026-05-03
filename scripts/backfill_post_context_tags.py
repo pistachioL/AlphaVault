@@ -50,7 +50,6 @@ from alphavault.logging_config import (  # noqa: E402
 from alphavault.research_workbench.service import (  # noqa: E402
     dispose_research_workbench_engine_from_env,
 )
-from alphavault.research_stock_cache import mark_entity_page_dirty  # noqa: E402
 from alphavault.rss.utils import RateLimiter, now_str  # noqa: E402
 from alphavault.worker.post_context_tags import (  # noqa: E402
     PostContextResult,
@@ -422,32 +421,12 @@ def _write_completed_post_context_rows(
     if not rows:
         return
     write_rows = [row.write_row for row in rows]
-    seen_stock_keys: set[str] = set()
-    stock_keys: list[str] = []
-    for row in rows:
-        for stock_key in row.stock_keys:
-            if stock_key in seen_stock_keys:
-                continue
-            seen_stock_keys.add(stock_key)
-            stock_keys.append(stock_key)
     with postgres_connect_autocommit(source_engine) as conn:
         write_post_context_results_batch(
             conn,
             rows=write_rows,
             persist_entity_match_followups=False,
         )
-        for stock_key in stock_keys:
-            try:
-                mark_entity_page_dirty(
-                    conn,
-                    stock_key=stock_key,
-                    reason="ai_done",
-                )
-            except BaseException:
-                logger.warning(
-                    "[post_context_backfill] mark_dirty_failed stock_key=%s",
-                    stock_key,
-                )
 
 
 def _flush_completed_rows(

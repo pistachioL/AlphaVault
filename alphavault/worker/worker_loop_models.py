@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from alphavault.rss.utils import RateLimiter
 from alphavault.worker.runtime_models import LLMConfig
@@ -25,13 +25,11 @@ class SourceTickContext:
     maintenance_next_at: float
     now: float
     do_maintenance: bool
-    due_ai_pending_get: Callable[[], bool] | None
 
 
 @dataclass(frozen=True)
 class SourceTickExecutors:
     ai_executor: ThreadPoolExecutor
-    stock_hot_executor: ThreadPoolExecutor
     rss_executor: ThreadPoolExecutor
 
 

@@ -117,29 +117,6 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.topic_cluster_post_overrides (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS {{schema_name}}.entity_page_snapshot (
-    entity_key TEXT PRIMARY KEY,
-    entity_type TEXT NOT NULL DEFAULT '',
-    header_json TEXT NOT NULL DEFAULT '{}',
-    signal_top_json TEXT NOT NULL DEFAULT '[]',
-    related_json TEXT NOT NULL DEFAULT '[]',
-    counters_json TEXT NOT NULL DEFAULT '{}',
-    content_hash TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS {{schema_name}}.projection_dirty (
-    job_type TEXT NOT NULL,
-    target_key TEXT NOT NULL,
-    reason_mask INTEGER NOT NULL DEFAULT 0,
-    dirty_since TEXT NOT NULL DEFAULT '',
-    last_dirty_at TEXT NOT NULL DEFAULT '',
-    claim_until TEXT NOT NULL DEFAULT '',
-    attempt_count INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (job_type, target_key)
-);
-
 CREATE TABLE IF NOT EXISTS {{schema_name}}.worker_cursor (
     state_key TEXT PRIMARY KEY,
     cursor TEXT NOT NULL DEFAULT '',
@@ -222,9 +199,3 @@ CREATE INDEX IF NOT EXISTS idx_topic_cluster_topics_cluster_key
 
 CREATE INDEX IF NOT EXISTS idx_topic_cluster_post_overrides_cluster_key
     ON {{schema_name}}.topic_cluster_post_overrides(cluster_key);
-
-CREATE INDEX IF NOT EXISTS idx_entity_page_snapshot_updated
-    ON {{schema_name}}.entity_page_snapshot(updated_at);
-
-CREATE INDEX IF NOT EXISTS idx_projection_dirty_claimable
-    ON {{schema_name}}.projection_dirty(job_type, claim_until, dirty_since, last_dirty_at, target_key);

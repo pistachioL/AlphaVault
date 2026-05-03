@@ -2,12 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 from datetime import datetime, timedelta
-import os
 from typing import Any
 
-from alphavault.constants import (
-    ENV_WORKER_STOCK_HOT_CACHE_INTERVAL_SECONDS,
-)
 from alphavault.db.postgres_db import ensure_postgres_engine
 from alphavault.db.postgres_env import require_postgres_source_from_env
 from alphavault.worker.cli import RSSSourceConfig
@@ -35,17 +31,6 @@ def seconds_until_next_active_start(
         next_dt = today_start
 
     return max(1.0, (next_dt - now_dt).total_seconds())
-
-
-def resolve_stock_hot_cache_interval_seconds() -> float:
-    raw_value = os.getenv(ENV_WORKER_STOCK_HOT_CACHE_INTERVAL_SECONDS, "").strip()
-    if not raw_value:
-        return 60.0
-    try:
-        seconds = float(raw_value)
-    except Exception:
-        return 60.0
-    return max(15.0, seconds)
 
 
 def build_source_runtimes(
@@ -105,7 +90,6 @@ def rss_inflight_now(inflight_futures: set[Future]) -> int:
 
 __all__ = [
     "build_source_runtimes",
-    "resolve_stock_hot_cache_interval_seconds",
     "rss_inflight_now",
     "seconds_until_next_active_start",
 ]

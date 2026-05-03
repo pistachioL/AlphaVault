@@ -31,7 +31,6 @@ def _tick_ctx() -> SourceTickContext:
             maintenance_next_at=600.0,
             now=0.0,
             do_maintenance=False,
-            due_ai_pending_get=None,
         ),
     )
 
@@ -39,7 +38,6 @@ def _tick_ctx() -> SourceTickContext:
 def test_open_executors_does_not_create_removed_queue_executors() -> None:
     with worker_loop_runner._open_executors(ai_cap=1, source_count=1) as execs:
         assert hasattr(execs, "ai_executor")
-        assert hasattr(execs, "stock_hot_executor")
         assert hasattr(execs, "rss_executor")
         assert not hasattr(execs, "redis_enqueue_executor")
         assert not hasattr(execs, "spool_executor")
@@ -75,7 +73,6 @@ def test_run_sources_once_schedules_all_rss_before_any_ai(monkeypatch) -> None:
                 "redis_enqueue_error": False,
                 "spool_flush_error": False,
                 "schedule_error": False,
-                "stock_hot_error": False,
             },
             False,
         ),
@@ -94,11 +91,6 @@ def test_run_sources_once_schedules_all_rss_before_any_ai(monkeypatch) -> None:
         worker_loop_source_tick,
         "_run_source_ai_schedule",
         _record_ai,
-    )
-    monkeypatch.setattr(
-        worker_loop_source_tick,
-        "_run_source_low_priority",
-        lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         worker_loop_source_tick,
@@ -182,7 +174,6 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
                 "redis_enqueue_error": False,
                 "spool_flush_error": False,
                 "schedule_error": False,
-                "stock_hot_error": False,
             },
             False,
         ),
@@ -201,11 +192,6 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
         worker_loop_source_tick,
         "_run_source_ai_schedule",
         _record_ai,
-    )
-    monkeypatch.setattr(
-        worker_loop_source_tick,
-        "_run_source_low_priority",
-        lambda **kwargs: events.append(f"low:{kwargs['source'].config.name}"),
     )
     monkeypatch.setattr(
         worker_loop_source_tick,
@@ -254,10 +240,8 @@ def test_run_sources_once_keeps_finalizing_later_sources_when_first_has_inflight
         "maintenance:weibo",
         "maintenance:xueqiu",
         "ai:weibo",
-        "low:weibo",
         "progress:weibo",
         "ai:xueqiu",
-        "low:xueqiu",
         "progress:xueqiu",
     ]
 
@@ -272,9 +256,6 @@ def test_run_worker_forever_recovers_redis_pending_on_start(monkeypatch) -> None
     )
     monkeypatch.setattr(
         worker_loop_runner, "log_source_runtime", lambda **_kwargs: None
-    )
-    monkeypatch.setattr(
-        worker_loop_runner, "_build_due_ai_cached_by_source", lambda **_kwargs: {}
     )
     monkeypatch.setattr(
         worker_loop_runner, "_run_worker_loop_forever", lambda **_kw: None
@@ -314,9 +295,6 @@ def test_run_worker_forever_skips_recover_without_redis(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         worker_loop_runner, "log_source_runtime", lambda **_kwargs: None
-    )
-    monkeypatch.setattr(
-        worker_loop_runner, "_build_due_ai_cached_by_source", lambda **_kwargs: {}
     )
     monkeypatch.setattr(
         worker_loop_runner, "_run_worker_loop_forever", lambda **_kw: None

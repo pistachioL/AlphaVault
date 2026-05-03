@@ -14,7 +14,6 @@ ANALYSIS_FEEDBACK_HEAVY_MODULES = (
 RESEARCH_PAGE_LOADER_HEAVY_MODULES = (
     "alphavault_reflex.services.source_read",
     "alphavault_reflex.services.stock_hot_read",
-    "alphavault_reflex.services.sector_hot_read",
     "alphavault_reflex.services.homework_board",
     "alphavault_reflex.services.research_data",
 )
@@ -24,7 +23,6 @@ RESEARCH_STATE_HEAVY_MODULES = (
     "alphavault.db.postgres_db",
     "alphavault_reflex.services.source_read",
     "alphavault_reflex.services.stock_hot_read",
-    "alphavault_reflex.services.sector_hot_read",
 )
 
 HOMEWORK_STATE_HEAVY_MODULES = (
@@ -39,7 +37,6 @@ APP_HEAVY_MODULES = (
     "alphavault.db.postgres_db",
     "alphavault_reflex.services.source_read",
     "alphavault_reflex.services.stock_hot_read",
-    "alphavault_reflex.services.sector_hot_read",
     "alphavault.domains.stock.object_index",
 )
 

@@ -44,10 +44,6 @@ from alphavault.infra.ai.runtime_config import (
     AI_TASK_POST_CONTEXT,
     ai_task_runtime_config_from_env,
 )
-from alphavault.research_stock_cache import (
-    mark_entity_page_dirty,
-    mark_entity_page_dirty_from_assertions,
-)
 from alphavault.weibo.topic_prompt_tree import (
     MAX_TOPIC_PROMPT_CHARS,
     thread_root_info_for_post,
@@ -56,7 +52,6 @@ from alphavault.worker.post_context_tags import (
     POST_CONTEXT_PROMPT_VERSION,
     PostContextResult,
     extract_post_context_result,
-    extract_stock_entity_keys_from_entities,
 )
 from alphavault.worker.post_processor_utils import score_from_assertions
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
@@ -765,32 +760,6 @@ def process_one_post_uid_topic_prompt_v4(
                     invest_score=float(invest_score),
                 )
             )
-
-            if rows:
-                try:
-                    mark_entity_page_dirty_from_assertions(
-                        engine,
-                        assertions=rows,
-                        reason="ai_done",
-                    )
-                except BaseException:
-                    logger.warning("[stock_hot] mark_dirty_failed post_uid=%s", uid)
-            if context_result is not None:
-                for stock_key in extract_stock_entity_keys_from_entities(
-                    context_result.entities
-                ):
-                    try:
-                        mark_entity_page_dirty(
-                            engine,
-                            stock_key=stock_key,
-                            reason="ai_done",
-                        )
-                    except BaseException:
-                        logger.warning(
-                            "[stock_hot] mark_dirty_failed post_uid=%s stock_key=%s",
-                            uid,
-                            stock_key,
-                        )
         clear_topic_prompt_failure_context()
         return True
     except Exception as err:

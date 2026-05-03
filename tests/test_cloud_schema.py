@@ -15,8 +15,6 @@ _SOURCE_TABLES = {
     "topic_clusters",
     "topic_cluster_topics",
     "topic_cluster_post_overrides",
-    "entity_page_snapshot",
-    "projection_dirty",
     "worker_cursor",
     "worker_locks",
 }
