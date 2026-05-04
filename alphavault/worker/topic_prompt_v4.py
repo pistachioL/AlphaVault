@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from alphavault.ai.contracts import AiTopicRuntimeContext
 from alphavault.ai.topic_prompt_v4 import build_topic_prompt
 from alphavault.weibo.topic_prompt_tree import build_topic_runtime_context
 
@@ -68,7 +69,7 @@ def build_topic_prompt_v4_with_prompt_chars_limit(
     posts: list[dict[str, object]],
     manual_feedback_hint: dict[str, object] | None = None,
     max_prompt_chars: int,
-) -> tuple[dict[str, object], int, str, int, int, bool, bool]:
+) -> tuple[AiTopicRuntimeContext, int, str, int, int, bool, bool]:
     """
     Build a topic-prompt-v4 prompt with a hard prompt chars budget.
 
@@ -78,7 +79,7 @@ def build_topic_prompt_v4_with_prompt_chars_limit(
 
     def build_ctx(
         *, node_chars: int, include_comments: bool
-    ) -> tuple[dict[str, object], int]:
+    ) -> tuple[AiTopicRuntimeContext, int]:
         return build_topic_runtime_context(
             root_key=root_key,
             root_segment=root_segment,
@@ -90,25 +91,25 @@ def build_topic_prompt_v4_with_prompt_chars_limit(
             max_node_text_chars=int(node_chars),
         )
 
-    def build_prompt(ctx: dict[str, object], *, compact_json: bool) -> tuple[str, int]:
-        pkg = ctx.get("ai_topic_package")
-        if not isinstance(pkg, dict):
-            raise RuntimeError("ai_topic_package_invalid")
+    def build_prompt(
+        ctx: AiTopicRuntimeContext, *, compact_json: bool
+    ) -> tuple[str, int]:
         prompt = build_topic_prompt(
-            ai_topic_package=pkg, compact_json=bool(compact_json)
+            ai_topic_package=ctx.ai_topic_package,
+            compact_json=bool(compact_json),
         )
         return prompt, len(prompt)
 
     def search_best_cap(
         *, include_comments: bool
-    ) -> Optional[tuple[dict[str, object], int, str, int, int]]:
+    ) -> Optional[tuple[AiTopicRuntimeContext, int, str, int, int]]:
         base_ctx, _base_truncated = build_ctx(
             node_chars=0, include_comments=include_comments
         )
-        max_len = max(1, max_message_tree_text_len(base_ctx.get("message_tree")))
+        max_len = max(1, max_message_tree_text_len(base_ctx.message_tree))
         lo = 1
         hi = int(max_len)
-        best: Optional[tuple[dict[str, object], int, str, int, int]] = None
+        best: Optional[tuple[AiTopicRuntimeContext, int, str, int, int]] = None
         while lo <= hi:
             mid = (lo + hi) // 2
             mid_ctx, mid_truncated = build_ctx(

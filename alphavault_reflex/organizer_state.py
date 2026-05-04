@@ -175,6 +175,11 @@ def _load_stock_object_index_module() -> ModuleType:
     return importlib.import_module("alphavault.domains.stock.object_index")
 
 
+@cache
+def _load_organizer_candidates_module() -> ModuleType:
+    return importlib.import_module("alphavault_reflex.services.organizer_candidates")
+
+
 def _stock_alias_batch_cap() -> int:
     return int(_load_relation_candidate_ranker_module().AI_RANK_BATCH_CAP)
 
@@ -1764,89 +1769,15 @@ def _build_section_candidates(
     assertions,
     section: str,
 ) -> list[PendingRow]:
-    if section == SECTION_STOCK_ALIAS:
-        return _coerce_pending_rows(_stock_alias_candidates(assertions))
-    if section == SECTION_STOCK_SECTOR:
-        return _coerce_pending_rows(_stock_sector_candidates(assertions))
-    return _coerce_pending_rows(_sector_relation_candidates(assertions))
-
-
-def _stock_alias_candidates(assertions) -> list[dict[str, str]]:
-    return _stock_candidates_for_relation_type(
-        assertions,
-        relation_type=SECTION_STOCK_ALIAS,
-    )
-
-
-def _stock_sector_candidates(assertions) -> list[dict[str, str]]:
-    return _stock_candidates_for_relation_type(
-        assertions,
-        relation_type=SECTION_STOCK_SECTOR,
-    )
-
-
-def _stock_candidates_for_relation_type(
-    assertions,
-    *,
-    relation_type: str,
-) -> list[dict[str, str]]:
-    candidate_builders = _load_candidate_builders_module()
-    stock_index = _load_stock_object_index_module().build_stock_object_index(assertions)
-    out: list[dict[str, str]] = []
-    for stock_key in _unique_stock_keys(assertions):
-        out.extend(
-            candidate_builders.build_stock_pending_candidates(
-                assertions,
-                stock_key=stock_key,
-                ai_enabled=False,
-                relation_type=relation_type,
-                stock_index=stock_index,
-            )
+    return _coerce_pending_rows(
+        _load_organizer_candidates_module().build_section_candidates(
+            assertions,
+            section=section,
+            limit=SECTION_CANDIDATE_LIMIT,
+            candidate_builders_module=_load_candidate_builders_module(),
+            stock_object_index_module=_load_stock_object_index_module(),
         )
-        if len(out) >= SECTION_CANDIDATE_LIMIT:
-            break
-    return out[:SECTION_CANDIDATE_LIMIT]
-
-
-def _sector_relation_candidates(assertions) -> list[dict[str, str]]:
-    candidate_builders = _load_candidate_builders_module()
-    out: list[dict[str, str]] = []
-    for sector_key in _unique_sector_keys(assertions):
-        out.extend(
-            candidate_builders.build_sector_pending_candidates(
-                assertions, sector_key=sector_key, ai_enabled=False
-            )
-        )
-    return out[:SECTION_CANDIDATE_LIMIT]
-
-
-def _unique_stock_keys(assertions) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for row in assertions:
-        raw_key = row.get("entity_key")
-        stock_key = str(raw_key or "").strip()
-        if not stock_key.startswith("stock:") or stock_key in seen:
-            continue
-        seen.add(stock_key)
-        out.append(stock_key)
-    return out
-
-
-def _unique_sector_keys(assertions) -> list[str]:
-    seen: set[str] = set()
-    out: list[str] = []
-    for row in assertions:
-        item = row.get("cluster_keys")
-        if not isinstance(item, list):
-            continue
-        for raw_key in item:
-            sector_key = str(raw_key or "").strip()
-            if not sector_key or sector_key in seen:
-                continue
-            seen.add(sector_key)
-            out.append(sector_key)
-    return out
+    )
 
 
 def _filter_known_candidate_statuses(

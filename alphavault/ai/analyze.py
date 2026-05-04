@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from alphavault.constants import (
     ENV_AI_API_MODE,
@@ -17,11 +17,12 @@ from alphavault.constants import (
 from alphavault.ai._client import _call_ai_with_openai
 from alphavault.ai._errors import extract_llm_error_details, format_llm_error_one_line
 from alphavault.ai._text import clean_text, clamp_float, clamp_int, parse_json_text
+from alphavault.ai.result_mapper import (
+    ai_analyze_output_from_parsed,
+    ai_assertion_to_draft,
+)
 from alphavault.ai.topic_prompt_v4 import TOPIC_PROMPT_VERSION
-
-# NOTE: Current worker paths only need the shared constants and helpers below.
-# Some repo scripts still import the old analyze API, so we keep a small
-# compatibility layer here instead of breaking those entry points.
+from alphavault.domains.ai_draft.models import AssertionDraft
 
 AI_MODE_COMPLETION = "completion"
 AI_MODE_RESPONSES = "responses"
@@ -68,7 +69,7 @@ LEGACY_ACTION_MAP = {
 class AnalyzeResult:
     status: str
     invest_score: float
-    assertions: list[dict[str, Any]]
+    assertions: list[AssertionDraft]
 
 
 def normalize_action(action: str) -> str:
@@ -171,82 +172,33 @@ quoted_text（转发/引用上下文）:
         trace_label=trace_label,
     )
 
-    status = str(parsed.get("status", "irrelevant")).strip().lower()
-    if status not in ("relevant", "irrelevant"):
-        status = "irrelevant"
-    invest_score = clamp_float(parsed.get("invest_score", 0.0), 0.0, 1.0, 0.0)
-    raw_assertions = parsed.get("assertions") or []
-    assertions = raw_assertions if isinstance(raw_assertions, list) else []
-    if status == "irrelevant":
-        assertions = []
-
-    normalized_assertions: list[dict[str, Any]] = []
-    for item in assertions[:5]:
-        if not isinstance(item, dict):
-            continue
-        source_type = clean_text(item.get("source_type", "commentary")).lower()
-        source_type = (
-            source_type
-            if source_type in {"commentary", "extension", "forward_only"}
-            else "commentary"
-        )
-        normalized_assertions.append(
-            {
-                "topic_key": clean_text(item.get("topic_key", "other:misc"))
-                or "other:misc",
-                "action": normalize_action(
-                    clean_text(item.get("action", "view.bullish"))
-                ),
-                "action_strength": clamp_int(item.get("action_strength", 1), 0, 3, 1),
-                "summary": clean_text(item.get("summary", "")) or "未提供摘要",
-                "evidence": clean_text(item.get("evidence", "")),
-                "confidence": clamp_float(item.get("confidence", 0.5), 0.0, 1.0, 0.5),
-                "stock_codes_json": json.dumps(
-                    item.get("stock_codes_json", []), ensure_ascii=False
-                ),
-                "stock_names_json": json.dumps(
-                    item.get("stock_names_json", []), ensure_ascii=False
-                ),
-                "industries_json": json.dumps(
-                    item.get("industries_json", []), ensure_ascii=False
-                ),
-                "commodities_json": json.dumps(
-                    item.get("commodities_json", []), ensure_ascii=False
-                ),
-                "indices_json": json.dumps(
-                    item.get("indices_json", []), ensure_ascii=False
-                ),
-                "source_type": source_type,
-            }
-        )
+    output = ai_analyze_output_from_parsed(parsed)
 
     return AnalyzeResult(
-        status=status,
-        invest_score=invest_score,
-        assertions=normalized_assertions,
+        status=output.status,
+        invest_score=output.invest_score,
+        assertions=[ai_assertion_to_draft(item) for item in output.assertions],
     )
 
 
 def validate_and_adjust_assertions(
-    assertions: list[dict[str, Any]],
+    assertions: list[AssertionDraft],
     commentary_text: str,
     quoted_text: str,
-) -> list[dict[str, Any]]:
+) -> list[AssertionDraft]:
     commentary = commentary_text or ""
     quoted = quoted_text or ""
     fallback_evidence = (
         commentary[:120] if commentary else (quoted[:120] if quoted else "")
     )
 
-    fixed: list[dict[str, Any]] = []
+    fixed: list[AssertionDraft] = []
     for item in assertions:
-        if not isinstance(item, dict):
-            continue
-        evidence = clean_text(item.get("evidence", ""))
-        summary = clean_text(item.get("summary", "未提供摘要")) or "未提供摘要"
-        confidence = clamp_float(item.get("confidence", 0.5), 0.0, 1.0, 0.5)
-        strength = clamp_int(item.get("action_strength", 1), 0, 3, 1)
-        source_type = clean_text(item.get("source_type", "commentary")).lower()
+        evidence = clean_text(item.evidence)
+        summary = clean_text(item.summary or "未提供摘要") or "未提供摘要"
+        confidence = clamp_float(item.confidence, 0.0, 1.0, 0.5)
+        strength = clamp_int(item.action_strength, 0, 3, 1)
+        source_type = clean_text(item.source_type or "commentary").lower()
         source_type = (
             source_type
             if source_type in {"commentary", "extension", "forward_only"}
@@ -268,14 +220,20 @@ def validate_and_adjust_assertions(
             summary = f"[弱证据] {summary}"
 
         fixed.append(
-            {
-                **item,
-                "summary": summary,
-                "evidence": evidence,
-                "confidence": confidence,
-                "action_strength": strength,
-                "source_type": source_type,
-            }
+            AssertionDraft(
+                topic_key=item.topic_key,
+                action=item.action,
+                action_strength=strength,
+                summary=summary,
+                evidence=evidence,
+                confidence=confidence,
+                source_type=source_type,
+                stock_codes=item.stock_codes,
+                stock_names=item.stock_names,
+                industries=item.industries,
+                commodities=item.commodities,
+                indices=item.indices,
+            )
         )
     return fixed
 

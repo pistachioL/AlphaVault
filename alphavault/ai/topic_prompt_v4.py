@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+
+from alphavault.ai.contracts import AiTopicPackage
 
 TOPIC_PROMPT_VERSION = "topic-prompt-v4"
 PROMPT_FOCUS_USERNAME_PLACEHOLDER = "__FOCUS_USERNAME__"
@@ -24,16 +25,15 @@ def build_prompt_header(*, focus_username: str) -> str:
 
 
 def build_topic_prompt(
-    *, ai_topic_package: dict[str, Any], compact_json: bool = False
+    *, ai_topic_package: AiTopicPackage, compact_json: bool = False
 ) -> str:
-    focus_username = str(ai_topic_package.get("focus_username") or "").strip()
+    focus_username = str(ai_topic_package.focus_username or "").strip()
     header = build_prompt_header(focus_username=focus_username)
+    payload = ai_topic_package.to_dict()
     if compact_json:
-        topic_json = json.dumps(
-            ai_topic_package, ensure_ascii=False, separators=(",", ":")
-        )
+        topic_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     else:
-        topic_json = json.dumps(ai_topic_package, ensure_ascii=False, indent=2)
+        topic_json = json.dumps(payload, ensure_ascii=False, indent=2)
     return (
         "\n\n".join(
             [
@@ -53,7 +53,7 @@ def build_topic_prompt(
     )
 
 
-def build_topic_prompt_compact(*, ai_topic_package: dict[str, Any]) -> str:
+def build_topic_prompt_compact(*, ai_topic_package: AiTopicPackage) -> str:
     return build_topic_prompt(ai_topic_package=ai_topic_package, compact_json=True)
 
 

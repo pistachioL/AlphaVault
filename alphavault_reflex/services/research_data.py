@@ -1,41 +1,31 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 
-from alphavault.research_sector_view import (
-    SectorResearchView,
-    build_sector_research_view,
+from alphavault.domains.content.row_mapper import map_posts
+from alphavault.domains.signal.aggregator import (
+    attach_signal_tree_context,
+    filter_signals_for_sector,
+    merge_assertions_with_posts,
+    slice_signals,
 )
-from alphavault.research_signal_view import (
-    build_signal_rows,
-    coerce_signal_timestamp,
-    merge_post_fields,
+from alphavault.domains.signal.row_mapper import map_assertions
+from alphavault.domains.stock.service import (
+    build_stock_search_index,
+    build_stock_signal_page,
 )
+from alphavault_reflex.view_models.research_page import (
+    SectorResearchPageView,
+    StockResearchPageView,
+    build_related_sector_view_rows,
+    build_related_stock_view_rows,
+    build_signal_row_views,
+)
+from alphavault.research_sector_view import build_sector_research_view
 from alphavault_reflex.services.research_models import (
     build_sector_route,
     build_stock_route,
 )
-from alphavault.domains.stock.object_index import (
-    build_stock_object_index,
-    build_stock_search_rows,
-    filter_assertions_for_stock_object,
-)
-
-
-STOCK_KEY_PREFIX = "stock:"
-MAX_SIGNAL_ROWS = 60
-
-
-@dataclass(frozen=True)
-class StockResearchView:
-    entity_key: str
-    page_title: str
-    signals: list[dict[str, str]]
-    signal_total: int
-    signal_page: int
-    signal_page_size: int
-    related_sectors: list[dict[str, str]]
 
 
 def build_search_index(
@@ -48,16 +38,16 @@ def build_search_index(
     del posts
     if not assertions:
         return []
-
-    stock_hits = build_stock_search_rows(
-        assertions,
+    assertion_models = map_assertions(assertions)
+    stock_hits = build_stock_search_index(
+        assertion_models,
         stock_relations=stock_relations,
         ai_alias_map=ai_alias_map,
     )
     sector_hits: dict[str, dict[str, str]] = {}
 
-    for row in assertions:
-        for sector_key in _coerce_list(row.get("cluster_keys")):
+    for assertion in assertion_models:
+        for sector_key in assertion.cluster_keys:
             sector_hits.setdefault(
                 sector_key,
                 {
@@ -89,173 +79,86 @@ def build_stock_research_view(
     stock_relations: list[dict[str, object]] | None = None,
     ai_alias_map: dict[str, str] | None = None,
     signal_page: int = 1,
-    signal_page_size: int = MAX_SIGNAL_ROWS,
+    signal_page_size: int = 60,
     now: datetime | None = None,
-) -> StockResearchView:
+) -> StockResearchPageView:
     stock_key = str(stock_key or "").strip()
     if not assertions or not stock_key:
-        return StockResearchView(
+        return StockResearchPageView(
             entity_key=stock_key,
-            page_title=_stock_title(stock_key),
+            page_title=stock_key.removeprefix("stock:"),
             signals=[],
             signal_total=0,
             signal_page=1,
             signal_page_size=_clamp_signal_page_size(signal_page_size),
             related_sectors=[],
         )
-
-    stock_index = build_stock_object_index(
-        assertions,
+    post_models = map_posts(posts)
+    assertion_models = map_assertions(assertions)
+    stock_page = build_stock_signal_page(
+        stock_key=stock_key,
+        posts=post_models,
+        assertions=assertion_models,
         stock_relations=stock_relations,
         ai_alias_map=ai_alias_map,
-    )
-    entity_key = stock_index.resolve(stock_key)
-    stock_view = filter_assertions_for_stock_object(
-        assertions,
-        stock_key=entity_key,
-        stock_relations=stock_relations,
-        ai_alias_map=ai_alias_map,
-        stock_index=stock_index,
-    )
-    stock_view = merge_post_fields(stock_view, posts)
-    signal_slice, signal_total, signal_page = _slice_signal_view(
-        stock_view,
-        page=signal_page,
-        page_size=signal_page_size,
-    )
-    return StockResearchView(
-        entity_key=entity_key,
-        page_title=stock_index.page_title(entity_key),
-        signals=build_signal_rows(signal_slice, posts=posts, now=now),
-        signal_total=signal_total,
         signal_page=signal_page,
         signal_page_size=_clamp_signal_page_size(signal_page_size),
-        related_sectors=_build_related_sector_rows(stock_view),
+    )
+    return StockResearchPageView(
+        entity_key=stock_page.entity_key,
+        page_title=stock_page.page_title,
+        signals=build_signal_row_views(stock_page.signals, now=now),
+        signal_total=stock_page.signal_total,
+        signal_page=stock_page.signal_page,
+        signal_page_size=stock_page.signal_page_size,
+        related_sectors=build_related_sector_view_rows(stock_page.related_sectors),
     )
 
 
-def _coerce_positive_int(value: object, *, default: int) -> int:
-    try:
-        parsed = int(str(value or "").strip())
-    except (TypeError, ValueError):
-        return int(default)
-    if parsed <= 0:
-        return int(default)
-    return int(parsed)
+def build_sector_research_page_view(
+    posts: list[dict[str, object]],
+    assertions: list[dict[str, object]],
+    *,
+    sector_key: str,
+    now: datetime | None = None,
+) -> SectorResearchPageView:
+    post_models = map_posts(posts)
+    assertion_models = map_assertions(assertions)
+    signals = attach_signal_tree_context(
+        merge_assertions_with_posts(assertion_models, post_models),
+        posts=post_models,
+    )
+    sector_signals = filter_signals_for_sector(signals, sector_key=sector_key)
+    signal_slice, _signal_total, _signal_page = slice_signals(
+        sector_signals,
+        page=1,
+        page_size=60,
+    )
+    return SectorResearchPageView(
+        page_title=str(sector_key or "").strip(),
+        signals=build_signal_row_views(signal_slice, now=now),
+        related_stocks=build_related_stock_view_rows(
+            build_sector_research_view(
+                posts, assertions, sector_key=sector_key
+            ).related_stocks
+        ),
+    )
 
 
 def _clamp_signal_page_size(value: object) -> int:
-    size = _coerce_positive_int(value, default=MAX_SIGNAL_ROWS)
-    return max(1, min(size, MAX_SIGNAL_ROWS))
-
-
-def _slice_signal_view(
-    view: list[dict[str, object]],
-    *,
-    page: int,
-    page_size: int,
-) -> tuple[list[dict[str, object]], int, int]:
-    if not view:
-        return view, 0, 1
-
-    safe_page_size = _clamp_signal_page_size(page_size)
-    safe_page = _coerce_positive_int(page, default=1)
-
-    rows = sorted(view, key=_signal_sort_key)
-
-    total = int(len(rows))
-    if total <= 0:
-        return [], 0, 1
-
-    total_pages = max(1, (total + safe_page_size - 1) // safe_page_size)
-    safe_page = min(safe_page, total_pages)
-
-    start = (safe_page - 1) * safe_page_size
-    end = start + safe_page_size
-    return [dict(row) for row in rows[start:end]], total, safe_page
-
-
-def _build_related_sector_rows(view: list[dict[str, object]]) -> list[dict[str, str]]:
-    counts: dict[str, int] = {}
-    for row in view:
-        for sector_key in _coerce_list(row.get("cluster_keys")):
-            counts[sector_key] = int(counts.get(sector_key, 0)) + 1
-    ranked = sorted(counts.items(), key=lambda kv: (-int(kv[1]), str(kv[0])))
-    return [
-        {"sector_key": sector_key, "mention_count": str(count)}
-        for sector_key, count in ranked
-    ]
-
-
-def _signal_sort_key(row: dict[str, object]) -> tuple[int, float]:
-    ts = coerce_signal_timestamp(row.get("created_at"))
-    if ts is None:
-        return (1, 0.0)
-    return (0, -ts.timestamp())
-
-
-def _coerce_list(value: object) -> list[str]:
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str) and value.strip():
-        return [value.strip()]
-    return []
-
-
-def _stock_object_terms(stock_index, entity_key: str) -> list[str]:
-    member_keys = set(stock_index.member_keys_by_object_key.get(entity_key, set()))
-    member_keys.add(entity_key)
-    terms: list[str] = []
-    for member_key in member_keys:
-        stock_value = _stock_title(member_key)
-        if not stock_value:
-            continue
-        terms.append(stock_value)
-        if "." in stock_value:
-            short_code = stock_value.split(".", 1)[0].strip()
-            if short_code:
-                terms.append(short_code)
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for term in sorted(terms, key=lambda item: (-len(item), item)):
-        text = str(term or "").strip()
-        if not text or text in seen:
-            continue
-        if len(text) < 2 and not any(char.isdigit() for char in text):
-            continue
-        seen.add(text)
-        deduped.append(text)
-    return deduped
-
-
-def _finalize_candidate_rows(value: object) -> list[dict[str, str]]:
-    if not isinstance(value, list):
-        return []
-    out: list[dict[str, str]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        out.append(
-            {
-                str(key): str(raw or "").strip()
-                for key, raw in item.items()
-                if str(key).strip()
-            }
-        )
-    return out
-
-
-def _stock_title(stock_key: str) -> str:
-    stock_key = str(stock_key or "").strip()
-    if stock_key.startswith(STOCK_KEY_PREFIX):
-        return stock_key[len(STOCK_KEY_PREFIX) :]
-    return stock_key
+    try:
+        size = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        size = 60
+    if size <= 0:
+        size = 60
+    return max(1, min(size, 60))
 
 
 __all__ = [
-    "SectorResearchView",
-    "StockResearchView",
+    "SectorResearchPageView",
+    "StockResearchPageView",
+    "build_sector_research_page_view",
     "build_search_index",
-    "build_sector_research_view",
     "build_stock_research_view",
 ]

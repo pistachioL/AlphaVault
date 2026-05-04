@@ -57,6 +57,8 @@ WANTED_TRADE_ASSERTION_COLUMNS = [
     "industries_json",
     "commodities_json",
     "indices_json",
+    "keywords_json",
+    "cluster_keys_json",
     "author",
     "created_at",
 ]
@@ -229,6 +231,8 @@ def standardize_assertions_rows(
         row["industries"] = parse_json_list(row.get("industries_json"))
         row["commodities"] = parse_json_list(row.get("commodities_json"))
         row["indices"] = parse_json_list(row.get("indices_json"))
+        row["keywords"] = parse_json_list(row.get("keywords_json"))
+        row["cluster_keys"] = parse_json_list(row.get("cluster_keys_json"))
         normalized.append(row)
     return normalized
 

@@ -5,6 +5,7 @@ from functools import cache
 import reflex as rx
 from types import ModuleType
 
+from alphavault.domains.stock.service import prepare_board_assertion_rows
 from alphavault.db.postgres_env import infer_platform_from_post_uid
 from alphavault_reflex.services.analysis_feedback import (
     ENTRYPOINT_HOMEWORK_TREE,
@@ -47,11 +48,6 @@ TREE_DEBUG_STAGE_TREE_EMPTY = "tree_empty"
 @cache
 def _load_source_read_module() -> ModuleType:
     return importlib.import_module("alphavault_reflex.services.source_read")
-
-
-@cache
-def _load_stock_object_index_module() -> ModuleType:
-    return importlib.import_module("alphavault.domains.stock.object_index")
 
 
 class HomeworkState(rx.State):
@@ -157,7 +153,7 @@ class HomeworkState(rx.State):
             _clear_selected_tree(self)
             return
 
-        board_assertions, board_topic_labels = _prepare_board_assertions(
+        board_assertions, board_topic_labels = prepare_board_assertion_rows(
             assertions,
             stock_relations=stock_relations,
         )
@@ -506,33 +502,6 @@ def _coerce_homework_rows(rows: object) -> list[dict[str, str]]:
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, dict)]
-
-
-def _prepare_board_assertions(
-    assertions: list[dict[str, object]],
-    *,
-    stock_relations: list[dict[str, object]],
-) -> tuple[list[dict[str, object]], dict[str, str]]:
-    if not assertions:
-        return [], {}
-    board_assertions = [dict(row) for row in assertions]
-    stock_index = _load_stock_object_index_module().build_stock_object_index(
-        board_assertions,
-        stock_relations=stock_relations,
-    )
-    board_topic_labels: dict[str, str] = {}
-    for row in board_assertions:
-        entity_key = str(row.get("entity_key") or "").strip()
-        if entity_key.startswith("stock:"):
-            group_key = stock_index.resolve(entity_key)
-            row["board_group_key"] = group_key
-            if group_key:
-                board_topic_labels[group_key] = stock_index.page_title(group_key)
-            continue
-        row["board_group_key"] = entity_key
-        if entity_key:
-            board_topic_labels[entity_key] = _topic_label(entity_key)
-    return board_assertions, board_topic_labels
 
 
 def _fill_trade_board_urls(rows: list[dict[str, str]]) -> None:

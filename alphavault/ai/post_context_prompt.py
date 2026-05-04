@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+
+from alphavault.ai.contracts import AiTopicPackage
 
 POST_CONTEXT_PROMPT_VERSION = "post-context-v1"
 
@@ -17,18 +18,19 @@ def _load_prompt_header_template() -> str:
 
 def build_post_context_prompt(
     *,
-    ai_topic_package: dict[str, Any],
+    ai_topic_package: AiTopicPackage,
     compact_json: bool = False,
 ) -> str:
     header = _load_prompt_header_template()
+    payload = ai_topic_package.to_dict()
     if compact_json:
         topic_json = json.dumps(
-            ai_topic_package,
+            payload,
             ensure_ascii=False,
             separators=(",", ":"),
         )
     else:
-        topic_json = json.dumps(ai_topic_package, ensure_ascii=False, indent=2)
+        topic_json = json.dumps(payload, ensure_ascii=False, indent=2)
     return (
         "\n\n".join(
             [

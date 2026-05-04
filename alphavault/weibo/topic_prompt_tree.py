@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from alphavault.ai.contracts import AiTopicPackage, AiTopicRuntimeContext
 from alphavault.domains.thread_tree.parse import (
     content_key_for_compare,
     extract_speaker_name,
@@ -51,7 +52,7 @@ def _ensure_thread_text(*, raw_text: str, author: str) -> str:
 
 def _clean_manual_feedback_hint(
     manual_feedback_hint: dict[str, object] | None,
-) -> dict[str, str] | None:
+) -> dict[str, object] | None:
     if not isinstance(manual_feedback_hint, dict):
         return None
     feedback_tag = str(manual_feedback_hint.get("feedback_tag") or "").strip()
@@ -164,7 +165,7 @@ def build_topic_runtime_context(
     manual_feedback_hint: dict[str, object] | None = None,
     include_virtual_comments: bool = True,
     max_node_text_chars: int = MAX_NODE_TEXT_CHARS,
-) -> tuple[dict[str, Any], int]:
+) -> tuple[AiTopicRuntimeContext, int]:
     """
     Build (runtime_context, truncated_nodes_count).
 
@@ -307,22 +308,21 @@ def build_topic_runtime_context(
         _insert_path(root_node, path_payloads)
 
     message_tree = _serialize_tree(root_node)
-    ai_topic_package: dict[str, Any] = {
-        "topic_status_id": root_source_id,
-        "focus_username": focus,
-        "message_tree": message_tree,
-    }
     cleaned_feedback_hint = _clean_manual_feedback_hint(manual_feedback_hint)
-    if cleaned_feedback_hint is not None:
-        ai_topic_package[MANUAL_FEEDBACK_HINT_KEY] = cleaned_feedback_hint
-    runtime_context = {
-        "root_key": root_key,
-        "root_source_id": root_source_id,
-        "focus_username": focus,
-        "message_tree": message_tree,
-        "message_lookup": build_message_lookup_from_tree(message_tree),
-        "ai_topic_package": ai_topic_package,
-    }
+    ai_topic_package = AiTopicPackage(
+        topic_status_id=root_source_id,
+        focus_username=focus,
+        message_tree=message_tree,
+        manual_feedback_hint=cleaned_feedback_hint,
+    )
+    runtime_context = AiTopicRuntimeContext(
+        root_key=str(root_key or "").strip(),
+        root_source_id=root_source_id,
+        focus_username=focus,
+        message_tree=message_tree,
+        message_lookup=build_message_lookup_from_tree(message_tree),
+        ai_topic_package=ai_topic_package,
+    )
     return runtime_context, truncated_nodes
 
 

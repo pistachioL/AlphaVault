@@ -65,6 +65,18 @@ from alphavault.logging_config import get_logger
 MAX_MANUAL_FEEDBACK_HINT_NOTE_CHARS = 300
 
 
+def _runtime_context_message_lookup(
+    runtime_context: object,
+) -> dict[tuple[str, str], dict[str, object]]:
+    if isinstance(runtime_context, dict):
+        raw_lookup = runtime_context.get("message_lookup")
+    else:
+        raw_lookup = getattr(runtime_context, "message_lookup", None)
+    if not isinstance(raw_lookup, dict):
+        raise RuntimeError("ai_topic_message_lookup_invalid")
+    return raw_lookup
+
+
 def _build_manual_feedback_hint(
     feedback_row: dict[str, str] | None,
 ) -> dict[str, object] | None:
@@ -656,9 +668,7 @@ def process_one_post_uid_topic_prompt_v4(
         if not isinstance(parsed, dict):
             raise RuntimeError("ai_topic_invalid_json_root")
 
-        message_lookup = runtime_context.get("message_lookup")
-        if not isinstance(message_lookup, dict):
-            raise RuntimeError("ai_topic_message_lookup_invalid")
+        message_lookup = _runtime_context_message_lookup(runtime_context)
 
         post_uid_by_pid = {
             str(post.platform_post_id or "").strip(): str(post.post_uid or "").strip()
