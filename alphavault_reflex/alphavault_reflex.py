@@ -27,6 +27,7 @@ from alphavault_reflex.services.process_metrics import load_container_memory_met
 from alphavault_reflex.services.process_metrics import load_process_metrics
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
+HEALTHCHECK_API_PATH = "/api/healthz"
 MANUAL_RSS_TRIGGER_API_PATH = "/api/rss/trigger"
 MANUAL_DB_REQUEUE_API_PATH = "/api/admin/requeue-from-db"
 MANUAL_PROCESS_METRICS_API_PATH = "/api/admin/processes"
@@ -82,6 +83,10 @@ app.add_page(
 
 def _load_manual_worker_admin_module():
     return importlib.import_module("alphavault.worker.manual_rss_trigger")
+
+
+async def _healthcheck_get(_request: Request) -> JSONResponse:
+    return JSONResponse({"ok": True}, status_code=200)
 
 
 async def _manual_rss_trigger_get(request: Request) -> JSONResponse:
@@ -212,6 +217,7 @@ async def _manual_process_metrics_get(request: Request) -> JSONResponse:
     return JSONResponse(payload, status_code=200)
 
 
+app._api.add_route(HEALTHCHECK_API_PATH, _healthcheck_get, methods=["GET"])
 app._api.add_route(
     MANUAL_RSS_TRIGGER_API_PATH, _manual_rss_trigger_get, methods=["GET"]
 )
