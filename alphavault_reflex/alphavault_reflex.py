@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import importlib
 import time
 
@@ -10,10 +11,21 @@ from starlette.responses import JSONResponse
 from alphavault.env import load_dotenv_if_present
 from alphavault.error_alerts import install_ntfy_error_alerting
 from alphavault.logging_config import get_logger
-from alphavault_reflex.organizer_state import OrganizerState
+from alphavault.mcp_server.http_app import (
+    MCP_ROUTE_MOUNT_PATH,
+    create_mcp_http_app,
+    require_mcp_session_manager,
+)
 from alphavault_reflex.homework_state import HomeworkState
+from alphavault_reflex.mcp_history_constants import (
+    MCP_HISTORY_PAGE_TITLE,
+    MCP_HISTORY_ROUTE,
+)
+from alphavault_reflex.mcp_history_state import McpHistoryState
+from alphavault_reflex.organizer_state import OrganizerState
 from alphavault_reflex.pages.homework import homework_page
 from alphavault_reflex.pages.index import index_page
+from alphavault_reflex.pages.mcp_history import mcp_history_page
 from alphavault_reflex.pages.organizer import organizer_page
 from alphavault_reflex.pages.search_posts import search_posts_page
 from alphavault_reflex.pages.sector_research import sector_research_page
@@ -36,6 +48,30 @@ logger = get_logger(__name__)
 load_dotenv_if_present()
 install_ntfy_error_alerting(service_name="web")
 
+
+class _ManagedMcpHttpApp:
+    def __init__(self) -> None:
+        self._current_app = None
+
+    def start(self):
+        self._current_app = create_mcp_http_app()
+        return self._current_app
+
+    def stop(self) -> None:
+        self._current_app = None
+
+    async def __call__(self, scope, receive, send) -> None:
+        current_app = self._current_app
+        if current_app is None:
+            response = JSONResponse(
+                {"ok": False, "error": "mcp_http_app_not_started"},
+                status_code=503,
+            )
+            await response(scope, receive, send)
+            return
+        await current_app(scope, receive, send)
+
+
 app = rx.App(
     theme=rx.theme(appearance="light"),
     stylesheets=[
@@ -49,6 +85,12 @@ app = rx.App(
 )
 
 app.add_page(index_page, route="/", title="AlphaVault")
+app.add_page(
+    mcp_history_page,
+    route=MCP_HISTORY_ROUTE,
+    title=MCP_HISTORY_PAGE_TITLE,
+    on_load=McpHistoryState.load_history_if_needed,
+)
 app.add_page(
     search_posts_page,
     route="/search/posts",
@@ -79,6 +121,36 @@ app.add_page(
     title="整理中心",
     on_load=OrganizerState.load_pending,
 )
+_managed_mcp_http_app = _ManagedMcpHttpApp()
+_existing_api_lifespan_context = app._api.router.lifespan_context
+
+
+@asynccontextmanager
+async def _run_managed_mcp_http_app():
+    mcp_http_app = _managed_mcp_http_app.start()
+    try:
+        async with require_mcp_session_manager(mcp_http_app).run():
+            yield
+    finally:
+        _managed_mcp_http_app.stop()
+
+
+@asynccontextmanager
+async def _run_mcp_http_app_lifespan():
+    async with _run_managed_mcp_http_app():
+        yield
+
+
+@asynccontextmanager
+async def _run_api_lifespan_with_mcp(api_app):
+    async with _existing_api_lifespan_context(api_app):
+        async with _run_managed_mcp_http_app():
+            yield
+
+
+app.register_lifespan_task(_run_mcp_http_app_lifespan)
+app._api.router.lifespan_context = _run_api_lifespan_with_mcp
+app._api.mount(MCP_ROUTE_MOUNT_PATH, _managed_mcp_http_app)
 
 
 def _load_manual_worker_admin_module():

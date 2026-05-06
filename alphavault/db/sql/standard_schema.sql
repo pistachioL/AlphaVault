@@ -83,6 +83,38 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.follow_pages (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS {{schema_name}}.mcp_call_history (
+    call_id TEXT PRIMARY KEY,
+    trace_id TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    auth_mode TEXT NOT NULL DEFAULT '',
+    request_path TEXT NOT NULL DEFAULT '',
+    input_json TEXT NOT NULL DEFAULT '{}',
+    resolved_stock_key TEXT NOT NULL DEFAULT '',
+    result_count INTEGER NOT NULL DEFAULT 0,
+    error_text TEXT NOT NULL DEFAULT '',
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    cf_ray TEXT NOT NULL DEFAULT '',
+    access_subject TEXT NOT NULL DEFAULT '',
+    access_email TEXT NOT NULL DEFAULT '',
+    access_aud TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS {{schema_name}}.mcp_call_history_posts (
+    call_id TEXT NOT NULL,
+    post_uid TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    author TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    match_reason TEXT NOT NULL DEFAULT '',
+    preview TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(call_id, post_uid, source_kind)
+);
+
 CREATE INDEX IF NOT EXISTS idx_security_master_official_name_norm
     ON {{schema_name}}.security_master(official_name_norm);
 
@@ -106,3 +138,15 @@ CREATE INDEX IF NOT EXISTS idx_homework_trade_feed_updated
 
 CREATE INDEX IF NOT EXISTS idx_follow_pages_follow_type_key
     ON {{schema_name}}.follow_pages(follow_type, follow_key);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_call_history_trace_id_created
+    ON {{schema_name}}.mcp_call_history(trace_id, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_call_history_created
+    ON {{schema_name}}.mcp_call_history(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_call_history_tool_created
+    ON {{schema_name}}.mcp_call_history(tool_name, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_call_history_posts_call_id
+    ON {{schema_name}}.mcp_call_history_posts(call_id);

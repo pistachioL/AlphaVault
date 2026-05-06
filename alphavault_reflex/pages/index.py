@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import reflex as rx
 
+from alphavault_reflex.mcp_history_constants import MCP_HISTORY_ROUTE
 from alphavault_reflex.home_search_state import HomeSearchState
 from alphavault_reflex.pages.stock_link_components import stock_route_link
 
@@ -158,6 +159,11 @@ def index_page() -> rx.Component:
                     rx.link(
                         "打开全文搜索页",
                         href="/search/posts",
+                        class_name="av-research-chip",
+                    ),
+                    rx.link(
+                        "打开 MCP 历史",
+                        href=MCP_HISTORY_ROUTE,
                         class_name="av-research-chip",
                     ),
                     spacing="3",

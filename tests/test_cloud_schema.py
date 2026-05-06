@@ -26,6 +26,8 @@ _STANDARD_TABLES = {
     "alias_resolve_tasks",
     "homework_trade_feed",
     "follow_pages",
+    "mcp_call_history",
+    "mcp_call_history_posts",
 }
 
 

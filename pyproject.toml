@@ -18,6 +18,7 @@ dependencies = [
   "sqlalchemy",
   "sqlparams>=6.2.0",
   "supervisor",
+  "mcp>=1.27.0",
 ]
 
 [dependency-groups]
