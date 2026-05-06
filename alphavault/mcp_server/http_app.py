@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .request_meta import McpRequestMetaMiddleware, require_current_request_meta
 from .tool_runner import (
@@ -25,6 +26,9 @@ def create_mcp_http_app():
         "AlphaVault MCP",
         instructions="通过 AlphaVault 数据库检索个股、帖子和帖子详情。",
         streamable_http_path="/",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        ),
     )
 
     @server.tool(
