@@ -6,6 +6,11 @@ import unicodedata
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.domains.stock.keys import normalize_stock_key, stock_value
 from alphavault.domains.stock.names import normalize_stock_official_name_norm
+from alphavault.domains.stock.view_scope import (
+    DEFAULT_STOCK_VIEW_SCOPE,
+    STOCK_VIEW_SCOPE_COMPANY,
+    normalize_stock_view_scope,
+)
 from alphavault.research_workbench.schema import (
     RESEARCH_RELATIONS_TABLE,
     RESEARCH_SECURITY_MASTER_TABLE,
@@ -21,6 +26,9 @@ from alphavault.search_text import (
 _RELATION_TYPE_STOCK_ALIAS = "stock_alias"
 _RELATION_LABEL_ALIAS = "alias_of"
 DEFAULT_STOCK_RESULT_LIMIT = 8
+STOCK_RESOLVE_REQUIRED_ERROR = (
+    "当前输入还不能稳定映射到唯一股票，请先调用 ai_resolve_stock。"
+)
 
 
 class StockLookupRow(TypedDict):
@@ -304,6 +312,63 @@ def resolve_exact_stock_keys(query: str) -> list[str]:
     return _resolve_exact_stock_keys(query)
 
 
+def is_code_stock_key(value: str) -> bool:
+    normalized_stock_key = normalize_stock_key(value)
+    stock_code = stock_value(normalized_stock_key)
+    if "." not in stock_code:
+        return False
+    code, market = stock_code.rsplit(".", 1)
+    return bool(code.strip().isdigit() and market.strip())
+
+
+def _same_company_stock_key_sort_key(stock_key: str) -> tuple[int, str]:
+    stock_code = stock_value(stock_key)
+    if "." not in stock_code:
+        return (99, stock_key)
+    _code, market = stock_code.rsplit(".", 1)
+    market_rank = {"SH": 0, "SZ": 1, "BJ": 2, "HK": 3}.get(market.strip(), 9)
+    return (market_rank, stock_code)
+
+
+def _resolve_same_company_exact_stock_key(stock: str) -> str:
+    exact_stock_keys = resolve_exact_stock_keys(stock)
+    if len(exact_stock_keys) <= 1:
+        return ""
+    from alphavault.research_workbench import get_official_names_by_stock_keys
+
+    engine = get_research_workbench_engine_from_env()
+    official_names = get_official_names_by_stock_keys(engine, exact_stock_keys)
+    unique_official_names = {
+        str(official_names.get(stock_key) or "").strip()
+        for stock_key in exact_stock_keys
+        if str(official_names.get(stock_key) or "").strip()
+    }
+    if len(unique_official_names) != 1 or len(official_names) != len(exact_stock_keys):
+        return ""
+    return sorted(exact_stock_keys, key=_same_company_stock_key_sort_key)[0]
+
+
+def resolve_requested_stock_key(
+    stock: str,
+    *,
+    view_scope: str = DEFAULT_STOCK_VIEW_SCOPE,
+) -> str:
+    normalized_stock_key = normalize_stock_key(stock)
+    if is_code_stock_key(normalized_stock_key):
+        return normalized_stock_key
+    exact_stock_key = resolve_exact_stock_key(stock)
+    if exact_stock_key:
+        return exact_stock_key
+    if normalize_stock_view_scope(view_scope) != STOCK_VIEW_SCOPE_COMPANY:
+        return ""
+    same_company_stock_key = _resolve_same_company_exact_stock_key(stock)
+    if same_company_stock_key:
+        return same_company_stock_key
+    if is_code_stock_key(stock):
+        return normalize_stock_key(stock)
+    return ""
+
+
 def resolve_stock(
     query: str,
     *,
@@ -342,7 +407,10 @@ __all__ = [
     "DEFAULT_STOCK_RESULT_LIMIT",
     "StockLookupResult",
     "StockLookupRow",
+    "STOCK_RESOLVE_REQUIRED_ERROR",
+    "is_code_stock_key",
     "resolve_exact_stock_key",
     "resolve_exact_stock_keys",
+    "resolve_requested_stock_key",
     "resolve_stock",
 ]

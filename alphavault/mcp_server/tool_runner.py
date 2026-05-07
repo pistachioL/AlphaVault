@@ -13,7 +13,10 @@ _STATUS_SUCCESS = "success"
 _STATUS_ERROR = "error"
 _SOURCE_KIND_SEARCH_ROW = "search_row"
 _SOURCE_KIND_STOCK_SIGNAL = "stock_signal"
+_SOURCE_KIND_STOCK_EVIDENCE = "stock_evidence"
+_SOURCE_KIND_PORTFOLIO_STOCK_EVIDENCE = "portfolio_stock_evidence"
 _SOURCE_KIND_POST_DETAIL = "post_detail"
+_MAX_HISTORY_POSTS = 120
 
 
 def _clean_text(value: object) -> str:
@@ -85,6 +88,84 @@ def _stock_page_history_posts(result: object) -> list[dict[str, str]]:
         for row in rows
         if isinstance(row, dict) and _clean_text(row.get("post_uid"))
     ]
+
+
+def _stock_evidence_history_posts(result: object) -> list[dict[str, str]]:
+    if not isinstance(result, dict):
+        return []
+    rows = result.get("evidence_rows")
+    if not isinstance(rows, list):
+        return []
+    return [
+        {
+            "post_uid": _clean_text(row.get("post_uid"))
+            if isinstance(row, dict)
+            else "",
+            "source_kind": _SOURCE_KIND_STOCK_EVIDENCE,
+            "title": _clean_text(row.get("summary")) if isinstance(row, dict) else "",
+            "author": _clean_text(row.get("author")) if isinstance(row, dict) else "",
+            "created_at": _clean_text(row.get("created_at"))
+            if isinstance(row, dict)
+            else "",
+            "url": _clean_text(row.get("url")) if isinstance(row, dict) else "",
+            "match_reason": _clean_text(row.get("stance"))
+            if isinstance(row, dict)
+            else "",
+            "preview": _clean_text(row.get("raw_text"))
+            if isinstance(row, dict)
+            else "",
+        }
+        for row in rows
+        if isinstance(row, dict) and _clean_text(row.get("post_uid"))
+    ][:_MAX_HISTORY_POSTS]
+
+
+def _portfolio_history_posts(result: object) -> list[dict[str, str]]:
+    if not isinstance(result, dict):
+        return []
+    companies = result.get("companies")
+    if not isinstance(companies, list):
+        return []
+    posts: list[dict[str, str]] = []
+    for company in companies:
+        if not isinstance(company, dict):
+            continue
+        page_title = _clean_text(company.get("page_title"))
+        evidence_rows = company.get("evidence_rows")
+        if not isinstance(evidence_rows, list):
+            continue
+        for row in evidence_rows:
+            if not isinstance(row, dict) or not _clean_text(row.get("post_uid")):
+                continue
+            summary = _clean_text(row.get("summary"))
+            title = f"{page_title} | {summary}" if page_title and summary else summary
+            posts.append(
+                {
+                    "post_uid": _clean_text(row.get("post_uid")),
+                    "source_kind": _SOURCE_KIND_PORTFOLIO_STOCK_EVIDENCE,
+                    "title": title,
+                    "author": _clean_text(row.get("author")),
+                    "created_at": _clean_text(row.get("created_at")),
+                    "url": _clean_text(row.get("url")),
+                    "match_reason": _clean_text(row.get("stance")),
+                    "preview": _clean_text(row.get("raw_text")),
+                }
+            )
+            if len(posts) >= _MAX_HISTORY_POSTS:
+                return posts
+    return posts
+
+
+def _single_company_resolved_stock_key(result: object) -> str:
+    if not isinstance(result, dict):
+        return ""
+    companies = result.get("companies")
+    if not isinstance(companies, list) or len(companies) != 1:
+        return ""
+    company = companies[0]
+    if not isinstance(company, dict):
+        return ""
+    return _clean_text(company.get("resolved_stock_key"))
 
 
 def _search_history_posts(result: object) -> list[dict[str, str]]:
@@ -268,6 +349,66 @@ def run_get_stock_page_tool(
     )
 
 
+def run_get_stock_evidence_pack_tool(
+    *,
+    request_meta: McpRequestMeta,
+    stock: str,
+    window_days: int,
+    max_posts: int,
+) -> dict[str, object]:
+    stock_tools = _load_stock_tools_module()
+    return _run_tool_call(
+        request_meta=request_meta,
+        tool_name="get_stock_evidence_pack",
+        input_payload={
+            "stock": _clean_text(stock),
+            "window_days": max(1, int(window_days or 0)),
+            "max_posts": max(1, int(max_posts or 0)),
+        },
+        call_fn=lambda: stock_tools.ai_get_stock_evidence_pack(
+            stock,
+            window_days=window_days,
+            max_posts=max_posts,
+        ),
+        resolved_stock_key_fn=lambda result: _clean_text(
+            result.get("resolved_stock_key")
+        ),
+        result_count_fn=lambda result: _result_count(result, rows_key="evidence_rows"),
+        error_text_fn=lambda result: _error_text(result, "load_error", "error"),
+        posts_fn=_stock_evidence_history_posts,
+    )
+
+
+def run_get_portfolio_context_tool(
+    *,
+    request_meta: McpRequestMeta,
+    stocks: list[str],
+    window_days: int,
+    max_posts_per_stock: int,
+) -> dict[str, object]:
+    stock_tools = _load_stock_tools_module()
+    return _run_tool_call(
+        request_meta=request_meta,
+        tool_name="get_portfolio_context",
+        input_payload={
+            "stocks": [
+                str(item or "").strip() for item in stocks if str(item or "").strip()
+            ],
+            "window_days": max(1, int(window_days or 0)),
+            "max_posts_per_stock": max(1, int(max_posts_per_stock or 0)),
+        },
+        call_fn=lambda: stock_tools.ai_get_portfolio_context(
+            stocks,
+            window_days=window_days,
+            max_posts_per_stock=max_posts_per_stock,
+        ),
+        resolved_stock_key_fn=_single_company_resolved_stock_key,
+        result_count_fn=lambda result: _result_count(result, rows_key="companies"),
+        error_text_fn=lambda result: _error_text(result, "load_error", "error"),
+        posts_fn=_portfolio_history_posts,
+    )
+
+
 def run_search_posts_tool(
     *,
     request_meta: McpRequestMeta,
@@ -315,6 +456,8 @@ def run_get_post_detail_tool(
 
 __all__ = [
     "run_get_post_detail_tool",
+    "run_get_portfolio_context_tool",
+    "run_get_stock_evidence_pack_tool",
     "run_get_stock_page_tool",
     "run_resolve_stock_tool",
     "run_search_posts_tool",

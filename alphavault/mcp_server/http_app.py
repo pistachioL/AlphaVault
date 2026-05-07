@@ -9,6 +9,8 @@ from alphavault.domains.stock.view_scope import DEFAULT_STOCK_VIEW_SCOPE
 from .request_meta import McpRequestMetaMiddleware, require_current_request_meta
 from .tool_runner import (
     run_get_post_detail_tool,
+    run_get_portfolio_context_tool,
+    run_get_stock_evidence_pack_tool,
     run_get_stock_page_tool,
     run_resolve_stock_tool,
     run_search_posts_tool,
@@ -24,6 +26,12 @@ _DEFAULT_VIEW_SCOPE = DEFAULT_STOCK_VIEW_SCOPE
 
 
 def create_mcp_http_app():
+    from alphavault.capabilities.stock_analysis import (
+        DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
+        DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
+        DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+    )
+
     server = FastMCP(
         "AlphaVault MCP",
         instructions="通过 AlphaVault 数据库检索个股、帖子和帖子详情。",
@@ -71,6 +79,42 @@ def create_mcp_http_app():
             author=author,
             related_filter=related_filter,
             view_scope=view_scope,
+        )
+
+    @server.tool(
+        name="get_stock_evidence_pack",
+        description="读取公司级单票证据包，返回 A/H 覆盖、样本统计、分歧分数和压缩后的证据行。",
+    )
+    async def get_stock_evidence_pack(
+        stock: str,
+        window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+        max_posts: int = DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
+    ) -> dict[str, object]:
+        request_meta = require_current_request_meta()
+        return await asyncio.to_thread(
+            run_get_stock_evidence_pack_tool,
+            request_meta=request_meta,
+            stock=stock,
+            window_days=window_days,
+            max_posts=max_posts,
+        )
+
+    @server.tool(
+        name="get_portfolio_context",
+        description="读取一组持仓的公司级组合上下文，返回去重后的公司列表、分歧排序和共享作者。",
+    )
+    async def get_portfolio_context(
+        stocks: list[str],
+        window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+        max_posts_per_stock: int = DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
+    ) -> dict[str, object]:
+        request_meta = require_current_request_meta()
+        return await asyncio.to_thread(
+            run_get_portfolio_context_tool,
+            request_meta=request_meta,
+            stocks=stocks,
+            window_days=window_days,
+            max_posts_per_stock=max_posts_per_stock,
         )
 
     @server.tool(

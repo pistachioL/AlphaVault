@@ -7,6 +7,8 @@ _PREFIXED_CN_STOCK_VALUE_RE = re.compile(
     r"^(SH|SZ|BJ)(\d{6})(?:\.US)?$",
     re.IGNORECASE,
 )
+_SUFFIXED_HK_STOCK_VALUE_RE = re.compile(r"^(\d{1,5})\.HK$", re.IGNORECASE)
+_HK_STOCK_CODE_WIDTH = 5
 
 
 def _canonical_stock_value(stock_value: str) -> str:
@@ -15,6 +17,9 @@ def _canonical_stock_value(stock_value: str) -> str:
         return ""
     matched = _PREFIXED_CN_STOCK_VALUE_RE.match(value)
     if matched is None:
+        hk_matched = _SUFFIXED_HK_STOCK_VALUE_RE.match(value)
+        if hk_matched is not None:
+            return f"{hk_matched.group(1).zfill(_HK_STOCK_CODE_WIDTH)}.HK"
         return value
     market, code = matched.groups()
     return f"{code}.{market.upper()}"

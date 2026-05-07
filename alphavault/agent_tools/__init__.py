@@ -6,15 +6,25 @@ from .post_tools import (
     ai_search_posts,
 )
 from .stock_tools import (
+    DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
+    DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
+    DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
     AgentResolveStockResult,
     AgentStockCandidate,
     AgentStockPageResult,
     AgentStockSignalRow,
+    PortfolioContext,
+    StockEvidencePack,
+    ai_get_portfolio_context,
+    ai_get_stock_evidence_pack,
     ai_get_stock_page,
     ai_resolve_stock,
 )
 
 __all__ = [
+    "DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS",
+    "DEFAULT_STOCK_EVIDENCE_MAX_POSTS",
+    "DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS",
     "AgentPostDetailResult",
     "AgentPostSearchResult",
     "AgentPostSearchRow",
@@ -22,7 +32,11 @@ __all__ = [
     "AgentStockCandidate",
     "AgentStockPageResult",
     "AgentStockSignalRow",
+    "PortfolioContext",
+    "StockEvidencePack",
     "ai_get_post_detail",
+    "ai_get_portfolio_context",
+    "ai_get_stock_evidence_pack",
     "ai_get_stock_page",
     "ai_resolve_stock",
     "ai_search_posts",

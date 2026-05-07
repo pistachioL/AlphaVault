@@ -65,6 +65,54 @@ def test_ensure_postgres_engine_reuses_cached_engine_until_disposed(
     third.dispose()
 
 
+def test_dispose_cached_postgres_engines_closes_cached_pools(monkeypatch) -> None:
+    from alphavault.db import postgres_db
+
+    created_pools: list[object] = []
+
+    class _FakePool:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.closed = False
+            created_pools.append(self)
+
+        def getconn(self):
+            raise AssertionError("unexpected getconn")
+
+        def putconn(self, _conn) -> None:
+            raise AssertionError("unexpected putconn")
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(postgres_db, "ConnectionPool", _FakePool)
+
+    first = postgres_db.ensure_postgres_engine(
+        "postgresql://cache-test@127.0.0.1:5432/postgres",
+        schema_name="weibo",
+    )
+    second = postgres_db.ensure_postgres_engine(
+        "postgresql://cache-test@127.0.0.1:5432/postgres",
+        schema_name="xueqiu",
+    )
+
+    postgres_db._dispose_cached_postgres_engines()
+
+    assert len(created_pools) == 2
+    assert getattr(created_pools[0], "closed", False) is True
+    assert getattr(created_pools[1], "closed", False) is True
+
+    third = postgres_db.ensure_postgres_engine(
+        "postgresql://cache-test@127.0.0.1:5432/postgres",
+        schema_name="weibo",
+    )
+
+    assert third is not first
+    assert third is not second
+
+    third.dispose()
+
+
 def test_postgres_execute_supports_named_params_and_mappings(
     postgres_dsn: str,
 ) -> None:

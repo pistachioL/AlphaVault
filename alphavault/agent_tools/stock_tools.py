@@ -2,29 +2,29 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+from alphavault.capabilities.stock_analysis import (
+    DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
+    DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
+    DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+    PortfolioContext,
+    StockEvidencePack,
+    get_portfolio_context,
+    get_stock_evidence_pack,
+)
 from alphavault.capabilities.stock_lookup import (
+    STOCK_RESOLVE_REQUIRED_ERROR,
     StockLookupRow,
-    resolve_exact_stock_key,
-    resolve_exact_stock_keys,
+    resolve_requested_stock_key,
     resolve_stock,
 )
 from alphavault.capabilities.stock_page import get_stock_page
-from alphavault.domains.stock.keys import normalize_stock_key, stock_value
 from alphavault.domains.stock.view_scope import (
     DEFAULT_STOCK_VIEW_SCOPE,
-    STOCK_VIEW_SCOPE_COMPANY,
     normalize_stock_view_scope,
-)
-from alphavault.research_workbench import (
-    get_official_names_by_stock_keys,
-    get_research_workbench_engine_from_env,
 )
 
 DEFAULT_AGENT_STOCK_CANDIDATE_LIMIT = 5
 DEFAULT_AGENT_SIGNAL_PAGE_SIZE = 10
-STOCK_RESOLVE_REQUIRED_ERROR = (
-    "当前输入还不能稳定映射到唯一股票，请先调用 ai_resolve_stock。"
-)
 
 
 class AgentStockCandidate(TypedDict):
@@ -120,57 +120,6 @@ def ai_resolve_stock(
     }
 
 
-def _resolve_requested_stock_key(stock: str, *, view_scope: str) -> str:
-    normalized_stock_key = normalize_stock_key(stock)
-    if _is_code_stock_key(normalized_stock_key):
-        return normalized_stock_key
-    exact_stock_key = resolve_exact_stock_key(stock)
-    if exact_stock_key:
-        return exact_stock_key
-    if normalize_stock_view_scope(view_scope) != STOCK_VIEW_SCOPE_COMPANY:
-        return ""
-    same_company_stock_key = _resolve_same_company_exact_stock_key(stock)
-    if same_company_stock_key:
-        return same_company_stock_key
-    if _is_code_stock_key(stock):
-        return normalize_stock_key(stock)
-    return ""
-
-
-def _is_code_stock_key(value: str) -> bool:
-    normalized_stock_key = normalize_stock_key(value)
-    stock_code = stock_value(normalized_stock_key)
-    if "." not in stock_code:
-        return False
-    code, market = stock_code.rsplit(".", 1)
-    return bool(code.strip().isdigit() and market.strip())
-
-
-def _same_company_stock_key_sort_key(stock_key: str) -> tuple[int, str]:
-    stock_code = stock_value(stock_key)
-    if "." not in stock_code:
-        return (99, stock_key)
-    _code, market = stock_code.rsplit(".", 1)
-    market_rank = {"SH": 0, "SZ": 1, "BJ": 2, "HK": 3}.get(market.strip(), 9)
-    return (market_rank, stock_code)
-
-
-def _resolve_same_company_exact_stock_key(stock: str) -> str:
-    exact_stock_keys = resolve_exact_stock_keys(stock)
-    if len(exact_stock_keys) <= 1:
-        return ""
-    engine = get_research_workbench_engine_from_env()
-    official_names = get_official_names_by_stock_keys(engine, exact_stock_keys)
-    unique_official_names = {
-        str(official_names.get(stock_key) or "").strip()
-        for stock_key in exact_stock_keys
-        if str(official_names.get(stock_key) or "").strip()
-    }
-    if len(unique_official_names) != 1 or len(official_names) != len(exact_stock_keys):
-        return ""
-    return sorted(exact_stock_keys, key=_same_company_stock_key_sort_key)[0]
-
-
 def _trim_signal_rows(rows: object) -> list[AgentStockSignalRow]:
     if not isinstance(rows, list):
         return []
@@ -229,7 +178,7 @@ def ai_get_stock_page(
     view_scope: str = DEFAULT_STOCK_VIEW_SCOPE,
 ) -> AgentStockPageResult:
     normalized_view_scope = normalize_stock_view_scope(view_scope)
-    resolved_stock_key = _resolve_requested_stock_key(
+    resolved_stock_key = resolve_requested_stock_key(
         stock,
         view_scope=normalized_view_scope,
     )
@@ -275,14 +224,47 @@ def ai_get_stock_page(
     }
 
 
+def ai_get_stock_evidence_pack(
+    stock: str,
+    *,
+    window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+    max_posts: int = DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
+) -> StockEvidencePack:
+    return get_stock_evidence_pack(
+        stock,
+        window_days=window_days,
+        max_posts=max_posts,
+    )
+
+
+def ai_get_portfolio_context(
+    stocks: list[str],
+    *,
+    window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+    max_posts_per_stock: int = DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
+) -> PortfolioContext:
+    return get_portfolio_context(
+        stocks,
+        window_days=window_days,
+        max_posts_per_stock=max_posts_per_stock,
+    )
+
+
 __all__ = [
     "AgentResolveStockResult",
     "AgentStockCandidate",
     "AgentStockPageResult",
     "AgentStockSignalRow",
+    "DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS",
     "DEFAULT_AGENT_SIGNAL_PAGE_SIZE",
     "DEFAULT_AGENT_STOCK_CANDIDATE_LIMIT",
+    "DEFAULT_STOCK_EVIDENCE_MAX_POSTS",
+    "DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS",
+    "PortfolioContext",
     "STOCK_RESOLVE_REQUIRED_ERROR",
+    "StockEvidencePack",
+    "ai_get_portfolio_context",
+    "ai_get_stock_evidence_pack",
     "ai_get_stock_page",
     "ai_resolve_stock",
 ]

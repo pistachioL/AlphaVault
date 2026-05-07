@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import os
 import re
 from dataclasses import dataclass, field
@@ -292,6 +293,19 @@ def _drop_cached_postgres_engine(engine: PostgresEngine) -> None:
         if cached is engine:
             _POSTGRES_ENGINE_CACHE.pop(cache_key, None)
     engine._cache_key = None
+
+
+def _dispose_cached_postgres_engines() -> None:
+    with _POSTGRES_ENGINE_CACHE_LOCK:
+        engines = list(_POSTGRES_ENGINE_CACHE.values())
+    for engine in engines:
+        try:
+            engine.dispose()
+        except Exception:
+            continue
+
+
+atexit.register(_dispose_cached_postgres_engines)
 
 
 def postgres_connect_autocommit(engine: PostgresEngine) -> PostgresConnection:

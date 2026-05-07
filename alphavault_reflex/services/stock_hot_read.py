@@ -102,7 +102,7 @@ def _dedupe_stock_keys(keys: list[str]) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for raw_key in keys:
-        key = str(raw_key or "").strip()
+        key = _normalize_stock_key(str(raw_key or "").strip())
         if not key or key in seen:
             continue
         seen.add(key)
