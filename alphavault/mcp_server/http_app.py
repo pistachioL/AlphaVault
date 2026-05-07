@@ -24,6 +24,11 @@ _DEFAULT_SIGNAL_PAGE_SIZE = 10
 _DEFAULT_POST_SEARCH_LIMIT = 10
 _DEFAULT_RELATED_FILTER = "all"
 _DEFAULT_VIEW_SCOPE = DEFAULT_STOCK_VIEW_SCOPE
+_SEARCH_POSTS_TOOL_DESCRIPTION = (
+    "按关键字搜索帖子正文、提及词和结构化实体。"
+    "`query` 支持 PGroonga 查询语法：空格表示同时匹配多个词，"
+    "`OR` 表示任选其一，双引号表示短语，前缀 `-` 表示排除词。"
+)
 
 
 def create_mcp_http_app():
@@ -138,7 +143,7 @@ def create_mcp_http_app():
 
     @server.tool(
         name="search_posts",
-        description="按关键字搜索帖子正文、提及词和结构化实体。",
+        description=_SEARCH_POSTS_TOOL_DESCRIPTION,
     )
     async def search_posts(
         query: str,
