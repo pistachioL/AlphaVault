@@ -18,6 +18,7 @@ from alphavault.capabilities.stock_lookup import (
     resolve_stock,
 )
 from alphavault.capabilities.stock_page import get_stock_page
+from alphavault.capabilities.stock_summary import StockSummaryResult, get_stock_summary
 from alphavault.domains.stock.view_scope import (
     DEFAULT_STOCK_VIEW_SCOPE,
     normalize_stock_view_scope,
@@ -250,6 +251,19 @@ def ai_get_portfolio_context(
     )
 
 
+def ai_get_stock_summary(
+    stock: str,
+    *,
+    window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+    max_posts: int = DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
+) -> StockSummaryResult:
+    return get_stock_summary(
+        stock,
+        window_days=window_days,
+        max_posts=max_posts,
+    )
+
+
 __all__ = [
     "AgentResolveStockResult",
     "AgentStockCandidate",
@@ -263,8 +277,10 @@ __all__ = [
     "PortfolioContext",
     "STOCK_RESOLVE_REQUIRED_ERROR",
     "StockEvidencePack",
+    "StockSummaryResult",
     "ai_get_portfolio_context",
     "ai_get_stock_evidence_pack",
     "ai_get_stock_page",
+    "ai_get_stock_summary",
     "ai_resolve_stock",
 ]

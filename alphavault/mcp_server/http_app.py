@@ -12,6 +12,7 @@ from .tool_runner import (
     run_get_portfolio_context_tool,
     run_get_stock_evidence_pack_tool,
     run_get_stock_page_tool,
+    run_get_stock_summary_tool,
     run_resolve_stock_tool,
     run_search_posts_tool,
 )
@@ -93,6 +94,24 @@ def create_mcp_http_app():
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_get_stock_evidence_pack_tool,
+            request_meta=request_meta,
+            stock=stock,
+            window_days=window_days,
+            max_posts=max_posts,
+        )
+
+    @server.tool(
+        name="get_stock_summary",
+        description="读取公司级单票 AI 总结，返回压缩证据、分歧统计和结构化摘要。",
+    )
+    async def get_stock_summary(
+        stock: str,
+        window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
+        max_posts: int = DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
+    ) -> dict[str, object]:
+        request_meta = require_current_request_meta()
+        return await asyncio.to_thread(
+            run_get_stock_summary_tool,
             request_meta=request_meta,
             stock=stock,
             window_days=window_days,

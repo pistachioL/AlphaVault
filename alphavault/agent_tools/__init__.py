@@ -15,9 +15,11 @@ from .stock_tools import (
     AgentStockSignalRow,
     PortfolioContext,
     StockEvidencePack,
+    StockSummaryResult,
     ai_get_portfolio_context,
     ai_get_stock_evidence_pack,
     ai_get_stock_page,
+    ai_get_stock_summary,
     ai_resolve_stock,
 )
 
@@ -34,10 +36,12 @@ __all__ = [
     "AgentStockSignalRow",
     "PortfolioContext",
     "StockEvidencePack",
+    "StockSummaryResult",
     "ai_get_post_detail",
     "ai_get_portfolio_context",
     "ai_get_stock_evidence_pack",
     "ai_get_stock_page",
+    "ai_get_stock_summary",
     "ai_resolve_stock",
     "ai_search_posts",
 ]

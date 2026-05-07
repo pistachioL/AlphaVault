@@ -33,6 +33,10 @@ _EXPORTS = {
         "alphavault.capabilities.stock_analysis",
         "StockEvidencePack",
     ),
+    "StockSummaryResult": (
+        "alphavault.capabilities.stock_summary",
+        "StockSummaryResult",
+    ),
     "StockLookupResult": ("alphavault.capabilities.stock_lookup", "StockLookupResult"),
     "StockLookupRow": ("alphavault.capabilities.stock_lookup", "StockLookupRow"),
     "get_portfolio_context": (
@@ -43,6 +47,10 @@ _EXPORTS = {
     "get_stock_evidence_pack": (
         "alphavault.capabilities.stock_analysis",
         "get_stock_evidence_pack",
+    ),
+    "get_stock_summary": (
+        "alphavault.capabilities.stock_summary",
+        "get_stock_summary",
     ),
     "get_stock_page": ("alphavault.capabilities.stock_page", "get_stock_page"),
     "get_stock_sidebar": ("alphavault.capabilities.stock_page", "get_stock_sidebar"),
@@ -80,11 +88,13 @@ __all__ = [
     "PostSearchResult",
     "PostSearchRow",
     "StockEvidencePack",
+    "StockSummaryResult",
     "StockLookupResult",
     "StockLookupRow",
     "get_portfolio_context",
     "get_post_detail",
     "get_stock_evidence_pack",
+    "get_stock_summary",
     "get_stock_page",
     "get_stock_sidebar",
     "resolve_exact_stock_key",

@@ -379,6 +379,36 @@ def run_get_stock_evidence_pack_tool(
     )
 
 
+def run_get_stock_summary_tool(
+    *,
+    request_meta: McpRequestMeta,
+    stock: str,
+    window_days: int,
+    max_posts: int,
+) -> dict[str, object]:
+    stock_tools = _load_stock_tools_module()
+    return _run_tool_call(
+        request_meta=request_meta,
+        tool_name="get_stock_summary",
+        input_payload={
+            "stock": _clean_text(stock),
+            "window_days": max(1, int(window_days or 0)),
+            "max_posts": max(1, int(max_posts or 0)),
+        },
+        call_fn=lambda: stock_tools.ai_get_stock_summary(
+            stock,
+            window_days=window_days,
+            max_posts=max_posts,
+        ),
+        resolved_stock_key_fn=lambda result: _clean_text(
+            result.get("resolved_stock_key")
+        ),
+        result_count_fn=lambda result: _result_count(result, rows_key="evidence_rows"),
+        error_text_fn=lambda result: _error_text(result, "load_error", "error"),
+        posts_fn=_stock_evidence_history_posts,
+    )
+
+
 def run_get_portfolio_context_tool(
     *,
     request_meta: McpRequestMeta,
@@ -459,6 +489,7 @@ __all__ = [
     "run_get_portfolio_context_tool",
     "run_get_stock_evidence_pack_tool",
     "run_get_stock_page_tool",
+    "run_get_stock_summary_tool",
     "run_resolve_stock_tool",
     "run_search_posts_tool",
 ]
