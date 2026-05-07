@@ -22,6 +22,11 @@ from alphavault.domains.stock.keys import (
     stock_key_lookup_candidates,
     stock_value,
 )
+from alphavault.domains.stock.view_scope import (
+    DEFAULT_STOCK_VIEW_SCOPE,
+    STOCK_VIEW_SCOPE_COMPANY,
+    normalize_stock_view_scope,
+)
 from alphavault.env import load_dotenv_if_present
 from alphavault.research_signal_view import (
     coerce_signal_timestamp,
@@ -60,6 +65,7 @@ _MATCH_KIND_CONTEXT = "context"
 class StockQueryContext(TypedDict):
     requested_stock_key: str
     query_keys: list[str]
+    covered_stock_keys: list[str]
     same_company_stocks: list[dict[str, str]]
     official_names: dict[str, str]
     page_title: str
@@ -172,12 +178,12 @@ def _is_stock_code_key(stock_key: str) -> bool:
 def _build_same_company_rows(
     *,
     requested_stock_key: str,
-    query_keys: list[str],
+    stock_keys: list[str],
     official_names: dict[str, str],
 ) -> list[dict[str, str]]:
     requested = _normalize_stock_key(requested_stock_key)
     code_keys = _dedupe_stock_keys(
-        [key for key in query_keys if _is_stock_code_key(key)]
+        [key for key in stock_keys if _is_stock_code_key(key)]
     )
     ordered_keys: list[str] = []
     if requested and requested in code_keys:
@@ -197,13 +203,44 @@ def _empty_stock_query_context() -> StockQueryContext:
     return {
         "requested_stock_key": "",
         "query_keys": [],
+        "covered_stock_keys": [],
         "same_company_stocks": [],
         "official_names": {},
         "page_title": "",
     }
 
 
-def _resolve_stock_query_context(stock_key: str) -> tuple[StockQueryContext, str]:
+def _resolve_same_company_stock_keys(stock_key: str) -> tuple[list[str], str]:
+    normalized = _normalize_stock_key(stock_key)
+    if not normalized:
+        return [], ""
+    queue = [normalized] if _is_stock_code_key(normalized) else []
+    seen_nodes = set(queue)
+    same_company_keys = list(queue)
+    while queue:
+        current = queue.pop(0)
+        sibling_keys, sibling_err = load_stock_same_company_keys_from_env(current)
+        if sibling_err:
+            return [], sibling_err
+        for sibling_key in sibling_keys:
+            normalized_sibling = _normalize_stock_key(sibling_key)
+            if (
+                not normalized_sibling
+                or not _is_stock_code_key(normalized_sibling)
+                or normalized_sibling in seen_nodes
+            ):
+                continue
+            seen_nodes.add(normalized_sibling)
+            same_company_keys.append(normalized_sibling)
+            queue.append(normalized_sibling)
+    return _dedupe_stock_keys(same_company_keys), ""
+
+
+def _resolve_stock_query_context(
+    stock_key: str,
+    *,
+    view_scope: str,
+) -> tuple[StockQueryContext, str]:
     normalized = _normalize_stock_key(stock_key)
     if not normalized:
         return _empty_stock_query_context(), ""
@@ -215,21 +252,17 @@ def _resolve_stock_query_context(stock_key: str) -> tuple[StockQueryContext, str
         stock_key=normalized,
         alias_graph=alias_graph,
     )
-    seen_query_keys = set(query_keys)
-    queue = _dedupe_stock_keys(
-        [
-            _normalize_stock_key(item)
-            for item in query_keys
-            if _normalize_stock_key(item)
-        ]
+    same_company_stock_keys, same_company_err = _resolve_same_company_stock_keys(
+        normalized
     )
-    seen_nodes = set(queue)
-    while queue:
-        current = queue.pop(0)
-        sibling_keys, sibling_err = load_stock_same_company_keys_from_env(current)
-        if sibling_err:
-            return _empty_stock_query_context(), sibling_err
-        for sibling_key in sibling_keys:
+    if same_company_err:
+        return _empty_stock_query_context(), same_company_err
+    normalized_view_scope = normalize_stock_view_scope(view_scope)
+    if normalized_view_scope == STOCK_VIEW_SCOPE_COMPANY:
+        seen_query_keys = set(query_keys)
+        for sibling_key in same_company_stock_keys:
+            if sibling_key == normalized:
+                continue
             alias_component = _resolve_alias_component_keys(
                 stock_key=sibling_key,
                 alias_graph=alias_graph,
@@ -239,12 +272,12 @@ def _resolve_stock_query_context(stock_key: str) -> tuple[StockQueryContext, str
                     continue
                 seen_query_keys.add(candidate)
                 query_keys.append(candidate)
-                normalized_candidate = _normalize_stock_key(candidate)
-                if not normalized_candidate or normalized_candidate in seen_nodes:
-                    continue
-                seen_nodes.add(normalized_candidate)
-                queue.append(normalized_candidate)
-    official_names, _official_name_err = load_stock_official_names_from_env(query_keys)
+    official_name_keys = _dedupe_stock_keys(
+        [*query_keys, *same_company_stock_keys, normalized]
+    )
+    official_names, _official_name_err = load_stock_official_names_from_env(
+        official_name_keys
+    )
     page_title = next(
         (
             str(official_names.get(key) or "").strip()
@@ -256,9 +289,12 @@ def _resolve_stock_query_context(stock_key: str) -> tuple[StockQueryContext, str
     return {
         "requested_stock_key": normalized,
         "query_keys": query_keys,
+        "covered_stock_keys": _dedupe_stock_keys(
+            [key for key in query_keys if _is_stock_code_key(key)]
+        ),
         "same_company_stocks": _build_same_company_rows(
             requested_stock_key=normalized,
-            query_keys=query_keys,
+            stock_keys=same_company_stock_keys or [normalized],
             official_names=official_names,
         ),
         "official_names": official_names,
@@ -771,6 +807,7 @@ def _empty_stock_view(
     *,
     entity_key: str,
     requested_stock_key: str,
+    view_scope: str,
     page_title: str,
     signal_page_size: int,
     load_error: str = "",
@@ -780,6 +817,8 @@ def _empty_stock_view(
     return {
         "entity_key": entity_key,
         "requested_stock_key": requested_stock_key,
+        "view_scope": normalize_stock_view_scope(view_scope),
+        "covered_stock_keys": [entity_key] if _is_stock_code_key(entity_key) else [],
         "page_title": page_title,
         "signals": [],
         "signal_total": 0,
@@ -852,12 +891,15 @@ def load_stock_page_rows_from_env(
     author: str = "",
     signal_window_days: int = _DEFAULT_STOCK_POST_WINDOW_DAYS,
     related_filter: str = _DEFAULT_RELATED_FILTER,
+    view_scope: str = DEFAULT_STOCK_VIEW_SCOPE,
 ) -> dict[str, object]:
     normalized = _normalize_stock_key(stock_key)
+    normalized_view_scope = normalize_stock_view_scope(view_scope)
     if not normalized:
         return _empty_stock_view(
             entity_key="",
             requested_stock_key="",
+            view_scope=normalized_view_scope,
             page_title="",
             signal_page_size=signal_page_size,
         )
@@ -867,15 +909,20 @@ def load_stock_page_rows_from_env(
         return _empty_stock_view(
             entity_key=normalized,
             requested_stock_key=normalized,
+            view_scope=normalized_view_scope,
             page_title=normalized.removeprefix("stock:"),
             signal_page_size=signal_page_size,
             load_error=MISSING_POSTGRES_DSN_ERROR,
         )
-    query_context, relation_err = _resolve_stock_query_context(normalized)
+    query_context, relation_err = _resolve_stock_query_context(
+        normalized,
+        view_scope=normalized_view_scope,
+    )
     if relation_err:
         return _empty_stock_view(
             entity_key=normalized,
             requested_stock_key=normalized,
+            view_scope=normalized_view_scope,
             page_title=normalized.removeprefix("stock:"),
             signal_page_size=signal_page_size,
             load_error=relation_err,
@@ -912,6 +959,8 @@ def load_stock_page_rows_from_env(
     return {
         "entity_key": normalized,
         "requested_stock_key": query_context["requested_stock_key"] or normalized,
+        "view_scope": normalized_view_scope,
+        "covered_stock_keys": query_context["covered_stock_keys"],
         "page_title": query_context["page_title"] or normalized.removeprefix("stock:"),
         "signals": signal_slice,
         "signal_total": max(int(selected_total), int(signal_total_from_rows)),
@@ -937,12 +986,15 @@ def load_stock_cached_view_from_env(
     signal_page_size: int,
     author: str = "",
     related_filter: str = _DEFAULT_RELATED_FILTER,
+    view_scope: str = DEFAULT_STOCK_VIEW_SCOPE,
 ) -> dict[str, object]:
     normalized = _normalize_stock_key(stock_key)
+    normalized_view_scope = normalize_stock_view_scope(view_scope)
     if not normalized:
         return _empty_stock_view(
             entity_key="",
             requested_stock_key="",
+            view_scope=normalized_view_scope,
             page_title="",
             signal_page_size=signal_page_size,
         )
@@ -952,6 +1004,7 @@ def load_stock_cached_view_from_env(
         signal_page_size=signal_page_size,
         author=str(author or "").strip(),
         related_filter=related_filter,
+        view_scope=normalized_view_scope,
     )
 
 
@@ -966,7 +1019,10 @@ def load_stock_sidebar_cached_view(stock_slug: str) -> dict[str, object]:
             "related_sectors": [],
             "load_error": MISSING_POSTGRES_DSN_ERROR,
         }
-    query_context, relation_err = _resolve_stock_query_context(normalized)
+    query_context, relation_err = _resolve_stock_query_context(
+        normalized,
+        view_scope=STOCK_VIEW_SCOPE_COMPANY,
+    )
     if relation_err:
         return {"related_sectors": [], "load_error": relation_err}
     selected_rows: list[dict[str, str]] = []

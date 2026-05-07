@@ -7,6 +7,8 @@ from pathlib import Path
 from alphavault.research_workbench import (
     get_research_workbench_engine_from_env,
     rebuild_stock_dict_shadow_best_effort,
+    STOCK_SIBLING_SYNC_SOURCE_SECURITY_MASTER,
+    sync_stock_sibling_relations_from_security_master,
 )
 from alphavault.research_workbench.security_master_repo import (
     bulk_upsert_security_master_stocks,
@@ -94,6 +96,14 @@ def import_csv_into_security_master(
         for batch_rows in _iter_row_batches(rows, resolved_batch_size):
             imported += bulk_upsert_security_master_stocks(conn, batch_rows)
             logger.info("imported security_master rows: %s/%s", imported, row_count)
+        sibling_relation_count = sync_stock_sibling_relations_from_security_master(
+            conn,
+            source=STOCK_SIBLING_SYNC_SOURCE_SECURITY_MASTER,
+        )
+        logger.info(
+            "synced stock same-company relations: %s",
+            sibling_relation_count,
+        )
         logger.info("rebuilding security_master shadow dict...")
         rebuild_stock_dict_shadow_best_effort(conn)
         logger.info("rebuilt security_master shadow dict")

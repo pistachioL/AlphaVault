@@ -28,6 +28,7 @@ RELATION_TYPE_STOCK_ALIAS = "stock_alias"
 RELATION_TYPE_STOCK_SIBLING = "stock_sibling"
 RELATION_LABEL_ALIAS = "alias_of"
 RELATION_LABEL_SAME_COMPANY = "same_company"
+STOCK_SIBLING_SYNC_SOURCE_SECURITY_MASTER = "security_master"
 _CN_MARKETS = frozenset(("SH", "SZ", "BJ"))
 
 
@@ -311,6 +312,7 @@ __all__ = [
     "RELATION_TYPE_STOCK_ALIAS",
     "RELATION_TYPE_STOCK_SIBLING",
     "RELATION_TYPE_STOCK_SECTOR",
+    "STOCK_SIBLING_SYNC_SOURCE_SECURITY_MASTER",
     "list_stock_sibling_keys",
     "record_relation",
     "record_stock_alias_relation",

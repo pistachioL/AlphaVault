@@ -300,6 +300,10 @@ def resolve_exact_stock_key(query: str) -> str:
     return ""
 
 
+def resolve_exact_stock_keys(query: str) -> list[str]:
+    return _resolve_exact_stock_keys(query)
+
+
 def resolve_stock(
     query: str,
     *,
@@ -339,5 +343,6 @@ __all__ = [
     "StockLookupResult",
     "StockLookupRow",
     "resolve_exact_stock_key",
+    "resolve_exact_stock_keys",
     "resolve_stock",
 ]

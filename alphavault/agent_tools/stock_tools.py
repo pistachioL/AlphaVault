@@ -5,10 +5,20 @@ from typing import TypedDict
 from alphavault.capabilities.stock_lookup import (
     StockLookupRow,
     resolve_exact_stock_key,
+    resolve_exact_stock_keys,
     resolve_stock,
 )
 from alphavault.capabilities.stock_page import get_stock_page
-from alphavault.domains.stock.keys import normalize_stock_key
+from alphavault.domains.stock.keys import normalize_stock_key, stock_value
+from alphavault.domains.stock.view_scope import (
+    DEFAULT_STOCK_VIEW_SCOPE,
+    STOCK_VIEW_SCOPE_COMPANY,
+    normalize_stock_view_scope,
+)
+from alphavault.research_workbench import (
+    get_official_names_by_stock_keys,
+    get_research_workbench_engine_from_env,
+)
 
 DEFAULT_AGENT_STOCK_CANDIDATE_LIMIT = 5
 DEFAULT_AGENT_SIGNAL_PAGE_SIZE = 10
@@ -45,17 +55,23 @@ class AgentStockSignalRow(TypedDict):
     match_kind: str
 
 
-class AgentStockPageResult(TypedDict):
-    requested_stock: str
-    resolved_stock_key: str
-    page_title: str
-    signal_total: int
-    signal_page: int
-    signal_page_size: int
-    signals: list[AgentStockSignalRow]
-    related_sectors: list[dict[str, str]]
-    same_company_stocks: list[dict[str, str]]
-    load_error: str
+AgentStockPageResult = TypedDict(
+    "AgentStockPageResult",
+    {
+        "requested_stock": str,
+        "resolved_stock_key": str,
+        "view_scope": str,
+        "covered_stock_keys": list[str],
+        "page_title": str,
+        "signal_total": int,
+        "signal_page": int,
+        "signal_page_size": int,
+        "signals": list[AgentStockSignalRow],
+        "related_sectors": list[dict[str, str]],
+        "same_company_stocks": list[dict[str, str]],
+        "load_error": str,
+    },
+)
 
 
 def _clean_text(value: object) -> str:
@@ -104,11 +120,55 @@ def ai_resolve_stock(
     }
 
 
-def _resolve_requested_stock_key(stock: str) -> str:
+def _resolve_requested_stock_key(stock: str, *, view_scope: str) -> str:
     normalized_stock_key = normalize_stock_key(stock)
-    if normalized_stock_key:
+    if _is_code_stock_key(normalized_stock_key):
         return normalized_stock_key
-    return resolve_exact_stock_key(stock)
+    exact_stock_key = resolve_exact_stock_key(stock)
+    if exact_stock_key:
+        return exact_stock_key
+    if normalize_stock_view_scope(view_scope) != STOCK_VIEW_SCOPE_COMPANY:
+        return ""
+    same_company_stock_key = _resolve_same_company_exact_stock_key(stock)
+    if same_company_stock_key:
+        return same_company_stock_key
+    if _is_code_stock_key(stock):
+        return normalize_stock_key(stock)
+    return ""
+
+
+def _is_code_stock_key(value: str) -> bool:
+    normalized_stock_key = normalize_stock_key(value)
+    stock_code = stock_value(normalized_stock_key)
+    if "." not in stock_code:
+        return False
+    code, market = stock_code.rsplit(".", 1)
+    return bool(code.strip().isdigit() and market.strip())
+
+
+def _same_company_stock_key_sort_key(stock_key: str) -> tuple[int, str]:
+    stock_code = stock_value(stock_key)
+    if "." not in stock_code:
+        return (99, stock_key)
+    _code, market = stock_code.rsplit(".", 1)
+    market_rank = {"SH": 0, "SZ": 1, "BJ": 2, "HK": 3}.get(market.strip(), 9)
+    return (market_rank, stock_code)
+
+
+def _resolve_same_company_exact_stock_key(stock: str) -> str:
+    exact_stock_keys = resolve_exact_stock_keys(stock)
+    if len(exact_stock_keys) <= 1:
+        return ""
+    engine = get_research_workbench_engine_from_env()
+    official_names = get_official_names_by_stock_keys(engine, exact_stock_keys)
+    unique_official_names = {
+        str(official_names.get(stock_key) or "").strip()
+        for stock_key in exact_stock_keys
+        if str(official_names.get(stock_key) or "").strip()
+    }
+    if len(unique_official_names) != 1 or len(official_names) != len(exact_stock_keys):
+        return ""
+    return sorted(exact_stock_keys, key=_same_company_stock_key_sort_key)[0]
 
 
 def _trim_signal_rows(rows: object) -> list[AgentStockSignalRow]:
@@ -148,6 +208,17 @@ def _trim_named_rows(value: object) -> list[dict[str, str]]:
     return out
 
 
+def _trim_text_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text = _clean_text(item)
+        if text:
+            out.append(text)
+    return out
+
+
 def ai_get_stock_page(
     stock: str,
     *,
@@ -155,12 +226,19 @@ def ai_get_stock_page(
     signal_page_size: int = DEFAULT_AGENT_SIGNAL_PAGE_SIZE,
     author: str = "",
     related_filter: str = "all",
+    view_scope: str = DEFAULT_STOCK_VIEW_SCOPE,
 ) -> AgentStockPageResult:
-    resolved_stock_key = _resolve_requested_stock_key(stock)
+    normalized_view_scope = normalize_stock_view_scope(view_scope)
+    resolved_stock_key = _resolve_requested_stock_key(
+        stock,
+        view_scope=normalized_view_scope,
+    )
     if not resolved_stock_key:
         return {
             "requested_stock": _clean_text(stock),
             "resolved_stock_key": "",
+            "view_scope": normalized_view_scope,
+            "covered_stock_keys": [],
             "page_title": "",
             "signal_total": 0,
             "signal_page": 1,
@@ -176,10 +254,13 @@ def ai_get_stock_page(
         signal_page_size=signal_page_size,
         author=author,
         related_filter=related_filter,
+        view_scope=normalized_view_scope,
     )
     return {
         "requested_stock": _clean_text(stock),
         "resolved_stock_key": resolved_stock_key,
+        "view_scope": normalized_view_scope,
+        "covered_stock_keys": _trim_text_list(view.get("covered_stock_keys")),
         "page_title": _clean_text(view.get("page_title")),
         "signal_total": _coerce_int(view.get("signal_total"), fallback=0),
         "signal_page": _coerce_int(view.get("signal_page"), fallback=1),

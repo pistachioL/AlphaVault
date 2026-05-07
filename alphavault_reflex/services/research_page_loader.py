@@ -3,6 +3,7 @@ from __future__ import annotations
 from alphavault.capabilities.post_detail import PostDetailResult
 from alphavault.capabilities.post_detail import get_post_detail
 from alphavault.capabilities.stock_page import get_stock_page, get_stock_sidebar
+from alphavault.domains.stock.view_scope import STOCK_VIEW_SCOPE_COMPANY
 from dataclasses import asdict
 import importlib
 from functools import cache
@@ -33,6 +34,7 @@ def load_stock_page_cached_view(
         signal_page_size=signal_page_size,
         author=author,
         related_filter=related_filter,
+        view_scope=STOCK_VIEW_SCOPE_COMPANY,
     )
 
 

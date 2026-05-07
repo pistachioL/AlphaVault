@@ -237,6 +237,7 @@ def run_get_stock_page_tool(
     signal_page_size: int,
     author: str,
     related_filter: str,
+    view_scope: str,
 ) -> dict[str, object]:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
@@ -248,6 +249,7 @@ def run_get_stock_page_tool(
             "signal_page_size": max(1, int(signal_page_size or 0)),
             "author": _clean_text(author),
             "related_filter": _clean_text(related_filter),
+            "view_scope": _clean_text(view_scope),
         },
         call_fn=lambda: stock_tools.ai_get_stock_page(
             stock,
@@ -255,6 +257,7 @@ def run_get_stock_page_tool(
             signal_page_size=signal_page_size,
             author=author,
             related_filter=related_filter,
+            view_scope=view_scope,
         ),
         resolved_stock_key_fn=lambda result: _clean_text(
             result.get("resolved_stock_key")

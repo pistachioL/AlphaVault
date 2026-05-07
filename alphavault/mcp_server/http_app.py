@@ -4,6 +4,7 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from alphavault.domains.stock.view_scope import DEFAULT_STOCK_VIEW_SCOPE
 
 from .request_meta import McpRequestMetaMiddleware, require_current_request_meta
 from .tool_runner import (
@@ -19,6 +20,7 @@ _DEFAULT_SIGNAL_PAGE = 1
 _DEFAULT_SIGNAL_PAGE_SIZE = 10
 _DEFAULT_POST_SEARCH_LIMIT = 10
 _DEFAULT_RELATED_FILTER = "all"
+_DEFAULT_VIEW_SCOPE = DEFAULT_STOCK_VIEW_SCOPE
 
 
 def create_mcp_http_app():
@@ -49,7 +51,7 @@ def create_mcp_http_app():
 
     @server.tool(
         name="get_stock_page",
-        description="读取个股研究页信号列表、相关板块和同公司股票。",
+        description="读取个股研究页信号列表。默认只查单票；传 view_scope='company' 时聚合同公司 A/H。",
     )
     async def get_stock_page(
         stock: str,
@@ -57,6 +59,7 @@ def create_mcp_http_app():
         signal_page_size: int = _DEFAULT_SIGNAL_PAGE_SIZE,
         author: str = "",
         related_filter: str = _DEFAULT_RELATED_FILTER,
+        view_scope: str = _DEFAULT_VIEW_SCOPE,
     ) -> dict[str, object]:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
@@ -67,6 +70,7 @@ def create_mcp_http_app():
             signal_page_size=signal_page_size,
             author=author,
             related_filter=related_filter,
+            view_scope=view_scope,
         )
 
     @server.tool(

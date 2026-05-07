@@ -5,6 +5,10 @@ from functools import cache
 from types import ModuleType
 
 from alphavault.domains.stock.keys import normalize_stock_key
+from alphavault.domains.stock.view_scope import (
+    DEFAULT_STOCK_VIEW_SCOPE,
+    normalize_stock_view_scope,
+)
 
 DEFAULT_SIGNAL_PAGE_SIZE = 20
 MAX_SIGNAL_PAGE_SIZE = 500
@@ -39,11 +43,14 @@ def _empty_stock_page_view(
     stock_key: str,
     *,
     signal_page_size: int,
+    view_scope: str,
     load_error: str = "",
 ) -> dict[str, object]:
     return {
         "entity_key": stock_key,
         "requested_stock_key": stock_key,
+        "view_scope": normalize_stock_view_scope(view_scope),
+        "covered_stock_keys": [stock_key] if stock_key else [],
         "page_title": stock_key.removeprefix("stock:"),
         "signals": [],
         "signal_total": 0,
@@ -70,11 +77,13 @@ def get_stock_page(
     signal_page_size: int = DEFAULT_SIGNAL_PAGE_SIZE,
     author: str = "",
     related_filter: str = "all",
+    view_scope: str = DEFAULT_STOCK_VIEW_SCOPE,
 ) -> dict[str, object]:
     normalized_stock_key = normalize_stock_key(stock_key)
     author_filter = str(author or "").strip()
     normalized_signal_page = _normalize_signal_page(signal_page)
     normalized_signal_page_size = _normalize_signal_page_size(signal_page_size)
+    normalized_view_scope = normalize_stock_view_scope(view_scope)
     stock_hot_read = _load_stock_hot_read_module()
     if author_filter:
         view = stock_hot_read.load_stock_cached_view_from_env(
@@ -83,6 +92,7 @@ def get_stock_page(
             signal_page_size=normalized_signal_page_size,
             author=author_filter,
             related_filter=related_filter,
+            view_scope=normalized_view_scope,
         )
     else:
         view = stock_hot_read.load_stock_cached_view_from_env(
@@ -90,11 +100,13 @@ def get_stock_page(
             signal_page=normalized_signal_page,
             signal_page_size=normalized_signal_page_size,
             related_filter=related_filter,
+            view_scope=normalized_view_scope,
         )
     if str(view.get("entity_key") or "").strip() == "":
         return _empty_stock_page_view(
             normalized_stock_key,
             signal_page_size=signal_page_size,
+            view_scope=normalized_view_scope,
             load_error=str(view.get("load_error") or "").strip(),
         )
     return view
