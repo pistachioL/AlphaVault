@@ -10,9 +10,11 @@ from .request_meta import McpRequestMetaMiddleware, require_current_request_meta
 from .tool_runner import (
     run_get_post_detail_tool,
     run_get_portfolio_context_tool,
+    run_get_stock_obvious_trades_tool,
     run_get_stock_evidence_pack_tool,
     run_get_stock_page_tool,
     run_get_stock_summary_tool,
+    run_list_obvious_trades_tool,
     run_resolve_stock_tool,
     run_search_posts_tool,
 )
@@ -37,10 +39,18 @@ def create_mcp_http_app():
         DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
         DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
     )
+    from alphavault.capabilities.stock_obvious_trades import (
+        DEFAULT_OBVIOUS_TRADE_FILTER,
+        DEFAULT_OBVIOUS_TRADE_LIMIT,
+        DEFAULT_OBVIOUS_TRADE_LOOKBACK_DAYS,
+        DEFAULT_OBVIOUS_TRADE_MIN_STRENGTH,
+        DEFAULT_OBVIOUS_TRADE_SIGNAL_PAGE_SIZE,
+        DEFAULT_STOCK_OBVIOUS_TRADE_LOOKBACK_DAYS,
+    )
 
     server = FastMCP(
         "AlphaVault MCP",
-        instructions="通过 AlphaVault 数据库检索个股、帖子和帖子详情。",
+        instructions="通过 AlphaVault 数据库检索个股、明显交易、帖子和帖子详情。",
         streamable_http_path="/",
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=False
@@ -84,6 +94,52 @@ def create_mcp_http_app():
             signal_page_size=signal_page_size,
             author=author,
             related_filter=related_filter,
+            view_scope=view_scope,
+        )
+
+    @server.tool(
+        name="list_obvious_trades",
+        description="读取最近一段时间的明显交易标的列表，按标的聚合最近动作、买卖强度和提及人数。",
+    )
+    async def list_obvious_trades(
+        lookback_days: int = DEFAULT_OBVIOUS_TRADE_LOOKBACK_DAYS,
+        trade_filter: str = DEFAULT_OBVIOUS_TRADE_FILTER,
+        min_strength: int = DEFAULT_OBVIOUS_TRADE_MIN_STRENGTH,
+        limit: int = DEFAULT_OBVIOUS_TRADE_LIMIT,
+    ) -> dict[str, object]:
+        request_meta = require_current_request_meta()
+        return await asyncio.to_thread(
+            run_list_obvious_trades_tool,
+            request_meta=request_meta,
+            lookback_days=lookback_days,
+            trade_filter=trade_filter,
+            min_strength=min_strength,
+            limit=limit,
+        )
+
+    @server.tool(
+        name="get_stock_obvious_trades",
+        description="读取单只股票最近一段时间的明显交易信号明细；传 view_scope='company' 时聚合同公司 A/H。",
+    )
+    async def get_stock_obvious_trades(
+        stock: str,
+        lookback_days: int = DEFAULT_STOCK_OBVIOUS_TRADE_LOOKBACK_DAYS,
+        trade_filter: str = DEFAULT_OBVIOUS_TRADE_FILTER,
+        min_strength: int = DEFAULT_OBVIOUS_TRADE_MIN_STRENGTH,
+        signal_page: int = _DEFAULT_SIGNAL_PAGE,
+        signal_page_size: int = DEFAULT_OBVIOUS_TRADE_SIGNAL_PAGE_SIZE,
+        view_scope: str = _DEFAULT_VIEW_SCOPE,
+    ) -> dict[str, object]:
+        request_meta = require_current_request_meta()
+        return await asyncio.to_thread(
+            run_get_stock_obvious_trades_tool,
+            request_meta=request_meta,
+            stock=stock,
+            lookback_days=lookback_days,
+            trade_filter=trade_filter,
+            min_strength=min_strength,
+            signal_page=signal_page,
+            signal_page_size=signal_page_size,
             view_scope=view_scope,
         )
 

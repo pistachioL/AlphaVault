@@ -11,6 +11,7 @@ from .request_meta import McpRequestMeta
 
 _STATUS_SUCCESS = "success"
 _STATUS_ERROR = "error"
+_SOURCE_KIND_OBVIOUS_TRADE = "obvious_trade_row"
 _SOURCE_KIND_SEARCH_ROW = "search_row"
 _SOURCE_KIND_STOCK_SIGNAL = "stock_signal"
 _SOURCE_KIND_STOCK_EVIDENCE = "stock_evidence"
@@ -196,6 +197,38 @@ def _search_history_posts(result: object) -> list[dict[str, str]]:
     ]
 
 
+def _obvious_trade_history_posts(result: object) -> list[dict[str, str]]:
+    if not isinstance(result, dict):
+        return []
+    rows = result.get("rows")
+    if not isinstance(rows, list):
+        return []
+    return [
+        {
+            "post_uid": _clean_text(row.get("post_uid"))
+            if isinstance(row, dict)
+            else "",
+            "source_kind": _SOURCE_KIND_OBVIOUS_TRADE,
+            "title": _clean_text(row.get("page_title"))
+            if isinstance(row, dict)
+            else "",
+            "author": _clean_text(row.get("recent_author"))
+            if isinstance(row, dict)
+            else "",
+            "created_at": _clean_text(row.get("recent_created_at"))
+            if isinstance(row, dict)
+            else "",
+            "url": _clean_text(row.get("url")) if isinstance(row, dict) else "",
+            "match_reason": _clean_text(row.get("recent_action"))
+            if isinstance(row, dict)
+            else "",
+            "preview": _clean_text(row.get("summary")) if isinstance(row, dict) else "",
+        }
+        for row in rows
+        if isinstance(row, dict) and _clean_text(row.get("post_uid"))
+    ]
+
+
 def _post_detail_history_posts(
     result: object, *, requested_post_uid: str
 ) -> list[dict[str, str]]:
@@ -349,6 +382,79 @@ def run_get_stock_page_tool(
     )
 
 
+def run_list_obvious_trades_tool(
+    *,
+    request_meta: McpRequestMeta,
+    lookback_days: int,
+    trade_filter: str,
+    min_strength: int,
+    limit: int,
+) -> dict[str, object]:
+    stock_tools = _load_stock_tools_module()
+    return _run_tool_call(
+        request_meta=request_meta,
+        tool_name="list_obvious_trades",
+        input_payload={
+            "lookback_days": max(1, int(lookback_days or 0)),
+            "trade_filter": _clean_text(trade_filter),
+            "min_strength": max(0, int(min_strength or 0)),
+            "limit": max(1, int(limit or 0)),
+        },
+        call_fn=lambda: stock_tools.ai_list_obvious_trades(
+            lookback_days=lookback_days,
+            trade_filter=trade_filter,
+            min_strength=min_strength,
+            limit=limit,
+        ),
+        resolved_stock_key_fn=lambda _result: "",
+        result_count_fn=lambda result: _result_count(result, rows_key="rows"),
+        error_text_fn=lambda result: _error_text(result, "load_error", "error"),
+        posts_fn=_obvious_trade_history_posts,
+    )
+
+
+def run_get_stock_obvious_trades_tool(
+    *,
+    request_meta: McpRequestMeta,
+    stock: str,
+    lookback_days: int,
+    trade_filter: str,
+    min_strength: int,
+    signal_page: int,
+    signal_page_size: int,
+    view_scope: str,
+) -> dict[str, object]:
+    stock_tools = _load_stock_tools_module()
+    return _run_tool_call(
+        request_meta=request_meta,
+        tool_name="get_stock_obvious_trades",
+        input_payload={
+            "stock": _clean_text(stock),
+            "lookback_days": max(1, int(lookback_days or 0)),
+            "trade_filter": _clean_text(trade_filter),
+            "min_strength": max(0, int(min_strength or 0)),
+            "signal_page": max(1, int(signal_page or 0)),
+            "signal_page_size": max(1, int(signal_page_size or 0)),
+            "view_scope": _clean_text(view_scope),
+        },
+        call_fn=lambda: stock_tools.ai_get_stock_obvious_trades(
+            stock,
+            lookback_days=lookback_days,
+            trade_filter=trade_filter,
+            min_strength=min_strength,
+            signal_page=signal_page,
+            signal_page_size=signal_page_size,
+            view_scope=view_scope,
+        ),
+        resolved_stock_key_fn=lambda result: _clean_text(
+            result.get("resolved_stock_key")
+        ),
+        result_count_fn=lambda result: _result_count(result, rows_key="signals"),
+        error_text_fn=lambda result: _error_text(result, "load_error", "error"),
+        posts_fn=_stock_page_history_posts,
+    )
+
+
 def run_get_stock_evidence_pack_tool(
     *,
     request_meta: McpRequestMeta,
@@ -487,9 +593,11 @@ def run_get_post_detail_tool(
 __all__ = [
     "run_get_post_detail_tool",
     "run_get_portfolio_context_tool",
+    "run_get_stock_obvious_trades_tool",
     "run_get_stock_evidence_pack_tool",
     "run_get_stock_page_tool",
     "run_get_stock_summary_tool",
+    "run_list_obvious_trades_tool",
     "run_resolve_stock_tool",
     "run_search_posts_tool",
 ]
