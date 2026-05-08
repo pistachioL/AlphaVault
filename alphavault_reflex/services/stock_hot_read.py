@@ -490,6 +490,7 @@ def _load_stock_signal_rows(
     query = f"""
 WITH matched AS (
     SELECT DISTINCT ON (a.post_uid)
+        a.assertion_id,
         a.post_uid,
         a.summary,
         {action_select} AS action,
@@ -511,7 +512,7 @@ WITH matched AS (
       {author_clause}
     ORDER BY a.post_uid, {order_prefix}
 )
-SELECT post_uid, summary, action, action_strength, author, created_at, url
+SELECT assertion_id, post_uid, summary, action, action_strength, author, created_at, url
 FROM matched
 ORDER BY created_at_sort DESC, post_uid DESC
 LIMIT :limit
@@ -523,6 +524,8 @@ LIMIT :limit
         created_at = str(row.get("created_at") or "").strip()
         out.append(
             {
+                "platform": "",
+                "assertion_id": str(row.get("assertion_id") or "").strip(),
                 "post_uid": str(row.get("post_uid") or "").strip(),
                 "summary": str(row.get("summary") or "").strip(),
                 "action": str(row.get("action") or "").strip(),
@@ -607,6 +610,8 @@ LIMIT :limit
     reference_now = default_signal_reference_time()
     return [
         {
+            "platform": "",
+            "assertion_id": "",
             "post_uid": str(row.get("post_uid") or "").strip(),
             "summary": str(row.get("summary") or "").strip(),
             "action": "",
@@ -741,6 +746,8 @@ def _enrich_signal_rows_with_tree(
         tree_label, tree_text = tree_map.get(post_uid, ("", ""))
         out.append(
             {
+                "platform": str(row.get("platform") or "").strip(),
+                "assertion_id": str(row.get("assertion_id") or "").strip(),
                 "post_uid": post_uid,
                 "summary": str(row.get("summary") or "").strip(),
                 "match_kind": str(row.get("match_kind") or "").strip(),
@@ -857,16 +864,19 @@ def _load_source_signal_page(
             related_filter=related_filter,
         )
         rows = list(assertion_rows)
+        for row in rows:
+            row["platform"] = str(source.name or "").strip()
         if not _is_signal_only_filter(related_filter):
-            rows.extend(
-                _load_stock_context_rows(
-                    conn,
-                    stock_keys=stock_keys,
-                    author=author,
-                    signal_window_days=signal_window_days,
-                    fetch_limit=fetch_limit,
-                )
+            context_rows = _load_stock_context_rows(
+                conn,
+                stock_keys=stock_keys,
+                author=author,
+                signal_window_days=signal_window_days,
+                fetch_limit=fetch_limit,
             )
+            for row in context_rows:
+                row["platform"] = str(source.name or "").strip()
+            rows.extend(context_rows)
             rows = _sort_signal_rows(rows)
         posts = _load_posts_for_signal_rows(
             conn,

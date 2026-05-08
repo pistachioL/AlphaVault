@@ -35,6 +35,10 @@ from alphavault.domains.stock.view_scope import (
     DEFAULT_STOCK_VIEW_SCOPE,
     normalize_stock_view_scope,
 )
+from alphavault.research_workbench.trade_signal_review_service import (
+    TradeReviewResult,
+    coerce_trade_review_result,
+)
 
 DEFAULT_AGENT_STOCK_CANDIDATE_LIMIT = 5
 DEFAULT_AGENT_SIGNAL_PAGE_SIZE = 10
@@ -66,6 +70,7 @@ class AgentStockSignalRow(TypedDict):
     action: str
     signal_badge: str
     match_kind: str
+    trade_review: TradeReviewResult
 
 
 AgentStockPageResult = TypedDict(
@@ -103,6 +108,7 @@ AgentObviousTradeRow = TypedDict(
         "mentions": str,
         "author_count": str,
         "post_uid": str,
+        "recent_trade_review": TradeReviewResult,
     },
 )
 
@@ -118,6 +124,7 @@ class AgentObviousTradeSignalRow(TypedDict):
     action_strength: str
     signal_badge: str
     match_kind: str
+    trade_review: TradeReviewResult
 
 
 AgentObviousTradeListResult = TypedDict(
@@ -239,6 +246,7 @@ def _trim_signal_rows(rows: object) -> list[AgentStockSignalRow]:
                 "signal_badge": _clean_text(row.get("signal_badge"))
                 or _clean_text(row.get("action")),
                 "match_kind": _clean_text(row.get("match_kind")),
+                "trade_review": coerce_trade_review_result(row.get("trade_review")),
             }
         )
     return out
@@ -266,6 +274,9 @@ def _trim_obvious_trade_rows(rows: object) -> list[AgentObviousTradeRow]:
                 "mentions": _clean_text(row.get("mentions")),
                 "author_count": _clean_text(row.get("author_count")),
                 "post_uid": _clean_text(row.get("post_uid")),
+                "recent_trade_review": coerce_trade_review_result(
+                    row.get("recent_trade_review")
+                ),
             }
         )
     return out
@@ -286,12 +297,14 @@ def _trim_obvious_trade_signal_rows(
                 "title": _signal_title(row),
                 "preview": _signal_preview(row),
                 "author": _clean_text(row.get("author")),
-                "created_at": _clean_text(row.get("created_at")),
+                "created_at": _clean_text(row.get("created_at_line"))
+                or _clean_text(row.get("created_at")),
                 "url": _clean_text(row.get("url")),
                 "action": _clean_text(row.get("action")),
                 "action_strength": _clean_text(row.get("action_strength")),
                 "signal_badge": _clean_text(row.get("signal_badge")),
                 "match_kind": _clean_text(row.get("match_kind")),
+                "trade_review": coerce_trade_review_result(row.get("trade_review")),
             }
         )
     return out

@@ -449,3 +449,119 @@ FROM {table}
 WHERE status = :status
 ORDER BY updated_at DESC, alias_key ASC{limit_clause}
 """
+
+
+def upsert_trade_signal_review(table: str) -> str:
+    return f"""
+INSERT INTO {table} AS target(
+    platform,
+    assertion_id,
+    post_uid,
+    stock_key,
+    author,
+    action,
+    action_strength,
+    position_phase,
+    copyability,
+    review_status,
+    hard_block,
+    blocking_flags_json,
+    reason_text,
+    evidence_quotes_json,
+    history_window_days,
+    history_signal_count,
+    history_refs_json,
+    review_model,
+    review_version,
+    error_text,
+    reviewed_at,
+    updated_at
+)
+VALUES (
+    :platform,
+    :assertion_id,
+    :post_uid,
+    :stock_key,
+    :author,
+    :action,
+    :action_strength,
+    :position_phase,
+    :copyability,
+    :review_status,
+    :hard_block,
+    :blocking_flags_json,
+    :reason_text,
+    :evidence_quotes_json,
+    :history_window_days,
+    :history_signal_count,
+    :history_refs_json,
+    :review_model,
+    :review_version,
+    :error_text,
+    :reviewed_at,
+    :updated_at
+)
+ON CONFLICT(platform, assertion_id, stock_key) DO UPDATE SET
+    post_uid = excluded.post_uid,
+    author = excluded.author,
+    action = excluded.action,
+    action_strength = excluded.action_strength,
+    position_phase = excluded.position_phase,
+    copyability = excluded.copyability,
+    review_status = excluded.review_status,
+    hard_block = excluded.hard_block,
+    blocking_flags_json = excluded.blocking_flags_json,
+    reason_text = excluded.reason_text,
+    evidence_quotes_json = excluded.evidence_quotes_json,
+    history_window_days = excluded.history_window_days,
+    history_signal_count = excluded.history_signal_count,
+    history_refs_json = excluded.history_refs_json,
+    review_model = excluded.review_model,
+    review_version = excluded.review_version,
+    error_text = excluded.error_text,
+    reviewed_at = excluded.reviewed_at,
+    updated_at = excluded.updated_at
+"""
+
+
+def select_trade_signal_reviews_by_keys(table: str, *, key_count: int) -> str:
+    count = max(1, int(key_count or 0))
+    value_rows = ", ".join(
+        [
+            f"(:platform_{idx}, :assertion_id_{idx}, :stock_key_{idx})"
+            for idx in range(count)
+        ]
+    )
+    return f"""
+WITH wanted(platform, assertion_id, stock_key) AS (
+    VALUES {value_rows}
+)
+SELECT
+    r.platform,
+    r.assertion_id,
+    r.post_uid,
+    r.stock_key,
+    r.author,
+    r.action,
+    r.action_strength,
+    r.position_phase,
+    r.copyability,
+    r.review_status,
+    r.hard_block,
+    r.blocking_flags_json,
+    r.reason_text,
+    r.evidence_quotes_json,
+    r.history_window_days,
+    r.history_signal_count,
+    r.history_refs_json,
+    r.review_model,
+    r.review_version,
+    r.error_text,
+    r.reviewed_at,
+    r.updated_at
+FROM {table} r
+JOIN wanted w
+  ON w.platform = r.platform
+ AND w.assertion_id = r.assertion_id
+ AND w.stock_key = r.stock_key
+"""

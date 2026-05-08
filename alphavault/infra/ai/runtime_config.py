@@ -40,6 +40,7 @@ AI_TASK_RELATION_CANDIDATE_RANK = "relation_candidate_rank"
 AI_TASK_TOPIC_CLUSTER_SUGGEST = "topic_cluster_suggest"
 AI_TASK_FOLLOW_KEYWORDS_SUGGEST = "follow_keywords_suggest"
 AI_TASK_STOCK_SUMMARY = "stock_summary"
+AI_TASK_TRADE_SIGNAL_REVIEW = "trade_signal_review"
 AI_REASONING_EFFORT_CHOICES = [
     "none",
     "minimal",
@@ -468,6 +469,7 @@ __all__ = [
     "AI_TASK_POST_CONTEXT",
     "AI_TASK_RELATION_CANDIDATE_RANK",
     "AI_TASK_STOCK_SUMMARY",
+    "AI_TASK_TRADE_SIGNAL_REVIEW",
     "AI_TASK_TOPIC_CLUSTER_SUGGEST",
     "AiRuntimeConfig",
     "ai_limit_group_field_env_name",

@@ -115,6 +115,46 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.mcp_call_history_posts (
     PRIMARY KEY(call_id, post_uid, source_kind)
 );
 
+CREATE TABLE IF NOT EXISTS {{schema_name}}.trade_signal_reviews (
+    platform TEXT NOT NULL,
+    assertion_id TEXT NOT NULL,
+    post_uid TEXT NOT NULL DEFAULT '',
+    stock_key TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    action_strength INTEGER NOT NULL DEFAULT 0,
+    position_phase TEXT NOT NULL DEFAULT 'unknown' CHECK (
+        position_phase IN (
+            'new_buy',
+            'replenish_add',
+            'low_cost_old_position_add',
+            'rotation_buy',
+            'trim_on_strength',
+            'exit',
+            'unknown'
+        )
+    ),
+    copyability TEXT NOT NULL DEFAULT 'unknown' CHECK (
+        copyability IN ('high', 'medium', 'low', 'unknown')
+    ),
+    review_status TEXT NOT NULL DEFAULT 'failed' CHECK (
+        review_status IN ('ready', 'skipped', 'failed')
+    ),
+    hard_block BOOLEAN NOT NULL DEFAULT FALSE,
+    blocking_flags_json TEXT NOT NULL DEFAULT '[]',
+    reason_text TEXT NOT NULL DEFAULT '',
+    evidence_quotes_json TEXT NOT NULL DEFAULT '[]',
+    history_window_days INTEGER NOT NULL DEFAULT 90,
+    history_signal_count INTEGER NOT NULL DEFAULT 0,
+    history_refs_json TEXT NOT NULL DEFAULT '[]',
+    review_model TEXT NOT NULL DEFAULT '',
+    review_version TEXT NOT NULL DEFAULT '',
+    error_text TEXT NOT NULL DEFAULT '',
+    reviewed_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(platform, assertion_id, stock_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_security_master_official_name_norm
     ON {{schema_name}}.security_master(official_name_norm);
 
@@ -150,3 +190,9 @@ CREATE INDEX IF NOT EXISTS idx_mcp_call_history_tool_created
 
 CREATE INDEX IF NOT EXISTS idx_mcp_call_history_posts_call_id
     ON {{schema_name}}.mcp_call_history_posts(call_id);
+
+CREATE INDEX IF NOT EXISTS idx_trade_signal_reviews_post_uid
+    ON {{schema_name}}.trade_signal_reviews(post_uid);
+
+CREATE INDEX IF NOT EXISTS idx_trade_signal_reviews_author_stock
+    ON {{schema_name}}.trade_signal_reviews(platform, author, stock_key, reviewed_at);

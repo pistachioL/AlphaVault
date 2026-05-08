@@ -28,6 +28,7 @@ _STANDARD_TABLES = {
     "follow_pages",
     "mcp_call_history",
     "mcp_call_history_posts",
+    "trade_signal_reviews",
 }
 
 

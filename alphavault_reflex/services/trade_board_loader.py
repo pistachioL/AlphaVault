@@ -43,6 +43,7 @@ _STANDARD_POSTGRES_ERROR_PREFIX = "postgres_connect_error:standard:"
 _SOURCE_SCHEMA_NAMES = frozenset((SCHEMA_WEIBO, SCHEMA_XUEQIU))
 
 TRADE_BOARD_ASSERTION_COLUMNS = [
+    "assertion_id",
     "post_uid",
     "idx",
     "entity_key",

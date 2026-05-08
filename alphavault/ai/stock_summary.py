@@ -194,9 +194,26 @@ def _format_evidence_rows(rows: object) -> str:
         summary = _trim_text(row.get("summary"), limit=_MAX_EVIDENCE_TEXT_LENGTH)
         raw_text = _trim_text(row.get("raw_text"), limit=_MAX_EVIDENCE_TEXT_LENGTH)
         tree_text = _trim_text(row.get("tree_text"), limit=_MAX_TREE_TEXT_LENGTH)
+        trade_review = row.get("trade_review") if isinstance(row, dict) else {}
+        review_status = clean_text(
+            trade_review.get("review_status") if isinstance(trade_review, dict) else ""
+        )
+        position_phase = clean_text(
+            trade_review.get("position_phase") if isinstance(trade_review, dict) else ""
+        )
+        copyability = clean_text(
+            trade_review.get("copyability") if isinstance(trade_review, dict) else ""
+        )
+        reason_text = _trim_text(
+            trade_review.get("reason_text") if isinstance(trade_review, dict) else "",
+            limit=_MAX_EVIDENCE_TEXT_LENGTH,
+        )
         lines.append(
             f"{index}. 时间={created_at or '未知'} | 作者={author or '未知'} | "
             f"立场={stance or '未知'} | 动作={action or '未知'} | 强度={action_strength or '0'}\n"
+            f"   审查：状态={review_status or '未知'} | 阶段={position_phase or '未知'} | "
+            f"可复制性={copyability or '未知'}\n"
+            f"   审查依据：{reason_text or '（空）'}\n"
             f"   摘要：{summary or '（空）'}\n"
             f"   原文：{raw_text or '（空）'}\n"
             f"   对话：{tree_text or '（空）'}"

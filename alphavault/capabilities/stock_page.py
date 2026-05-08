@@ -19,6 +19,13 @@ def _load_stock_hot_read_module() -> ModuleType:
     return importlib.import_module("alphavault_reflex.services.stock_hot_read")
 
 
+@cache
+def _load_trade_signal_review_module() -> ModuleType:
+    return importlib.import_module(
+        "alphavault.research_workbench.trade_signal_review_service"
+    )
+
+
 def _normalize_signal_page(value: object) -> int:
     try:
         parsed = int(str(value or "").strip())
@@ -109,6 +116,20 @@ def get_stock_page(
             view_scope=normalized_view_scope,
             load_error=str(view.get("load_error") or "").strip(),
         )
+    raw_covered_stock_keys = view.get("covered_stock_keys")
+    covered_stock_keys: list[str] = []
+    if isinstance(raw_covered_stock_keys, list):
+        covered_stock_keys = [
+            stock_key
+            for item in raw_covered_stock_keys
+            for stock_key in [normalize_stock_key(str(item or "").strip())]
+            if stock_key
+        ]
+    view["signals"] = _load_trade_signal_review_module().enrich_trade_signal_rows(
+        [dict(row) for row in (view.get("signals") or []) if isinstance(row, dict)],
+        stock_key=str(view.get("entity_key") or normalized_stock_key),
+        related_stock_keys=covered_stock_keys,
+    )
     return view
 
 

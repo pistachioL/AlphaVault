@@ -17,6 +17,11 @@ from alphavault.domains.stock.view_scope import (
     DEFAULT_STOCK_VIEW_SCOPE,
     normalize_stock_view_scope,
 )
+from alphavault.research_workbench.trade_signal_review_service import (
+    TradeReviewResult,
+    build_trade_review_for_row,
+    enrich_trade_signal_rows,
+)
 
 
 @cache
@@ -89,6 +94,31 @@ ObviousTradeRow = TypedDict(
         "mentions": str,
         "author_count": str,
         "post_uid": str,
+        "recent_trade_review": TradeReviewResult,
+    },
+)
+
+
+_ObviousTradeSeedRow = TypedDict(
+    "_ObviousTradeSeedRow",
+    {
+        "stock_key": str,
+        "page_title": str,
+        "summary": str,
+        "recent_action": str,
+        "recent_author": str,
+        "recent_created_at": str,
+        "url": str,
+        "buy_strength": str,
+        "sell_strength": str,
+        "net_strength": str,
+        "mentions": str,
+        "author_count": str,
+        "post_uid": str,
+        "platform": str,
+        "assertion_id": str,
+        "action": str,
+        "action_strength": str,
     },
 )
 
@@ -119,7 +149,7 @@ class StockObviousTradeResult(TypedDict):
     signal_total: int
     signal_page: int
     signal_page_size: int
-    signals: list[dict[str, str]]
+    signals: list[dict[str, object]]
     same_company_stocks: list[dict[str, str]]
     load_error: str
 
@@ -273,7 +303,7 @@ def _empty_stock_obvious_trade_result(
     }
 
 
-def _obvious_trade_sort_key(row: ObviousTradeRow) -> tuple[int, float, str]:
+def _obvious_trade_sort_key(row: _ObviousTradeSeedRow) -> tuple[int, float, str]:
     recent_created_at = _clean_text(row.get("recent_created_at"))
     ts = _coerce_trade_board_timestamp(recent_created_at)
     if ts is None:
@@ -314,7 +344,7 @@ def _normalize_market_trade_rows(
     page_titles: dict[str, str],
     allowed_actions: frozenset[str],
     min_strength: int,
-) -> list[ObviousTradeRow]:
+) -> list[_ObviousTradeSeedRow]:
     homework_board = _load_homework_board_module()
     grouped: dict[str, _TradeAggregate] = {}
     for raw_row in rows:
@@ -350,7 +380,7 @@ def _normalize_market_trade_rows(
             bucket.recent_time = created_at
             bucket.recent_row = dict(raw_row)
 
-    out: list[ObviousTradeRow] = []
+    out: list[_ObviousTradeSeedRow] = []
     for stock_key, bucket in grouped.items():
         recent_row = bucket.recent_row
         buy_strength = bucket.buy_strength
@@ -373,6 +403,10 @@ def _normalize_market_trade_rows(
                 "mentions": str(bucket.mentions),
                 "author_count": str(len(bucket.authors)),
                 "post_uid": _clean_text(recent_row.get("post_uid")),
+                "platform": _clean_text(recent_row.get("source")),
+                "assertion_id": _clean_text(recent_row.get("assertion_id")),
+                "action": _clean_text(recent_row.get("action")),
+                "action_strength": _clean_text(recent_row.get("action_strength")),
             }
         )
     return sorted(out, key=_obvious_trade_sort_key)
@@ -406,12 +440,18 @@ def _normalize_stock_signal_rows(
             continue
         out.append(
             {
+                "platform": _clean_text(row.get("platform") or row.get("source")),
+                "assertion_id": _clean_text(row.get("assertion_id")),
                 "post_uid": _clean_text(row.get("post_uid")),
                 "title": _clean_text(row.get("summary"))
                 or _build_stock_signal_preview(row),
+                "summary": _clean_text(row.get("summary")),
                 "preview": _build_stock_signal_preview(row),
+                "raw_text": _clean_text(row.get("raw_text")),
+                "tree_text": _clean_text(row.get("tree_text")),
                 "author": _clean_text(row.get("author")),
-                "created_at": _clean_text(row.get("created_at_line"))
+                "created_at": _clean_text(row.get("created_at")),
+                "created_at_line": _clean_text(row.get("created_at_line"))
                 or _clean_text(row.get("created_at")),
                 "url": _clean_text(row.get("url")),
                 "action": _clean_text(row.get("action")),
@@ -477,13 +517,46 @@ def list_obvious_trades(
         min_strength=normalized_min_strength,
     )
     limited_rows = normalized_rows[:normalized_limit]
+    public_rows: list[ObviousTradeRow] = []
+    for row in limited_rows:
+        recent_trade_review = build_trade_review_for_row(
+            {
+                "platform": row.get("platform"),
+                "assertion_id": row.get("assertion_id"),
+                "post_uid": row.get("post_uid"),
+                "author": row.get("recent_author"),
+                "created_at": row.get("recent_created_at"),
+                "summary": row.get("summary"),
+                "action": row.get("action"),
+                "action_strength": row.get("action_strength"),
+            },
+            stock_key=_clean_text(row.get("stock_key")),
+        )
+        public_rows.append(
+            {
+                "stock_key": _clean_text(row.get("stock_key")),
+                "page_title": _clean_text(row.get("page_title")),
+                "summary": _clean_text(row.get("summary")),
+                "recent_action": _clean_text(row.get("recent_action")),
+                "recent_author": _clean_text(row.get("recent_author")),
+                "recent_created_at": _clean_text(row.get("recent_created_at")),
+                "url": _clean_text(row.get("url")),
+                "buy_strength": _clean_text(row.get("buy_strength")),
+                "sell_strength": _clean_text(row.get("sell_strength")),
+                "net_strength": _clean_text(row.get("net_strength")),
+                "mentions": _clean_text(row.get("mentions")),
+                "author_count": _clean_text(row.get("author_count")),
+                "post_uid": _clean_text(row.get("post_uid")),
+                "recent_trade_review": recent_trade_review,
+            }
+        )
     return {
         "lookback_days": normalized_lookback_days,
         "trade_filter": normalized_trade_filter,
         "min_strength": normalized_min_strength,
         "row_total": len(normalized_rows),
         "has_more": len(normalized_rows) > len(limited_rows),
-        "rows": limited_rows,
+        "rows": public_rows,
         "load_error": "",
     }
 
@@ -536,21 +609,27 @@ def get_stock_obvious_trades(
         allowed_actions=_allowed_trade_actions(normalized_trade_filter),
         min_strength=normalized_min_strength,
     )
-    signal_slice, signal_total, safe_signal_page = _slice_signal_rows(
+    signal_page_rows, signal_total, safe_signal_page = _slice_signal_rows(
         signals,
         signal_page=normalized_signal_page,
         signal_page_size=normalized_signal_page_size,
+    )
+    covered_stock_keys = [
+        _clean_text(item)
+        for item in (view.get("covered_stock_keys") or [])
+        if _clean_text(item)
+    ]
+    enriched_signal_rows = enrich_trade_signal_rows(
+        signal_page_rows,
+        stock_key=_clean_text(view.get("entity_key") or resolved_stock_key),
+        related_stock_keys=covered_stock_keys,
     )
     load_error = _clean_text(view.get("load_error")) if signal_total <= 0 else ""
     return {
         "requested_stock": _clean_text(stock),
         "resolved_stock_key": _clean_text(resolved_stock_key),
         "view_scope": normalized_view_scope,
-        "covered_stock_keys": [
-            _clean_text(item)
-            for item in (view.get("covered_stock_keys") or [])
-            if _clean_text(item)
-        ],
+        "covered_stock_keys": covered_stock_keys,
         "page_title": _clean_text(view.get("page_title")),
         "lookback_days": normalized_lookback_days,
         "trade_filter": normalized_trade_filter,
@@ -558,7 +637,7 @@ def get_stock_obvious_trades(
         "signal_total": signal_total,
         "signal_page": safe_signal_page,
         "signal_page_size": normalized_signal_page_size,
-        "signals": signal_slice,
+        "signals": enriched_signal_rows,
         "same_company_stocks": [
             {str(key): _clean_text(raw) for key, raw in row.items() if _clean_text(key)}
             for row in (view.get("same_company_stocks") or [])

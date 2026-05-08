@@ -13,6 +13,11 @@ from alphavault.capabilities.stock_lookup import (
 )
 from alphavault.domains.stock.keys import normalize_stock_key, stock_value
 from alphavault.domains.stock.view_scope import STOCK_VIEW_SCOPE_COMPANY
+from alphavault.research_workbench.trade_signal_review_service import (
+    TradeReviewResult,
+    coerce_trade_review_result,
+    enrich_trade_signal_rows,
+)
 
 DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS = 90
 DEFAULT_STOCK_EVIDENCE_MAX_POSTS = 40
@@ -94,6 +99,7 @@ class StockEvidenceRow(TypedDict):
     summary: str
     raw_text: str
     tree_text: str
+    trade_review: TradeReviewResult
 
 
 class StockEvidencePack(TypedDict):
@@ -281,6 +287,7 @@ def _normalize_signal_row(row: dict[str, object]) -> StockEvidenceRow:
         "summary": _extract_summary(row),
         "raw_text": _trim_text(row.get("raw_text"), limit=_RAW_TEXT_EXCERPT_LIMIT),
         "tree_text": _trim_text(row.get("tree_text"), limit=_TREE_TEXT_EXCERPT_LIMIT),
+        "trade_review": coerce_trade_review_result(row.get("trade_review")),
     }
 
 
@@ -683,6 +690,12 @@ def _build_stock_evidence_pack_for_resolved_key(
     )
     raw_rows = view.get("signals")
     signal_row_source = raw_rows if isinstance(raw_rows, list) else []
+    covered_stock_keys = _trim_stock_key_list(view.get("covered_stock_keys"))
+    signal_row_source = enrich_trade_signal_rows(
+        [dict(row) for row in signal_row_source if isinstance(row, dict)],
+        stock_key=resolved_stock_key,
+        related_stock_keys=covered_stock_keys,
+    )
     signal_rows = _dedupe_signal_rows(
         [
             _normalize_signal_row(row)
@@ -700,7 +713,7 @@ def _build_stock_evidence_pack_for_resolved_key(
         "requested_stock": _clean_text(requested_stock),
         "resolved_stock_key": _clean_text(resolved_stock_key),
         "view_scope": STOCK_VIEW_SCOPE_COMPANY,
-        "covered_stock_keys": _trim_stock_key_list(view.get("covered_stock_keys")),
+        "covered_stock_keys": covered_stock_keys,
         "page_title": _clean_text(view.get("page_title")),
         "same_company_stocks": _trim_named_rows(view.get("same_company_stocks")),
         "window_days": int(window_days),
