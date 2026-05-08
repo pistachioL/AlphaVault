@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
 import importlib
+import hashlib
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -80,6 +81,7 @@ _BLOCKING_FLAGS = frozenset(
     }
 )
 _EMPTY_TREE_MESSAGE = "没有对话流。"
+_REVIEW_VERSION_FINGERPRINT_SEPARATOR = "@"
 
 
 class TradeReviewHistoryRef(TypedDict):
@@ -268,6 +270,47 @@ def _make_review_result(
     }
 
 
+def _review_content_fingerprint(request: _TradeReviewRequest) -> str:
+    payload = "\n".join(
+        (
+            request.post_uid,
+            request.stock_key,
+            request.author,
+            request.created_at,
+            request.action,
+            str(request.action_strength),
+            request.summary,
+            request.raw_text,
+            request.tree_text,
+        )
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _storage_review_version(review_version: str, request: _TradeReviewRequest) -> str:
+    base_version = _clean_text(review_version) or TRADE_SIGNAL_REVIEW_VERSION
+    return (
+        f"{base_version}{_REVIEW_VERSION_FINGERPRINT_SEPARATOR}"
+        f"{_review_content_fingerprint(request)}"
+    )
+
+
+def _split_review_version(value: object) -> tuple[str, str]:
+    text = _clean_text(value)
+    if not text:
+        return "", ""
+    base_version, separator, fingerprint = text.partition(
+        _REVIEW_VERSION_FINGERPRINT_SEPARATOR
+    )
+    if not separator:
+        return text, ""
+    return base_version, fingerprint
+
+
+def _public_review_version(value: object) -> str:
+    return _split_review_version(value)[0]
+
+
 def coerce_trade_review_result(
     value: object,
     *,
@@ -297,7 +340,7 @@ def coerce_trade_review_result(
         history_window_days=_coerce_int(value.get("history_window_days")),
         history_signal_count=_coerce_int(value.get("history_signal_count")),
         history_refs=value.get("history_refs"),
-        review_version=_clean_text(value.get("review_version")),
+        review_version=_public_review_version(value.get("review_version")),
         reviewed_at=_clean_text(value.get("reviewed_at")),
         error_text=_clean_text(value.get("error_text")),
     )
@@ -332,7 +375,7 @@ def _record_payload_from_result(
         "history_signal_count": result["history_signal_count"],
         "history_refs": list(result["history_refs"]),
         "review_model": _clean_text(review_model),
-        "review_version": result["review_version"],
+        "review_version": _storage_review_version(result["review_version"], request),
         "error_text": result["error_text"],
         "reviewed_at": result["reviewed_at"],
         "updated_at": result["reviewed_at"] or now_cst_str(),
@@ -744,8 +787,17 @@ def _row_cache_key(request: _TradeReviewRequest) -> TradeSignalReviewKey:
     return (request.platform, request.assertion_id, request.stock_key)
 
 
-def _is_current_review_fresh(record: TradeSignalReviewRecord) -> bool:
-    if _clean_text(record.get("review_version")) != TRADE_SIGNAL_REVIEW_VERSION:
+def _is_current_review_fresh(
+    record: TradeSignalReviewRecord,
+    *,
+    request: _TradeReviewRequest,
+) -> bool:
+    stored_version, stored_fingerprint = _split_review_version(
+        record.get("review_version")
+    )
+    if stored_version != TRADE_SIGNAL_REVIEW_VERSION:
+        return False
+    if stored_fingerprint != _review_content_fingerprint(request):
         return False
     return _clean_text(record.get("review_status")) in _FRESH_REVIEW_STATUSES
 
@@ -848,31 +900,26 @@ def _run_pending_trade_reviews(
     return results
 
 
-def enrich_trade_signal_rows(
-    rows: Sequence[Mapping[str, object]],
+def _enrich_prepared_trade_signal_rows(
+    prepared_rows: list[dict[str, object]],
     *,
-    stock_key: str,
-    related_stock_keys: Sequence[str] | None = None,
+    request_contexts: dict[int, tuple[str, tuple[str, ...]]],
 ) -> list[dict[str, object]]:
-    normalized_stock_key = normalize_stock_key(stock_key)
-    if not normalized_stock_key or not rows:
-        return [
-            _strip_internal_fields({**dict(row), "trade_review": _skip_review()})
-            for row in rows
-        ]
-    normalized_related_stock_keys = _normalize_related_stock_keys(
-        normalized_stock_key,
-        related_stock_keys,
-    )
+    if not prepared_rows:
+        return []
     engine = get_research_workbench_engine_from_env()
-    prepared_rows: list[dict[str, object]] = [dict(row) for row in rows]
     requests_by_index: dict[int, _TradeReviewRequest] = {}
     request_keys: list[TradeSignalReviewKey] = []
     for index, row in enumerate(prepared_rows):
+        request_context = request_contexts.get(index)
+        if request_context is None:
+            row["trade_review"] = _skip_review()
+            continue
+        stock_key, related_stock_keys = request_context
         request = _build_request(
             row,
-            stock_key=normalized_stock_key,
-            related_stock_keys=normalized_related_stock_keys,
+            stock_key=stock_key,
+            related_stock_keys=related_stock_keys,
         )
         if request is None:
             row["trade_review"] = _skip_review()
@@ -888,7 +935,7 @@ def enrich_trade_signal_rows(
             continue
         cache_key = _row_cache_key(request)
         cached = cached_reviews.get(cache_key)
-        if cached is not None and _is_current_review_fresh(cached):
+        if cached is not None and _is_current_review_fresh(cached, request=request):
             row["trade_review"] = _review_result_from_record(cached)
             continue
         pending_reviews.append(_PendingTradeReview(index=index, request=request))
@@ -918,6 +965,57 @@ def enrich_trade_signal_rows(
     return [_strip_internal_fields(row) for row in prepared_rows]
 
 
+def enrich_trade_signal_rows(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    stock_key: str,
+    related_stock_keys: Sequence[str] | None = None,
+) -> list[dict[str, object]]:
+    normalized_stock_key = normalize_stock_key(stock_key)
+    if not normalized_stock_key or not rows:
+        return [
+            _strip_internal_fields({**dict(row), "trade_review": _skip_review()})
+            for row in rows
+        ]
+    normalized_related_stock_keys = _normalize_related_stock_keys(
+        normalized_stock_key,
+        related_stock_keys,
+    )
+    prepared_rows = [dict(row) for row in rows]
+    return _enrich_prepared_trade_signal_rows(
+        prepared_rows,
+        request_contexts={
+            index: (normalized_stock_key, normalized_related_stock_keys)
+            for index, _ in enumerate(prepared_rows)
+        },
+    )
+
+
+def enrich_trade_signal_rows_by_stock_keys(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    stock_key_field: str = "stock_key",
+) -> list[dict[str, object]]:
+    prepared_rows = [dict(row) for row in rows]
+    if not prepared_rows:
+        return []
+    request_contexts: dict[int, tuple[str, tuple[str, ...]]] = {}
+    for index, row in enumerate(prepared_rows):
+        normalized_stock_key = normalize_stock_key(
+            _clean_text(row.get(stock_key_field))
+        )
+        if not normalized_stock_key:
+            continue
+        request_contexts[index] = (
+            normalized_stock_key,
+            _normalize_related_stock_keys(normalized_stock_key, None),
+        )
+    return _enrich_prepared_trade_signal_rows(
+        prepared_rows,
+        request_contexts=request_contexts,
+    )
+
+
 def build_trade_review_for_row(
     row: Mapping[str, object],
     *,
@@ -944,4 +1042,5 @@ __all__ = [
     "build_trade_review_for_row",
     "coerce_trade_review_result",
     "enrich_trade_signal_rows",
+    "enrich_trade_signal_rows_by_stock_keys",
 ]

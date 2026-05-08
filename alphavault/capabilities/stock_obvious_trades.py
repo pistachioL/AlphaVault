@@ -19,8 +19,9 @@ from alphavault.domains.stock.view_scope import (
 )
 from alphavault.research_workbench.trade_signal_review_service import (
     TradeReviewResult,
-    build_trade_review_for_row,
+    coerce_trade_review_result,
     enrich_trade_signal_rows,
+    enrich_trade_signal_rows_by_stock_keys,
 )
 
 
@@ -467,6 +468,22 @@ def _normalize_stock_signal_rows(
     return sorted(out, key=_signal_sort_key)
 
 
+def _build_market_trade_review_row(
+    row: _ObviousTradeSeedRow,
+) -> dict[str, object]:
+    return {
+        "platform": row.get("platform"),
+        "assertion_id": row.get("assertion_id"),
+        "post_uid": row.get("post_uid"),
+        "author": row.get("recent_author"),
+        "created_at": row.get("recent_created_at"),
+        "summary": row.get("summary"),
+        "action": row.get("action"),
+        "action_strength": row.get("action_strength"),
+        "stock_key": row.get("stock_key"),
+    }
+
+
 def list_obvious_trades(
     *,
     lookback_days: int = DEFAULT_OBVIOUS_TRADE_LOOKBACK_DAYS,
@@ -517,21 +534,17 @@ def list_obvious_trades(
         min_strength=normalized_min_strength,
     )
     limited_rows = normalized_rows[:normalized_limit]
+    enriched_review_rows = enrich_trade_signal_rows_by_stock_keys(
+        [_build_market_trade_review_row(row) for row in limited_rows]
+    )
     public_rows: list[ObviousTradeRow] = []
-    for row in limited_rows:
-        recent_trade_review = build_trade_review_for_row(
-            {
-                "platform": row.get("platform"),
-                "assertion_id": row.get("assertion_id"),
-                "post_uid": row.get("post_uid"),
-                "author": row.get("recent_author"),
-                "created_at": row.get("recent_created_at"),
-                "summary": row.get("summary"),
-                "action": row.get("action"),
-                "action_strength": row.get("action_strength"),
-            },
-            stock_key=_clean_text(row.get("stock_key")),
+    for index, row in enumerate(limited_rows):
+        review_row = (
+            enriched_review_rows[index]
+            if index < len(enriched_review_rows)
+            else {"trade_review": None}
         )
+        recent_trade_review = coerce_trade_review_result(review_row.get("trade_review"))
         public_rows.append(
             {
                 "stock_key": _clean_text(row.get("stock_key")),
