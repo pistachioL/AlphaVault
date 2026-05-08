@@ -34,12 +34,16 @@ _WARNING_ALERT_MARKERS = (
 )
 _INTERNAL_LOGGER_PREFIXES = ("urllib3", "requests")
 _SUPPRESSED_NTFY_MESSAGE_PREFIXES = (
-    "[llm] request_retry label=topic:",
-    "[llm] request_failed label=topic:",
+    "[llm] request_retry label=",
+    "[llm] request_failed label=",
+    "[llm] request_defer label=",
 )
 _SUPPRESSED_NTFY_MESSAGE_MARKERS = (
     "AiInvalidJsonError",
     "ai_invalid_json",
+    "RateLimitError",
+    "status_code=429",
+    "code=model_cooldown",
 )
 _MAX_BODY_MESSAGE_CHARS = 1200
 _MAX_STACK_CHARS = 1800

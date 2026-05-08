@@ -3,7 +3,7 @@ import logging
 import threading
 import time
 
-from alphavault.ai._client import AiInvalidJsonError
+from alphavault.ai._client import AiInvalidJsonError, AiRetryLaterError
 from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
     DEFAULT_AI_REASONING_EFFORT,
@@ -773,6 +773,16 @@ def process_one_post_uid_topic_prompt_v4(
         clear_topic_prompt_failure_context()
         return True
     except Exception as err:
+        if isinstance(err, AiRetryLaterError):
+            set_topic_prompt_failure_context(
+                kind="retry_later",
+                error=format_llm_error_one_line(err, limit=700),
+                prompt_version=str(config.prompt_version or "").strip(),
+                root_key=str(root_key or "").strip(),
+                retry_after_seconds=max(
+                    1, int(getattr(err, "retry_after_seconds", 0) or 1)
+                ),
+            )
         if isinstance(err, AiInvalidJsonError):
             raw_tail = to_one_line_tail(getattr(err, "raw_ai_text", ""), max_chars=240)
             set_topic_prompt_failure_context(

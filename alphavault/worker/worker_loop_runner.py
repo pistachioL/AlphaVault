@@ -12,7 +12,6 @@ from alphavault.rss.utils import RateLimiter, sleep_until_active
 from alphavault.logging_config import get_logger
 from alphavault.worker import periodic_jobs
 from alphavault.worker.runtime_models import LLMConfig, WorkerSourceRuntime
-from alphavault.worker.redis_stream_queue import redis_ai_reset_consumer_group
 from alphavault.worker.source_runtime import log_source_runtime
 from alphavault.worker.worker_loop_models import (
     SourceTickContext,
@@ -73,31 +72,6 @@ def _build_settings(args) -> WorkerLoopSettings:
         limit_or_none=limit_or_none,
         stuck_seconds=int(stuck_seconds),
     )
-
-
-def _recover_redis_ai_pending_on_start(
-    *,
-    sources: list[WorkerSourceRuntime],
-    redis_client: Any,
-) -> None:
-    if not redis_client:
-        return
-    queue_keys = {
-        str(getattr(source, "redis_queue_key", "") or "").strip() for source in sources
-    }
-    for queue_key in sorted(key for key in queue_keys if key):
-        try:
-            redis_ai_reset_consumer_group(
-                redis_client,
-                queue_key,
-            )
-        except Exception as err:
-            logger.warning(
-                "[redis] ai_group_reset_error queue=%s %s: %s",
-                queue_key,
-                type(err).__name__,
-                err,
-            )
 
 
 def _compute_maintenance(
@@ -300,10 +274,6 @@ def run_worker_forever(
     worker_interval_seconds: float,
 ) -> None:
     settings = _build_settings(args)
-    _recover_redis_ai_pending_on_start(
-        sources=sources,
-        redis_client=redis_client,
-    )
     for src in sources:
         log_source_runtime(
             source=src,

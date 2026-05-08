@@ -20,6 +20,21 @@ def payload_retry_count(
     return max(0, int(parse_int_or_default_fn(raw_retry_count, 0)))
 
 
+def failure_context_retry_after_seconds(
+    failure_context: dict[str, object] | None,
+) -> int:
+    if not isinstance(failure_context, dict):
+        return 0
+    if str(failure_context.get("kind") or "").strip() != "retry_later":
+        return 0
+    raw_value = failure_context.get("retry_after_seconds")
+    try:
+        parsed = int(str(raw_value).strip())
+    except Exception:
+        return 0
+    return max(0, parsed)
+
+
 def payload_to_cloud_post(
     payload: dict[str, object],
     *,
@@ -165,7 +180,13 @@ def process_one_redis_payload(
             )
         return
 
-    next_retry_at = int(now_epoch_fn()) + int(backoff_seconds_fn(retry_count))
+    retry_after_seconds = failure_context_retry_after_seconds(failure_context)
+    retry_delay_seconds = (
+        retry_after_seconds
+        if retry_after_seconds > 0
+        else int(backoff_seconds_fn(retry_count))
+    )
+    next_retry_at = int(now_epoch_fn()) + int(retry_delay_seconds)
     retry_payload = dict(payload)
     retry_payload["retry_count"] = int(retry_count)
     retry_payload["next_retry_at"] = int(next_retry_at)

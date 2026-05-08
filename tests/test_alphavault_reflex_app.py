@@ -86,7 +86,8 @@ def test_mcp_http_app_runs_under_parent_lifespan() -> None:
     assert response.status_code < 500
 
 
-def test_mcp_http_app_runs_under_reflex_factory_lifespan() -> None:
+def test_mcp_http_app_runs_under_reflex_factory_lifespan(monkeypatch) -> None:
+    monkeypatch.setattr(app, "_compile", lambda *args, **kwargs: None)
     with TestClient(app()) as client:
         response = client.get(
             f"{MCP_ROUTE_MOUNT_PATH}/",

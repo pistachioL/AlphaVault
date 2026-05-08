@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, Optional
 
 from alphavault.ai._errors import (
     _append_trace,
+    extract_retry_after_seconds,
     _mask_secret,
     extract_llm_error_details,
     format_llm_error_one_line,
@@ -19,6 +20,8 @@ from alphavault.logging_config import get_logger
 DEFAULT_AI_RETRY_BACKOFF_SEC = 2.0
 DEFAULT_AI_RETRY_MAX_BACKOFF_SEC = 32.0
 DEFAULT_AI_RETRY_LOG_ERROR_LIMIT = 300
+DEFAULT_AI_INLINE_RETRY_AFTER_SEC = 60
+DEFAULT_AI_RETRY_AFTER_MAX_SECONDS = 24 * 60 * 60
 logger = get_logger(__name__)
 
 
@@ -46,6 +49,43 @@ class AiValidationError(RuntimeError):
         self.raw_ai_text = str(raw_ai_text or "")
 
 
+class AiRetryLaterError(RuntimeError):
+    """
+    Raised when the provider asks the caller to retry much later.
+
+    The worker should hand the job back to the delayed retry queue instead of
+    holding the consumer thread for a long cooldown window.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retry_after_seconds: int,
+        raw_error: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = max(1, int(retry_after_seconds))
+        if raw_error is None:
+            return
+        for attr_name in (
+            "status_code",
+            "provider",
+            "llm_provider",
+            "model",
+            "request_id",
+            "code",
+            "type",
+            "param",
+            "response",
+            "request",
+        ):
+            attr_value = getattr(raw_error, attr_name, None)
+            if attr_value in (None, ""):
+                continue
+            setattr(self, attr_name, attr_value)
+
+
 def _to_one_line_tail(text: str, *, max_chars: int) -> str:
     s = str(text or "").replace("\r", " ").replace("\n", " ").strip()
     if not s:
@@ -68,6 +108,13 @@ def _load_raw_ai_text(response: Any, *, ai_stream: bool, api_mode: str) -> str:
         return _collect_streamed_ai_text(response, api_mode=api_mode)
     finally:
         _close_if_possible(response)
+
+
+def _clamp_retry_after_seconds(retry_after_seconds: int | float) -> int:
+    return max(
+        1,
+        min(int(retry_after_seconds), int(DEFAULT_AI_RETRY_AFTER_MAX_SECONDS)),
+    )
 
 
 def _call_ai_with_openai(
@@ -203,6 +250,29 @@ def _call_ai_with_openai(
                     "error_details": extract_llm_error_details(exc),
                 },
             )
+            retry_after_seconds = extract_retry_after_seconds(exc)
+            if retry_after_seconds is not None:
+                retry_after_seconds = _clamp_retry_after_seconds(retry_after_seconds)
+                formatted_error = format_llm_error_one_line(
+                    exc,
+                    limit=DEFAULT_AI_RETRY_LOG_ERROR_LIMIT,
+                )
+                if (
+                    retry_after_seconds > DEFAULT_AI_INLINE_RETRY_AFTER_SEC
+                    or attempt >= retries
+                ):
+                    logger.info(
+                        "[llm] request_defer label=%s attempt=%s retry_after_seconds=%s error=%s",
+                        trace_label,
+                        attempt + 1,
+                        retry_after_seconds,
+                        formatted_error,
+                    )
+                    raise AiRetryLaterError(
+                        formatted_error,
+                        retry_after_seconds=retry_after_seconds,
+                        raw_error=exc,
+                    ) from exc
             if attempt >= retries:
                 logger.warning(
                     "[llm] request_failed label=%s attempts=%s error=%s",
@@ -214,7 +284,10 @@ def _call_ai_with_openai(
                     ),
                 )
                 break
-            wait_seconds = min(backoff_sec, DEFAULT_AI_RETRY_MAX_BACKOFF_SEC)
+            if retry_after_seconds is not None:
+                wait_seconds = float(retry_after_seconds)
+            else:
+                wait_seconds = min(backoff_sec, DEFAULT_AI_RETRY_MAX_BACKOFF_SEC)
             logger.warning(
                 "[llm] request_retry label=%s attempt=%s next_attempt=%s wait_seconds=%s error=%s",
                 trace_label,

@@ -1,10 +1,22 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from alphavault.ai._text import clean_text
+
+_RETRY_AFTER_SECONDS_PATTERNS = (
+    re.compile(r"""["']reset_seconds["']\s*[:=]\s*(\d+)""", re.IGNORECASE),
+    re.compile(r"""["']retry_after_seconds["']\s*[:=]\s*(\d+)""", re.IGNORECASE),
+    re.compile(r"""\bretry_after_seconds\s*[:=]\s*(\d+)""", re.IGNORECASE),
+    re.compile(r"""\bretry[-_ ]after\s*[:=]?\s*(\d+)""", re.IGNORECASE),
+)
+_ERROR_CODE_PATTERNS = (
+    re.compile(r"""["']code["']\s*[:=]\s*["']([^"']+)["']""", re.IGNORECASE),
+    re.compile(r"""\bcode=([A-Za-z0-9_.-]+)""", re.IGNORECASE),
+)
 
 
 def _mask_secret(value: Any) -> str:
@@ -29,6 +41,37 @@ def _truncate_text(text: str, limit: int) -> str:
     if n <= 3:
         return text[:n]
     return text[: n - 3] + "..."
+
+
+def _extract_retry_after_seconds_from_text(text: str) -> int | None:
+    compact_text = _compact_text(text)
+    if not compact_text:
+        return None
+    for pattern in _RETRY_AFTER_SECONDS_PATTERNS:
+        matched = pattern.search(compact_text)
+        if matched is None:
+            continue
+        try:
+            parsed = int(str(matched.group(1) or "").strip())
+        except Exception:
+            continue
+        if parsed > 0:
+            return parsed
+    return None
+
+
+def _extract_error_code_from_text(text: str) -> str:
+    compact_text = _compact_text(text)
+    if not compact_text:
+        return ""
+    for pattern in _ERROR_CODE_PATTERNS:
+        matched = pattern.search(compact_text)
+        if matched is None:
+            continue
+        code = _compact_text(matched.group(1))
+        if code:
+            return code
+    return ""
 
 
 def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
@@ -66,6 +109,8 @@ def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
             details["request_id"] = _compact_text(request_id)
 
         code = getattr(exc, "code", None)
+        if not code:
+            code = _extract_error_code_from_text(str(exc))
         if code:
             details["code"] = _compact_text(code)
         error_type = getattr(exc, "type", None)
@@ -74,6 +119,32 @@ def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
         param = getattr(exc, "param", None)
         if param:
             details["param"] = _compact_text(param)
+
+        retry_after_seconds = getattr(exc, "retry_after_seconds", None)
+        if retry_after_seconds is None:
+            retry_after_seconds = getattr(exc, "reset_seconds", None)
+        if retry_after_seconds is None:
+            response = getattr(exc, "response", None)
+            headers = getattr(response, "headers", None)
+            retry_after_header = None
+            if headers and hasattr(headers, "get"):
+                retry_after_header = headers.get("retry-after") or headers.get(
+                    "Retry-After"
+                )
+            if retry_after_header not in (None, ""):
+                try:
+                    retry_after_seconds = int(float(str(retry_after_header).strip()))
+                except Exception:
+                    retry_after_seconds = None
+        if retry_after_seconds is None:
+            retry_after_seconds = _extract_retry_after_seconds_from_text(str(exc))
+        if retry_after_seconds is not None:
+            try:
+                parsed_retry_after = int(float(str(retry_after_seconds).strip()))
+            except Exception:
+                parsed_retry_after = 0
+            if parsed_retry_after > 0:
+                details["retry_after_seconds"] = parsed_retry_after
 
         request = getattr(exc, "request", None)
         if request is not None:
@@ -123,6 +194,19 @@ def extract_llm_error_details(exc: BaseException) -> Dict[str, Any]:
     return details
 
 
+def extract_retry_after_seconds(exc: BaseException) -> int | None:
+    try:
+        raw_value = extract_llm_error_details(exc).get("retry_after_seconds")
+        if raw_value in (None, ""):
+            return None
+        parsed = int(float(str(raw_value).strip()))
+    except Exception:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
     """
     One-line error for log + DB. Example:
@@ -134,6 +218,7 @@ def format_llm_error_one_line(exc: BaseException, *, limit: int = 900) -> str:
         parts.append(str(details.get("type") or type(exc).__name__))
         for key in (
             "status_code",
+            "retry_after_seconds",
             "provider",
             "model",
             "request_id",
