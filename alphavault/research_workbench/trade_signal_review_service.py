@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import Future, ThreadPoolExecutor
 import importlib
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
@@ -25,8 +26,10 @@ from alphavault.domains.signal.aggregator import coerce_signal_timestamp
 from alphavault.domains.stock.keys import normalize_stock_key
 from alphavault.infra.ai.runtime_config import (
     AI_TASK_TRADE_SIGNAL_REVIEW,
+    AiRuntimeConfig,
     ai_task_runtime_config_from_env,
 )
+from alphavault.rss.utils import RateLimiter
 from alphavault.timeutil import now_cst_str
 
 from .service import get_research_workbench_engine_from_env
@@ -120,6 +123,19 @@ class _TradeReviewRequest:
     related_stock_keys: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _PendingTradeReview:
+    index: int
+    request: _TradeReviewRequest
+
+
+@dataclass(frozen=True)
+class _TradeReviewExecution:
+    index: int
+    review_result: TradeReviewResult
+    review_model: str
+
+
 def _clean_text(value: object) -> str:
     return str(value or "").strip()
 
@@ -130,6 +146,16 @@ def _coerce_int(value: object, *, default: int = 0) -> int:
         return default
     try:
         return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: object, *, default: float = 0.0) -> float:
+    raw = _clean_text(value)
+    if not raw:
+        return default
+    try:
+        return float(raw)
     except (TypeError, ValueError):
         return default
 
@@ -655,12 +681,10 @@ def _generate_review(
     request: _TradeReviewRequest,
     history_refs: list[TradeReviewHistoryRef],
     history_signal_count: int,
+    runtime_config: AiRuntimeConfig,
+    request_gate: Callable[[], None] | None = None,
 ) -> tuple[TradeReviewResult, str]:
-    config = ai_task_runtime_config_from_env(
-        task_key=AI_TASK_TRADE_SIGNAL_REVIEW,
-        timeout_seconds_default=DEFAULT_TRADE_SIGNAL_REVIEW_TIMEOUT_SECONDS,
-    )
-    if not _clean_text(config.api_key):
+    if not _clean_text(runtime_config.api_key):
         return (
             _failed_review(
                 error_text="Missing AI_API_KEY",
@@ -675,17 +699,18 @@ def _generate_review(
             history_refs=history_refs,
             history_signal_count=history_signal_count,
         ),
-        api_mode=config.api_mode,
+        api_mode=runtime_config.api_mode,
         ai_stream=False,
-        model_name=config.model,
-        base_url=config.base_url,
-        api_key=config.api_key,
-        timeout_seconds=float(config.timeout_seconds),
-        retry_count=int(config.retries),
-        temperature=float(config.temperature),
-        reasoning_effort=str(config.reasoning_effort),
+        model_name=runtime_config.model,
+        base_url=runtime_config.base_url,
+        api_key=runtime_config.api_key,
+        timeout_seconds=float(runtime_config.timeout_seconds),
+        retry_count=int(runtime_config.retries),
+        temperature=float(runtime_config.temperature),
+        reasoning_effort=str(runtime_config.reasoning_effort),
         trace_out=None,
         trace_label=f"trade_signal_review:{request.assertion_id}",
+        request_gate=request_gate,
     )
     return (
         _normalize_ai_review_result(
@@ -693,7 +718,7 @@ def _generate_review(
             history_signal_count=history_signal_count,
             history_refs=history_refs,
         ),
-        _clean_text(config.model),
+        _clean_text(runtime_config.model),
     )
 
 
@@ -732,6 +757,97 @@ def _strip_internal_fields(row: dict[str, object]) -> dict[str, object]:
     return cleaned
 
 
+def _runtime_ai_max_inflight(runtime_config: AiRuntimeConfig) -> int:
+    return max(1, _coerce_int(runtime_config.ai_max_inflight, default=1))
+
+
+def _runtime_ai_rpm(runtime_config: AiRuntimeConfig) -> float:
+    return max(0.0, _coerce_float(runtime_config.ai_rpm, default=0.0))
+
+
+def _run_trade_review(
+    *,
+    index: int,
+    request: _TradeReviewRequest,
+    runtime_config: AiRuntimeConfig,
+    request_gate: Callable[[], None] | None,
+) -> _TradeReviewExecution:
+    history_refs, history_signal_count = _load_trade_history_rows(
+        request=request,
+        history_window_days=DEFAULT_TRADE_SIGNAL_REVIEW_HISTORY_WINDOW_DAYS,
+    )
+    try:
+        review_result, review_model = _generate_review(
+            request=request,
+            history_refs=history_refs,
+            history_signal_count=history_signal_count,
+            runtime_config=runtime_config,
+            request_gate=request_gate,
+        )
+    except BaseException as err:
+        logger.warning(
+            "[trade_review] generation_error platform=%s assertion_id=%s error=%s",
+            request.platform,
+            request.assertion_id,
+            format_llm_error_one_line(err, limit=240),
+        )
+        review_result = _failed_review(
+            error_text=format_llm_error_one_line(err, limit=240),
+            history_signal_count=history_signal_count,
+            history_refs=history_refs,
+        )
+        review_model = ""
+    return _TradeReviewExecution(
+        index=index,
+        review_result=review_result,
+        review_model=review_model,
+    )
+
+
+def _run_pending_trade_reviews(
+    pending_reviews: list[_PendingTradeReview],
+    *,
+    runtime_config: AiRuntimeConfig,
+) -> dict[int, _TradeReviewExecution]:
+    if not pending_reviews:
+        return {}
+    request_gate: Callable[[], None] | None = None
+    limiter = RateLimiter(_runtime_ai_rpm(runtime_config))
+    if limiter.has_limit():
+        request_gate = limiter.wait
+    resolved_ai_max_inflight = min(
+        _runtime_ai_max_inflight(runtime_config),
+        len(pending_reviews),
+    )
+    if resolved_ai_max_inflight <= 1:
+        return {
+            pending_review.index: _run_trade_review(
+                index=pending_review.index,
+                request=pending_review.request,
+                runtime_config=runtime_config,
+                request_gate=request_gate,
+            )
+            for pending_review in pending_reviews
+        }
+    futures: list[Future[_TradeReviewExecution]] = []
+    results: dict[int, _TradeReviewExecution] = {}
+    with ThreadPoolExecutor(max_workers=resolved_ai_max_inflight) as executor:
+        for pending_review in pending_reviews:
+            futures.append(
+                executor.submit(
+                    _run_trade_review,
+                    index=pending_review.index,
+                    request=pending_review.request,
+                    runtime_config=runtime_config,
+                    request_gate=request_gate,
+                )
+            )
+        for future in futures:
+            execution = future.result()
+            results[execution.index] = execution
+    return results
+
+
 def enrich_trade_signal_rows(
     rows: Sequence[Mapping[str, object]],
     *,
@@ -764,6 +880,7 @@ def enrich_trade_signal_rows(
         requests_by_index[index] = _ensure_request_texts(request)
         request_keys.append(_row_cache_key(requests_by_index[index]))
     cached_reviews = list_trade_signal_reviews_by_keys(engine, keys=request_keys)
+    pending_reviews: list[_PendingTradeReview] = []
     payloads_to_upsert: list[dict[str, object]] = []
     for index, row in enumerate(prepared_rows):
         request = requests_by_index.get(index)
@@ -774,37 +891,28 @@ def enrich_trade_signal_rows(
         if cached is not None and _is_current_review_fresh(cached):
             row["trade_review"] = _review_result_from_record(cached)
             continue
-        history_refs, history_signal_count = _load_trade_history_rows(
-            request=request,
-            history_window_days=DEFAULT_TRADE_SIGNAL_REVIEW_HISTORY_WINDOW_DAYS,
+        pending_reviews.append(_PendingTradeReview(index=index, request=request))
+    if pending_reviews:
+        runtime_config = ai_task_runtime_config_from_env(
+            task_key=AI_TASK_TRADE_SIGNAL_REVIEW,
+            timeout_seconds_default=DEFAULT_TRADE_SIGNAL_REVIEW_TIMEOUT_SECONDS,
         )
-        try:
-            review_result, review_model = _generate_review(
-                request=request,
-                history_refs=history_refs,
-                history_signal_count=history_signal_count,
-            )
-        except BaseException as err:
-            logger.warning(
-                "[trade_review] generation_error platform=%s assertion_id=%s error=%s",
-                request.platform,
-                request.assertion_id,
-                format_llm_error_one_line(err, limit=240),
-            )
-            review_result = _failed_review(
-                error_text=format_llm_error_one_line(err, limit=240),
-                history_signal_count=history_signal_count,
-                history_refs=history_refs,
-            )
-            review_model = ""
-        row["trade_review"] = review_result
-        payloads_to_upsert.append(
-            _record_payload_from_result(
-                request=request,
-                result=review_result,
-                review_model=review_model,
-            )
+        executions_by_index = _run_pending_trade_reviews(
+            pending_reviews,
+            runtime_config=runtime_config,
         )
+        for pending_review in pending_reviews:
+            execution = executions_by_index[pending_review.index]
+            prepared_rows[pending_review.index]["trade_review"] = (
+                execution.review_result
+            )
+            payloads_to_upsert.append(
+                _record_payload_from_result(
+                    request=pending_review.request,
+                    result=execution.review_result,
+                    review_model=execution.review_model,
+                )
+            )
     if payloads_to_upsert:
         upsert_trade_signal_reviews(engine, rows=payloads_to_upsert)
     return [_strip_internal_fields(row) for row in prepared_rows]
