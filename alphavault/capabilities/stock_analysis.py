@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from functools import cache
 from types import ModuleType
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 from alphavault.capabilities.stock_lookup import (
     STOCK_RESOLVE_REQUIRED_ERROR,

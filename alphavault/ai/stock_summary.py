@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 from alphavault.ai.analyze import _call_ai_with_openai, clean_text, clamp_float
 from alphavault.capabilities.stock_analysis import StockEvidencePack

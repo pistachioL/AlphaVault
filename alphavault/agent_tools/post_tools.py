@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 from alphavault.capabilities.post_detail import PostDetailResult, get_post_detail
 from alphavault.capabilities.post_search import (

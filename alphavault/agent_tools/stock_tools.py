@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 from alphavault.capabilities.stock_analysis import (
     DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,

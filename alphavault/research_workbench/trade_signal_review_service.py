@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
 from types import ModuleType
-from typing import TypedDict
+from typing_extensions import TypedDict
 
 from alphavault.ai._errors import format_llm_error_one_line
 from alphavault.ai.analyze import _call_ai_with_openai
