@@ -57,6 +57,14 @@ _EXPORTS = {
         "alphavault.capabilities.stock_obvious_trades",
         "ObviousTradeRow",
     ),
+    "PortfolioCandidateBuckets": (
+        "alphavault.capabilities.stock_analysis",
+        "PortfolioCandidateBuckets",
+    ),
+    "PortfolioCandidateRow": (
+        "alphavault.capabilities.stock_analysis",
+        "PortfolioCandidateRow",
+    ),
     "PortfolioContext": ("alphavault.capabilities.stock_analysis", "PortfolioContext"),
     "PostDetailResult": ("alphavault.capabilities.post_detail", "PostDetailResult"),
     "PostSearchResult": ("alphavault.capabilities.post_search", "PostSearchResult"),
@@ -135,6 +143,8 @@ __all__ = [
     "DEFAULT_STOCK_RESULT_LIMIT",
     "ObviousTradeListResult",
     "ObviousTradeRow",
+    "PortfolioCandidateBuckets",
+    "PortfolioCandidateRow",
     "PortfolioContext",
     "PostDetailResult",
     "PostSearchResult",

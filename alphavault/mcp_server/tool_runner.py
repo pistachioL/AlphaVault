@@ -2,12 +2,30 @@ from __future__ import annotations
 
 import importlib
 import json
+from collections.abc import Mapping
 from time import perf_counter
 from types import ModuleType
-from typing import Callable
+from typing import TYPE_CHECKING, Callable, TypeVar
 from uuid import uuid4
 
 from .request_meta import McpRequestMeta
+
+if TYPE_CHECKING:
+    from alphavault.agent_tools.post_tools import (
+        AgentPostDetailResult,
+        AgentPostSearchResult,
+    )
+    from alphavault.agent_tools.stock_tools import (
+        AgentObviousTradeListResult,
+        AgentResolveStockResult,
+        AgentStockObviousTradeResult,
+        AgentStockPageResult,
+    )
+    from alphavault.capabilities.stock_analysis import (
+        PortfolioContext,
+        StockEvidencePack,
+    )
+    from alphavault.capabilities.stock_summary import StockSummaryResult
 
 _STATUS_SUCCESS = "success"
 _STATUS_ERROR = "error"
@@ -18,6 +36,7 @@ _SOURCE_KIND_STOCK_EVIDENCE = "stock_evidence"
 _SOURCE_KIND_PORTFOLIO_STOCK_EVIDENCE = "portfolio_stock_evidence"
 _SOURCE_KIND_POST_DETAIL = "post_detail"
 _MAX_HISTORY_POSTS = 120
+_ToolResult = TypeVar("_ToolResult", bound=Mapping[str, object])
 
 
 def _clean_text(value: object) -> str:
@@ -292,17 +311,18 @@ def _run_tool_call(
     request_meta: McpRequestMeta,
     tool_name: str,
     input_payload: dict[str, object],
-    call_fn: Callable[[], dict[str, object]],
-    resolved_stock_key_fn: Callable[[dict[str, object]], str],
-    result_count_fn: Callable[[dict[str, object]], int],
-    error_text_fn: Callable[[dict[str, object]], str],
-    posts_fn: Callable[[dict[str, object]], list[dict[str, str]]],
-) -> dict[str, object]:
+    call_fn: Callable[[], _ToolResult],
+    resolved_stock_key_fn: Callable[[Mapping[str, object]], str],
+    result_count_fn: Callable[[Mapping[str, object]], int],
+    error_text_fn: Callable[[Mapping[str, object]], str],
+    posts_fn: Callable[[Mapping[str, object]], list[dict[str, str]]],
+) -> _ToolResult:
     started_at = perf_counter()
-    result: dict[str, object] = {}
+    result_for_record: Mapping[str, object] = {}
     error_text = ""
     try:
-        result = dict(call_fn() or {})
+        result = call_fn()
+        result_for_record = result
         error_text = _clean_text(error_text_fn(result))
         return result
     except BaseException as err:
@@ -314,10 +334,10 @@ def _run_tool_call(
             request_meta=request_meta,
             tool_name=tool_name,
             input_payload=input_payload,
-            resolved_stock_key=resolved_stock_key_fn(result),
-            result_count=result_count_fn(result),
+            resolved_stock_key=resolved_stock_key_fn(result_for_record),
+            result_count=result_count_fn(result_for_record),
             error_text=error_text,
-            posts=posts_fn(result),
+            posts=posts_fn(result_for_record),
             duration_ms=duration_ms,
         )
 
@@ -327,7 +347,7 @@ def run_resolve_stock_tool(
     request_meta: McpRequestMeta,
     query: str,
     limit: int,
-) -> dict[str, object]:
+) -> AgentResolveStockResult:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -352,7 +372,7 @@ def run_get_stock_page_tool(
     author: str,
     related_filter: str,
     view_scope: str,
-) -> dict[str, object]:
+) -> AgentStockPageResult:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -389,7 +409,7 @@ def run_list_obvious_trades_tool(
     trade_filter: str,
     min_strength: int,
     limit: int,
-) -> dict[str, object]:
+) -> AgentObviousTradeListResult:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -423,7 +443,7 @@ def run_get_stock_obvious_trades_tool(
     signal_page: int,
     signal_page_size: int,
     view_scope: str,
-) -> dict[str, object]:
+) -> AgentStockObviousTradeResult:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -461,7 +481,7 @@ def run_get_stock_evidence_pack_tool(
     stock: str,
     window_days: int,
     max_posts: int,
-) -> dict[str, object]:
+) -> StockEvidencePack:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -491,7 +511,7 @@ def run_get_stock_summary_tool(
     stock: str,
     window_days: int,
     max_posts: int,
-) -> dict[str, object]:
+) -> StockSummaryResult:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -521,7 +541,7 @@ def run_get_portfolio_context_tool(
     stocks: list[str],
     window_days: int,
     max_posts_per_stock: int,
-) -> dict[str, object]:
+) -> PortfolioContext:
     stock_tools = _load_stock_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -551,7 +571,7 @@ def run_search_posts_tool(
     query: str,
     limit: int,
     cursor: str,
-) -> dict[str, object]:
+) -> AgentPostSearchResult:
     post_tools = _load_post_tools_module()
     return _run_tool_call(
         request_meta=request_meta,
@@ -573,7 +593,7 @@ def run_get_post_detail_tool(
     *,
     request_meta: McpRequestMeta,
     post_uid: str,
-) -> dict[str, object]:
+) -> AgentPostDetailResult:
     post_tools = _load_post_tools_module()
     return _run_tool_call(
         request_meta=request_meta,

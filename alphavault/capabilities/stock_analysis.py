@@ -35,6 +35,18 @@ _RAW_TEXT_EXCERPT_LIMIT = 420
 _TREE_TEXT_EXCERPT_LIMIT = 640
 _PORTFOLIO_INPUT_REQUIRED_ERROR = "持仓列表为空。"
 _COMPANY_STOCK_KEY_MARKET_RANK = {"SH": 0, "SZ": 1, "BJ": 2, "HK": 3}
+_COPYABILITY_HIGH = "high"
+_COPYABILITY_MEDIUM = "medium"
+_COPYABILITY_LOW = "low"
+_POSITION_PHASE_NEW_BUY = "new_buy"
+_POSITION_PHASE_REPLENISH_ADD = "replenish_add"
+_ADD_CANDIDATE_COPYABILITY = frozenset((_COPYABILITY_HIGH, _COPYABILITY_MEDIUM))
+_ADD_CANDIDATE_POSITION_PHASES = frozenset(
+    (_POSITION_PHASE_NEW_BUY, _POSITION_PHASE_REPLENISH_ADD)
+)
+_ADD_CANDIDATES_KEY = "add_candidates"
+_WATCH_CANDIDATES_KEY = "watch_candidates"
+_BLOCKED_CANDIDATES_KEY = "blocked_candidates"
 
 _STANCE_BULLISH = "bullish"
 _STANCE_BEARISH = "bearish"
@@ -140,6 +152,31 @@ class PortfolioSharedAuthorRow(TypedDict):
     stocks: list[str]
 
 
+class PortfolioCandidateRow(TypedDict):
+    requested_stocks: list[str]
+    input_count: int
+    requested_stock: str
+    resolved_stock_key: str
+    page_title: str
+    latest_created_at: str
+    review_status: str
+    copyability: str
+    hard_block: bool
+    position_phase: str
+    blocking_flags: list[str]
+    reason_text: str
+
+
+PortfolioCandidateBuckets = TypedDict(
+    "PortfolioCandidateBuckets",
+    {
+        "add_candidates": list[PortfolioCandidateRow],
+        "watch_candidates": list[PortfolioCandidateRow],
+        "blocked_candidates": list[PortfolioCandidateRow],
+    },
+)
+
+
 class PortfolioCompanyRow(TypedDict):
     requested_stocks: list[str]
     input_count: int
@@ -161,6 +198,7 @@ class PortfolioCompanyRow(TypedDict):
     match_kind_counts: list[StockMatchKindCountRow]
     top_authors: list[StockAuthorRow]
     evidence_rows: list[StockEvidenceRow]
+    latest_trade_review: TradeReviewResult
     load_error: str
 
 
@@ -180,6 +218,7 @@ class PortfolioContext(TypedDict):
     inputs: list[PortfolioInputRow]
     unresolved_inputs: list[PortfolioInputRow]
     companies: list[PortfolioCompanyRow]
+    candidate_buckets: PortfolioCandidateBuckets
     shared_authors: list[PortfolioSharedAuthorRow]
     load_error: str
 
@@ -195,6 +234,7 @@ class _AuthorStats:
 class _ComputedEvidence:
     pack: StockEvidencePack
     author_counts: Counter[str]
+    latest_trade_review: TradeReviewResult
 
 
 def _clean_text(value: object) -> str:
@@ -424,6 +464,12 @@ def _build_top_authors(rows: list[StockEvidenceRow]) -> list[StockAuthorRow]:
     return out
 
 
+def _latest_trade_review_from_rows(rows: list[StockEvidenceRow]) -> TradeReviewResult:
+    if not rows:
+        return coerce_trade_review_result(None)
+    return coerce_trade_review_result(rows[0].get("trade_review"))
+
+
 def _compute_controversy_score(rows: list[StockEvidenceRow]) -> float:
     if not rows:
         return 0.0
@@ -642,6 +688,7 @@ def _canonicalize_company_pack(
     return _ComputedEvidence(
         pack=canonical_pack,
         author_counts=Counter(computed.author_counts),
+        latest_trade_review=coerce_trade_review_result(computed.latest_trade_review),
     )
 
 
@@ -732,7 +779,11 @@ def _build_stock_evidence_pack_for_resolved_key(
         "evidence_rows": evidence_rows,
         "load_error": _clean_text(view.get("load_error")),
     }
-    return _ComputedEvidence(pack=pack, author_counts=author_counts)
+    return _ComputedEvidence(
+        pack=pack,
+        author_counts=author_counts,
+        latest_trade_review=_latest_trade_review_from_rows(signal_rows),
+    )
 
 
 def get_stock_evidence_pack(
@@ -793,7 +844,95 @@ def _portfolio_company_row(
         "match_kind_counts": list(pack["match_kind_counts"]),
         "top_authors": list(pack["top_authors"]),
         "evidence_rows": list(pack["evidence_rows"]),
+        "latest_trade_review": coerce_trade_review_result(computed.latest_trade_review),
         "load_error": pack["load_error"],
+    }
+
+
+def _empty_portfolio_candidate_buckets() -> PortfolioCandidateBuckets:
+    return {
+        "add_candidates": [],
+        "watch_candidates": [],
+        "blocked_candidates": [],
+    }
+
+
+def _portfolio_candidate_row(
+    company: PortfolioCompanyRow,
+) -> PortfolioCandidateRow:
+    review = coerce_trade_review_result(company.get("latest_trade_review"))
+    return {
+        "requested_stocks": [
+            _clean_text(item)
+            for item in company.get("requested_stocks", [])
+            if _clean_text(item)
+        ],
+        "input_count": int(company.get("input_count") or 0),
+        "requested_stock": _clean_text(company.get("requested_stock")),
+        "resolved_stock_key": _clean_text(company.get("resolved_stock_key")),
+        "page_title": _clean_text(company.get("page_title")),
+        "latest_created_at": _clean_text(company.get("latest_created_at")),
+        "review_status": _clean_text(review.get("review_status")),
+        "copyability": _clean_text(review.get("copyability")),
+        "hard_block": bool(review.get("hard_block")),
+        "position_phase": _clean_text(review.get("position_phase")),
+        "blocking_flags": [
+            _clean_text(item)
+            for item in review.get("blocking_flags", [])
+            if _clean_text(item)
+        ],
+        "reason_text": _clean_text(review.get("reason_text")),
+    }
+
+
+def _sort_portfolio_candidate_rows(
+    rows: list[PortfolioCandidateRow],
+) -> list[PortfolioCandidateRow]:
+    ordered_rows = list(rows)
+    ordered_rows.sort(
+        key=lambda row: (
+            _clean_text(row.get("page_title")),
+            _clean_text(row.get("resolved_stock_key")),
+        )
+    )
+    ordered_rows.sort(
+        key=lambda row: _clean_text(row.get("latest_created_at")),
+        reverse=True,
+    )
+    return ordered_rows
+
+
+def _build_portfolio_candidate_buckets(
+    companies: list[PortfolioCompanyRow],
+) -> PortfolioCandidateBuckets:
+    buckets: dict[str, list[PortfolioCandidateRow]] = {
+        _ADD_CANDIDATES_KEY: [],
+        _WATCH_CANDIDATES_KEY: [],
+        _BLOCKED_CANDIDATES_KEY: [],
+    }
+    for company in companies:
+        candidate = _portfolio_candidate_row(company)
+        hard_block = bool(candidate.get("hard_block"))
+        copyability = _clean_text(candidate.get("copyability"))
+        position_phase = _clean_text(candidate.get("position_phase"))
+        if hard_block or copyability == _COPYABILITY_LOW:
+            buckets[_BLOCKED_CANDIDATES_KEY].append(candidate)
+            continue
+        if (
+            copyability in _ADD_CANDIDATE_COPYABILITY
+            and position_phase in _ADD_CANDIDATE_POSITION_PHASES
+        ):
+            buckets[_ADD_CANDIDATES_KEY].append(candidate)
+            continue
+        buckets[_WATCH_CANDIDATES_KEY].append(candidate)
+    return {
+        "add_candidates": _sort_portfolio_candidate_rows(buckets[_ADD_CANDIDATES_KEY]),
+        "watch_candidates": _sort_portfolio_candidate_rows(
+            buckets[_WATCH_CANDIDATES_KEY]
+        ),
+        "blocked_candidates": _sort_portfolio_candidate_rows(
+            buckets[_BLOCKED_CANDIDATES_KEY]
+        ),
     }
 
 
@@ -870,6 +1009,7 @@ def get_portfolio_context(
             "inputs": [],
             "unresolved_inputs": [],
             "companies": [],
+            "candidate_buckets": _empty_portfolio_candidate_buckets(),
             "shared_authors": [],
             "load_error": _PORTFOLIO_INPUT_REQUIRED_ERROR,
         }
@@ -1017,6 +1157,7 @@ def get_portfolio_context(
         computed_by_company_key=computed_by_company_key,
         page_title_by_company_key=page_title_by_company_key,
     )
+    candidate_buckets = _build_portfolio_candidate_buckets(companies)
     total_signal_total = sum(int(row.get("signal_total") or 0) for row in companies)
     unique_covered_stock_keys = _dedupe_texts(covered_stock_keys)
     load_error = ""
@@ -1038,6 +1179,7 @@ def get_portfolio_context(
         "inputs": normalized_input_rows,
         "unresolved_inputs": unresolved_inputs,
         "companies": companies,
+        "candidate_buckets": candidate_buckets,
         "shared_authors": shared_authors,
         "load_error": load_error,
     }
@@ -1050,6 +1192,8 @@ __all__ = [
     "MAX_PORTFOLIO_INPUT_STOCKS",
     "MAX_STOCK_EVIDENCE_MAX_POSTS",
     "MAX_STOCK_EVIDENCE_WINDOW_DAYS",
+    "PortfolioCandidateBuckets",
+    "PortfolioCandidateRow",
     "PortfolioCompanyRow",
     "PortfolioContext",
     "PortfolioInputRow",

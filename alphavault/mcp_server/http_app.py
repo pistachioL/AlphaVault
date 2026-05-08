@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -19,6 +20,23 @@ from .tool_runner import (
     run_search_posts_tool,
 )
 
+if TYPE_CHECKING:
+    from alphavault.agent_tools.post_tools import (
+        AgentPostDetailResult,
+        AgentPostSearchResult,
+    )
+    from alphavault.agent_tools.stock_tools import (
+        AgentObviousTradeListResult,
+        AgentResolveStockResult,
+        AgentStockObviousTradeResult,
+        AgentStockPageResult,
+    )
+    from alphavault.capabilities.stock_analysis import (
+        PortfolioContext,
+        StockEvidencePack,
+    )
+    from alphavault.capabilities.stock_summary import StockSummaryResult
+
 MCP_ROUTE_MOUNT_PATH = "/mcp"
 _DEFAULT_STOCK_CANDIDATE_LIMIT = 5
 _DEFAULT_SIGNAL_PAGE = 1
@@ -33,7 +51,45 @@ _SEARCH_POSTS_TOOL_DESCRIPTION = (
 )
 
 
+def _load_mcp_output_types() -> None:
+    if "PortfolioContext" in globals():
+        return
+
+    from alphavault.agent_tools.post_tools import (
+        AgentPostDetailResult as _AgentPostDetailResult,
+        AgentPostSearchResult as _AgentPostSearchResult,
+    )
+    from alphavault.agent_tools.stock_tools import (
+        AgentObviousTradeListResult as _AgentObviousTradeListResult,
+        AgentResolveStockResult as _AgentResolveStockResult,
+        AgentStockObviousTradeResult as _AgentStockObviousTradeResult,
+        AgentStockPageResult as _AgentStockPageResult,
+    )
+    from alphavault.capabilities.stock_analysis import (
+        PortfolioContext as _PortfolioContext,
+        StockEvidencePack as _StockEvidencePack,
+    )
+    from alphavault.capabilities.stock_summary import (
+        StockSummaryResult as _StockSummaryResult,
+    )
+
+    globals().update(
+        {
+            "AgentPostDetailResult": _AgentPostDetailResult,
+            "AgentPostSearchResult": _AgentPostSearchResult,
+            "AgentObviousTradeListResult": _AgentObviousTradeListResult,
+            "AgentResolveStockResult": _AgentResolveStockResult,
+            "AgentStockObviousTradeResult": _AgentStockObviousTradeResult,
+            "AgentStockPageResult": _AgentStockPageResult,
+            "PortfolioContext": _PortfolioContext,
+            "StockEvidencePack": _StockEvidencePack,
+            "StockSummaryResult": _StockSummaryResult,
+        }
+    )
+
+
 def create_mcp_http_app():
+    _load_mcp_output_types()
     from alphavault.capabilities.stock_analysis import (
         DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
         DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
@@ -64,7 +120,7 @@ def create_mcp_http_app():
     async def resolve_stock(
         query: str,
         limit: int = _DEFAULT_STOCK_CANDIDATE_LIMIT,
-    ) -> dict[str, object]:
+    ) -> AgentResolveStockResult:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_resolve_stock_tool,
@@ -84,7 +140,7 @@ def create_mcp_http_app():
         author: str = "",
         related_filter: str = _DEFAULT_RELATED_FILTER,
         view_scope: str = _DEFAULT_VIEW_SCOPE,
-    ) -> dict[str, object]:
+    ) -> AgentStockPageResult:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_get_stock_page_tool,
@@ -106,7 +162,7 @@ def create_mcp_http_app():
         trade_filter: str = DEFAULT_OBVIOUS_TRADE_FILTER,
         min_strength: int = DEFAULT_OBVIOUS_TRADE_MIN_STRENGTH,
         limit: int = DEFAULT_OBVIOUS_TRADE_LIMIT,
-    ) -> dict[str, object]:
+    ) -> AgentObviousTradeListResult:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_list_obvious_trades_tool,
@@ -129,7 +185,7 @@ def create_mcp_http_app():
         signal_page: int = _DEFAULT_SIGNAL_PAGE,
         signal_page_size: int = DEFAULT_OBVIOUS_TRADE_SIGNAL_PAGE_SIZE,
         view_scope: str = _DEFAULT_VIEW_SCOPE,
-    ) -> dict[str, object]:
+    ) -> AgentStockObviousTradeResult:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_get_stock_obvious_trades_tool,
@@ -151,7 +207,7 @@ def create_mcp_http_app():
         stock: str,
         window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
         max_posts: int = DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
-    ) -> dict[str, object]:
+    ) -> StockEvidencePack:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_get_stock_evidence_pack_tool,
@@ -169,7 +225,7 @@ def create_mcp_http_app():
         stock: str,
         window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
         max_posts: int = DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
-    ) -> dict[str, object]:
+    ) -> StockSummaryResult:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_get_stock_summary_tool,
@@ -181,13 +237,13 @@ def create_mcp_http_app():
 
     @server.tool(
         name="get_portfolio_context",
-        description="读取一组持仓的公司级组合上下文，返回去重后的公司列表、分歧排序和共享作者。",
+        description="读取一组持仓的公司级组合上下文，返回去重后的公司列表、组合级候选分桶和共享作者。",
     )
     async def get_portfolio_context(
         stocks: list[str],
         window_days: int = DEFAULT_STOCK_EVIDENCE_WINDOW_DAYS,
         max_posts_per_stock: int = DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
-    ) -> dict[str, object]:
+    ) -> PortfolioContext:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_get_portfolio_context_tool,
@@ -205,7 +261,7 @@ def create_mcp_http_app():
         query: str,
         limit: int = _DEFAULT_POST_SEARCH_LIMIT,
         cursor: str = "",
-    ) -> dict[str, object]:
+    ) -> AgentPostSearchResult:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_search_posts_tool,
@@ -219,7 +275,7 @@ def create_mcp_http_app():
         name="get_post_detail",
         description="读取单条帖子详情，返回原文和对话流。",
     )
-    async def get_post_detail(post_uid: str) -> dict[str, object]:
+    async def get_post_detail(post_uid: str) -> AgentPostDetailResult:
         request_meta = require_current_request_meta()
         return await asyncio.to_thread(
             run_get_post_detail_tool,
