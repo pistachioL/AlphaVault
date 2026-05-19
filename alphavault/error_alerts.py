@@ -33,18 +33,28 @@ _WARNING_ALERT_MARKERS = (
     "exception",
 )
 _INTERNAL_LOGGER_PREFIXES = ("urllib3", "requests")
-_SUPPRESSED_NTFY_MESSAGE_PREFIXES = (
+_LLM_ALERT_LOGGER_NAME = "alphavault.ai._client"
+_LLM_NTFY_MESSAGE_PREFIXES = (
     "[llm] request_retry label=",
     "[llm] request_failed label=",
     "[llm] request_defer label=",
 )
-_SUPPRESSED_NTFY_MESSAGE_MARKERS = (
-    "AiInvalidJsonError",
+_SUPPRESSED_LLM_NTFY_MESSAGE_MARKERS = (
+    "aiinvalidjsonerror",
     "ai_invalid_json",
-    "RateLimitError",
+    "ratelimiterror",
     "status_code=429",
     "code=model_cooldown",
 )
+_SUSTAINED_LLM_NTFY_MESSAGE_MARKERS = (
+    "auth_unavailable",
+    "no auth available",
+    "status_code=503",
+)
+_SUSTAINED_LLM_UNAVAILABLE_GROUP_LABEL = "llm_auth_unavailable_503"
+_SUSTAINED_LLM_UNAVAILABLE_MIN_DURATION_SECONDS = 6 * 60 * 60
+_SUSTAINED_LLM_UNAVAILABLE_REPEAT_COOLDOWN_SECONDS = 24 * 60 * 60
+_SUSTAINED_LLM_UNAVAILABLE_RESET_AFTER_SECONDS = 2 * 60 * 60
 _MAX_BODY_MESSAGE_CHARS = 1200
 _MAX_STACK_CHARS = 1800
 _MAX_SUMMARY_MESSAGE_CHARS = 500
@@ -108,6 +118,20 @@ class _AlertWindowState:
     first_message: str
     last_message: str
     source_scope: str
+
+
+@dataclass
+class _SustainedAlertState:
+    fingerprint_id: str
+    group_label: str
+    logger_name: str
+    level_name: str
+    count: int
+    first_seen_at: float
+    last_seen_at: float
+    last_notified_at: float
+    first_message: str
+    last_message: str
 
 
 def _limit_text(value: str, max_chars: int) -> str:
@@ -210,13 +234,7 @@ def _should_alert_for_record(record: logging.LogRecord) -> bool:
     if record.name.startswith(_INTERNAL_LOGGER_PREFIXES):
         return False
     message = record.getMessage()
-    if (
-        record.name == "alphavault.ai._client"
-        and any(
-            message.startswith(prefix) for prefix in _SUPPRESSED_NTFY_MESSAGE_PREFIXES
-        )
-        and any(marker in message for marker in _SUPPRESSED_NTFY_MESSAGE_MARKERS)
-    ):
+    if _should_suppress_llm_ntfy_alert(record=record, message=message):
         return False
     if record.levelno >= logging.ERROR:
         return True
@@ -224,6 +242,44 @@ def _should_alert_for_record(record: logging.LogRecord) -> bool:
         return False
     lowered = f"{record.name} {message}".lower()
     return any(marker in lowered for marker in _WARNING_ALERT_MARKERS)
+
+
+def _should_suppress_llm_ntfy_alert(
+    *,
+    record: logging.LogRecord,
+    message: str,
+) -> bool:
+    return _matches_llm_ntfy_message(
+        record=record,
+        message=message,
+        markers=_SUPPRESSED_LLM_NTFY_MESSAGE_MARKERS,
+    )
+
+
+def _should_use_sustained_llm_ntfy_alert(
+    *,
+    record: logging.LogRecord,
+    message: str,
+) -> bool:
+    return _matches_llm_ntfy_message(
+        record=record,
+        message=message,
+        markers=_SUSTAINED_LLM_NTFY_MESSAGE_MARKERS,
+    )
+
+
+def _matches_llm_ntfy_message(
+    *,
+    record: logging.LogRecord,
+    message: str,
+    markers: tuple[str, ...],
+) -> bool:
+    if record.name != _LLM_ALERT_LOGGER_NAME:
+        return False
+    if not any(message.startswith(prefix) for prefix in _LLM_NTFY_MESSAGE_PREFIXES):
+        return False
+    lowered_message = message.lower()
+    return any(marker in lowered_message for marker in markers)
 
 
 def _normalize_message_for_fingerprint(message: str) -> str:
@@ -327,12 +383,16 @@ def _build_fingerprint(
         ]
         group_label = record.name
     raw = "\n".join(raw_parts)
-    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+    digest = _fingerprint_digest(raw)
     return raw, digest, group_label, source_scope
 
 
 def _format_local_time(ts: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def _fingerprint_digest(raw: str) -> str:
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
 def _build_alert_event(
@@ -418,15 +478,92 @@ class NtfyErrorAlertHandler(logging.Handler):
         self.config = config
         self._lock = threading.Lock()
         self._windows: dict[str, _AlertWindowState] = {}
+        self._sustained_windows: dict[str, _SustainedAlertState] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            message = record.getMessage()
+            if _should_use_sustained_llm_ntfy_alert(record=record, message=message):
+                self._record_sustained_llm_alert(record=record, message=message)
+                return
             if not _should_alert_for_record(record):
                 return
             event = _build_alert_event(config=self.config, record=record)
             self._record_event(event)
         except Exception as err:
             self._write_internal_error(err)
+
+    def _record_sustained_llm_alert(
+        self,
+        *,
+        record: logging.LogRecord,
+        message: str,
+    ) -> None:
+        summary_message = _limit_text(message, _MAX_SUMMARY_MESSAGE_CHARS)
+        dedup_key = "\n".join(
+            (
+                self.config.service_name,
+                record.name,
+                _SUSTAINED_LLM_UNAVAILABLE_GROUP_LABEL,
+            )
+        )
+        now = time.time()
+        state_to_publish: _SustainedAlertState | None = None
+        with self._lock:
+            state = self._sustained_windows.get(dedup_key)
+            if (
+                state is None
+                or now - state.last_seen_at
+                > _SUSTAINED_LLM_UNAVAILABLE_RESET_AFTER_SECONDS
+            ):
+                self._sustained_windows[dedup_key] = _SustainedAlertState(
+                    fingerprint_id=_fingerprint_digest(dedup_key),
+                    group_label=_SUSTAINED_LLM_UNAVAILABLE_GROUP_LABEL,
+                    logger_name=record.name,
+                    level_name=record.levelname,
+                    count=1,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    last_notified_at=0.0,
+                    first_message=summary_message,
+                    last_message=summary_message,
+                )
+                return
+            state.count += 1
+            state.last_seen_at = now
+            state.last_message = summary_message
+            if (
+                now - state.first_seen_at
+                < _SUSTAINED_LLM_UNAVAILABLE_MIN_DURATION_SECONDS
+            ):
+                return
+            if (
+                state.last_notified_at > 0
+                and now - state.last_notified_at
+                < _SUSTAINED_LLM_UNAVAILABLE_REPEAT_COOLDOWN_SECONDS
+            ):
+                return
+            state.last_notified_at = now
+            state_to_publish = _SustainedAlertState(
+                fingerprint_id=state.fingerprint_id,
+                group_label=state.group_label,
+                logger_name=state.logger_name,
+                level_name=state.level_name,
+                count=state.count,
+                first_seen_at=state.first_seen_at,
+                last_seen_at=state.last_seen_at,
+                last_notified_at=state.last_notified_at,
+                first_message=state.first_message,
+                last_message=state.last_message,
+            )
+        if state_to_publish is None:
+            return
+        publish_thread = threading.Thread(
+            target=self._publish_sustained_llm_alert_safe,
+            kwargs={"state": state_to_publish},
+            daemon=True,
+        )
+        publish_thread.start()
 
     def _record_event(self, event: _AlertEvent) -> None:
         timer_to_start: threading.Timer | None = None
@@ -523,6 +660,42 @@ class NtfyErrorAlertHandler(logging.Handler):
             )
         except Exception as err:
             self._write_internal_error(err)
+
+    def _publish_sustained_llm_alert_safe(
+        self,
+        *,
+        state: _SustainedAlertState,
+    ) -> None:
+        duration_seconds = max(1, int(state.last_seen_at - state.first_seen_at))
+        title = (
+            f"{_ALERT_TITLE_PREFIX}/{self.config.service_name} "
+            f"sustained {state.group_label} x{state.count}"
+        )
+        body = "\n".join(
+            [
+                f"service={self.config.service_name}",
+                f"logger={state.logger_name}",
+                f"level={state.level_name}",
+                f"fingerprint={state.fingerprint_id}",
+                f"group={state.group_label}",
+                f"count={state.count}",
+                f"duration_seconds={duration_seconds}",
+                (
+                    "notify_after_seconds="
+                    f"{_SUSTAINED_LLM_UNAVAILABLE_MIN_DURATION_SECONDS}"
+                ),
+                (
+                    "repeat_cooldown_seconds="
+                    f"{_SUSTAINED_LLM_UNAVAILABLE_REPEAT_COOLDOWN_SECONDS}"
+                ),
+                f"first_seen={_format_local_time(state.first_seen_at)}",
+                f"last_seen={_format_local_time(state.last_seen_at)}",
+                "",
+                f"first_message={state.first_message}",
+                f"last_message={state.last_message}",
+            ]
+        )
+        self._publish_alert_safe(title=title, body=body, priority="high")
 
     def _write_internal_error(self, err: Exception) -> None:
         try:
