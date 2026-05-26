@@ -47,6 +47,7 @@ from alphavault.rss.utils import RateLimiter
 DEFAULT_SEMANTIC_POST_CANDIDATE_LIMIT = 40
 MIN_QUERY_LIMIT = 1
 EXTRA_FETCH_COUNT = 1
+RERANK_MIN_OVERFETCH = EXTRA_FETCH_COUNT
 DEFAULT_DETAIL_TITLE = "帖子详情"
 DOC_KIND_ASSERTION = "assertion"
 DOC_KIND_RAW_TAIL = "raw_tail"
@@ -96,6 +97,10 @@ def _clean_limit(limit: int) -> int:
 
 def _clean_candidate_limit(candidate_limit: int, *, limit: int) -> int:
     return max(_clean_limit(limit) + EXTRA_FETCH_COUNT, int(candidate_limit))
+
+
+def _should_rerank_rows(*, row_count: int, limit: int) -> bool:
+    return row_count > _clean_limit(limit) + RERANK_MIN_OVERFETCH
 
 
 def _embedding_literal(vector: list[float]) -> str:
@@ -369,7 +374,11 @@ def _rerank_rows(
     reranker_runtime: SemanticQueryRerankerRuntime | None,
     limit: int,
 ) -> tuple[list[dict[str, object]], bool]:
-    if reranker_runtime is None or not rows:
+    if (
+        reranker_runtime is None
+        or not rows
+        or not _should_rerank_rows(row_count=len(rows), limit=limit)
+    ):
         out = [
             dict(row, primary_score=_coerce_float(row.get("semantic_score")))
             for row in rows
