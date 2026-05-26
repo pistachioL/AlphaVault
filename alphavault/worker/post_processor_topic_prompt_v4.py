@@ -6,7 +6,6 @@ import time
 from alphavault.ai._client import AiInvalidJsonError, AiRetryLaterError
 from alphavault.ai.analyze import (
     DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
     DEFAULT_MODEL,
     _call_ai_with_openai,
     format_llm_error_one_line,
@@ -643,9 +642,7 @@ def process_one_post_uid_topic_prompt_v4(
             timeout_seconds=float(config.ai_timeout_seconds),
             retry_count=int(config.ai_retries),
             temperature=float(config.ai_temperature),
-            reasoning_effort=str(
-                config.ai_reasoning_effort or DEFAULT_AI_REASONING_EFFORT
-            ),
+            reasoning_effort=str(config.ai_reasoning_effort or ""),
             trace_out=config.trace_out,
             trace_label=trace_label,
             validator=validate_topic_prompt_v4_ai_result,

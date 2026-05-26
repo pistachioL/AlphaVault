@@ -8,7 +8,6 @@ from alphavault.ai.analyze import (
     AI_MODE_COMPLETION,
     AI_MODE_RESPONSES,
     DEFAULT_AI_MODE,
-    DEFAULT_AI_REASONING_EFFORT,
     DEFAULT_AI_RETRY_COUNT,
     DEFAULT_AI_TEMPERATURE,
     DEFAULT_MODEL,
@@ -234,11 +233,7 @@ def _build_default_runtime_config(*, timeout_seconds_default: float) -> AiRuntim
             default=DEFAULT_AI_MODE,
         ),
         temperature=_env_float(ENV_AI_TEMPERATURE, DEFAULT_AI_TEMPERATURE),
-        reasoning_effort=(
-            DEFAULT_AI_REASONING_EFFORT
-            if reasoning_effort is None
-            else reasoning_effort
-        ),
+        reasoning_effort=("" if reasoning_effort is None else reasoning_effort),
         timeout_seconds=max(1.0, _env_float(ENV_AI_TIMEOUT_SEC, default_timeout)),
         retries=max(0, _env_int(ENV_AI_RETRIES, DEFAULT_AI_RETRY_COUNT)),
         ai_rpm=max(0.0, _env_float(ENV_AI_RPM, DEFAULT_AI_RPM)),
