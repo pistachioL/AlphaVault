@@ -19,6 +19,14 @@ _SCHEMA_TARGET_ALL = "all"
 _SCHEMA_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SCHEMA_TEMPLATE_NAME = "{{schema_name}}"
 _DOLLAR_QUOTE_RE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$")
+_VECTOR_EXTENSION_STATEMENT_RE = re.compile(
+    r"^CREATE EXTENSION IF NOT EXISTS vector\s*$",
+    re.IGNORECASE,
+)
+_VECTOR_DEPENDENT_STATEMENT_RE = re.compile(
+    r"\bsemantic_docs\b|\bhalfvec\b|\bhnsw\b",
+    re.IGNORECASE,
+)
 _SCHEMA_PATHS = {
     _SCHEMA_TARGET_SOURCE: _SQL_DIR / "source_schema.sql",
     _SCHEMA_TARGET_STANDARD: _SQL_DIR / "standard_schema.sql",
@@ -212,12 +220,27 @@ def _use_conn(
     yield engine_or_conn
 
 
+def _should_skip_vector_extension_statement(
+    *,
+    statement: str,
+    error: Exception,
+) -> bool:
+    if _VECTOR_EXTENSION_STATEMENT_RE.match(str(statement or "").strip()) is None:
+        return False
+    return 'extension "vector" is not available' in str(error or "").lower()
+
+
+def _is_vector_dependent_statement(statement: str) -> bool:
+    return _VECTOR_DEPENDENT_STATEMENT_RE.search(str(statement or "")) is not None
+
+
 def apply_cloud_schema(
     engine_or_conn: PostgresEngine | Any,
     *,
     target: str = _SCHEMA_TARGET_ALL,
     schema_name: str | None = None,
 ) -> None:
+    vector_extension_available = True
     with _use_conn(engine_or_conn) as conn:
         for sql_target, resolved_schema_name in _resolve_schema_jobs(
             target=target,
@@ -228,7 +251,21 @@ def apply_cloud_schema(
                 schema_name=resolved_schema_name,
             )
             for statement in iter_cloud_schema_statements(rendered_sql):
-                conn.execute(statement)
+                if not vector_extension_available and _is_vector_dependent_statement(
+                    statement
+                ):
+                    continue
+                with conn.transaction():
+                    try:
+                        conn.execute(statement)
+                    except Exception as exc:
+                        if _should_skip_vector_extension_statement(
+                            statement=statement,
+                            error=exc,
+                        ):
+                            vector_extension_available = False
+                            continue
+                        raise
 
 
 __all__ = [
