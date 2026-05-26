@@ -2,6 +2,7 @@
 -- 给 weibo / xueqiu 这类 source schema 使用
 
 CREATE SCHEMA IF NOT EXISTS {{schema_name}};
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS {{schema_name}}.posts (
     post_uid TEXT PRIMARY KEY,
@@ -117,6 +118,27 @@ CREATE TABLE IF NOT EXISTS {{schema_name}}.topic_cluster_post_overrides (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS {{schema_name}}.semantic_docs (
+    doc_id TEXT PRIMARY KEY,
+    post_uid TEXT NOT NULL,
+    assertion_id TEXT NOT NULL DEFAULT '',
+    doc_kind TEXT NOT NULL CHECK (doc_kind IN ('assertion', 'raw_tail')),
+    chunk_seq INTEGER NOT NULL CHECK (chunk_seq >= 1),
+    platform TEXT NOT NULL,
+    author TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    created_at_ts TIMESTAMP,
+    action TEXT NOT NULL DEFAULT '',
+    action_strength INTEGER NOT NULL DEFAULT 0 CHECK (action_strength BETWEEN 0 AND 3),
+    mention_texts TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    entity_keys TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    doc_text TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    embedding_model TEXT NOT NULL,
+    embedding HALFVEC(2048) NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS {{schema_name}}.worker_cursor (
     state_key TEXT PRIMARY KEY,
     cursor TEXT NOT NULL DEFAULT '',
@@ -140,6 +162,24 @@ CREATE INDEX IF NOT EXISTS idx_posts_created_at_post_uid
 
 CREATE INDEX IF NOT EXISTS idx_posts_platform_post_id
     ON {{schema_name}}.posts(platform_post_id);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_docs_post_uid_doc_kind
+    ON {{schema_name}}.semantic_docs(post_uid, doc_kind);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_docs_created_at_ts
+    ON {{schema_name}}.semantic_docs(created_at_ts DESC, doc_id);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_docs_entity_keys_gin
+    ON {{schema_name}}.semantic_docs
+    USING GIN(entity_keys);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_docs_mention_texts_gin
+    ON {{schema_name}}.semantic_docs
+    USING GIN(mention_texts);
+
+CREATE INDEX IF NOT EXISTS idx_semantic_docs_embedding_hnsw
+    ON {{schema_name}}.semantic_docs
+    USING hnsw(embedding halfvec_cosine_ops);
 
 DO $$
 BEGIN

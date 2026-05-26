@@ -39,6 +39,10 @@ from alphavault.research_workbench.sample_post_raw_text import (
 from alphavault.research_workbench.service import (
     get_research_workbench_engine_from_env,
 )
+from alphavault.semantic_docs import (
+    semantic_doc_embedding_is_configured,
+    sync_semantic_docs_for_post,
+)
 from alphavault.infra.ai.runtime_config import (
     AI_TASK_POST_CONTEXT,
     ai_task_runtime_config_from_env,
@@ -330,6 +334,35 @@ def _write_done_with_feedback_apply(
         )
 
     run_postgres_transaction(engine, _write)
+
+
+def _sync_semantic_docs_best_effort(
+    *,
+    engine: PostgresEngine,
+    post_uid: str,
+    final_status: str,
+    prefetched_post: CloudPost | None,
+) -> None:
+    resolved_final_status = str(final_status or "").strip()
+    if resolved_final_status == "relevant":
+        configured, _ = semantic_doc_embedding_is_configured()
+        if not configured:
+            return
+    try:
+        sync_semantic_docs_for_post(
+            engine,
+            post_uid=post_uid,
+            final_status=resolved_final_status,
+            prefetched_post=prefetched_post,
+            apply=True,
+        )
+    except Exception as semantic_docs_err:
+        logger.warning(
+            "[semantic_docs] sync_failed post_uid=%s final_status=%s error=%s",
+            post_uid,
+            resolved_final_status,
+            format_llm_error_one_line(semantic_docs_err, limit=300),
+        )
 
 
 def map_topic_prompt_assertions_to_rows(
@@ -755,6 +788,17 @@ def process_one_post_uid_topic_prompt_v4(
                 ),
                 prefetched_ingested_at=int(time.time()),
                 latest_pending_feedback=latest_pending_feedback,
+            )
+            _sync_semantic_docs_best_effort(
+                engine=engine,
+                post_uid=uid,
+                final_status=final_status,
+                prefetched_post=(
+                    prefetched_post
+                    if prefetched_post is not None
+                    and uid == str(post.post_uid or "").strip()
+                    else None
+                ),
             )
             logger.info(
                 _build_ai_topic_diag_log_line(

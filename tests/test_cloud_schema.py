@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from alphavault.constants import SCHEMA_STANDARD, SCHEMA_WEIBO, SCHEMA_XUEQIU
 
 
@@ -15,6 +17,7 @@ _SOURCE_TABLES = {
     "topic_clusters",
     "topic_cluster_topics",
     "topic_cluster_post_overrides",
+    "semantic_docs",
     "worker_cursor",
     "worker_locks",
 }
@@ -30,6 +33,21 @@ _STANDARD_TABLES = {
     "mcp_call_history_posts",
     "trade_signal_reviews",
 }
+
+
+def _require_vector_extension(pg_conn) -> None:
+    row = pg_conn.execute(
+        """
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_available_extensions
+    WHERE name = 'vector'
+)
+"""
+    ).fetchone()
+    if bool(row[0]):
+        return
+    pytest.skip("当前测试 Postgres 未安装 vector 扩展")
 
 
 def _table_names(pg_conn, schema_name: str) -> set[str]:
@@ -72,6 +90,7 @@ WHERE schemaname = %(schema_name)s AND tablename = %(table_name)s
 def test_apply_cloud_schema_source_installs_into_target_schema(pg_conn) -> None:
     from alphavault.db.cloud_schema import apply_cloud_schema
 
+    _require_vector_extension(pg_conn)
     apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
 
     assert _table_names(pg_conn, SCHEMA_WEIBO) == _SOURCE_TABLES
@@ -96,6 +115,7 @@ def test_apply_cloud_schema_standard_installs_into_standard_schema(pg_conn) -> N
 def test_apply_cloud_schema_all_installs_all_known_schemas(pg_conn) -> None:
     from alphavault.db.cloud_schema import apply_cloud_schema
 
+    _require_vector_extension(pg_conn)
     apply_cloud_schema(pg_conn, target="all")
 
     assert _table_names(pg_conn, SCHEMA_WEIBO) == _SOURCE_TABLES
@@ -131,6 +151,7 @@ def test_cloud_schema_sql_has_no_alter_table() -> None:
 def test_apply_cloud_schema_posts_table_has_no_ai_runtime_columns(pg_conn) -> None:
     from alphavault.db.cloud_schema import apply_cloud_schema
 
+    _require_vector_extension(pg_conn)
     apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
     post_columns = _column_names(pg_conn, SCHEMA_WEIBO, "posts")
     assert {
@@ -158,6 +179,7 @@ def test_apply_cloud_schema_posts_table_has_no_ai_runtime_columns(pg_conn) -> No
 def test_apply_cloud_schema_feedback_table_has_expected_columns(pg_conn) -> None:
     from alphavault.db.cloud_schema import apply_cloud_schema
 
+    _require_vector_extension(pg_conn)
     apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
 
     feedback_columns = _column_names(pg_conn, SCHEMA_WEIBO, "post_analysis_feedback")
@@ -180,6 +202,7 @@ def test_apply_cloud_schema_feedback_table_has_expected_columns(pg_conn) -> None
 def test_apply_cloud_schema_assertions_table_has_no_created_at(pg_conn) -> None:
     from alphavault.db.cloud_schema import apply_cloud_schema
 
+    _require_vector_extension(pg_conn)
     apply_cloud_schema(pg_conn, target="source", schema_name=SCHEMA_WEIBO)
     assertion_columns = _column_names(pg_conn, SCHEMA_WEIBO, "assertions")
     assert {

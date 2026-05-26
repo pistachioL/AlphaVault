@@ -17,6 +17,7 @@ from .tool_runner import (
     run_get_stock_summary_tool,
     run_list_obvious_trades_tool,
     run_resolve_stock_tool,
+    run_search_posts_semantic_tool,
     run_search_posts_tool,
 )
 
@@ -48,6 +49,9 @@ _SEARCH_POSTS_TOOL_DESCRIPTION = (
     "按关键字搜索帖子正文、提及词和结构化实体。"
     "`query` 支持 PGroonga 查询语法：空格表示同时匹配多个词，"
     "`OR` 表示任选其一，双引号表示短语，前缀 `-` 表示排除词。"
+)
+_SEARCH_POSTS_SEMANTIC_TOOL_DESCRIPTION = (
+    "按语义搜索帖子内容。先在 `semantic_docs` 里做向量召回，再按需要用重排模型重排。"
 )
 
 
@@ -90,6 +94,9 @@ def _load_mcp_output_types() -> None:
 
 def create_mcp_http_app():
     _load_mcp_output_types()
+    from alphavault.capabilities.post_search_semantic import (
+        DEFAULT_SEMANTIC_POST_CANDIDATE_LIMIT,
+    )
     from alphavault.capabilities.stock_analysis import (
         DEFAULT_PORTFOLIO_EVIDENCE_MAX_POSTS,
         DEFAULT_STOCK_EVIDENCE_MAX_POSTS,
@@ -269,6 +276,26 @@ def create_mcp_http_app():
             query=query,
             limit=limit,
             cursor=cursor,
+        )
+
+    @server.tool(
+        name="search_posts_semantic",
+        description=_SEARCH_POSTS_SEMANTIC_TOOL_DESCRIPTION,
+    )
+    async def search_posts_semantic(
+        query: str,
+        limit: int = _DEFAULT_POST_SEARCH_LIMIT,
+        cursor: str = "",
+        candidate_limit: int = DEFAULT_SEMANTIC_POST_CANDIDATE_LIMIT,
+    ) -> AgentPostSearchResult:
+        request_meta = require_current_request_meta()
+        return await asyncio.to_thread(
+            run_search_posts_semantic_tool,
+            request_meta=request_meta,
+            query=query,
+            limit=limit,
+            cursor=cursor,
+            candidate_limit=candidate_limit,
         )
 
     @server.tool(

@@ -589,6 +589,37 @@ def run_search_posts_tool(
     )
 
 
+def run_search_posts_semantic_tool(
+    *,
+    request_meta: McpRequestMeta,
+    query: str,
+    limit: int,
+    cursor: str,
+    candidate_limit: int,
+) -> AgentPostSearchResult:
+    post_tools = _load_post_tools_module()
+    return _run_tool_call(
+        request_meta=request_meta,
+        tool_name="search_posts_semantic",
+        input_payload={
+            "query": _clean_text(query),
+            "limit": max(1, int(limit or 0)),
+            "cursor": _clean_text(cursor),
+            "candidate_limit": max(1, int(candidate_limit or 0)),
+        },
+        call_fn=lambda: post_tools.ai_search_posts_semantic(
+            query,
+            limit=limit,
+            cursor=cursor,
+            candidate_limit=candidate_limit,
+        ),
+        resolved_stock_key_fn=lambda _result: "",
+        result_count_fn=lambda result: _result_count(result, rows_key="rows"),
+        error_text_fn=lambda result: _error_text(result, "error"),
+        posts_fn=_search_history_posts,
+    )
+
+
 def run_get_post_detail_tool(
     *,
     request_meta: McpRequestMeta,
@@ -620,4 +651,5 @@ __all__ = [
     "run_list_obvious_trades_tool",
     "run_resolve_stock_tool",
     "run_search_posts_tool",
+    "run_search_posts_semantic_tool",
 ]

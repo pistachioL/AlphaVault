@@ -22,6 +22,7 @@ from alphavault.db.postgres_db import (
 )
 from alphavault.db.sql import source_queue as source_queue_sql
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
+from alphavault.db.sql_rows import read_sql_rows
 from alphavault.rss.utils import now_str
 from alphavault.search_text import build_sparse_search_text
 
@@ -310,6 +311,55 @@ def load_cloud_post(
             raw_text=str(row.get("raw_text") or ""),
             ai_retry_count=_coerce_int(row.get("ai_retry_count")),
         )
+
+
+def load_cloud_posts(
+    engine_or_conn: PostgresConnection | PostgresEngine,
+    *,
+    post_uids: list[str],
+) -> dict[str, CloudPost]:
+    post_uid_chunks = _chunk_post_uids(post_uids, chunk_size=500)
+    if not post_uid_chunks:
+        return {}
+    out: dict[str, CloudPost] = {}
+    with _use_conn(engine_or_conn) as conn:
+        posts_table = _posts_table(conn)
+        for chunk in post_uid_chunks:
+            placeholders = make_in_placeholders(prefix="post_uid", count=len(chunk))
+            params = make_in_params(prefix="post_uid", values=chunk)
+            rows = read_sql_rows(
+                conn,
+                f"""
+SELECT
+    post_uid,
+    platform,
+    platform_post_id,
+    author,
+    created_at,
+    url,
+    raw_text,
+    0 AS ai_retry_count
+FROM {posts_table}
+WHERE post_uid IN ({placeholders})
+ORDER BY post_uid ASC
+""".strip(),
+                params=params,
+            )
+            for row in rows:
+                post_uid = str(row.get("post_uid") or "").strip()
+                if not post_uid:
+                    continue
+                out[post_uid] = CloudPost(
+                    post_uid=post_uid,
+                    platform=str(row.get("platform") or "weibo"),
+                    platform_post_id=str(row.get("platform_post_id") or ""),
+                    author=str(row.get("author") or ""),
+                    created_at=str(row.get("created_at") or ""),
+                    url=str(row.get("url") or ""),
+                    raw_text=str(row.get("raw_text") or ""),
+                    ai_retry_count=_coerce_int(row.get("ai_retry_count")),
+                )
+    return out
 
 
 def load_post_processed_at(conn: PostgresConnection, *, post_uid: str) -> str | None:
@@ -963,6 +1013,7 @@ __all__ = [
     "get_research_workbench_engine_from_env",
     "is_post_already_processed_success",
     "load_cloud_post",
+    "load_cloud_posts",
     "load_failed_post_queue_rows",
     "load_post_processed_at",
     "load_unprocessed_post_queue_rows",

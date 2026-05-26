@@ -7,6 +7,10 @@ from alphavault.capabilities.post_search import (
     DEFAULT_POST_SEARCH_LIMIT,
     search_posts,
 )
+from alphavault.capabilities.post_search_semantic import (
+    DEFAULT_SEMANTIC_POST_CANDIDATE_LIMIT,
+    search_posts_semantic,
+)
 
 DEFAULT_AGENT_POST_SEARCH_LIMIT = 10
 
@@ -80,6 +84,27 @@ def ai_search_posts(
     }
 
 
+def ai_search_posts_semantic(
+    query: str,
+    *,
+    limit: int = DEFAULT_AGENT_POST_SEARCH_LIMIT,
+    cursor: str = "",
+    candidate_limit: int = DEFAULT_SEMANTIC_POST_CANDIDATE_LIMIT,
+) -> AgentPostSearchResult:
+    result = search_posts_semantic(
+        query,
+        limit=limit,
+        cursor=cursor,
+        candidate_limit=candidate_limit,
+    )
+    return {
+        "rows": _trim_post_search_rows(result.get("rows")),
+        "next_cursor": _clean_text(result.get("next_cursor")),
+        "has_more": bool(result.get("has_more")),
+        "error": _clean_text(result.get("error")),
+    }
+
+
 def ai_get_post_detail(post_uid: str) -> AgentPostDetailResult:
     detail: PostDetailResult = get_post_detail(post_uid)
     return {
@@ -97,6 +122,8 @@ __all__ = [
     "AgentPostSearchRow",
     "DEFAULT_AGENT_POST_SEARCH_LIMIT",
     "DEFAULT_POST_SEARCH_LIMIT",
+    "DEFAULT_SEMANTIC_POST_CANDIDATE_LIMIT",
     "ai_get_post_detail",
     "ai_search_posts",
+    "ai_search_posts_semantic",
 ]
