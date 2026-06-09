@@ -34,7 +34,13 @@ _WARNING_ALERT_MARKERS = (
 )
 _INTERNAL_LOGGER_PREFIXES = ("urllib3", "requests")
 _LLM_ALERT_LOGGER_NAME = "alphavault.ai._client"
-_LLM_NTFY_MESSAGE_PREFIXES = (
+_LLM_PROGRESS_MESSAGE_PREFIXES = (
+    "[llm] validate_failed",
+    "[llm] request_retry label=",
+    "[llm] request_failed label=",
+    "[llm] request_defer label=",
+)
+_LLM_SUSTAINED_MESSAGE_PREFIXES = (
     "[llm] request_retry label=",
     "[llm] request_failed label=",
     "[llm] request_defer label=",
@@ -234,6 +240,8 @@ def _should_alert_for_record(record: logging.LogRecord) -> bool:
     if record.name.startswith(_INTERNAL_LOGGER_PREFIXES):
         return False
     message = record.getMessage()
+    if _should_skip_llm_progress_alert(record=record, message=message):
+        return False
     if _should_suppress_llm_ntfy_alert(record=record, message=message):
         return False
     if record.levelno >= logging.ERROR:
@@ -256,6 +264,16 @@ def _should_suppress_llm_ntfy_alert(
     )
 
 
+def _should_skip_llm_progress_alert(
+    *,
+    record: logging.LogRecord,
+    message: str,
+) -> bool:
+    return record.name == _LLM_ALERT_LOGGER_NAME and any(
+        message.startswith(prefix) for prefix in _LLM_PROGRESS_MESSAGE_PREFIXES
+    )
+
+
 def _should_use_sustained_llm_ntfy_alert(
     *,
     record: logging.LogRecord,
@@ -273,10 +291,11 @@ def _matches_llm_ntfy_message(
     record: logging.LogRecord,
     message: str,
     markers: tuple[str, ...],
+    prefixes: tuple[str, ...] = _LLM_SUSTAINED_MESSAGE_PREFIXES,
 ) -> bool:
     if record.name != _LLM_ALERT_LOGGER_NAME:
         return False
-    if not any(message.startswith(prefix) for prefix in _LLM_NTFY_MESSAGE_PREFIXES):
+    if not any(message.startswith(prefix) for prefix in prefixes):
         return False
     lowered_message = message.lower()
     return any(marker in lowered_message for marker in markers)

@@ -150,6 +150,44 @@ def _build_final_invalid_json_log_line(
     return " ".join(parts)
 
 
+def _build_final_post_failed_log_line(
+    *,
+    post_uid: str,
+    retry_count: int,
+    max_retry_count: int,
+    prompt_version: str,
+    root_key: str,
+    failure_kind: str,
+    error: str,
+    trace_id: str,
+    consumer: str,
+    queue: str,
+    source: str,
+    message_id: str,
+) -> str:
+    parts = [
+        "[ai] final_post_failed",
+        f"post_uid={_trace_log_value(post_uid)}",
+        f"attempt={max(0, int(retry_count))}",
+        f"max_retries={max(0, int(max_retry_count))}",
+        f"prompt_version={_trace_log_value(prompt_version)}",
+        f"root_key={_trace_log_value(root_key)}",
+        f"failure_kind={_trace_log_value(failure_kind)}",
+        f"error={_trace_log_value(error)}",
+    ]
+    for key, value in (
+        ("trace_id", trace_id),
+        ("consumer", consumer),
+        ("queue", queue),
+        ("source", source),
+        ("message_id", message_id),
+    ):
+        text = _trace_log_value(value)
+        if text:
+            parts.append(f"{key}={text}")
+    return " ".join(parts)
+
+
 def process_one_redis_payload(
     *,
     engine: PostgresEngine,
@@ -397,22 +435,63 @@ def process_one_redis_payload(
 
     def _on_final_failure(**kwargs) -> None:  # type: ignore[no-untyped-def]
         failure_context = kwargs.get("failure_context")
-        if not isinstance(failure_context, dict):
-            return
-        if str(failure_context.get("kind") or "").strip() != "invalid_json":
+        post_uid = str(
+            kwargs.get("post_uid") or trace_state.get("post_uid") or ""
+        ).strip()
+        retry_count = int(kwargs.get("retry_count") or 0)
+        max_retry_count = int(kwargs.get("max_retry_count") or 0)
+        if isinstance(failure_context, dict):
+            failure_kind = str(failure_context.get("kind") or "").strip()
+            prompt_version = str(failure_context.get("prompt_version") or "").strip()
+            root_key = str(failure_context.get("root_key") or "").strip()
+            error = str(failure_context.get("error") or "").strip()
+            if failure_kind == "invalid_json":
+                logger.error(
+                    _build_final_invalid_json_log_line(
+                        post_uid=post_uid,
+                        retry_count=retry_count,
+                        max_retry_count=max_retry_count,
+                        prompt_version=prompt_version,
+                        root_key=root_key,
+                        raw_ai_len=int(failure_context.get("raw_ai_len") or 0),
+                        raw_ai_tail=str(
+                            failure_context.get("raw_ai_tail") or ""
+                        ).strip(),
+                        error=error,
+                        trace_id=resolved_trace_id,
+                        consumer=resolved_consumer_name,
+                        queue=resolved_queue_key,
+                        source=resolved_source_name,
+                        message_id=resolved_message_id,
+                    )
+                )
+                return
+            logger.error(
+                _build_final_post_failed_log_line(
+                    post_uid=post_uid,
+                    retry_count=retry_count,
+                    max_retry_count=max_retry_count,
+                    prompt_version=prompt_version,
+                    root_key=root_key,
+                    failure_kind=failure_kind or "unknown",
+                    error=error or "process_returned_false",
+                    trace_id=resolved_trace_id,
+                    consumer=resolved_consumer_name,
+                    queue=resolved_queue_key,
+                    source=resolved_source_name,
+                    message_id=resolved_message_id,
+                )
+            )
             return
         logger.error(
-            _build_final_invalid_json_log_line(
-                post_uid=str(
-                    kwargs.get("post_uid") or trace_state.get("post_uid") or ""
-                ).strip(),
-                retry_count=int(kwargs.get("retry_count") or 0),
-                max_retry_count=int(kwargs.get("max_retry_count") or 0),
-                prompt_version=str(failure_context.get("prompt_version") or "").strip(),
-                root_key=str(failure_context.get("root_key") or "").strip(),
-                raw_ai_len=int(failure_context.get("raw_ai_len") or 0),
-                raw_ai_tail=str(failure_context.get("raw_ai_tail") or "").strip(),
-                error=str(failure_context.get("error") or "").strip(),
+            _build_final_post_failed_log_line(
+                post_uid=post_uid,
+                retry_count=retry_count,
+                max_retry_count=max_retry_count,
+                prompt_version=str(getattr(config, "prompt_version", "") or "").strip(),
+                root_key="",
+                failure_kind="unknown",
+                error="process_returned_false",
                 trace_id=resolved_trace_id,
                 consumer=resolved_consumer_name,
                 queue=resolved_queue_key,
