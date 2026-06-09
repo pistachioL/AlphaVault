@@ -39,6 +39,7 @@ RSS_NTFY_TITLE_DEFAULT_PREFIX = "AlphaVault RSS"
 RSS_NTFY_SENT_KEY_PREFIX = "rss_ntfy_sent"
 RSS_NTFY_MAX_SUMMARY_COUNT = 3
 RSS_NTFY_MAX_RAW_TEXT_CHARS = 240
+RSS_NTFY_MAX_TITLE_CHARS = 36
 logger = get_logger(__name__)
 
 
@@ -283,13 +284,18 @@ def _rule_triggered(
 def _build_ntfy_title(
     *,
     rule: RSSNtfyRule,
-    post: CloudPost,
+    rows: list[dict[str, object]],
     actions: tuple[str, ...],
 ) -> str:
+    for row in rows:
+        summary = _truncate_text(
+            _clean_text(row.get("summary")),
+            limit=RSS_NTFY_MAX_TITLE_CHARS,
+        )
+        if summary:
+            return f"{rule.ntfy.title_prefix} {summary}".strip()
     action_text = actions[0] if actions else "relevant"
-    return (
-        f"{rule.ntfy.title_prefix} {post.author or post.platform} {action_text}".strip()
-    )
+    return f"{rule.ntfy.title_prefix} {action_text}".strip()
 
 
 def _truncate_text(value: str, *, limit: int) -> str:
@@ -303,7 +309,7 @@ def _encode_ntfy_header_value(value: str) -> str:
     text = _clean_text(value)
     if not text:
         return ""
-    return Header(text, "utf-8").encode()
+    return Header(text, "utf-8", maxlinelen=1000).encode(linesep="")
 
 
 def _build_body(
@@ -474,7 +480,7 @@ def maybe_publish_rss_ntfy_notifications(
             post_uid=post.post_uid,
         ):
             continue
-        title = _build_ntfy_title(rule=rule, post=post, actions=actions)
+        title = _build_ntfy_title(rule=rule, rows=rows, actions=actions)
         body = _build_body(
             rule=rule,
             post=post,
