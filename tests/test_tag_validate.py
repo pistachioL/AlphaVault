@@ -243,7 +243,7 @@ def test_topic_prompt_v4_reject_bad_mention_type() -> None:
         validate_topic_prompt_v4_ai_result(parsed)
 
 
-def test_topic_prompt_v4_allows_separator_in_top_level_mention_text() -> None:
+def test_topic_prompt_v4_rejects_separator_in_stock_alias_mention_text() -> None:
     parsed = {
         "topic_status_id": "status-5",
         "topic_summary": "他说了一句。",
@@ -273,7 +273,8 @@ def test_topic_prompt_v4_allows_separator_in_top_level_mention_text() -> None:
             }
         ],
     }
-    validate_topic_prompt_v4_ai_result(parsed)
+    with pytest.raises(AiTagValidationError):
+        validate_topic_prompt_v4_ai_result(parsed)
 
 
 def test_db_row_ok_v4_assertion_row_minimal_fields() -> None:

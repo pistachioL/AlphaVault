@@ -25,6 +25,8 @@ ALLOWED_MENTION_TYPES = {
     "keyword",
 }
 
+_ALLOW_SEPARATOR_MENTION_TYPES = {"industry_name", "keyword"}
+
 _BAD_SEPARATORS = {"，", "、"}
 
 
@@ -184,6 +186,11 @@ def _validate_top_level_mention(
         mention_type in ALLOWED_MENTION_TYPES,
         f"mentions[{mention_index}].mention_type_invalid value={_short(mention_type)}",
     )
+    if mention_type not in _ALLOW_SEPARATOR_MENTION_TYPES:
+        _must(
+            not _has_bad_separator(mention_text),
+            f"mentions[{mention_index}].mention_text_has_separator value={_short(mention_text)}",
+        )
     evidence = _validate_required_text(
         mention.get("evidence"),
         field=f"mentions[{mention_index}].evidence",
