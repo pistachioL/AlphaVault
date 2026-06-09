@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
+from email.header import Header
 from functools import lru_cache
 from typing import Any
 
@@ -298,6 +299,13 @@ def _truncate_text(value: str, *, limit: int) -> str:
     return text[: max(0, int(limit) - 3)].rstrip() + "..."
 
 
+def _encode_ntfy_header_value(value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    return Header(text, "utf-8").encode()
+
+
 def _build_body(
     *,
     rule: RSSNtfyRule,
@@ -402,7 +410,7 @@ def _publish_ntfy(
     click_url: str,
 ) -> None:
     headers = {
-        "Title": title,
+        "Title": _encode_ntfy_header_value(title),
         "Priority": "default",
         "Tags": "money_with_wings,chart_with_upwards_trend",
     }
