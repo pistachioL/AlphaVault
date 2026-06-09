@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 from alphavault.logging_config import get_logger
 from alphavault.ai.analyze import (
@@ -27,6 +28,8 @@ def process_one_post_uid(
     prefetched_post: CloudPost | None = None,
     prefetched_recent: list[dict[str, object]] | None = None,
     source_name: str = "",
+    redis_client: Any | None = None,
+    redis_queue_key: str = "",
 ) -> bool:
     resolved_config = config
     if str(config.prompt_version or "").strip() != TOPIC_PROMPT_VERSION:
@@ -40,6 +43,8 @@ def process_one_post_uid(
             prefetched_post=prefetched_post,
             prefetched_recent=prefetched_recent,
             source_name=str(source_name or "").strip(),
+            redis_client=redis_client,
+            redis_queue_key=str(redis_queue_key or "").strip(),
         )
     except Exception as err:
         base_url_for_log = (resolved_config.base_url or "").strip()

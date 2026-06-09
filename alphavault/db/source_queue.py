@@ -56,6 +56,7 @@ class CloudPost:
     url: str
     raw_text: str
     ai_retry_count: int
+    feed_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -308,6 +309,7 @@ def load_cloud_post(
             author=str(row.get("author") or ""),
             created_at=str(row.get("created_at") or ""),
             url=str(row.get("url") or ""),
+            feed_url="",
             raw_text=str(row.get("raw_text") or ""),
             ai_retry_count=_coerce_int(row.get("ai_retry_count")),
         )
@@ -356,6 +358,7 @@ ORDER BY post_uid ASC
                     author=str(row.get("author") or ""),
                     created_at=str(row.get("created_at") or ""),
                     url=str(row.get("url") or ""),
+                    feed_url="",
                     raw_text=str(row.get("raw_text") or ""),
                     ai_retry_count=_coerce_int(row.get("ai_retry_count")),
                 )

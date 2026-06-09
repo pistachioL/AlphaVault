@@ -54,6 +54,7 @@ def payload_to_cloud_post(
         url=str(payload.get("url") or "").strip(),
         raw_text=str(payload.get("raw_text") or ""),
         ai_retry_count=max(1, int(payload_retry_count_fn(payload) or 1)),
+        feed_url=str(payload.get("feed_url") or "").strip(),
     )
 
 
@@ -115,6 +116,8 @@ def process_one_redis_payload(
         prefetched_post=cloud_post,
         prefetched_recent=prefetched_recent,
         source_name=str(source_name or "").strip(),
+        redis_client=redis_client,
+        redis_queue_key=str(redis_queue_key or "").strip(),
     )
     if success:
         redis_ai_ack_fn(redis_client, redis_queue_key, message_id)

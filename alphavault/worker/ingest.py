@@ -398,6 +398,7 @@ def ingest_rss_many_once(
                 "author": resolved_author,
                 "created_at": created_at,
                 "url": link,
+                "feed_url": str(rss_url or "").strip(),
                 "raw_text": raw_text,
                 "ingested_at": int(time.time()),
             }

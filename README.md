@@ -73,6 +73,29 @@ export AI_LIMIT_GROUP_CONTEXT_LANE_RPM="12"
 export AI_LIMIT_GROUP_CONTEXT_LANE_MAX_INFLIGHT="50"
 export AI_QUEUE_ACK_TIMEOUT_SEC="3600"
 export AI_TRACE_OUT="trace.txt"
+export RSS_NTFY_RULES_JSON='[
+  {
+    "rule_id": "trade-only-demo",
+    "mode": "trade_only",
+    "match": {
+      "source_names": ["weibo"],
+      "rss_url_contains": ["weibo/user/3962719063"]
+    },
+    "ntfy": {
+      "publish_url": "https://ntfy.sh/your-trade-topic"
+    }
+  },
+  {
+    "rule_id": "invest-all-demo",
+    "mode": "invest_all",
+    "match": {
+      "rss_url_contains": ["weibo/user/123"]
+    },
+    "ntfy": {
+      "publish_url": "https://ntfy.sh/your-invest-topic"
+    }
+  }
+]'
 
 uv run python weibo_rss_worker.py --log-level info
 ```
@@ -88,6 +111,7 @@ uv run python weibo_rss_worker.py --log-level info
 - Worker 会先直接推 Redis；只有 Redis 写失败时才写本地 `spool`，AI 完成后再写 Postgres。
 - Redis 打开后，作者线程上下文优先读 Redis 缓存；缓存 miss 才回源 Postgres。
 - Reflex 只展示 `processed_at IS NOT NULL` 的帖子（避免 “pending 占位” 被当成 irrelevant）。
+- `RSS_NTFY_RULES_JSON` 为空时关闭 RSS 投资提醒；有值时会在 AI 成功写库后，按规则把实时 RSS 新内容发到对应 `ntfy` 目标。
 
 ## 手动触发 RSS 抓取 API
 先设置鉴权 key：

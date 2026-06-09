@@ -26,6 +26,7 @@ from alphavault.worker.cli import (
     resolve_rss_source_configs,
 )
 from alphavault.worker.runtime_models import _build_config
+from alphavault.worker.rss_ntfy import load_rss_ntfy_rules_from_env
 
 _FATAL_BASE_EXCEPTIONS = (KeyboardInterrupt, SystemExit, GeneratorExit)
 logger = get_logger(__name__)
@@ -63,6 +64,7 @@ def main() -> None:
         worker_interval_seconds = _resolve_worker_interval_seconds(args)
 
         config = _build_config(args)
+        load_rss_ntfy_rules_from_env()
         limiter = RateLimiter(config.ai_rpm)
         ai_cap = max(1, int(getattr(config, "ai_max_inflight", 1) or 1))
 

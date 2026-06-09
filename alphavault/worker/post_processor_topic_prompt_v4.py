@@ -57,6 +57,7 @@ from alphavault.worker.post_context_tags import (
     extract_post_context_result,
 )
 from alphavault.worker.post_processor_utils import score_from_assertions
+from alphavault.worker.rss_ntfy import maybe_publish_rss_ntfy_notifications
 from alphavault.worker.runtime_models import LLMConfig, _clamp_float, _clamp_int
 from alphavault.worker.topic_prompt_v4 import (
     build_topic_prompt_v4_llm_log_line,
@@ -534,6 +535,8 @@ def process_one_post_uid_topic_prompt_v4(
     prefetched_post: CloudPost | None = None,
     prefetched_recent: list[dict[str, object]] | None = None,
     source_name: str = "",
+    redis_client: object | None = None,
+    redis_queue_key: str = "",
 ) -> bool:
     clear_topic_prompt_failure_context()
     debug_enabled = logger.isEnabledFor(logging.DEBUG)
@@ -799,6 +802,21 @@ def process_one_post_uid_topic_prompt_v4(
                     and uid == str(post.post_uid or "").strip()
                     else None
                 ),
+            )
+            current_post = (
+                prefetched_post
+                if prefetched_post is not None
+                and uid == str(post.post_uid or "").strip()
+                else post
+            )
+            maybe_publish_rss_ntfy_notifications(
+                redis_client=redis_client,
+                redis_queue_key=str(redis_queue_key or "").strip(),
+                source_name=str(source_name or "").strip(),
+                post=current_post,
+                final_status=final_status,
+                invest_score=float(invest_score),
+                rows=rows,
             )
             logger.info(
                 _build_ai_topic_diag_log_line(
