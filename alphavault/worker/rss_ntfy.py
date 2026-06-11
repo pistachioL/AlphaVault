@@ -18,6 +18,7 @@ from alphavault.constants import (
 )
 from alphavault.db.source_queue import CloudPost
 from alphavault.logging_config import get_logger
+from alphavault.original_link import build_original_app_deep_link
 
 RSS_NTFY_MODE_TRADE_ONLY = "trade_only"
 RSS_NTFY_MODE_INVEST_ALL = "invest_all"
@@ -433,6 +434,13 @@ def _publish_ntfy(
     response.raise_for_status()
 
 
+def _resolve_notification_click_url(post: CloudPost) -> str:
+    deep_link = build_original_app_deep_link(post.url, post.post_uid)
+    if deep_link:
+        return deep_link
+    return _clean_text(post.url)
+
+
 def maybe_publish_rss_ntfy_notifications(
     *,
     redis_client: Any,
@@ -494,7 +502,7 @@ def maybe_publish_rss_ntfy_notifications(
                 rule=rule,
                 title=title,
                 body=body,
-                click_url=str(post.url or "").strip(),
+                click_url=_resolve_notification_click_url(post),
             )
         except Exception as err:
             _clear_notification_sent_marker(
