@@ -80,6 +80,17 @@ def _controls() -> rx.Component:
                 spacing="2",
             ),
             rx.vstack(
+                rx.text("作者筛选", class_name="av-label"),
+                rx.select(
+                    HomeworkState.author_filter_options,
+                    value=HomeworkState.author_filter,
+                    on_change=HomeworkState.set_author_filter,
+                    width="220px",
+                    disabled=HomeworkState.show_table_loading,
+                ),
+                spacing="2",
+            ),
+            rx.vstack(
                 rx.text("手动改完点刷新", class_name="av-label"),
                 rx.button(
                     "刷新",

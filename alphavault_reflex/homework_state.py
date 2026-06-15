@@ -12,9 +12,11 @@ from alphavault_reflex.services.analysis_feedback import (
     submit_post_analysis_feedback,
 )
 from alphavault_reflex.services.homework_board import (
+    AUTHOR_FILTER_ALL,
     TRADE_FILTER_OPTIONS,
     build_board,
     build_tree,
+    extract_authors_from_assertions,
 )
 from alphavault_reflex.services.homework_time_range import (
     HomeworkTimeRange,
@@ -59,6 +61,8 @@ class HomeworkState(rx.State):
     window_start_local: str = ""
     window_end_local: str = ""
     trade_filter: str = TRADE_FILTER_OPTIONS[0]
+    author_filter: str = AUTHOR_FILTER_ALL
+    author_options: list[str] = [AUTHOR_FILTER_ALL]
 
     rows: list[dict[str, str]] = []
 
@@ -93,6 +97,10 @@ class HomeworkState(rx.State):
     @rx.var
     def trade_filter_options(self) -> list[str]:
         return TRADE_FILTER_OPTIONS
+
+    @rx.var
+    def author_filter_options(self) -> list[str]:
+        return self.author_options
 
     @rx.var
     def show_table_loading(self) -> bool:
@@ -158,6 +166,11 @@ class HomeworkState(rx.State):
             stock_relations=stock_relations,
         )
 
+        authors = extract_authors_from_assertions(board_assertions)
+        self.author_options = [AUTHOR_FILTER_ALL] + authors
+        if self.author_filter not in self.author_options:
+            self.author_filter = AUTHOR_FILTER_ALL
+
         result = build_board(
             board_assertions,
             [],
@@ -168,6 +181,7 @@ class HomeworkState(rx.State):
             range_caption=selected_range.caption,
             age_reference_utc=selected_range.end_reference_utc,
             trade_filter=str(self.trade_filter),
+            author_filter=str(self.author_filter),
         )
         _fill_trade_board_urls(result.rows)
         for row in result.rows:
@@ -251,6 +265,11 @@ class HomeworkState(rx.State):
     @rx.event
     def set_trade_filter(self, value: str):
         self.trade_filter = str(value or TRADE_FILTER_OPTIONS[0])
+        yield from self._refresh_with_loading()
+
+    @rx.event
+    def set_author_filter(self, value: str):
+        self.author_filter = str(value or AUTHOR_FILTER_ALL)
         yield from self._refresh_with_loading()
 
     @rx.event

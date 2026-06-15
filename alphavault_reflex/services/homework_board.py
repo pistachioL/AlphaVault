@@ -32,6 +32,8 @@ TRADE_FILTER_VALUES = {
     TRADE_FILTER_HOLD: TRADE_HOLD_ACTIONS,
 }
 
+AUTHOR_FILTER_ALL = "全部作者"
+
 
 @dataclass(frozen=True)
 class BoardResult:
@@ -137,6 +139,7 @@ def build_board(
     range_caption: str,
     age_reference_utc: datetime,
     trade_filter: str,
+    author_filter: str,
 ) -> BoardResult:
     del posts, group_label
     empty_result = BoardResult(caption=str(range_caption or "").strip(), rows=[])
@@ -162,6 +165,13 @@ def build_board(
         if not topic or created_at is None:
             continue
         if created_at < range_start_utc or created_at >= range_end_exclusive_utc:
+            continue
+        author = str(row.get("author") or "").strip()
+        if (
+            author_filter
+            and author_filter != AUTHOR_FILTER_ALL
+            and author != author_filter
+        ):
             continue
         payload = dict(row)
         payload["_created_at_ts"] = created_at
@@ -343,3 +353,15 @@ def _to_int_text(value: object) -> str:
 
 def _normalize_summary(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+def extract_authors_from_assertions(
+    assertions: list[dict[str, object]],
+) -> list[str]:
+    """Extract unique authors from assertions, sorted alphabetically."""
+    authors: set[str] = set()
+    for row in assertions:
+        author = str(row.get("author") or "").strip()
+        if author:
+            authors.add(author)
+    return sorted(authors)
