@@ -182,6 +182,7 @@ def query_trade_board_assertion_rows(
     start_time: str,
     end_time: str,
     source_name: str,
+    trade_only: bool = True,
 ) -> list[dict[str, object]]:
     posts_table = source_table(source_name, "posts")
     assertions_table = source_table(source_name, "assertions")
@@ -189,6 +190,10 @@ def query_trade_board_assertion_rows(
     assertion_mentions_table = source_table(source_name, "assertion_mentions")
     topic_cluster_topics_table = source_table(source_name, "topic_cluster_topics")
     created_at_expr = trade_board_created_at_sql_expr("p.created_at")
+
+    # Build WHERE clause based on trade_only parameter
+    action_filter = "AND a.action LIKE 'trade.%'" if trade_only else ""
+
     sql = f"""
 {build_assertion_rollup_ctes(assertion_entities_table=assertion_entities_table, assertion_mentions_table=assertion_mentions_table, topic_cluster_topics_table=topic_cluster_topics_table)}
 SELECT {trade_board_select_expr()}
@@ -198,7 +203,7 @@ JOIN {assertions_table} a ON a.post_uid = p.post_uid
 WHERE p.processed_at IS NOT NULL
   AND {created_at_expr} >= CAST(:start_time AS timestamptz)
   AND {created_at_expr} < CAST(:end_time AS timestamptz)
-  AND a.action LIKE 'trade.%'
+  {action_filter}
 ORDER BY {created_at_expr} DESC, p.post_uid DESC, a.idx DESC
 """
     return _normalize_trade_board_assertion_rows(
@@ -300,6 +305,7 @@ def load_homework_board_payload_rows_cached(
     source_name: str,
     start_time: str,
     end_time: str,
+    trade_only: bool = True,
 ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
     start = time.perf_counter()
     del auth_token
@@ -312,6 +318,7 @@ def load_homework_board_payload_rows_cached(
             start_time=start_time,
             end_time=end_time,
             source_name=source_name,
+            trade_only=trade_only,
         )
         assertion_count = int(len(assertions))
         try:
@@ -346,6 +353,7 @@ def load_homework_board_payload_cached(
     source_name: str,
     start_time: str,
     end_time: str,
+    trade_only: bool = True,
 ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
     return load_homework_board_payload_rows_cached(
         db_url,
@@ -353,6 +361,7 @@ def load_homework_board_payload_cached(
         source_name,
         start_time,
         end_time,
+        trade_only,
     )
 
 
@@ -436,6 +445,7 @@ def load_homework_board_payload_rows_from_env(
     start_time: str,
     end_time: str,
     *,
+    trade_only: bool = True,
     load_cached_fn=load_homework_board_payload_rows_cached,
     resolve_workers_fn=resolve_homework_source_workers,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
@@ -460,6 +470,7 @@ def load_homework_board_payload_rows_from_env(
                     source.name,
                     start_time,
                     end_time,
+                    trade_only,
                 )
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
@@ -497,6 +508,7 @@ def load_homework_board_payload_rows_from_env(
                         source.name,
                         start_time,
                         end_time,
+                        trade_only,
                     )
                 ] = (source.name, time.perf_counter())
             for fut in as_completed(futures):
@@ -549,6 +561,7 @@ def load_homework_board_payload_from_env(
     start_time: str,
     end_time: str,
     *,
+    trade_only: bool = True,
     load_cached_fn=load_homework_board_payload_cached,
     resolve_workers_fn=resolve_homework_source_workers,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
@@ -573,6 +586,7 @@ def load_homework_board_payload_from_env(
                     source.name,
                     start_time,
                     end_time,
+                    trade_only,
                 )
             except BaseException as err:
                 if isinstance(err, DEFAULT_FATAL_EXCEPTIONS):
@@ -610,6 +624,7 @@ def load_homework_board_payload_from_env(
                         source.name,
                         start_time,
                         end_time,
+                        trade_only,
                     )
                 ] = (source.name, time.perf_counter())
             for fut in as_completed(futures):

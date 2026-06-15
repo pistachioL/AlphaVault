@@ -14,13 +14,15 @@ TRADE_BUY_ACTIONS = frozenset({"trade.buy", "trade.add"})
 TRADE_SELL_ACTIONS = frozenset({"trade.sell", "trade.reduce"})
 TRADE_HOLD_ACTIONS = frozenset({"trade.hold", "trade.watch"})
 
-TRADE_FILTER_ALL = "全部"
+TRADE_FILTER_ALL_TRADES = "全部交易"
+TRADE_FILTER_ALL_OPINIONS = "全部观点"
 TRADE_FILTER_BUY = "买"
 TRADE_FILTER_SELL = "卖"
 TRADE_FILTER_HOLD = "只看"
 
 TRADE_FILTER_OPTIONS = [
-    TRADE_FILTER_ALL,
+    TRADE_FILTER_ALL_TRADES,
+    TRADE_FILTER_ALL_OPINIONS,
     TRADE_FILTER_BUY,
     TRADE_FILTER_SELL,
     TRADE_FILTER_HOLD,
@@ -59,23 +61,29 @@ def format_age_label(max_ts: datetime, ts: datetime) -> str:
 
 def trade_action_badge(action: str, strength: object) -> str:
     action_str = str(action or "").strip()
-    strength_num = _coerce_strength(strength)
-    strength_num = max(0, min(3, strength_num))
 
-    strength_text = "很弱"
-    if strength_num == 1:
-        strength_text = "偏弱"
-    elif strength_num == 2:
-        strength_text = "中等偏强"
-    elif strength_num >= 3:
-        strength_text = "很强"
+    # For trade actions, show strength
+    if action_str.startswith("trade."):
+        strength_num = _coerce_strength(strength)
+        strength_num = max(0, min(3, strength_num))
 
-    parts = [
-        str(action_str),
-        str(strength_text),
-        f"强度 {strength_num}",
-    ]
-    return " · ".join([p for p in parts if str(p).strip()])
+        strength_text = "很弱"
+        if strength_num == 1:
+            strength_text = "偏弱"
+        elif strength_num == 2:
+            strength_text = "中等偏强"
+        elif strength_num >= 3:
+            strength_text = "很强"
+
+        parts = [
+            str(action_str),
+            str(strength_text),
+            f"强度 {strength_num}",
+        ]
+        return " · ".join([p for p in parts if str(p).strip()])
+
+    # For non-trade actions, just show the action
+    return action_str
 
 
 def _build_latest_post_uid_candidates(
@@ -146,20 +154,22 @@ def build_board(
     if not assertions:
         return empty_result
 
-    trade_rows = [
-        dict(row)
-        for row in assertions
-        if str(row.get("action") or "").strip().startswith("trade.")
-    ]
-    if not trade_rows:
+    # Note: When trade_filter is "全部观点", the assertions already contain all action types
+    # (because trade_only=False was passed to the query).
+    # We don't need to filter by action prefix here.
+    # The action-specific filtering (buy/sell/hold) happens later based on allowed_actions.
+
+    filtered_rows = [dict(row) for row in assertions]
+
+    if not filtered_rows:
         return empty_result
 
-    if not any(group_col in row for row in trade_rows):
-        if any("entity_key" in row for row in trade_rows):
+    if not any(group_col in row for row in filtered_rows):
+        if any("entity_key" in row for row in filtered_rows):
             group_col = "entity_key"
 
     board_rows: list[dict[str, object]] = []
-    for row in trade_rows:
+    for row in filtered_rows:
         topic = str(row.get(group_col) or "").strip()
         created_at = coerce_homework_timestamp(row.get("created_at"))
         if not topic or created_at is None:
@@ -227,7 +237,15 @@ def build_board(
         reverse=True,
     )
 
-    allowed_actions = TRADE_FILTER_VALUES.get(str(trade_filter or "").strip())
+    # When "全部交易" is selected, apply the specific action filter
+    # When "全部观点" is selected, allowed_actions is None (show all)
+    allowed_actions = None
+    if (
+        trade_filter != TRADE_FILTER_ALL_OPINIONS
+        and trade_filter != TRADE_FILTER_ALL_TRADES
+    ):
+        allowed_actions = TRADE_FILTER_VALUES.get(str(trade_filter or "").strip())
+
     if allowed_actions:
         agg_sorted = [
             item

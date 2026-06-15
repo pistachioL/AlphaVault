@@ -148,10 +148,16 @@ class HomeworkState(rx.State):
         return build_tree_render_lines(self.selected_tree_render_text)
 
     def _refresh(self, *, selected_range: HomeworkTimeRange) -> None:
+        from alphavault_reflex.services.homework_board import TRADE_FILTER_ALL_OPINIONS
+
+        # Determine whether to load only trade actions or all actions
+        trade_only = self.trade_filter != TRADE_FILTER_ALL_OPINIONS
+
         assertions, stock_relations, err = (
             _load_source_read_module().load_homework_board_payload_from_env(
                 format_homework_query_datetime(selected_range.start_utc),
                 format_homework_query_datetime(selected_range.end_exclusive_utc),
+                trade_only=trade_only,
             )
         )
         if err:

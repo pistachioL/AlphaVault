@@ -256,6 +256,7 @@ def load_homework_board_payload_from_env(
     start_time: str,
     end_time: str,
     *,
+    trade_only: bool = True,
     load_cached_fn=None,
     resolve_workers_fn=None,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]], str]:
@@ -264,8 +265,10 @@ def load_homework_board_payload_from_env(
         return trade_board_loader.load_homework_board_payload_from_env(
             start_time,
             end_time,
+            trade_only=trade_only,
         )
     kwargs: dict[str, object] = {}
+    kwargs["trade_only"] = trade_only
     if load_cached_fn is not None:
         kwargs["load_cached_fn"] = load_cached_fn
     if resolve_workers_fn is not None:

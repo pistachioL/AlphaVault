@@ -69,7 +69,7 @@ def _controls() -> rx.Component:
                 spacing="2",
             ),
             rx.vstack(
-                rx.text("trade 筛选", class_name="av-label"),
+                rx.text("观点筛选", class_name="av-label"),
                 rx.select(
                     HomeworkState.trade_filter_options,
                     value=HomeworkState.trade_filter,
