@@ -432,42 +432,53 @@ def replace_semantic_docs(
             )
         except Exception as e:
             # Zilliz 同步失败处理
-            if should_write_to_postgres():
-                # dual_write 模式：放入 Redis 重试队列
-                logger.warning(
-                    "zilliz_sync_failed post_uid=%s error=%s",
-                    resolved_post_uid,
-                    str(e)[:100],
-                )
+            logger.warning(
+                "zilliz_sync_failed post_uid=%s mode=%s error=%s",
+                resolved_post_uid,
+                "dual_write" if should_write_to_postgres() else "zilliz_only",
+                str(e)[:100],
+            )
 
-                # 加入重试队列
-                if redis_client:
-                    try:
-                        enqueue_zilliz_retry(
-                            redis_client,
-                            operation="replace",
-                            schema=schema,
-                            post_uid=resolved_post_uid,
-                            rows=normalized_rows,
-                            retry_count=0,
-                            error=str(e),
-                        )
-                    except Exception as retry_err:
-                        logger.warning(
-                            "zilliz_retry_enqueue_failed post_uid=%s: %s",
-                            resolved_post_uid,
-                            retry_err,
-                        )
-                else:
-                    logger.warning(
-                        "zilliz_retry_unavailable post_uid=%s (redis_client=None)",
+            # 尝试加入重试队列
+            if redis_client:
+                try:
+                    enqueue_zilliz_retry(
+                        redis_client,
+                        operation="replace",
+                        schema=schema,
+                        post_uid=resolved_post_uid,
+                        rows=normalized_rows,
+                        retry_count=0,
+                        error=str(e),
+                    )
+                    logger.info(
+                        "zilliz_retry_enqueued post_uid=%s",
                         resolved_post_uid,
                     )
+                except Exception as retry_err:
+                    logger.warning(
+                        "zilliz_retry_enqueue_failed post_uid=%s: %s",
+                        resolved_post_uid,
+                        retry_err,
+                    )
             else:
-                # zilliz_only 模式：抛出异常（主存储失败）
-                raise RuntimeError(
-                    f"Zilliz write failed (zilliz_only mode) for {resolved_post_uid}: {e}"
-                ) from e
+                logger.warning(
+                    "zilliz_retry_unavailable post_uid=%s (redis_client=None)",
+                    resolved_post_uid,
+                )
+
+            # zilliz_only 模式下，如果无法入队则抛出异常（主存储失败）
+            if not should_write_to_postgres():
+                if not redis_client:
+                    # 没有 Redis 重试队列，直接失败
+                    raise RuntimeError(
+                        f"Zilliz write failed (zilliz_only mode, no retry queue) for {resolved_post_uid}: {e}"
+                    ) from e
+                # 有 Redis 重试队列，记录警告但不阻塞（后台会重试）
+                logger.warning(
+                    "zilliz_only_mode_fallback_to_retry post_uid=%s",
+                    resolved_post_uid,
+                )
 
     return pg_count if should_write_to_postgres() else zilliz_count
 
