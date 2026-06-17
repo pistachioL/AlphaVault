@@ -200,25 +200,9 @@ def replace_semantic_docs_in_zilliz(
     if not rows:
         return 0
 
-    # 准备批量插入数据
-    data: dict[str, list[Any]] = {
-        "doc_id": [],
-        "post_uid": [],
-        "assertion_id": [],
-        "doc_kind": [],
-        "chunk_seq": [],
-        "platform": [],
-        "author": [],
-        "created_at": [],
-        "action": [],
-        "action_strength": [],
-        "doc_text": [],
-        "content_hash": [],
-        "embedding_model": [],
-        "embedding": [],
-    }
+    # 准备批量插入数据（行格式：list of dicts）
+    data: list[dict[str, Any]] = []
 
-    success_count = 0
     for row in rows:
         try:
             # 解析 embedding（可能是字符串或已经是 list）
@@ -239,23 +223,25 @@ def replace_semantic_docs_in_zilliz(
                 logger.warning("zilliz_empty_embedding doc_id=%s", row.get("doc_id"))
                 continue
 
-            # 填充数据
-            data["doc_id"].append(_clean_text(row.get("doc_id")))
-            data["post_uid"].append(_clean_text(row.get("post_uid")))
-            data["assertion_id"].append(_clean_text(row.get("assertion_id")))
-            data["doc_kind"].append(_clean_text(row.get("doc_kind")))
-            data["chunk_seq"].append(_coerce_int(row.get("chunk_seq")))
-            data["platform"].append(_clean_text(row.get("platform")))
-            data["author"].append(_clean_text(row.get("author"))[:255])
-            data["created_at"].append(_clean_text(row.get("created_at")))
-            data["action"].append(_clean_text(row.get("action")))
-            data["action_strength"].append(_coerce_int(row.get("action_strength")))
-            data["doc_text"].append(_clean_text(row.get("doc_text"))[:65535])
-            data["content_hash"].append(_clean_text(row.get("content_hash")))
-            data["embedding_model"].append(_clean_text(row.get("embedding_model")))
-            data["embedding"].append(embedding)
-
-            success_count += 1
+            # 构造单条记录
+            data.append(
+                {
+                    "doc_id": _clean_text(row.get("doc_id")),
+                    "post_uid": _clean_text(row.get("post_uid")),
+                    "assertion_id": _clean_text(row.get("assertion_id")),
+                    "doc_kind": _clean_text(row.get("doc_kind")),
+                    "chunk_seq": _coerce_int(row.get("chunk_seq")),
+                    "platform": _clean_text(row.get("platform")),
+                    "author": _clean_text(row.get("author"))[:255],
+                    "created_at": _clean_text(row.get("created_at")),
+                    "action": _clean_text(row.get("action")),
+                    "action_strength": _coerce_int(row.get("action_strength")),
+                    "doc_text": _clean_text(row.get("doc_text"))[:65535],
+                    "content_hash": _clean_text(row.get("content_hash")),
+                    "embedding_model": _clean_text(row.get("embedding_model")),
+                    "embedding": embedding,
+                }
+            )
 
         except Exception as e:
             logger.warning(
@@ -265,19 +251,19 @@ def replace_semantic_docs_in_zilliz(
             )
 
     # 批量插入
-    if success_count > 0:
+    if data:
         try:
             client.insert(collection_name=collection_name, data=data)
         except Exception as e:
             logger.error(
                 "zilliz_batch_insert_failed collection=%s count=%d error=%s",
                 collection_name,
-                success_count,
+                len(data),
                 str(e)[:500],
             )
             raise
 
-    return success_count
+    return len(data)
 
 
 def delete_semantic_docs_by_post_uid_in_zilliz(
