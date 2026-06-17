@@ -3,7 +3,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
-from typing import Iterator
+from typing import TYPE_CHECKING, Any, Iterator
+
+if TYPE_CHECKING:
+    from redis import Redis
 
 from alphavault.db.postgres_db import (
     PostgresConnection,
@@ -16,6 +19,16 @@ from alphavault.db.postgres_db import (
 from alphavault.db.sql import semantic_docs as semantic_docs_sql
 from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql_rows import read_sql_rows
+from alphavault.db.zilliz_client import (
+    delete_semantic_docs_by_post_uid_in_zilliz,
+    replace_semantic_docs_in_zilliz,
+    should_write_to_postgres,
+    should_write_to_zilliz,
+)
+from alphavault.db.zilliz_retry_queue import enqueue_zilliz_retry
+from alphavault.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 _ASSERTIONS_TABLE_NAME = "assertions"
 _ASSERTION_MENTIONS_TABLE_NAME = "assertion_mentions"
@@ -367,47 +380,181 @@ def replace_semantic_docs(
     *,
     post_uid: str,
     rows: list[dict[str, object]],
+    redis_client: Redis | Any = None,
 ) -> int:
+    """
+    替换指定 post_uid 的所有 semantic_docs
+
+    Args:
+        engine_or_conn: Postgres 连接或引擎
+        post_uid: 帖子唯一标识
+        rows: 要插入的记录列表
+        redis_client: Redis 客户端，用于 Zilliz 写入失败时加入重试队列（可选）
+                      如果为 None 且 Zilliz 写入失败，将只记录警告日志
+
+    Returns:
+        插入的记录数（dual_write 模式返回 Postgres 写入数）
+    """
     resolved_post_uid = _clean_text(post_uid)
     normalized_rows = _normalize_insert_rows(rows)
+    schema = require_postgres_schema_name(engine_or_conn)
 
-    def _write(conn: PostgresConnection) -> int:
-        conn.execute(
-            semantic_docs_sql.delete_semantic_docs_by_post_uid_sql(
-                _semantic_docs_table(conn)
-            ),
-            {"post_uid": resolved_post_uid},
-        )
-        if not normalized_rows:
-            return 0
-        conn.execute(
-            semantic_docs_sql.insert_semantic_doc_sql(_semantic_docs_table(conn)),
-            normalized_rows,
-        )
-        return len(normalized_rows)
+    pg_count = 0
+    zilliz_count = 0
 
-    return run_postgres_transaction(engine_or_conn, _write)
+    # 1. 写入 Postgres（根据迁移模式决定）
+    if should_write_to_postgres():
+
+        def _write(conn: PostgresConnection) -> int:
+            conn.execute(
+                semantic_docs_sql.delete_semantic_docs_by_post_uid_sql(
+                    _semantic_docs_table(conn)
+                ),
+                {"post_uid": resolved_post_uid},
+            )
+            if not normalized_rows:
+                return 0
+            conn.execute(
+                semantic_docs_sql.insert_semantic_doc_sql(_semantic_docs_table(conn)),
+                normalized_rows,
+            )
+            return len(normalized_rows)
+
+        pg_count = run_postgres_transaction(engine_or_conn, _write)
+
+    # 2. 同步到 Zilliz Cloud（根据迁移模式决定）
+    if should_write_to_zilliz():
+        try:
+            zilliz_count = replace_semantic_docs_in_zilliz(
+                schema,
+                post_uid=resolved_post_uid,
+                rows=normalized_rows,
+            )
+        except Exception as e:
+            # Zilliz 同步失败处理
+            if should_write_to_postgres():
+                # dual_write 模式：放入 Redis 重试队列
+                logger.warning(
+                    "zilliz_sync_failed post_uid=%s error=%s",
+                    resolved_post_uid,
+                    str(e)[:100],
+                )
+
+                # 加入重试队列
+                if redis_client:
+                    try:
+                        enqueue_zilliz_retry(
+                            redis_client,
+                            operation="replace",
+                            schema=schema,
+                            post_uid=resolved_post_uid,
+                            rows=normalized_rows,
+                            retry_count=0,
+                            error=str(e),
+                        )
+                    except Exception as retry_err:
+                        logger.warning(
+                            "zilliz_retry_enqueue_failed post_uid=%s: %s",
+                            resolved_post_uid,
+                            retry_err,
+                        )
+                else:
+                    logger.warning(
+                        "zilliz_retry_unavailable post_uid=%s (redis_client=None)",
+                        resolved_post_uid,
+                    )
+            else:
+                # zilliz_only 模式：抛出异常（主存储失败）
+                raise RuntimeError(
+                    f"Zilliz write failed (zilliz_only mode) for {resolved_post_uid}: {e}"
+                ) from e
+
+    return pg_count if should_write_to_postgres() else zilliz_count
 
 
 def delete_semantic_docs_by_post_uid(
     engine_or_conn: PostgresEngine | PostgresConnection,
     *,
     post_uid: str,
+    redis_client: Redis | Any = None,
 ) -> int:
+    """
+    删除指定 post_uid 的所有 semantic_docs
+
+    Args:
+        engine_or_conn: Postgres 连接或引擎
+        post_uid: 帖子唯一标识
+        redis_client: Redis 客户端，用于 Zilliz 删除失败时加入重试队列（可选）
+                      如果为 None 且 Zilliz 删除失败，将只记录警告日志
+
+    Returns:
+        删除的记录数（dual_write 模式返回 Postgres 删除数）
+    """
     resolved_post_uid = _clean_text(post_uid)
     if not resolved_post_uid:
         return 0
 
-    def _write(conn: PostgresConnection) -> int:
-        result = conn.execute(
-            semantic_docs_sql.delete_semantic_docs_by_post_uid_sql(
-                _semantic_docs_table(conn)
-            ),
-            {"post_uid": resolved_post_uid},
-        )
-        return int(result.rowcount or 0)
+    schema = require_postgres_schema_name(engine_or_conn)
+    pg_count = 0
 
-    return run_postgres_transaction(engine_or_conn, _write)
+    # 1. 删除 Postgres 记录（根据迁移模式决定）
+    if should_write_to_postgres():
+
+        def _write(conn: PostgresConnection) -> int:
+            result = conn.execute(
+                semantic_docs_sql.delete_semantic_docs_by_post_uid_sql(
+                    _semantic_docs_table(conn)
+                ),
+                {"post_uid": resolved_post_uid},
+            )
+            return int(result.rowcount or 0)
+
+        pg_count = run_postgres_transaction(engine_or_conn, _write)
+
+    # 2. 同步删除 Zilliz 记录（根据迁移模式决定）
+    zilliz_count = 0
+    if should_write_to_zilliz():
+        try:
+            zilliz_count = delete_semantic_docs_by_post_uid_in_zilliz(
+                schema,
+                post_uid=resolved_post_uid,
+            )
+        except Exception as e:
+            if should_write_to_postgres():
+                logger.warning(
+                    "zilliz_delete_failed post_uid=%s error=%s",
+                    resolved_post_uid,
+                    str(e)[:100],
+                )
+
+                if redis_client:
+                    try:
+                        enqueue_zilliz_retry(
+                            redis_client,
+                            operation="delete",
+                            schema=schema,
+                            post_uid=resolved_post_uid,
+                            rows=[],
+                            retry_count=0,
+                            error=str(e),
+                        )
+                    except Exception as retry_err:
+                        logger.warning(
+                            "zilliz_delete_retry_enqueue_failed post_uid=%s: %s",
+                            resolved_post_uid,
+                            retry_err,
+                        )
+                else:
+                    logger.warning(
+                        "zilliz_delete_retry_unavailable post_uid=%s (redis_client=None)",
+                        resolved_post_uid,
+                    )
+            else:
+                raise RuntimeError(
+                    f"Zilliz delete failed (zilliz_only mode) for {resolved_post_uid}: {e}"
+                ) from e
+
+    return pg_count if should_write_to_postgres() else zilliz_count
 
 
 def scan_relevant_post_uids(

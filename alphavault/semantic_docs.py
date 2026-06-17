@@ -5,7 +5,10 @@ from datetime import datetime
 from functools import lru_cache
 import hashlib
 import json
-from typing import NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
+
+if TYPE_CHECKING:
+    from redis import Redis
 
 from alphavault.ai.embedding import embed_texts_with_openai
 from alphavault.constants import (
@@ -377,14 +380,36 @@ def sync_semantic_docs_for_post(
     prefetched_stored_rows: list[dict[str, object]] | None = None,
     apply: bool = True,
     embedding_runtime: SemanticDocEmbeddingRuntime | None = None,
+    redis_client: Redis | Any = None,
 ) -> SemanticDocSyncResult:
+    """
+    同步指定 post 的语义文档（semantic_docs）
+
+    Args:
+        engine_or_conn: Postgres 连接或引擎
+        post_uid: 帖子唯一标识
+        final_status: 最终状态（非 "relevant" 会删除所有 semantic_docs）
+        prefetched_post: 预取的 post 对象（可选）
+        prefetched_assertion_rows: 预取的断言行（可选）
+        prefetched_stored_rows: 预取的已存储记录（可选）
+        apply: 是否实际写入数据库（False 仅计算结果）
+        embedding_runtime: 自定义 embedding 运行时配置（可选）
+        redis_client: Redis 客户端，用于 Zilliz 失败重试（可选）
+
+    Returns:
+        同步结果（包含文档数量、嵌入数量、复用数量等统计信息）
+    """
     resolved_post_uid = _clean_text(post_uid)
     resolved_final_status = _clean_text(final_status)
     if not resolved_post_uid:
         raise RuntimeError("semantic_doc_post_uid_missing")
     if resolved_final_status and resolved_final_status != "relevant":
         deleted_count = (
-            delete_semantic_docs_by_post_uid(engine_or_conn, post_uid=resolved_post_uid)
+            delete_semantic_docs_by_post_uid(
+                engine_or_conn,
+                post_uid=resolved_post_uid,
+                redis_client=redis_client,
+            )
             if apply
             else 0
         )
@@ -415,7 +440,11 @@ def sync_semantic_docs_for_post(
     docs = build_semantic_docs(post=post, assertion_rows=assertion_rows)
     if not docs:
         deleted_count = (
-            delete_semantic_docs_by_post_uid(engine_or_conn, post_uid=resolved_post_uid)
+            delete_semantic_docs_by_post_uid(
+                engine_or_conn,
+                post_uid=resolved_post_uid,
+                redis_client=redis_client,
+            )
             if apply
             else 0
         )
@@ -501,6 +530,7 @@ def sync_semantic_docs_for_post(
         engine_or_conn,
         post_uid=resolved_post_uid,
         rows=inserted_rows,
+        redis_client=redis_client,  # 传递 redis_client
     )
     return SemanticDocSyncResult(
         post_uid=resolved_post_uid,

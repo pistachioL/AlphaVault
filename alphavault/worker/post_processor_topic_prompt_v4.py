@@ -2,6 +2,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import Any
 
 from alphavault.ai._client import AiInvalidJsonError, AiRetryLaterError
 from alphavault.ai.analyze import (
@@ -343,6 +344,7 @@ def _sync_semantic_docs_best_effort(
     post_uid: str,
     final_status: str,
     prefetched_post: CloudPost | None,
+    redis_client: Any = None,  # 新增参数
 ) -> None:
     resolved_final_status = str(final_status or "").strip()
     if resolved_final_status == "relevant":
@@ -356,6 +358,7 @@ def _sync_semantic_docs_best_effort(
             final_status=resolved_final_status,
             prefetched_post=prefetched_post,
             apply=True,
+            redis_client=redis_client,  # 传递 redis_client
         )
     except Exception as semantic_docs_err:
         logger.warning(
@@ -802,6 +805,7 @@ def process_one_post_uid_topic_prompt_v4(
                     and uid == str(post.post_uid or "").strip()
                     else None
                 ),
+                redis_client=redis_client,  # 传递 redis_client
             )
             current_post = (
                 prefetched_post

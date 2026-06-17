@@ -263,6 +263,22 @@ def schedule_ai_from_stream(
             type(err).__name__,
             err,
         )
+
+    # Process Zilliz retry queue (新增)
+    try:
+        from alphavault.db.zilliz_retry_queue import process_zilliz_retry_queue
+
+        if redis_client:
+            process_zilliz_retry_queue(redis_client, max_batch_size=50)
+    except BaseException as err:
+        if isinstance(err, fatal_exceptions):
+            raise
+        logger.warning(
+            "[zilliz] retry_queue_error owner=%s %s: %s",
+            inflight_owner,
+            type(err).__name__,
+            err,
+        )
     try:
         claimed_messages = claim_stuck_messages_fn(
             redis_client,
