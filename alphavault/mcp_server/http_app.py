@@ -51,7 +51,7 @@ _SEARCH_POSTS_TOOL_DESCRIPTION = (
     "`OR` 表示任选其一，双引号表示短语，前缀 `-` 表示排除词。"
 )
 _SEARCH_POSTS_SEMANTIC_TOOL_DESCRIPTION = (
-    "按语义搜索帖子内容。先在 `semantic_docs` 里做向量召回，再按需要用重排模型重排。"
+    "按语义搜索帖子内容。先在 Zilliz 向量库里做向量召回，再按需要用重排模型重排。"
 )
 
 

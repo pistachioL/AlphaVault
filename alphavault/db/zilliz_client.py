@@ -11,6 +11,7 @@ Zilliz Cloud 向量数据库客户端
 
 from __future__ import annotations
 
+import json
 import os
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
@@ -46,6 +47,17 @@ def _coerce_int(value: object) -> int:
     if not text:
         return 0
     return int(text)
+
+
+def _coerce_float(value: object) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = _clean_text(value)
+    if not text:
+        return 0.0
+    return float(text)
 
 
 def _parse_vector_text(value: object) -> list[float]:
@@ -154,6 +166,19 @@ def _get_collection_name(schema: str) -> str:
         return "alphavault_weibo_semantic"
     # 未知 schema，使用通用命名
     return f"alphavault_{normalized}_semantic"
+
+
+def _doc_id_from_row(row: dict[str, Any]) -> str:
+    return _clean_text(row.get("doc_id") or row.get("id"))
+
+
+def _normalize_embedding(embedding: object) -> list[float]:
+    if not isinstance(embedding, list):
+        return []
+    out: list[float] = []
+    for item in embedding:
+        out.append(_coerce_float(item))
+    return out
 
 
 def replace_semantic_docs_in_zilliz(
@@ -266,6 +291,78 @@ def replace_semantic_docs_in_zilliz(
     return len(data)
 
 
+def load_semantic_docs_for_post_from_zilliz(
+    schema: str,
+    *,
+    post_uid: str,
+) -> list[dict[str, Any]]:
+    resolved_post_uid = _clean_text(post_uid)
+    if not resolved_post_uid or not should_write_to_zilliz():
+        return []
+
+    client = get_zilliz_client()
+    collection_name = _get_collection_name(schema)
+    safe_post_uid = _escape_filter_string(resolved_post_uid)
+    meta_rows = client.query(
+        collection_name=collection_name,
+        filter=f'post_uid == "{safe_post_uid}"',
+        output_fields=["doc_id", "content_hash", "embedding_model"],
+    )
+    doc_ids = [_doc_id_from_row(row) for row in meta_rows]
+    doc_ids = [doc_id for doc_id in doc_ids if doc_id]
+    if not doc_ids:
+        return []
+    vector_rows = client.get(
+        collection_name=collection_name,
+        ids=doc_ids,
+        output_fields=["embedding"],
+    )
+    vector_by_doc_id = {
+        _doc_id_from_row(row): _normalize_embedding(row.get("embedding"))
+        for row in vector_rows
+        if _doc_id_from_row(row)
+    }
+    out: list[dict[str, Any]] = []
+    for row in meta_rows:
+        doc_id = _doc_id_from_row(row)
+        if not doc_id:
+            continue
+        embedding = vector_by_doc_id.get(doc_id, [])
+        if not embedding:
+            continue
+        out.append(
+            {
+                "doc_id": doc_id,
+                "content_hash": _clean_text(row.get("content_hash")),
+                "embedding_model": _clean_text(row.get("embedding_model")),
+                "embedding_text": json.dumps(
+                    embedding,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            }
+        )
+    out.sort(key=lambda row: _clean_text(row.get("doc_id")))
+    return out
+
+
+def load_semantic_docs_for_posts_from_zilliz(
+    schema: str,
+    *,
+    post_uids: list[str],
+) -> dict[str, list[dict[str, Any]]]:
+    out: dict[str, list[dict[str, Any]]] = {}
+    for post_uid in post_uids:
+        resolved_post_uid = _clean_text(post_uid)
+        if not resolved_post_uid:
+            continue
+        out[resolved_post_uid] = load_semantic_docs_for_post_from_zilliz(
+            schema,
+            post_uid=resolved_post_uid,
+        )
+    return out
+
+
 def delete_semantic_docs_by_post_uid_in_zilliz(
     schema: str,
     *,
@@ -354,7 +451,18 @@ def semantic_search_in_zilliz(
             filter=filter_expr if filter_expr else None,
             output_fields=output_fields,
         )
-        return results[0] if results else []
+        raw_rows = results[0] if results else []
+        out: list[dict[str, Any]] = []
+        for row in raw_rows:
+            entity = row.get("entity")
+            entity_dict = entity if isinstance(entity, dict) else {}
+            normalized = dict(entity_dict)
+            normalized["doc_id"] = _doc_id_from_row(row) or _doc_id_from_row(
+                entity_dict
+            )
+            normalized["distance"] = _coerce_float(row.get("distance"))
+            out.append(normalized)
+        return out
     except Exception as e:
         logger.error(
             "zilliz_search_failed collection=%s limit=%d error=%s",
@@ -368,6 +476,8 @@ def semantic_search_in_zilliz(
 __all__ = [
     "get_zilliz_client",
     "get_migration_mode",
+    "load_semantic_docs_for_post_from_zilliz",
+    "load_semantic_docs_for_posts_from_zilliz",
     "should_write_to_postgres",
     "should_write_to_zilliz",
     "replace_semantic_docs_in_zilliz",

@@ -34,12 +34,14 @@ _WARNING_ALERT_MARKERS = (
 )
 _INTERNAL_LOGGER_PREFIXES = ("urllib3", "requests")
 _LLM_ALERT_LOGGER_NAME = "alphavault.ai._client"
+_EMBEDDING_ALERT_LOGGER_NAME = "alphavault.ai.embedding"
 _LLM_PROGRESS_MESSAGE_PREFIXES = (
     "[llm] validate_failed",
     "[llm] request_retry label=",
     "[llm] request_failed label=",
     "[llm] request_defer label=",
 )
+_EMBEDDING_PROGRESS_MESSAGE_PREFIXES = ("[embedding] request_retry ",)
 _LLM_SUSTAINED_MESSAGE_PREFIXES = (
     "[llm] request_retry label=",
     "[llm] request_failed label=",
@@ -269,8 +271,12 @@ def _should_skip_llm_progress_alert(
     record: logging.LogRecord,
     message: str,
 ) -> bool:
-    return record.name == _LLM_ALERT_LOGGER_NAME and any(
+    if record.name == _LLM_ALERT_LOGGER_NAME and any(
         message.startswith(prefix) for prefix in _LLM_PROGRESS_MESSAGE_PREFIXES
+    ):
+        return True
+    return record.name == _EMBEDDING_ALERT_LOGGER_NAME and any(
+        message.startswith(prefix) for prefix in _EMBEDDING_PROGRESS_MESSAGE_PREFIXES
     )
 
 

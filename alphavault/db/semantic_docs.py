@@ -21,6 +21,8 @@ from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql_rows import read_sql_rows
 from alphavault.db.zilliz_client import (
     delete_semantic_docs_by_post_uid_in_zilliz,
+    load_semantic_docs_for_post_from_zilliz,
+    load_semantic_docs_for_posts_from_zilliz,
     replace_semantic_docs_in_zilliz,
     should_write_to_postgres,
     should_write_to_zilliz,
@@ -126,6 +128,10 @@ def _assertion_entities_table(engine_or_conn: object) -> str:
 
 def _semantic_docs_table(engine_or_conn: object) -> str:
     return _source_table(engine_or_conn, _SEMANTIC_DOCS_TABLE_NAME)
+
+
+def _should_read_stored_semantic_docs_from_postgres() -> bool:
+    return should_write_to_postgres()
 
 
 def load_assertion_semantic_rows(
@@ -296,6 +302,11 @@ def load_stored_semantic_doc_embeddings(
     resolved_post_uid = _clean_text(post_uid)
     if not resolved_post_uid:
         return []
+    if not _should_read_stored_semantic_docs_from_postgres():
+        return load_semantic_docs_for_post_from_zilliz(
+            require_postgres_schema_name(engine_or_conn),
+            post_uid=resolved_post_uid,
+        )
     with _use_conn(engine_or_conn) as conn:
         return read_sql_rows(
             conn,
@@ -316,6 +327,11 @@ def load_stored_semantic_doc_embeddings_by_post_uids(
     )
     if not resolved_post_uids:
         return {}
+    if not _should_read_stored_semantic_docs_from_postgres():
+        return load_semantic_docs_for_posts_from_zilliz(
+            require_postgres_schema_name(engine_or_conn),
+            post_uids=list(resolved_post_uids),
+        )
     placeholders = make_in_placeholders(
         prefix="post_uid",
         count=len(resolved_post_uids),

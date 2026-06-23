@@ -29,7 +29,12 @@ from alphavault.db.postgres_db import (
     qualify_postgres_table,
 )
 from alphavault.db.postgres_env import PostgresSource
+from alphavault.db.sql.common import make_in_params, make_in_placeholders
 from alphavault.db.sql_rows import read_sql_rows
+from alphavault.db.zilliz_client import (
+    semantic_search_in_zilliz,
+    should_write_to_postgres,
+)
 from alphavault.infra.ai.embedding_runtime_config import (
     EMBEDDING_TASK_SEMANTIC_QUERY,
     EmbeddingRuntimeConfig,
@@ -45,6 +50,7 @@ from alphavault.infra.ai.reranker_runtime_config import (
 from alphavault.rss.utils import RateLimiter
 
 DEFAULT_SEMANTIC_POST_CANDIDATE_LIMIT = 40
+ZILLIZ_SOURCE_OVERFETCH_MULTIPLIER = 4
 MIN_QUERY_LIMIT = 1
 EXTRA_FETCH_COUNT = 1
 RERANK_MIN_OVERFETCH = EXTRA_FETCH_COUNT
@@ -55,9 +61,7 @@ SEMANTIC_DOC_KIND_LABELS = {
     DOC_KIND_ASSERTION: "观点",
     DOC_KIND_RAW_TAIL: "原文尾段",
 }
-SEMANTIC_SEARCH_EXTENSION_ERROR_TEXT = (
-    "语义搜索依赖 pgvector 扩展，当前数据库还没装好。"
-)
+SEMANTIC_SEARCH_EXTENSION_ERROR_TEXT = "语义搜索依赖向量检索服务，当前环境还没准备好。"
 
 
 @dataclass(frozen=True)
@@ -184,6 +188,158 @@ ORDER BY semantic_score DESC, created_at DESC, post_uid DESC
     return sql, params
 
 
+def _should_load_candidates_from_postgres() -> bool:
+    return should_write_to_postgres()
+
+
+def _posts_metadata_sql(
+    *,
+    posts_table: str,
+    post_uid_placeholders: str,
+) -> str:
+    return f"""
+SELECT
+    post_uid,
+    platform,
+    author,
+    created_at,
+    url,
+    raw_text
+FROM {posts_table}
+WHERE processed_at IS NOT NULL
+  AND post_uid IN ({post_uid_placeholders})
+""".strip()
+
+
+def _semantic_score_from_zilliz_row(row: dict[str, object]) -> float:
+    return _coerce_float(row.get("distance"))
+
+
+def _zilliz_search_limit(*, candidate_limit: int) -> int:
+    return max(
+        int(candidate_limit),
+        int(candidate_limit) * ZILLIZ_SOURCE_OVERFETCH_MULTIPLIER,
+    )
+
+
+def _load_posts_metadata(
+    *,
+    conn: object,
+    source: PostgresSource,
+    post_uids: list[str],
+) -> dict[str, dict[str, object]]:
+    resolved_post_uids = [_clean_text(post_uid) for post_uid in post_uids]
+    resolved_post_uids = [post_uid for post_uid in resolved_post_uids if post_uid]
+    if not resolved_post_uids:
+        return {}
+    placeholders = make_in_placeholders(
+        prefix="post_uid",
+        count=len(resolved_post_uids),
+    )
+    rows = read_sql_rows(
+        conn,
+        _posts_metadata_sql(
+            posts_table=_posts_table(source),
+            post_uid_placeholders=placeholders,
+        ),
+        params=make_in_params(prefix="post_uid", values=tuple(resolved_post_uids)),
+    )
+    out: dict[str, dict[str, object]] = {}
+    for row in rows:
+        post_uid = _clean_text(row.get("post_uid"))
+        if not post_uid:
+            continue
+        out[post_uid] = row
+    return out
+
+
+def _pick_better_semantic_row(
+    current: dict[str, object] | None,
+    candidate: dict[str, object],
+) -> dict[str, object]:
+    if current is None:
+        return candidate
+    current_score = _coerce_float(current.get("semantic_score"))
+    candidate_score = _coerce_float(candidate.get("semantic_score"))
+    if candidate_score > current_score:
+        return candidate
+    if candidate_score < current_score:
+        return current
+    current_created_at = _clean_text(current.get("created_at"))
+    candidate_created_at = _clean_text(candidate.get("created_at"))
+    if candidate_created_at > current_created_at:
+        return candidate
+    if candidate_created_at < current_created_at:
+        return current
+    if _clean_text(candidate.get("doc_id")) > _clean_text(current.get("doc_id")):
+        return candidate
+    return current
+
+
+def _load_source_candidate_rows_from_zilliz(
+    *,
+    conn: object,
+    source: PostgresSource,
+    query_embedding: list[float],
+    candidate_limit: int,
+) -> list[dict[str, object]]:
+    raw_rows = semantic_search_in_zilliz(
+        source.schema,
+        query_vector=query_embedding,
+        limit=_zilliz_search_limit(candidate_limit=candidate_limit),
+        output_fields=[
+            "doc_id",
+            "post_uid",
+            "doc_kind",
+            "platform",
+            "author",
+            "created_at",
+            "doc_text",
+        ],
+    )
+    post_uids = [_clean_text(row.get("post_uid")) for row in raw_rows]
+    posts_by_uid = _load_posts_metadata(
+        conn=conn,
+        source=source,
+        post_uids=post_uids,
+    )
+    best_row_by_post_uid: dict[str, dict[str, object]] = {}
+    for row in raw_rows:
+        post_uid = _clean_text(row.get("post_uid"))
+        post_row = posts_by_uid.get(post_uid)
+        if post_row is None:
+            continue
+        candidate = {
+            "doc_id": _clean_text(row.get("doc_id")),
+            "post_uid": post_uid,
+            "platform": _clean_text(post_row.get("platform"))
+            or _clean_text(row.get("platform")),
+            "author": _clean_text(post_row.get("author"))
+            or _clean_text(row.get("author")),
+            "created_at": _clean_text(post_row.get("created_at"))
+            or _clean_text(row.get("created_at")),
+            "url": _clean_text(post_row.get("url")),
+            "raw_text": _clean_text(post_row.get("raw_text")),
+            "doc_kind": _clean_text(row.get("doc_kind")),
+            "match_doc_text": _clean_text(row.get("doc_text")),
+            "semantic_score": _semantic_score_from_zilliz_row(row),
+        }
+        best_row_by_post_uid[post_uid] = _pick_better_semantic_row(
+            best_row_by_post_uid.get(post_uid),
+            candidate,
+        )
+    out = list(best_row_by_post_uid.values())
+    out.sort(
+        key=lambda row: (
+            _coerce_float(row.get("semantic_score")),
+            _clean_text(row.get("created_at")),
+            _clean_text(row.get("post_uid")),
+        ),
+        reverse=True,
+    )
+    return out[: int(candidate_limit)]
+
+
 @lru_cache(maxsize=1)
 def semantic_query_embedding_runtime_from_env() -> SemanticQueryEmbeddingRuntime:
     config = embedding_task_runtime_config_from_env(
@@ -239,12 +395,32 @@ def _load_candidate_rows(
     candidate_limit: int,
 ) -> list[dict[str, object]]:
     sources = _load_search_sources_from_env()
-    sql, params = _build_search_sql(sources=sources)
-    params["source_candidate_limit"] = int(candidate_limit)
-    params["query_embedding"] = _embedding_literal(query_embedding)
     engine = ensure_postgres_engine(sources[0].url)
     with postgres_connect_autocommit(engine) as conn:
-        return read_sql_rows(conn, sql, params=params)
+        if _should_load_candidates_from_postgres():
+            sql, params = _build_search_sql(sources=sources)
+            params["source_candidate_limit"] = int(candidate_limit)
+            params["query_embedding"] = _embedding_literal(query_embedding)
+            return read_sql_rows(conn, sql, params=params)
+        rows: list[dict[str, object]] = []
+        for source in sources:
+            rows.extend(
+                _load_source_candidate_rows_from_zilliz(
+                    conn=conn,
+                    source=source,
+                    query_embedding=query_embedding,
+                    candidate_limit=candidate_limit,
+                )
+            )
+        rows.sort(
+            key=lambda row: (
+                _coerce_float(row.get("semantic_score")),
+                _clean_text(row.get("created_at")),
+                _clean_text(row.get("post_uid")),
+            ),
+            reverse=True,
+        )
+        return rows[: int(candidate_limit)]
 
 
 def _semantic_match_reason(*, doc_kind: str, reranked: bool) -> str:
